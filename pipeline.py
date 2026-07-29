@@ -6,7 +6,12 @@ from utils import get_model_and_tokenizer
 model, tokenizer, device = get_model_and_tokenizer()
 
 def evaluate_eac_robust(prompt, max_new_tokens=256):
-    inputs = tokenizer(prompt, return_tensors="pt").to(device)
+    messages = [
+        {"role": "system", "content": "You are an expert Python coder."},
+        {"role": "user", "content": prompt}
+    ]
+    prompt_formatted = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+    inputs = tokenizer(prompt_formatted, return_tensors="pt").to(device)
     prompt_length = inputs.input_ids.shape[1]
 
     scheduler = EntropyAwareScheduler()
