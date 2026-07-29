@@ -1,7 +1,7 @@
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-def get_model_and_tokenizer(model_name="gpt2"):
+def get_model_and_tokenizer(model_name="Qwen/Qwen2.5-Coder-1.5B-Instruct"):
     """
     Initializes and returns the model, tokenizer, and device.
     """

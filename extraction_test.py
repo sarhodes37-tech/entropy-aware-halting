@@ -17,7 +17,12 @@ def evaluate_eac_robust(trace_steps):
 # 3. EXTRACTION PIPELINE
 # ==============================================================================
 def extract_trace_entropy_hf(prompt, max_new_tokens=256):
-    inputs = tokenizer(prompt, return_tensors="pt").to(device)
+    messages = [
+        {"role": "system", "content": "You are an expert Python coder."},
+        {"role": "user", "content": prompt}
+    ]
+    prompt_formatted = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+    inputs = tokenizer(prompt_formatted, return_tensors="pt").to(device)
     prompt_length = inputs.input_ids.shape[1]
 
     with torch.no_grad():
@@ -26,7 +31,8 @@ def extract_trace_entropy_hf(prompt, max_new_tokens=256):
             max_new_tokens=max_new_tokens,
             return_dict_in_generate=True,
             output_scores=True,
-            do_sample=False
+            do_sample=False,
+            repetition_penalty=1.0
         )
 
     gen_tokens = outputs.sequences[0][prompt_length:]
