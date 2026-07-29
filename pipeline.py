@@ -1,12 +1,9 @@
 import torch
 import torch.nn.functional as F
-from transformers import AutoModelForCausalLM, AutoTokenizer
 from scheduler import EntropyAwareScheduler
+from utils import get_model_and_tokenizer
 
-device = "cuda" if torch.cuda.is_available() else "cpu"
-model_name = "gpt2" # Using gpt2 as a lightweight model
-tokenizer = AutoTokenizer.from_pretrained(model_name)
-model = AutoModelForCausalLM.from_pretrained(model_name).to(device)
+model, tokenizer, device = get_model_and_tokenizer()
 
 def evaluate_eac_robust(prompt, max_new_tokens=256):
     inputs = tokenizer(prompt, return_tensors="pt").to(device)
