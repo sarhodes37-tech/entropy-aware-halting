@@ -39,3 +39,9 @@ def test_scheduler_init_invalid_value():
 
     with pytest.raises(ValueError, match="negative_yield_window must be positive"):
         EntropyAwareScheduler(negative_yield_window=0)
+import torch
+from scheduler import EntropyAwareScheduler
+
+scheduler = EntropyAwareScheduler()
+scheduler.step(torch.tensor([0.5, 0.5]), cost=0, state=None)
+scheduler.step(torch.tensor([0.9, 0.1]), cost=0, state=None)

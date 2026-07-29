@@ -1,11 +1,10 @@
 import torch
 import torch.nn.functional as F
+import torch.distributions as dist
 from transformers import AutoModelForCausalLM, AutoTokenizer
+from utils import get_model_and_tokenizer
 
-device = "cuda" if torch.cuda.is_available() else "cpu"
-model_name = "gpt2" # Using gpt2 as a lightweight model
-tokenizer = AutoTokenizer.from_pretrained(model_name)
-model = AutoModelForCausalLM.from_pretrained(model_name).to(device)
+model, tokenizer, device = get_model_and_tokenizer()
 
 def evaluate_eac_robust(trace_steps):
     print(f"Evaluating state-aware EAC on extracted trace with {len(trace_steps)} steps.")
@@ -37,11 +36,8 @@ def extract_trace_entropy_hf(prompt, max_new_tokens=256):
     log2 = torch.log(torch.tensor(2.0, device=device))
 
     for idx, (token_id, logits) in enumerate(zip(gen_tokens, logits_per_step)):
-        probs = F.softmax(logits[0], dim=-1)
-        log_probs = F.log_softmax(logits[0], dim=-1)
-
-        # Calculate Shannon Entropy H = -sum(p * log2(p))
-        entropy_bits = -torch.sum(probs * (log_probs / log2)).item()
+        # Calculate Shannon Entropy using torch.distributions.Categorical
+        entropy_bits = (dist.Categorical(logits=logits[0]).entropy() / log2).item()
 
         token_text = tokenizer.decode([token_id])
         trace_steps.append({
