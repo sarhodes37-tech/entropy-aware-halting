@@ -1,4 +1,3 @@
-import math
 import torch
 from dataclasses import dataclass
 from typing import Any
