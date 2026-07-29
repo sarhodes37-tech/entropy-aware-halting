@@ -7,10 +7,12 @@ import torch.nn.functional as F
 from scheduler import EntropyAwareScheduler
 from utils import get_model_and_tokenizer
 from vector_hygiene import VectorHygieneManager
+from friction_window import PreExecutionFrictionGate
 
 model, tokenizer, device = get_model_and_tokenizer()
 
 hygiene_manager = VectorHygieneManager(db_client=None)
+friction_gate = PreExecutionFrictionGate()
 
 def evaluate_eac_robust(prompt, max_new_tokens=256):
     messages = [
@@ -90,6 +92,7 @@ def evaluate_eac_robust(prompt, max_new_tokens=256):
     final_trace_text = "".join(generated_tokens[:result.best_step + 1])
     print("\nFinal trace text (after rollback):", final_trace_text)
 
+    # TODO: Agent tool-calling logic will eventually interface with friction_gate.stage_action() here
     return trace_steps
 
 if __name__ == "__main__":
