@@ -1,4 +1,5 @@
 import math
+import torch
 from dataclasses import dataclass
 from typing import Any
 
@@ -55,7 +56,6 @@ class EntropyAwareScheduler:
         self.initial_entropy = None
 
     def entropy(self, probabilities):
-        import torch
         if not isinstance(probabilities, torch.Tensor):
             probabilities = torch.tensor(probabilities)
 
