@@ -79,7 +79,7 @@ class EntropyAwareScheduler:
 
         eta = 0
         if step_index > 0:
-            if self.initial_entropy > 0:
+            if self.initial_entropy > 0 and cost > 0:
                 eta = (delta_h / self.initial_entropy) * self.V / cost
 
         utility = self.V * (self.initial_entropy - H) - self.total_cost
