@@ -1,9 +1,16 @@
+import json
+import datetime
+import hashlib
+import uuid
 import torch
 import torch.nn.functional as F
 from scheduler import EntropyAwareScheduler
 from utils import get_model_and_tokenizer
+from vector_hygiene import VectorHygieneManager
 
 model, tokenizer, device = get_model_and_tokenizer()
+
+hygiene_manager = VectorHygieneManager(db_client=None)
 
 def evaluate_eac_robust(prompt, max_new_tokens=256):
     messages = [
@@ -19,6 +26,7 @@ def evaluate_eac_robust(prompt, max_new_tokens=256):
     generated_tokens = []
     current_input_ids = inputs.input_ids
     past_key_values = None
+    trajectory_id = uuid.uuid4().hex
 
     print("\nExtracting logprobs and computing token entropy...")
 
@@ -40,11 +48,28 @@ def evaluate_eac_robust(prompt, max_new_tokens=256):
         result = scheduler.step(probabilities=probs, cost=0.03, state=next_token_text)
         generated_tokens.append(next_token_text)
 
+        hygiene_manager.stage_vectors(trajectory_id, [next_token_id.item()])
+
         current_input_ids = next_token_id.unsqueeze(0)
 
         if result.halt:
             print(f"Halting at step {i} due to {result.directive}. Best step was {result.best_step} with state {result.best_state}.")
+            if result.directive == "NEGATIVE_YIELD":
+                audit_entry = {
+                    "timestamp": datetime.datetime.utcnow().isoformat(),
+                    "prompt_hash": hashlib.sha256(prompt.encode('utf-8')).hexdigest(),
+                    "active_constraint": "NEGATIVE_YIELD",
+                    "entropy_at_failure": scheduler.history[-1].entropy if scheduler.history else None,
+                    "rejected_trajectory": "".join(generated_tokens),
+                    "status": "VETO_APPLIED - DFR ROUTED"
+                }
+                with open("audit_ledger.json", "a") as f:
+                    f.write(json.dumps(audit_entry) + "\n")
+                hygiene_manager.revoke_trajectory(trajectory_id)
             break
+
+    if not result.halt or result.directive != "NEGATIVE_YIELD":
+        hygiene_manager.commit_trajectory(trajectory_id)
 
     trace_steps = []
     for step_idx in range(len(scheduler.history)):
