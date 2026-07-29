@@ -45,3 +45,8 @@ from scheduler import EntropyAwareScheduler
 scheduler = EntropyAwareScheduler()
 scheduler.step(torch.tensor([0.5, 0.5]), cost=0, state=None)
 scheduler.step(torch.tensor([0.9, 0.1]), cost=0, state=None)
+
+def test_entropy_negative_probabilities():
+    scheduler = EntropyAwareScheduler()
+    with pytest.raises(ValueError, match="Probabilities cannot contain negative values"):
+        scheduler.entropy(torch.tensor([-0.5, 1.5]))

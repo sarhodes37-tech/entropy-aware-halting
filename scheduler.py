@@ -99,6 +99,9 @@ class EntropyAwareScheduler:
         if not isinstance(probabilities, torch.Tensor):
             probabilities = torch.tensor(probabilities)
 
+        if torch.any(probabilities < 0):
+            raise ValueError("Probabilities cannot contain negative values")
+
         # Add epsilon to prevent log(0)
         probabilities = probabilities + 1e-9
         return -torch.sum(probabilities * torch.log2(probabilities)).item()
