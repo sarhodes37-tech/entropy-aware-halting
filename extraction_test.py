@@ -1,11 +1,8 @@
 import torch
 import torch.nn.functional as F
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from utils import get_model_and_tokenizer
 
-device = "cuda" if torch.cuda.is_available() else "cpu"
-model_name = "gpt2" # Using gpt2 as a lightweight model
-tokenizer = AutoTokenizer.from_pretrained(model_name)
-model = AutoModelForCausalLM.from_pretrained(model_name).to(device)
+model, tokenizer, device = get_model_and_tokenizer()
 
 def evaluate_eac_robust(trace_steps):
     print(f"Evaluating state-aware EAC on extracted trace with {len(trace_steps)} steps.")
