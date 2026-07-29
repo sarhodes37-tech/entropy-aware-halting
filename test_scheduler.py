@@ -39,8 +39,29 @@ def test_scheduler_init_invalid_value():
 
     with pytest.raises(ValueError, match="negative_yield_window must be positive"):
         EntropyAwareScheduler(negative_yield_window=0)
+
+def test_scheduler_entropy():
+    import torch
+    scheduler = EntropyAwareScheduler()
+
+    # Test with python list
+    entropy_list = scheduler.entropy([0.5, 0.5])
+    assert pytest.approx(entropy_list, 0.0001) == 1.0
+
+    # Test with torch tensor
+    entropy_tensor = scheduler.entropy(torch.tensor([0.5, 0.5]))
+    assert pytest.approx(entropy_tensor, 0.0001) == 1.0
+
+    # Test deterministic distribution (should be close to 0)
+    entropy_deterministic = scheduler.entropy([1.0, 0.0])
+    # The calculated entropy might have a small value due to the 1e-9 epsilon
+    assert pytest.approx(entropy_deterministic, abs=1e-5) == 0.0
+
+    # Test uniform distribution across 4 elements
+    entropy_uniform_4 = scheduler.entropy([0.25, 0.25, 0.25, 0.25])
+    assert pytest.approx(entropy_uniform_4, abs=1e-4) == 2.0
+
 import torch
-from scheduler import EntropyAwareScheduler
 
 scheduler = EntropyAwareScheduler()
 scheduler.step(torch.tensor([0.5, 0.5]), cost=0, state=None)
