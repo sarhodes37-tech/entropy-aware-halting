@@ -37,6 +37,46 @@ class EntropyAwareScheduler:
         utility_epsilon=0.5,
         minimum_steps_before_convergence=3
     ):
+        if not isinstance(value_of_information, (int, float)):
+            raise TypeError("value_of_information must be a number")
+        if value_of_information <= 0:
+            raise ValueError("value_of_information must be positive")
+
+        if not isinstance(divergence_threshold, (int, float)):
+            raise TypeError("divergence_threshold must be a number")
+        if divergence_threshold < 0:
+            raise ValueError("divergence_threshold must be non-negative")
+
+        if not isinstance(negative_yield_window, int):
+            raise TypeError("negative_yield_window must be an integer")
+        if negative_yield_window <= 0:
+            raise ValueError("negative_yield_window must be positive")
+
+        if not isinstance(entropy_delta_threshold, (int, float)):
+            raise TypeError("entropy_delta_threshold must be a number")
+        if entropy_delta_threshold < 0:
+            raise ValueError("entropy_delta_threshold must be non-negative")
+
+        if not isinstance(stagnation_window, int):
+            raise TypeError("stagnation_window must be an integer")
+        if stagnation_window <= 0:
+            raise ValueError("stagnation_window must be positive")
+
+        if not isinstance(confidence_threshold, (int, float)):
+            raise TypeError("confidence_threshold must be a number")
+        if confidence_threshold < 0:
+            raise ValueError("confidence_threshold must be non-negative")
+
+        if not isinstance(utility_epsilon, (int, float)):
+            raise TypeError("utility_epsilon must be a number")
+        if utility_epsilon < 0:
+            raise ValueError("utility_epsilon must be non-negative")
+
+        if not isinstance(minimum_steps_before_convergence, int):
+            raise TypeError("minimum_steps_before_convergence must be an integer")
+        if minimum_steps_before_convergence < 0:
+            raise ValueError("minimum_steps_before_convergence must be non-negative")
+
         self.V = value_of_information
         self.divergence_threshold = divergence_threshold
         self.negative_yield_window = negative_yield_window
