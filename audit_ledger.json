@@ -1,2 +1,0 @@
-{"timestamp": "2026-07-30T05:17:59.768822", "prompt_hash": "cb2fea287ffb357f914bffe2f58c7583bb74a60f3f96f259866c94b77a843a2d", "active_constraint": "NEGATIVE_YIELD", "entropy_at_failure": 0.5, "rejected_trajectory": " test test", "status": "VETO_APPLIED - DFR ROUTED"}
-{"timestamp": "2026-07-30T05:27:05.831981", "prompt_hash": "cb2fea287ffb357f914bffe2f58c7583bb74a60f3f96f259866c94b77a843a2d", "active_constraint": "NEGATIVE_YIELD", "entropy_at_failure": 0.5, "rejected_trajectory": " test test", "status": "VETO_APPLIED - DFR ROUTED"}
