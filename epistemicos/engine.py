@@ -2,6 +2,7 @@ from typing import Dict, Any, List, Optional
 from epistemicos.beliefs import BayesianBeliefKernel
 from epistemicos.gates import Gate
 from epistemicos.receipts import ReceiptGenerator
+from epistemicos.broker import kafka_mock
 
 class EpistemicOrchestrator:
     def __init__(self, prior_probabilities: Dict[str, float]):
@@ -66,6 +67,12 @@ class EpistemicOrchestrator:
             rollbacks_executed = receipt_gen.rollback()
 
         receipt = receipt_gen.mint_receipt(transaction_id, success=all_gates_passed, confidence_matrix=confidence_matrix)
+
+        # Publish asynchronously to decouple the hot path from slow blockchain logging
+        kafka_mock.publish("receipts_topic", {
+            "raw_payload": raw_payload,
+            "receipt": receipt
+        })
 
         return {
             "receipt": receipt,
