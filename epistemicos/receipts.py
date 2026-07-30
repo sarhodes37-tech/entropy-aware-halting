@@ -21,11 +21,11 @@ class ReceiptGenerator:
         self.log_event("ActionProposed", {"action": action})
         self._rollbacks.append(rollback_patch)
 
-    def mint_receipt(self, transaction_id: str, success: bool) -> Dict[str, Any]:
-        """Cryptographically signs the event log into an auditable receipt."""
+    def mint_receipt(self, transaction_id: str, success: bool, confidence_matrix: Dict[str, float]) -> Dict[str, Any]:
         receipt = {
             "transaction_id": transaction_id,
             "status": "COMMITTED" if success else "ROLLED_BACK",
+            "confidence_matrix": confidence_matrix,
             "event_log": self._events
         }
         receipt_string = json.dumps(receipt, sort_keys=True).encode()

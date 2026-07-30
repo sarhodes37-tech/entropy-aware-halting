@@ -9,12 +9,10 @@ def test_lateral_breakout():
 
     # Inject the standard underwriting contract
     engine = EpistemicOrchestrator(
-        prior_probabilities=priors,
-        gates=[
-            EntropyGate(z_threshold=2.85),
-            PermissionGate(contract_model=CanonicalProblemRepresentation)
-        ]
+        prior_probabilities=priors
     )
+    engine.register_gate("EntropyGate", EntropyGate(z_threshold=2.85))
+    engine.register_gate("PermissionGate", PermissionGate(contract_model=CanonicalProblemRepresentation))
 
     # The agent attempts to break out of the permitted scope by hitting an external API
     # to find a loophole or external relay staging path.

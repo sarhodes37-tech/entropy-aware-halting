@@ -8,12 +8,10 @@ def test_noisy_integration():
     # Define our prior risk probabilities
     priors = {"preferred": 0.5, "standard": 0.3, "substandard": 0.2}
     engine = EpistemicOrchestrator(
-        prior_probabilities=priors,
-        gates=[
-            EntropyGate(z_threshold=2.85),
-            PermissionGate(contract_model=CanonicalProblemRepresentation)
-        ]
+        prior_probabilities=priors
     )
+    engine.register_gate("EntropyGate", EntropyGate(z_threshold=2.85))
+    engine.register_gate("PermissionGate", PermissionGate(contract_model=CanonicalProblemRepresentation))
 
     # Proposed actions and their corresponding JSON Patch rollbacks
     proposed_actions = [

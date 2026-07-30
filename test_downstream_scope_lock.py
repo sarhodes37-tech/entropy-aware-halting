@@ -9,12 +9,10 @@ def test_downstream_scope_lock():
 
     priors = {"stable": 0.6, "constrained": 0.3, "cascading_failure": 0.1}
     engine = EpistemicOrchestrator(
-        prior_probabilities=priors,
-        gates=[
-            EntropyGate(z_threshold=2.85),
-            PermissionGate(contract_model=SupplyChainNodeRepresentation)
-        ]
+        prior_probabilities=priors
     )
+    engine.register_gate("EntropyGate", EntropyGate(z_threshold=2.85))
+    engine.register_gate("PermissionGate", PermissionGate(contract_model=SupplyChainNodeRepresentation))
 
     # 1. Standard Internal Operation (Normal Subnet)
     standard_payload = {

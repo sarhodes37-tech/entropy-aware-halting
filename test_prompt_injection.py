@@ -7,12 +7,10 @@ from epistemicos.cpr import CanonicalProblemRepresentation
 def test_adversarial_injection():
     priors = {"preferred": 0.5, "standard": 0.3, "substandard": 0.2}
     engine = EpistemicOrchestrator(
-        prior_probabilities=priors,
-        gates=[
-            EntropyGate(z_threshold=2.85),
-            PermissionGate(contract_model=CanonicalProblemRepresentation)
-        ]
+        prior_probabilities=priors
     )
+    engine.register_gate("EntropyGate", EntropyGate(z_threshold=2.85))
+    engine.register_gate("PermissionGate", PermissionGate(contract_model=CanonicalProblemRepresentation))
 
     # The agent proposes a bind action (potentially influenced by the injection)
     proposed_actions = [

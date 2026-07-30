@@ -9,12 +9,10 @@ def test_logistics_module():
 
     # Inject the logistics contract into the engine
     engine = EpistemicOrchestrator(
-        prior_probabilities=priors,
-        gates=[
-            EntropyGate(z_threshold=2.85),
-            PermissionGate(contract_model=SupplyChainNodeRepresentation)
-        ]
+        prior_probabilities=priors
     )
+    engine.register_gate("EntropyGate", EntropyGate(z_threshold=2.85))
+    engine.register_gate("PermissionGate", PermissionGate(contract_model=SupplyChainNodeRepresentation))
 
     proposed_actions = [
         {
