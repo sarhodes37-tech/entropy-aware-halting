@@ -58,16 +58,36 @@ class PermissionGate(Gate):
         return {"passed": True, "confidence": 1.0}
 
 class CryptoAttestationGate(Gate):
-    """Evaluates the cryptographic health and Trust Epoch of the transaction."""
-    def __init__(self, required_algorithm: str = "ML-DSA", expiry_year: int = 2030):
+    """Evaluates the cryptographic health, Revocation State, and Trust Epoch of the transaction."""
+    def __init__(self, required_algorithm: str = "ML-DSA", expiry_year: int = 2030, ocsp_endpoint: str = "https://ca.epistemicos.internal/ocsp"):
         self.required_algorithm = required_algorithm
         self.expiry_year = expiry_year
+        self.ocsp_endpoint = ocsp_endpoint
+
+    def _check_ocsp_revocation(self, key_id: str) -> bool:
+        """
+        Simulates a low-latency UDP/HTTP ping to an Online Certificate Status Protocol responder.
+        Returns True if the key is revoked/compromised.
+        """
+        # Mocking a known compromised key
+        revoked_keys = ["KEY-000-COMPROMISED", "KEY-999-STOLEN"]
+        return key_id in revoked_keys
 
     def evaluate(self, payload: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
         crypto_meta = context.get("cryptography", {})
         algo = crypto_meta.get("algorithm", "RSA-2048")
+        key_id = crypto_meta.get("key_id", "UNKNOWN_KEY")
 
-        # If legacy cryptography is used, confidence plummets and the gate fails
+        # 1. Stateful Revocation Check (The Hot Path)
+        is_revoked = self._check_ocsp_revocation(key_id)
+        if is_revoked:
+            return {
+                "passed": False,
+                "reason": f"CRITICAL: Key {key_id} is flagged as REVOKED by OCSP.",
+                "confidence": 0.0
+            }
+
+        # 2. Cryptographic Epoch Check
         if algo != self.required_algorithm:
             return {
                 "passed": False,
@@ -77,6 +97,6 @@ class CryptoAttestationGate(Gate):
 
         current_year = time.gmtime().tm_year
         time_to_expiry = max(0, self.expiry_year - current_year)
-        confidence = min(1.0, time_to_expiry / 5.0) # Confidence decays as the epoch nears its end
+        confidence = min(1.0, time_to_expiry / 5.0)
 
         return {"passed": True, "confidence": round(confidence, 4)}
