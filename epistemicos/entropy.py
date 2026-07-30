@@ -39,13 +39,17 @@ class EntropyAttestationGate:
                     baseline = entropies[:i]
                     mean_h = np.mean(baseline)
                     std_h = np.std(baseline)
-                    if std_h == 0.0: std_h = 1e-5
+                    # Ensure standard deviation doesn't collapse to near-zero for uniform distributions
+                    # which would artificially inflate Z-scores of normal text.
+                    if std_h < 0.05:
+                        std_h = 0.05
                     z_scores.append((h - mean_h) / std_h)
             else:
                 baseline = entropies[i-window_size:i]
                 mean_h = np.mean(baseline)
                 std_h = np.std(baseline)
-                if std_h == 0.0: std_h = 1e-5
+                if std_h < 0.05:
+                    std_h = 0.05
                 z_scores.append((h - mean_h) / std_h)
 
         flagged_count = sum(1 for z in z_scores if z > self.z_threshold)

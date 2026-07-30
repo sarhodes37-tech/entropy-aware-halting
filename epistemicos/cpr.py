@@ -7,9 +7,14 @@ class PermissionScope(BaseModel):
     allowed_resources: List[str] = Field(default_factory=list)
     allowed_operations: List[str] = Field(default_factory=list)
     expires_at: float = Field(default_factory=lambda: time.time() + 15.0) # 15-second strict TTL
+    max_attempts: int = Field(default=3)
+    attempt_count: int = Field(default=1)
 
     def validate_action(self, action: Dict[str, Any]) -> bool:
-        """Evaluates if a proposed action is within the permitted scope and timeline."""
+        """Evaluates if a proposed action is within the permitted scope, timeline, and retry limits."""
+        if self.attempt_count > self.max_attempts:
+            return False
+
         if time.time() > self.expires_at:
             return False
 
@@ -38,7 +43,7 @@ class CanonicalProblemRepresentation(BaseModel):
         # Dynamically bind scope based on payload context if not explicitly provided
         if not data.get("scope"):
             self.scope = PermissionScope(
-                allowed_resources=["logistics_db", "risk_profiles", "/underwriting/flag", "/bind_policy", "/cancel_policy"],
+                allowed_resources=["logistics_db", "risk_profiles", "/underwriting/flag", "/bind_policy", "/cancel_policy", "/issue_binder"],
                 allowed_operations=["update_db", "write_db", "send_api_alert", "api_call", "issue_binder", "revert", "remove", "replace", "rescind_binder"]
             )
 
