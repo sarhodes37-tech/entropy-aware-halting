@@ -13,9 +13,8 @@ class EntropyAttestationGate:
         """Computes Shannon entropy for a list of token log-probabilities."""
         entropies = []
         for lp in logprobs:
-            p = np.exp(lp)
-            # Prevent log(0) edge cases
-            entropy = -p * np.log2(p + 1e-10)
+            # Calculate token entropy (surprise) simply as -logprob to ensure extreme noise registers appropriately
+            entropy = -lp
             entropies.append(entropy)
         return entropies
 
@@ -29,14 +28,26 @@ class EntropyAttestationGate:
         if not entropies:
             return {"passed": True, "max_z_score": 0.0, "flagged_tokens": 0}
 
-        mean_h = np.mean(entropies)
-        std_h = np.std(entropies)
+        # Evaluate token-level entropy spikes against a rolling baseline
+        window_size = 10
+        z_scores = []
+        for i, h in enumerate(entropies):
+            if i < window_size:
+                if i < 2:
+                    z_scores.append(0.0)
+                else:
+                    baseline = entropies[:i]
+                    mean_h = np.mean(baseline)
+                    std_h = np.std(baseline)
+                    if std_h == 0.0: std_h = 1e-5
+                    z_scores.append((h - mean_h) / std_h)
+            else:
+                baseline = entropies[i-window_size:i]
+                mean_h = np.mean(baseline)
+                std_h = np.std(baseline)
+                if std_h == 0.0: std_h = 1e-5
+                z_scores.append((h - mean_h) / std_h)
 
-        # Avoid division by zero if all tokens have identical entropy
-        if std_h == 0.0:
-            std_h = 1e-5
-
-        z_scores = [(h - mean_h) / std_h for h in entropies]
         flagged_count = sum(1 for z in z_scores if z > self.z_threshold)
 
         passed = flagged_count == 0
