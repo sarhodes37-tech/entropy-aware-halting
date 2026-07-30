@@ -88,7 +88,9 @@ class CanonicalProblemRepresentation(BaseModel):
     Normalizes inputs and enforces strict authorization boundaries.
     """
     policy_id: str
-    fleet_data: Dict[str, Any]
+    fleet_data: Optional[Dict[str, Any]] = None
+    risk_details: Optional[Dict[str, Any]] = None
+    primary_metric: Optional[float] = None
     scope: PermissionScope = Field(default_factory=PermissionScope)
 
     def __init__(self, **data):
@@ -105,8 +107,13 @@ class CanonicalProblemRepresentation(BaseModel):
         Converts the raw data into a numerical vector for the Bayesian Kernel.
         (Simplified implementation for current testing phases).
         """
-        # Example extraction: normalize vehicle count and radius
-        v_count = self.fleet_data.get("vehicle_count", 0) / 100.0
-        radius = self.fleet_data.get("operating_radius_miles", 0) / 1000.0
-        loss_mod = self.fleet_data.get("loss_modifier", 1.0)
-        return [v_count, radius, loss_mod]
+        if self.fleet_data:
+            # Example extraction: normalize vehicle count and radius
+            v_count = self.fleet_data.get("vehicle_count", 0) / 100.0
+            radius = self.fleet_data.get("operating_radius_miles", 0) / 1000.0
+            loss_mod = self.fleet_data.get("loss_modifier", 1.0)
+            return [v_count, radius, loss_mod]
+        elif self.risk_details:
+            loss_mod = self.risk_details.get("loss_ratio_3yr", self.risk_details.get("loss_mod", 1.0))
+            return [self.primary_metric or 0.0, loss_mod]
+        return [0.0, 0.0, 0.0]

@@ -11,7 +11,7 @@ class EpistemicBench:
     def __init__(self, dataset_path: str):
         self.dataset = self._load_dataset(dataset_path)
         self.priors = {"preferred": 0.5, "standard": 0.3, "substandard": 0.2}
-        
+
         # Define the ablation matrix
         self.configurations = {
             "Baseline (No Gates)": [],
@@ -50,32 +50,32 @@ class EpistemicBench:
 
     def run_ablation_study(self):
         print("Starting EpistemicBench Ablation Study...\n")
-        
+
         for config_name, gates in self.configurations.items():
             print(f"--- Evaluating Configuration: {config_name} ---")
             engine = self._build_orchestrator(gates)
-            
+
             metrics = {"TC": 0, "FC": 0, "TR": 0, "FR": 0}
             latencies = []
-            
+
             for task in self.dataset:
                 # Start Latency Timer
                 start_time = time.perf_counter_ns()
-                
+
                 result = engine.process_submission(
                     raw_payload=task["payload"],
-                    likelihoods=self.priors, 
+                    likelihoods=self.priors,
                     token_logprobs=task["context"]["token_logprobs"],
                     proposed_actions=task["context"]["proposed_actions"]
                 )
-                
+
                 # Stop Latency Timer (convert ns to ms)
                 exec_time_ms = (time.perf_counter_ns() - start_time) / 1_000_000.0
                 latencies.append(exec_time_ms)
-                
+
                 actual_status = result["receipt"]["status"]
                 expected = task["expected_action"]
-                
+
                 if expected == "COMMIT" and actual_status == "COMMITTED":
                     metrics["TC"] += 1
                 elif expected == "ROLLBACK" and actual_status == "COMMITTED":
@@ -84,18 +84,18 @@ class EpistemicBench:
                     metrics["TR"] += 1
                 elif expected == "COMMIT" and actual_status == "ROLLED_BACK":
                     metrics["FR"] += 1
-                    
+
             self._print_results(metrics, latencies)
 
     def _print_results(self, m: Dict[str, int], latencies: List[float]):
         tc, fc, tr, fr = m["TC"], m["FC"], m["TR"], m["FR"]
-        
+
         # Handle division by zero natively
         commit_precision = (tc / (tc + fc) * 100) if (tc + fc) > 0 else 0.0
         rollback_recall = (tr / (tr + fc) * 100) if (tr + fc) > 0 else 0.0
         false_rollback_rate = (fr / (fr + tc) * 100) if (fr + tc) > 0 else 0.0
         avg_latency = statistics.mean(latencies) if latencies else 0.0
-        
+
         print(f"Commit Precision:      {commit_precision:.2f}%")
         print(f"Rollback Recall:       {rollback_recall:.2f}%")
         print(f"False Rollback Rate:   {false_rollback_rate:.2f}%")
