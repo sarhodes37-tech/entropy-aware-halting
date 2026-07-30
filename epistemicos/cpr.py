@@ -6,25 +6,51 @@ class PermissionScope(BaseModel):
     """Cryptographic-style boundary for delegated agent actions."""
     allowed_resources: List[str] = Field(default_factory=list)
     allowed_operations: List[str] = Field(default_factory=list)
-    expires_at: float = Field(default_factory=lambda: time.time() + 15.0) # 15-second strict TTL
+    expires_at: float = Field(default_factory=lambda: time.time() + 15.0)
     max_attempts: int = Field(default=3)
     attempt_count: int = Field(default=1)
 
+    # SaaS Egress Governors
+    max_payload_bytes: int = Field(default=4096)
+    max_row_count: int = Field(default=50)
+
     def validate_action(self, action: Dict[str, Any]) -> bool:
         """Evaluates if a proposed action is within the permitted scope, timeline, and retry limits."""
-        if self.attempt_count > self.max_attempts:
-            return False
-
-        if time.time() > self.expires_at:
+        if self.attempt_count > self.max_attempts or time.time() > self.expires_at:
             return False
 
         op = action.get("op")
         if op and op not in self.allowed_operations:
             return False
 
-        # Extract the target resource (node, endpoint, or table)
         target = action.get("node") or action.get("endpoint") or action.get("table")
         if target and target not in self.allowed_resources:
+            return False
+
+        return True
+
+    def validate_egress(self, response_payload: Any) -> bool:
+        """
+        Evaluates recursive row/record count of the return payload.
+        Neutralizes multi-million record SaaS exfiltration attempts.
+        """
+        import sys
+
+        # 1. Baseline Byte Size Check
+        if sys.getsizeof(str(response_payload)) > self.max_payload_bytes:
+            return False
+
+        # 2. Strict SaaS Row Count Check (Recursive)
+        def count_max_records(data: Any) -> int:
+            if isinstance(data, list):
+                # Evaluate list length and recurse deeper
+                return max(len(data), max((count_max_records(item) for item in data), default=0))
+            elif isinstance(data, dict):
+                # Evaluate dictionary key count (preventing dict-inflation evasion) and recurse
+                return max(len(data.keys()), max((count_max_records(val) for val in data.values()), default=0))
+            return 0
+
+        if count_max_records(response_payload) > self.max_row_count:
             return False
 
         return True
