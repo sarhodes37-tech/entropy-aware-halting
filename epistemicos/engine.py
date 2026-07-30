@@ -20,21 +20,30 @@ class EpistemicEngine:
         """
         Executes the EpistemicOS control loop with native Saga state management.
         """
-        # 1. Queue proposed actions into the buffer
-        if proposed_actions:
-            for item in proposed_actions:
-                self.action_buffer.push_action(
-                    action=item.get("action", {}),
-                    rollback_patch=item.get("rollback", {})
-                )
-
-        # 2. Process Data Contract & Bayesian Update
+        # 1. Process Data Contract & Bayesian Update
         cpr = CanonicalProblemRepresentation(**raw_payload)
         updated_beliefs = self.belief_kernel.update_beliefs(likelihoods)
         map_hypothesis = self.belief_kernel.get_map_estimate()
 
+        # 2. Scope Validation for Proposed Actions
+        scope_passed = True
+        if proposed_actions:
+            for item in proposed_actions:
+                action = item.get("action", {})
+                if not cpr.scope.validate_action(action):
+                    scope_passed = False
+                    break
+                self.action_buffer.push_action(
+                    action=action,
+                    rollback_patch=item.get("rollback", {})
+                )
+
         # 3. Evaluate Entropy Gate
         gate_result = self.entropy_gate.evaluate_generation(token_logprobs)
+
+        # If the action violates the permission scope, forcibly fail the gate
+        if not scope_passed:
+            gate_result["passed"] = False
 
         # 4. Transaction Lifecycle Control
         if gate_result["passed"]:
