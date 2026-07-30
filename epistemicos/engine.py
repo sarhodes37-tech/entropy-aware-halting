@@ -1,14 +1,14 @@
 from typing import Dict, Any, List, Optional
-from epistemicos.cpr import CanonicalProblemRepresentation
 from epistemicos.beliefs import BayesianBeliefKernel
 from epistemicos.entropy import EntropyAttestationGate
 from epistemicos.saga import ActionBuffer
 
 class EpistemicEngine:
-    def __init__(self, prior_probabilities: Dict[str, float], z_threshold: float = 2.85):
+    def __init__(self, prior_probabilities: Dict[str, float], contract_model: Any, z_threshold: float = 2.85):
         self.belief_kernel = BayesianBeliefKernel(prior_probabilities)
         self.entropy_gate = EntropyAttestationGate(z_threshold=z_threshold)
         self.action_buffer = ActionBuffer()
+        self.contract_model = contract_model # Injected domain contract
 
     def process_submission(
         self,
@@ -17,11 +17,9 @@ class EpistemicEngine:
         token_logprobs: List[float],
         proposed_actions: Optional[List[Dict[str, Any]]] = None
     ) -> Dict[str, Any]:
-        """
-        Executes the EpistemicOS control loop with native Saga state management.
-        """
+
         # 1. Process Data Contract & Bayesian Update
-        cpr = CanonicalProblemRepresentation(**raw_payload)
+        cpr = self.contract_model(**raw_payload)
         updated_beliefs = self.belief_kernel.update_beliefs(likelihoods)
         map_hypothesis = self.belief_kernel.get_map_estimate()
 
@@ -53,7 +51,7 @@ class EpistemicEngine:
             executed_rollbacks = self.action_buffer.rollback()
 
         return {
-            "policy_id": cpr.policy_id,
+            "policy_id": getattr(cpr, 'policy_id', getattr(cpr, 'node_id', 'UNKNOWN')),
             "serialized_features": cpr.serialize_for_belief_kernel(),
             "posterior_beliefs": updated_beliefs,
             "map_estimate": map_hypothesis,

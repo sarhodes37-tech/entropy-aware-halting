@@ -1,10 +1,11 @@
 import json
 import random
 from epistemicos.engine import EpistemicEngine
+from epistemicos.cpr import CanonicalProblemRepresentation
 
 def test_adversarial_injection():
     priors = {"preferred": 0.5, "standard": 0.3, "substandard": 0.2}
-    engine = EpistemicEngine(prior_probabilities=priors)
+    engine = EpistemicEngine(prior_probabilities=priors, contract_model=CanonicalProblemRepresentation)
 
     # The agent proposes a bind action (potentially influenced by the injection)
     proposed_actions = [

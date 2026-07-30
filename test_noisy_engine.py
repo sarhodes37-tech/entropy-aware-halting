@@ -1,11 +1,12 @@
 import json
 import random
 from epistemicos.engine import EpistemicEngine
+from epistemicos.cpr import CanonicalProblemRepresentation
 
 def test_noisy_integration():
     # Define our prior risk probabilities
     priors = {"preferred": 0.5, "standard": 0.3, "substandard": 0.2}
-    engine = EpistemicEngine(prior_probabilities=priors)
+    engine = EpistemicEngine(prior_probabilities=priors, contract_model=CanonicalProblemRepresentation)
 
     # Proposed actions and their corresponding JSON Patch rollbacks
     proposed_actions = [

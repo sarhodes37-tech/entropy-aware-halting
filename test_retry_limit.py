@@ -1,9 +1,10 @@
 import json
 from epistemicos.engine import EpistemicEngine
+from epistemicos.cpr import CanonicalProblemRepresentation
 
 def test_brute_force_retry():
     priors = {"preferred": 0.5, "standard": 0.3, "substandard": 0.2}
-    engine = EpistemicEngine(prior_probabilities=priors)
+    engine = EpistemicEngine(prior_probabilities=priors, contract_model=CanonicalProblemRepresentation)
 
     proposed_actions = [
         {
