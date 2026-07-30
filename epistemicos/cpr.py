@@ -14,15 +14,42 @@ class PermissionScope(BaseModel):
     max_payload_bytes: int = Field(default=4096)
     max_row_count: int = Field(default=50)
 
+    # Downstream Scope Lock (RMM / Vendor Subnet Quarantine)
+    origin_subnet: Optional[str] = None
+    is_rmm_origin: bool = False
+    quarantine_subnets: List[str] = Field(
+        default_factory=lambda: ["10.240.", "172.16.rmm", "msp_bridge", "vendor_portal"]
+    )
+
+    def is_quarantined_channel(self) -> bool:
+        """Determines if the transaction originates from a high-risk vendor or RMM subnet."""
+        if self.is_rmm_origin:
+            return True
+        if self.origin_subnet:
+            return any(prefix in self.origin_subnet for prefix in self.quarantine_subnets)
+        return False
+
     def validate_action(self, action: Dict[str, Any]) -> bool:
         """Evaluates if a proposed action is within the permitted scope, timeline, and retry limits."""
         if self.attempt_count > self.max_attempts or time.time() > self.expires_at:
             return False
 
         op = action.get("op")
+
+        # 1. Downstream Scope Lock: Enforce Read-Only Quarantine on RMM/Vendor Channels
+        if self.is_quarantined_channel():
+            mutating_operations = {
+                "update_db", "write_db", "reroute_freight", "halt_payments",
+                "issue_binder", "bind_policy", "cancel_policy", "release_buffer"
+            }
+            if op in mutating_operations:
+                return False  # Dynamically block state-changing operations
+
+        # 2. Operations Whitelist Check
         if op and op not in self.allowed_operations:
             return False
 
+        # 3. Resource Boundary Check
         target = action.get("node") or action.get("endpoint") or action.get("table")
         if target and target not in self.allowed_resources:
             return False
@@ -70,7 +97,7 @@ class CanonicalProblemRepresentation(BaseModel):
         if not data.get("scope"):
             self.scope = PermissionScope(
                 allowed_resources=["logistics_db", "risk_profiles", "/underwriting/flag", "/bind_policy", "/cancel_policy", "/issue_binder"],
-                allowed_operations=["update_db", "write_db", "send_api_alert", "api_call", "issue_binder", "revert", "remove", "replace", "rescind_binder"]
+                allowed_operations=["read", "query", "update_db", "write_db", "send_api_alert", "api_call", "issue_binder", "revert", "remove", "replace", "rescind_binder"]
             )
 
     def serialize_for_belief_kernel(self) -> List[float]:
