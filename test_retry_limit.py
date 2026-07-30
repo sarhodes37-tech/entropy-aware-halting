@@ -1,10 +1,17 @@
 import json
-from epistemicos.engine import EpistemicEngine
+from epistemicos.engine import EpistemicOrchestrator
+from epistemicos.gates import EntropyGate, PermissionGate
 from epistemicos.cpr import CanonicalProblemRepresentation
 
 def test_brute_force_retry():
     priors = {"preferred": 0.5, "standard": 0.3, "substandard": 0.2}
-    engine = EpistemicEngine(prior_probabilities=priors, contract_model=CanonicalProblemRepresentation)
+    engine = EpistemicOrchestrator(
+        prior_probabilities=priors,
+        gates=[
+            EntropyGate(z_threshold=2.85),
+            PermissionGate(contract_model=CanonicalProblemRepresentation)
+        ]
+    )
 
     proposed_actions = [
         {
@@ -50,7 +57,7 @@ def test_brute_force_retry():
             proposed_actions=proposed_actions
         )
 
-        if result["execution_approved"]:
+        if result["receipt"]["status"] == "COMMITTED":
             print("✅ Execution Approved.")
         else:
             print(f"🛑 Execution Halted. Scope validation failed.")

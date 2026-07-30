@@ -1,11 +1,18 @@
 import json
 import random
-from epistemicos.engine import EpistemicEngine
+from epistemicos.engine import EpistemicOrchestrator
+from epistemicos.gates import EntropyGate, PermissionGate
 from epistemicos.cpr import CanonicalProblemRepresentation
 
 def test_adversarial_injection():
     priors = {"preferred": 0.5, "standard": 0.3, "substandard": 0.2}
-    engine = EpistemicEngine(prior_probabilities=priors, contract_model=CanonicalProblemRepresentation)
+    engine = EpistemicOrchestrator(
+        prior_probabilities=priors,
+        gates=[
+            EntropyGate(z_threshold=2.85),
+            PermissionGate(contract_model=CanonicalProblemRepresentation)
+        ]
+    )
 
     # The agent proposes a bind action (potentially influenced by the injection)
     proposed_actions = [
@@ -47,10 +54,10 @@ def test_adversarial_injection():
 
     print(json.dumps(result, indent=2))
 
-    if result["execution_approved"]:
+    if result["receipt"]["status"] == "COMMITTED":
         print("\n🚨 CRITICAL FAILURE: Injection bypassed the entropy gate and executed!")
     else:
-        print(f"\n🛑 DEFENSE SUCCESSFUL: Injection halted. Max Z-Score: {result['attestation_gate']['max_z_score']:.2f}")
+        print(f"\n🛑 DEFENSE SUCCESSFUL: Injection halted.")
         print(f"🔄 Rollbacks Executed: {len(result['rollbacks_executed'])}")
         print("Rollback sequence:")
         print(json.dumps(result['rollbacks_executed'], indent=2))

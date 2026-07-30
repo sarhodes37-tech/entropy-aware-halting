@@ -1,15 +1,19 @@
 import json
 import random
-from epistemicos.engine import EpistemicEngine
+from epistemicos.engine import EpistemicOrchestrator
+from epistemicos.gates import EntropyGate, PermissionGate
 from logistics_cpr import SupplyChainNodeRepresentation
 
 def test_logistics_module():
     priors = {"stable": 0.6, "constrained": 0.3, "cascading_failure": 0.1}
 
     # Inject the logistics contract into the engine
-    engine = EpistemicEngine(
+    engine = EpistemicOrchestrator(
         prior_probabilities=priors,
-        contract_model=SupplyChainNodeRepresentation
+        gates=[
+            EntropyGate(z_threshold=2.85),
+            PermissionGate(contract_model=SupplyChainNodeRepresentation)
+        ]
     )
 
     proposed_actions = [

@@ -1,14 +1,12 @@
 from typing import Dict, Any, List, Optional
 from epistemicos.beliefs import BayesianBeliefKernel
-from epistemicos.entropy import EntropyAttestationGate
-from epistemicos.saga import ActionBuffer
+from epistemicos.gates import Gate
+from epistemicos.receipts import ReceiptGenerator
 
-class EpistemicEngine:
-    def __init__(self, prior_probabilities: Dict[str, float], contract_model: Any, z_threshold: float = 2.85):
+class EpistemicOrchestrator:
+    def __init__(self, prior_probabilities: Dict[str, float], gates: List[Gate]):
         self.belief_kernel = BayesianBeliefKernel(prior_probabilities)
-        self.entropy_gate = EntropyAttestationGate(z_threshold=z_threshold)
-        self.action_buffer = ActionBuffer()
-        self.contract_model = contract_model # Injected domain contract
+        self.gates = gates
 
     def process_submission(
         self,
@@ -18,44 +16,39 @@ class EpistemicEngine:
         proposed_actions: Optional[List[Dict[str, Any]]] = None
     ) -> Dict[str, Any]:
 
-        # 1. Process Data Contract & Bayesian Update
-        cpr = self.contract_model(**raw_payload)
+        receipt_gen = ReceiptGenerator()
+        transaction_id = raw_payload.get("policy_id", raw_payload.get("node_id", "UNKNOWN"))
+
+        # 1. Bayesian Update
         updated_beliefs = self.belief_kernel.update_beliefs(likelihoods)
-        map_hypothesis = self.belief_kernel.get_map_estimate()
+        receipt_gen.log_event("BeliefUpdated", {"posterior": updated_beliefs, "map": self.belief_kernel.get_map_estimate()})
 
-        # 2. Scope Validation for Proposed Actions
-        scope_passed = True
-        if proposed_actions:
-            for item in proposed_actions:
-                action = item.get("action", {})
-                if not cpr.scope.validate_action(action):
-                    scope_passed = False
-                    break
-                self.action_buffer.push_action(
-                    action=action,
-                    rollback_patch=item.get("rollback", {})
-                )
+        # 2. Stage Actions
+        context = {"token_logprobs": token_logprobs, "proposed_actions": proposed_actions or []}
+        for item in context["proposed_actions"]:
+            receipt_gen.push_action(item.get("action", {}), item.get("rollback", {}))
 
-        # 3. Evaluate Entropy Gate
-        gate_result = self.entropy_gate.evaluate_generation(token_logprobs)
+        # 3. Process Gates (Choreography)
+        all_gates_passed = True
+        for gate in self.gates:
+            gate_name = gate.__class__.__name__
+            result = gate.evaluate(payload=raw_payload, context=context)
+            receipt_gen.log_event(f"GateEvaluated:{gate_name}", result)
 
-        # If the action violates the permission scope, forcibly fail the gate
-        if not scope_passed:
-            gate_result["passed"] = False
+            if not result.get("passed", False):
+                all_gates_passed = False
+                break
 
-        # 4. Transaction Lifecycle Control
-        if gate_result["passed"]:
-            self.action_buffer.commit()
-            executed_rollbacks = []
+        # 4. Lifecycle Control
+        rollbacks_executed = []
+        if all_gates_passed:
+            receipt_gen.log_event("CommitIssued", {})
         else:
-            executed_rollbacks = self.action_buffer.rollback()
+            rollbacks_executed = receipt_gen.rollback()
+
+        receipt = receipt_gen.mint_receipt(transaction_id, success=all_gates_passed)
 
         return {
-            "policy_id": getattr(cpr, 'policy_id', getattr(cpr, 'node_id', 'UNKNOWN')),
-            "serialized_features": cpr.serialize_for_belief_kernel(),
-            "posterior_beliefs": updated_beliefs,
-            "map_estimate": map_hypothesis,
-            "attestation_gate": gate_result,
-            "execution_approved": gate_result["passed"],
-            "rollbacks_executed": executed_rollbacks
+            "receipt": receipt,
+            "rollbacks_executed": rollbacks_executed
         }

@@ -1,12 +1,19 @@
 import json
 import random
-from epistemicos.engine import EpistemicEngine
+from epistemicos.engine import EpistemicOrchestrator
+from epistemicos.gates import EntropyGate, PermissionGate
 from epistemicos.cpr import CanonicalProblemRepresentation
 
 def test_noisy_integration():
     # Define our prior risk probabilities
     priors = {"preferred": 0.5, "standard": 0.3, "substandard": 0.2}
-    engine = EpistemicEngine(prior_probabilities=priors, contract_model=CanonicalProblemRepresentation)
+    engine = EpistemicOrchestrator(
+        prior_probabilities=priors,
+        gates=[
+            EntropyGate(z_threshold=2.85),
+            PermissionGate(contract_model=CanonicalProblemRepresentation)
+        ]
+    )
 
     # Proposed actions and their corresponding JSON Patch rollbacks
     proposed_actions = [
@@ -51,10 +58,10 @@ def test_noisy_integration():
 
     print(json.dumps(result, indent=2))
 
-    if result["execution_approved"]:
+    if result["receipt"]["status"] == "COMMITTED":
         print("\n🚨 FAIL: Execution approved despite heavy noise!")
     else:
-        print(f"\n🛑 SUCCESS: Execution Halted. Max Z-Score: {result['attestation_gate']['max_z_score']:.2f}")
+        print(f"\n🛑 SUCCESS: Execution Halted.")
         print(f"🔄 Rollbacks Executed: {len(result['rollbacks_executed'])}")
         print("Rollback sequence:")
         print(json.dumps(result['rollbacks_executed'], indent=2))

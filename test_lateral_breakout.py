@@ -1,15 +1,19 @@
 import json
 import random
-from epistemicos.engine import EpistemicEngine
+from epistemicos.engine import EpistemicOrchestrator
+from epistemicos.gates import EntropyGate, PermissionGate
 from epistemicos.cpr import CanonicalProblemRepresentation
 
 def test_lateral_breakout():
     priors = {"preferred": 0.1, "standard": 0.2, "substandard": 0.7}
 
     # Inject the standard underwriting contract
-    engine = EpistemicEngine(
+    engine = EpistemicOrchestrator(
         prior_probabilities=priors,
-        contract_model=CanonicalProblemRepresentation
+        gates=[
+            EntropyGate(z_threshold=2.85),
+            PermissionGate(contract_model=CanonicalProblemRepresentation)
+        ]
     )
 
     # The agent attempts to break out of the permitted scope by hitting an external API
@@ -55,7 +59,7 @@ def test_lateral_breakout():
 
     print(json.dumps(result, indent=2))
 
-    if result["execution_approved"]:
+    if result["receipt"]["status"] == "COMMITTED":
         print("\n  CRITICAL FAILURE: Agent successfully broke out to an external tool!")
     else:
         print("\n  DEFENSE SUCCESSFUL: Lateral movement blocked by PermissionScope.")

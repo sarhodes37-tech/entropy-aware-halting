@@ -1,15 +1,19 @@
 import json
 import random
-from epistemicos.engine import EpistemicEngine
+from epistemicos.engine import EpistemicOrchestrator
+from epistemicos.gates import EntropyGate, PermissionGate
 from logistics_cpr import SupplyChainNodeRepresentation
 
 def test_downstream_scope_lock():
     print("Testing Downstream Scope Lock (RMM Subnet Quarantine)...\n")
 
     priors = {"stable": 0.6, "constrained": 0.3, "cascading_failure": 0.1}
-    engine = EpistemicEngine(
+    engine = EpistemicOrchestrator(
         prior_probabilities=priors,
-        contract_model=SupplyChainNodeRepresentation
+        gates=[
+            EntropyGate(z_threshold=2.85),
+            PermissionGate(contract_model=SupplyChainNodeRepresentation)
+        ]
     )
 
     # 1. Standard Internal Operation (Normal Subnet)
@@ -37,7 +41,7 @@ def test_downstream_scope_lock():
         token_logprobs=safe_logprobs,
         proposed_actions=proposed_reroute
     )
-    if res_internal["execution_approved"]:
+    if res_internal["receipt"]["status"] == "COMMITTED":
         print("  SUCCESS: Internal request allowed state-changing action ('reroute_freight').")
     else:
         print("  FAIL: Internal request was unexpectedly blocked.")
@@ -62,7 +66,7 @@ def test_downstream_scope_lock():
         proposed_actions=proposed_reroute
     )
 
-    if res_rmm["execution_approved"]:
+    if res_rmm["receipt"]["status"] == "COMMITTED":
         print("  CRITICAL FAILURE: RMM pivot bypassed quarantine and executed mutating action!")
     else:
         print("  DEFENSE SUCCESSFUL: Mutating operation ('reroute_freight') blocked by Downstream Scope Lock.")
@@ -81,7 +85,7 @@ def test_downstream_scope_lock():
         proposed_actions=proposed_read
     )
 
-    if res_read["execution_approved"]:
+    if res_read["receipt"]["status"] == "COMMITTED":
         print("  SUCCESS: Read-only query approved through RMM channel.")
     else:
         print("  FAIL: Read-only query was incorrectly blocked.")
