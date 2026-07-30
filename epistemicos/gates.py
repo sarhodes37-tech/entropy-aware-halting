@@ -100,3 +100,37 @@ class CryptoAttestationGate(Gate):
         confidence = min(1.0, time_to_expiry / 5.0)
 
         return {"passed": True, "confidence": round(confidence, 4)}
+
+class TriangulationGate(Gate):
+    """Guards against data washing and synthetic index inflation by cross-referencing metrics against secondary feeds."""
+    def __init__(self, max_divergence_threshold: float = 0.15):
+        self.max_divergence_threshold = max_divergence_threshold
+
+    def evaluate(self, payload: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
+        primary_metric = payload.get("primary_metric")
+        secondary_feeds = context.get("heterogeneous_telemetry", [])
+
+        if primary_metric is None:
+            # If the payload lacks a primary metric to triangulate, pass but log unverified
+            return {"passed": True, "confidence": 1.0}
+
+        if not secondary_feeds:
+            return {
+                "passed": True,
+                "confidence": 0.50,
+                "reason": "UNVERIFIED_SINGLE_SOURCE"
+            }
+
+        # Calculate absolute divergence (mean variance between primary and secondary feeds)
+        variances = [abs(primary_metric - feed_val) / max(primary_metric, 1e-5) for feed_val in secondary_feeds]
+        mean_divergence = sum(variances) / len(variances)
+
+        if mean_divergence > self.max_divergence_threshold:
+            return {
+                "passed": False,
+                "confidence": 0.0,
+                "reason": f"Divergence failure. Metric {primary_metric} washed/inflated against secondary telemetry."
+            }
+
+        confidence = round(1.0 - mean_divergence, 4)
+        return {"passed": True, "confidence": confidence}

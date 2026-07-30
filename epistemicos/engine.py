@@ -34,7 +34,8 @@ class EpistemicOrchestrator:
         context = {
             "token_logprobs": token_logprobs,
             "proposed_actions": proposed_actions or [],
-            "cryptography": crypto_metadata or {"algorithm": "RSA-2048"}
+            "cryptography": crypto_metadata or {"algorithm": "RSA-2048"},
+            "heterogeneous_telemetry": raw_payload.get("heterogeneous_telemetry", []) # Optional feed for triangulation
         }
         for item in context["proposed_actions"]:
             receipt_gen.push_action(item.get("action", {}), item.get("rollback", {}))
