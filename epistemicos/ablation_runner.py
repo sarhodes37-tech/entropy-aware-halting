@@ -18,6 +18,7 @@ class MetricSet:
     @property
     def precision(self) -> float:
         denom = self.true_positives_commit + self.false_positives_commit
+
         return (self.true_positives_commit / denom * 100) if denom > 0 else 0.0
 
     @property
