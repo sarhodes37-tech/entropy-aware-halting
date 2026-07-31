@@ -3,14 +3,13 @@ import json
 import statistics
 from typing import List, Dict, Any
 
-from epistemicos.engine import EpistemicOrchestrator
-from epistemicos.gates import EntropyGate, PermissionGate, TriangulationGate
+# [OPTION A]: Migrate imports from engine/gates to the optimized core
+from epistemicos.core import EpistemicOrchestrator, GateAction
 from epistemicos.cpr import CanonicalProblemRepresentation
 
 class EpistemicBench:
     def __init__(self, dataset_path: str):
         self.dataset = self._load_dataset(dataset_path)
-        self.priors = {"preferred": 0.5, "standard": 0.3, "substandard": 0.2}
 
         # Define the ablation matrix
         self.configurations = {
@@ -29,20 +28,13 @@ class EpistemicBench:
         return dataset
 
     def _build_orchestrator(self, config: List[str]) -> EpistemicOrchestrator:
-        os = EpistemicOrchestrator(prior_probabilities=self.priors)
-        if "entropy" in config:
-            os.register_gate("EntropyGate", EntropyGate(z_threshold=2.85))
-        if "permission" in config:
-            os.register_gate("PermissionGate", PermissionGate(contract_model=CanonicalProblemRepresentation))
-
-        # Enable CryptoGate only if triangulation is requested (for full EpistemicOS), or unconditionally
-        # Wait, the prompt implies + Entropy Gate should evaluate only Entropy Gate.
-        # Let's ensure the baseline really has *no* gates.
-        if "triangulation" in config: # The full config adds triangulation
-            from epistemicos.gates import CryptoAttestationGate
-            os.register_gate("CryptoAttestationGate", CryptoAttestationGate(required_algorithm="ML-DSA", expiry_year=2030))
-            os.register_gate("TriangulationGate", TriangulationGate(max_divergence_threshold=0.15))
-        return os
+        # The core.py EpistemicOrchestrator expects a list of allowed tools 
+        # instead of Bayesian priors.
+        allowed_tools = [
+            "get_weather", "read", "query", "update_db", 
+            "write_db", "api_call", "issue_binder", "rescind_binder"
+        ]
+        return EpistemicOrchestrator(allowed_tools=allowed_tools)
 
     def run_ablation_study(self):
         print("Starting EpistemicBench Ablation Study...\n")
@@ -55,28 +47,42 @@ class EpistemicBench:
             latencies = []
 
             for task in self.dataset:
-                # Start Latency Timer
                 start_time = time.perf_counter_ns()
 
-                # Merge heterogeneous telemetry into raw payload so TriangulationGate can read it
-                payload = task["payload"].copy()
-                if "heterogeneous_telemetry" in task["context"]:
-                    payload["heterogeneous_telemetry"] = task["context"]["heterogeneous_telemetry"]
+                # Map the dataset JSON schema to core.py process_step inputs
+                payload = task.get("payload", {})
+                prompt_text = payload.get("prompt", str(payload))
+                
+                context = task.get("context", {})
+                # Default to neutral logprobs if missing
+                logprobs = context.get("token_logprobs", [0.25, 0.25, 0.25, 0.25]) 
+                category = task.get("category", "")
 
-                result = engine.process_submission(
-                    raw_payload=payload,
-                    likelihoods=self.priors,
-                    token_logprobs=task["context"]["token_logprobs"],
-                    proposed_actions=task["context"]["proposed_actions"],
-                    crypto_metadata=task["context"].get("cryptography")
+                # Execute the optimized pipeline
+                action, exec_latency, reasons = engine.process_step(
+                    token_logits=logprobs,
+                    accumulated_output=prompt_text,
+                    category=category
                 )
 
-                # Stop Latency Timer (convert ns to ms)
+                # Handle ablation logic: core.py hardcodes gates, so we override 
+                # the result if that specific gate is technically "disabled" in this config.
+                if action == GateAction.HALT and "entropy" not in gates:
+                    action = GateAction.ALLOW
+                if action == GateAction.ROLLBACK and "permission" not in gates:
+                    action = GateAction.ALLOW
+
                 exec_time_ms = (time.perf_counter_ns() - start_time) / 1_000_000.0
                 latencies.append(exec_time_ms)
 
-                actual_status = result["receipt"]["status"]
-                expected = task["expected_action"]
+                # Normalize GateAction enums to legacy expected strings for metrics tracking
+                actual_status = "COMMITTED" if action == GateAction.ALLOW else "ROLLED_BACK"
+                expected = task.get("expected_action", "ALLOW")
+                
+                if expected in ["HALT", "DETERMINISTIC_HALT"]:
+                    expected = "ROLLBACK"
+                elif expected == "ALLOW":
+                    expected = "COMMIT"
 
                 if expected == "COMMIT" and actual_status == "COMMITTED":
                     metrics["TC"] += 1
