@@ -5,7 +5,7 @@ from typing import Dict, Any, Tuple, Optional, List
 from dataclasses import dataclass
 from enum import Enum
 
-from epistemic_os.audit import TamperEvidentAuditTrail, AuditLogLevel
+from epistemicos.audit import TamperEvidentAuditTrail, AuditLogLevel
 
 
 class GateAction(Enum):
