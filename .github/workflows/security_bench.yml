@@ -30,15 +30,22 @@ jobs:
         if [ -f "requirements.txt" ]; then pip install -r requirements.txt; fi
 
 
-    - name: Run RhodesBench (Hard Gate Interception)
+        - name: Run RhodesBench (Hard Gate Interception)
+      env:
+        PYTHONPATH: .
       run: |
+        echo "Listing all files in the root directory for debugging:"
+        ls -la
         echo "Executing baseline epistemic boundary tests..."
         python test_rhodes_bench.py --target-model ci-pipeline-test
 
     - name: Execute Formal Ablation Matrix
+      env:
+        PYTHONPATH: .
       run: |
         echo "Running full combinatorial ablation harness..."
-        python epistemic_os/ablation_runner.py
+        python epistemicos/ablation_runner.py
+
 
     - name: Enforce Zero-Regression Security Policy
       run: |
