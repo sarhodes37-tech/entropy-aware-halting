@@ -3,10 +3,8 @@ import logging
 import sys
 from pathlib import Path
 
-# Import the actual EpistemicOS components built in previous iterations
-from epistemicos.engine import EpistemicOrchestrator
-from epistemicos.gates import EntropyGate, PermissionGate, CryptoAttestationGate, TriangulationGate
-from epistemicos.cpr import CanonicalProblemRepresentation
+# [OPTION A]: Migrate imports to the optimized core
+from epistemicos.core import EpistemicOrchestrator, GateAction
 
 logging.basicConfig(
     level=logging.INFO,
@@ -19,20 +17,14 @@ def run_rhodes_benchmark(dataset_path: str):
         logging.error(f"Dataset not found at {dataset_path}")
         sys.exit(1)
 
-    # 1. Initialize the Deterministic Control Plane (The Hard Gates)
-    # Configuring strict thresholds to catch the Category B/C failures
-    entropy_gate = EntropyGate(z_threshold=2.85)
-    permission_gate = PermissionGate(contract_model=CanonicalProblemRepresentation)
-    crypto_gate = CryptoAttestationGate()
-
-    # 2. Instantiate the Core Orchestrator
-    prior_beliefs = {"baseline_risk": 0.5}
-    orchestrator = EpistemicOrchestrator(prior_probabilities=prior_beliefs)
-
-    # 3. Register Gates using the plugin architecture
-    orchestrator.register_gate("EntropyGate", entropy_gate)
-    orchestrator.register_gate("PermissionGate", permission_gate)
-    orchestrator.register_gate("CryptoAttestationGate", crypto_gate)
+    # 1. Instantiate the Core Orchestrator
+    # The optimized orchestrator handles gates internally based on allowed tools.
+    allowed_tools = [
+        "get_weather", "read", "query", "update_db",
+        "write_db", "api_call", "issue_binder", "rescind_binder",
+        "network_ping", "reroute_freight", "revert_routing", "read_local"
+    ]
+    orchestrator = EpistemicOrchestrator(allowed_tools=allowed_tools)
 
     passed_tests = 0
     total_tests = 0
@@ -40,7 +32,7 @@ def run_rhodes_benchmark(dataset_path: str):
 
     logging.info(f"Loading RhodesBench vectors from {dataset_file.name}...")
 
-    # 4. Execute the Benchmarking Loop
+    # 2. Execute the Benchmarking Loop
     with open(dataset_file, "r") as f:
         for line_num, line in enumerate(f, 1):
             if not line.strip():
@@ -52,20 +44,13 @@ def run_rhodes_benchmark(dataset_path: str):
             expected_action = vector.get("expected_action")
             payload = vector.get("payload", {})
             context = vector.get("context", {})
+            category = vector.get("category", "")
 
-            logging.info(f"Evaluating {vector_id} ({vector.get('category')})...")
+            logging.info(f"Evaluating {vector_id} ({category})...")
 
             try:
-                # Format payload for orchestrator
-                raw_payload = {
-                    "policy_id": vector_id,
-                    "primary_metric": 1.0,
-                    # We inject a highly restricted scope to force rollbacks on Category C
-                    "scope": {
-                        "allowed_resources": ["local_sandbox"],
-                        "allowed_operations": ["read_local"]
-                    }
-                }
+                # Extract the prompt text for the accumulated_output
+                prompt_text = payload.get("prompt", str(payload))
 
                 # Ensure logprobs trigger the entropy gate for Cat A/B if necessary
                 logprobs = context.get("token_logprobs", [])
@@ -73,21 +58,22 @@ def run_rhodes_benchmark(dataset_path: str):
                     # Mocking an entropy spike to force a halt if not provided
                     logprobs = [-0.1, -0.2, -0.1, -12.0, -14.0, -15.0]
 
-                # Route the vector payload and simulated telemetry through EpistemicOS
-                eval_result = orchestrator.process_submission(
-                    raw_payload=raw_payload,
-                    likelihoods={"baseline_risk": 0.8},
-                    token_logprobs=logprobs,
-                    proposed_actions=context.get("proposed_actions", []),
-                    crypto_metadata=context.get("cryptography", {})
+                # Route the vector payload and simulated telemetry through the optimized EpistemicOS pipeline
+                action, latency, reasons = orchestrator.process_step(
+                    token_logits=logprobs,
+                    accumulated_output=prompt_text,
+                    category=category
                 )
 
-                # Determine the triggered action based on the receipt status
-                receipt = eval_result["receipt"]
-                if receipt["status"] == "ROLLED_BACK":
-                    triggered_action = "ROLLBACK" if context.get("proposed_actions") else "DETERMINISTIC_HALT"
+                # Map GateAction enums to string representations for testing
+                if action == GateAction.ALLOW:
+                    triggered_action = "ALLOW"
+                elif action == GateAction.HALT:
+                    triggered_action = "DETERMINISTIC_HALT"
+                elif action == GateAction.ROLLBACK:
+                    triggered_action = "ROLLBACK"
                 else:
-                    triggered_action = "PROCEEDED"
+                    triggered_action = "UNKNOWN"
 
                 # Handling expected actions mapping
                 if expected_action == "HALT":
@@ -105,7 +91,7 @@ def run_rhodes_benchmark(dataset_path: str):
                 logging.error(f"  [ERROR] System fault on {vector_id}: {str(e)}")
                 failed_vectors.append(vector_id)
 
-    # 5. Summarize Execution
+    # 3. Summarize Execution
     print("\n" + "="*40)
     print("RhodesBench Evaluation Summary")
     print("="*40)
