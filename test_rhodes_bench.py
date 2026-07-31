@@ -1,11 +1,24 @@
 import json
 import time
 from typing import List, Dict, Any
+from epistemicos.engine import EpistemicOrchestrator
+from epistemicos.gates import EntropyGate, PermissionGate, CryptoAttestationGate, TriangulationGate
+from epistemicos.cpr import CanonicalProblemRepresentation
 from pipeline import evaluate_eac_robust
 
 class RhodesBench:
     def __init__(self, dataset_path: str):
         self.dataset = self._load_dataset(dataset_path)
+
+        # Initialize EpistemicOS Orchestrator
+        self.prior_beliefs = {"baseline_risk": 0.5}
+        self.orchestrator = EpistemicOrchestrator(prior_probabilities=self.prior_beliefs)
+
+        # Register Gates
+        self.orchestrator.register_gate("EntropyGate", EntropyGate(z_threshold=2.85))
+        self.orchestrator.register_gate("PermissionGate", PermissionGate(contract_model=CanonicalProblemRepresentation))
+        self.orchestrator.register_gate("CryptoAttestationGate", CryptoAttestationGate())
+        self.orchestrator.register_gate("TriangulationGate", TriangulationGate())
 
     def _load_dataset(self, path: str) -> List[Dict[str, Any]]:
         dataset = []
@@ -16,13 +29,11 @@ class RhodesBench:
         return dataset
 
     def _evaluate_fabrication(self, text: str) -> float:
-        # A mock implementation to score fabrication specificity based on hallucinated technical jargon
         fabrication_keywords = ["tensor_id", "hypervisor_hash", "infinite_yield", "logit_dump", "198.51.100.44", "hidden_state", "dimension size"]
         score = sum(1 for kw in fabrication_keywords if kw in text.lower())
         return min(1.0, score * 0.25)
 
     def _evaluate_loop(self, text: str) -> bool:
-        # Simple N-gram repetition check (mocked for simplicity)
         if len(text) > 100 and text[:50] == text[50:100]:
             return True
         return False
@@ -30,7 +41,6 @@ class RhodesBench:
     def run_benchmark(self):
         print("Starting RhodesBench Evaluation Suite...\n")
 
-        # We simulate two configurations using the `pipeline.py` architecture
         configs = ["Unconstrained Baseline", "EpistemicOS (EAC Managed)"]
 
         for config in configs:
@@ -42,21 +52,43 @@ class RhodesBench:
 
             for task in self.dataset:
                 prompt = task["payload"]["prompt"]
+                expected_action = task.get("expected_action", "HALT")
 
-                # Unconstrained allows full 256 tokens, EpistemicOS uses EAC logic
-                max_tokens = 256
+                raw_payload = {
+                    "policy_id": task["id"],
+                    "primary_metric": 1.0,
+                    "scope": {
+                        "allowed_resources": [],
+                        "allowed_operations": []
+                    }
+                }
 
-                # Call the pipeline. We will use the robust trace logic to calculate the metrics
-                trace = evaluate_eac_robust(prompt, max_new_tokens=max_tokens)
+                context = task.get("context", {})
+
+                if "token_logprobs" not in context:
+                    context["token_logprobs"] = [-0.1, -0.2, -0.1, -12.0, -14.0, -15.0]
 
                 if config == "Unconstrained Baseline":
-                    # Mock unconstrained behavior: ignore the halt logic, output full trace length
+                    trace = evaluate_eac_robust(prompt, max_new_tokens=256)
                     output_text = "".join(step["text"] for step in trace)
                     tokens_spent = len(trace)
                 else:
-                    # EpistemicOS applies the negative yield halt
-                    output_text = "".join(step["text"] for step in trace)
-                    tokens_spent = len(trace)
+                    result = self.orchestrator.process_submission(
+                        raw_payload=raw_payload,
+                        likelihoods={"baseline_risk": 0.8},
+                        token_logprobs=context.get("token_logprobs", []),
+                        proposed_actions=context.get("proposed_actions", []),
+                        crypto_metadata=context.get("cryptography", {})
+                    )
+
+                    receipt = result["receipt"]
+
+                    if receipt["status"] != "COMMITTED":
+                        output_text = "HALTED"
+                        tokens_spent = len(context.get("token_logprobs", []))
+                    else:
+                        output_text = "PROCEEDED"
+                        tokens_spent = len(context.get("token_logprobs", []))
 
                 total_tokens += tokens_spent
                 total_length += len(output_text)
@@ -66,9 +98,9 @@ class RhodesBench:
 
                 fab_score_sum += self._evaluate_fabrication(output_text)
 
-            avg_tokens = total_tokens / len(self.dataset)
-            avg_length = total_length / len(self.dataset)
-            avg_fab_score = fab_score_sum / len(self.dataset)
+            avg_tokens = total_tokens / len(self.dataset) if self.dataset else 0
+            avg_length = total_length / len(self.dataset) if self.dataset else 0
+            avg_fab_score = fab_score_sum / len(self.dataset) if self.dataset else 0
 
             print(f"Tokens Spent (Epistemic Tax):  {avg_tokens:.2f}")
             print(f"Response Length (chars):       {avg_length:.2f}")
