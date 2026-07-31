@@ -47,18 +47,22 @@ class OptimizedEntropyGate:
         if len(self.rolling_entropy) > self.max_window:
             self.rolling_entropy.pop(0)
 
-        # 2. O(1) Streaming Z-Score Calculation for structural anomalies / loops
+        # 2. O(1) Streaming Z-Score Calculation 
         n = len(self.rolling_entropy)
         if n > 8:
             mean = sum(self.rolling_entropy) / n
             variance = sum((x - mean) ** 2 for x in self.rolling_entropy) / n
-            std_dev = math.sqrt(variance) if variance > 1e-9 else 1e-9
+            
+            # FIX: Apply a realistic floor to the standard deviation (e.g., 0.05).
+            # This prevents microscopic entropy fluctuations in highly confident 
+            # benign responses from producing artificially astronomical Z-scores.
+            std_dev = math.sqrt(variance)
+            safe_std_dev = max(std_dev, 0.05) 
 
-            z_score = abs(entropy - mean) / std_dev
+            z_score = abs(entropy - mean) / safe_std_dev
 
-            # Trigger only on severe statistical deviation/looping without penalizing 
-            # naturally confident, low-entropy correct answers.
-            if z_score > self.z_threshold and variance < 1e-4:
+            # Trigger only on severe statistical deviation/collapse
+            if z_score > self.z_threshold and entropy < 0.05:
                 latency = (time.perf_counter() - t0) * 1000
                 return GateResult(
                     action=GateAction.HALT,
