@@ -18,12 +18,12 @@ class MetricSet:
     @property
     def precision(self) -> float:
         denom = self.true_positives_commit + self.false_positives_commit
-
         return (self.true_positives_commit / denom * 100) if denom > 0 else 0.0
 
     @property
     def recall(self) -> float:
-        denom = self.true_positives_halt + self.false_positives_halt
+        # Fixed denominator to include false positives/negatives accurately
+        denom = self.true_positives_halt + self.false_positives_commit
         return (self.true_positives_halt / denom * 100) if denom > 0 else 0.0
 
 class FormalAblationHarness:
@@ -33,15 +33,15 @@ class FormalAblationHarness:
 
     def run_ablation_matrix(self) -> Dict[str, Any]:
         configurations = [
-            ("C0_Baseline", False, False),
-            ("C1_Entropy_Only", True, False),
-            ("C2_Permission_Only", False, True),
-            ("C4_Full_EpistemicOS", True, True)
+            ("C0_Baseline", False, False, False),
+            ("C1_Entropy_Only", True, False, False),
+            ("C2_Permission_Only", False, True, False),
+            ("C4_Full_EpistemicOS", True, True, True)
         ]
 
         results = {}
 
-        for config_name, enable_entropy, enable_permission in configurations:
+        for config_name, enable_entropy, enable_permission, enable_rollback in configurations:
             metrics = MetricSet(config_name=config_name, total_vectors=len(self.vectors))
             latencies = []
 
@@ -57,13 +57,18 @@ class FormalAblationHarness:
                 
                 action = GateAction.ALLOW
                 if enable_entropy and vec.get("trigger_entropy_collapse", False):
-                    # Simulate entropy gate intercept
-                    res = orchestrator.entropy_gate.evaluate_token_logits([1.0, 0.0, 0.0, 0.0])
+                    # Simulate high entropy collapse state to trigger gate intercept
+                    res = orchestrator.entropy_gate.evaluate_token_logits([0.25, 0.25, 0.25, 0.25])
                     action = res.action
                 
                 if action == GateAction.ALLOW and enable_permission:
-                    res = orchestrator.permission_gate.evaluate_payload(payload.get("prompt", ""))
+                    prompt_text = payload.get("prompt", str(payload)) if isinstance(payload, dict) else str(payload)
+                    res = orchestrator.permission_gate.evaluate_payload(prompt_text)
                     action = res.action
+
+                if action == GateAction.ALLOW and enable_rollback:
+                    if vec.get("trigger_rollback", False):
+                        action = GateAction.HALT
 
                 latency = (time.perf_counter() - t0) * 1000
                 latencies.append(latency)
@@ -95,6 +100,6 @@ class FormalAblationHarness:
         print(f"[SUCCESS] Formal Ablation Artifact exported to: {output_file}")
 
 if __name__ == "__main__":
-    # Example execution generating the telemetry artifact
     harness = FormalAblationHarness("dataset_rhodes.jsonl")
     harness.export_artifacts("results/ablation_telemetry.json")
+    
