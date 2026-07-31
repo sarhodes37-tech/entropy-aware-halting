@@ -3,7 +3,7 @@ import json
 import time
 import uuid
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Tuple, Optional, List, Dict, Any
 from enum import Enum
 
 class AuditLogLevel(Enum):
