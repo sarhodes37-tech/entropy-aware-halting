@@ -29,8 +29,7 @@ jobs:
         python -m pip install --upgrade pip
         if [ -f "requirements.txt" ]; then pip install -r requirements.txt; fi
 
-
-        - name: Run RhodesBench (Hard Gate Interception)
+    - name: Run RhodesBench (Hard Gate Interception)
       env:
         PYTHONPATH: .
       run: |
@@ -45,7 +44,6 @@ jobs:
       run: |
         echo "Running full combinatorial ablation harness..."
         python epistemicos/ablation_runner.py
-
 
     - name: Enforce Zero-Regression Security Policy
       run: |
