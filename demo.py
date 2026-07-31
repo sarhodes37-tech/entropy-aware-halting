@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 import time
 import sys
-from epistemic_os.core import EpistemicOrchestrator, GateAction
+from epistemicos.core import EpistemicOrchestrator, GateAction
 
 # Terminal formatting
 GREEN = "\033[92m"
