@@ -1,2 +1,14 @@
+# Python
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
+*.so
+
+# Environments
+.env
+venv/
+env/
+
+# Testing
+.pytest_cache/
+.mypy_cache/
