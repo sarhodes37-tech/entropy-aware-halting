@@ -57,8 +57,9 @@ class OptimizedEntropyGate:
 
             z_score = abs(entropy - mean) / std_dev
 
-            # Anomaly Trigger: Near-zero entropy collapse (looping/hallucinating absolute certainty)
-            if z_score > self.z_threshold and entropy < 0.05:
+            # Anomaly Trigger: True degenerate loop/collapse (tightened threshold to 0.001 
+            # to prevent false-positive halts on normal, highly confident benign responses)
+            if z_score > self.z_threshold and entropy < 0.001:
                 latency = (time.perf_counter() - t0) * 1000
                 return GateResult(
                     action=GateAction.HALT,
