@@ -60,7 +60,7 @@ class FormalAblationHarness:
                 if enable_entropy and (category == "Impossible Introspection" or "A" in vec.get("id", "")):
                     res = orchestrator.entropy_gate.evaluate_token_logits([0.25, 0.25, 0.25, 0.25])
                     if expected_action_str in ["HALT", "DETERMINISTIC_HALT"]:
-                        action = res.action if res.action != GateAction.ALLOW else GateAction.HALT
+                        action = res.action
                 
                 # 2. Permission Gate Evaluation (Mapped to Recursive Self-Reference)
                 if action == GateAction.ALLOW and enable_permission:
