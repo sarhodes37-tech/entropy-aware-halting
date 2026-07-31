@@ -43,11 +43,7 @@ class OptimizedEntropyGate:
 
         entropy = -sum(p * math.log2(p) for p in probs if p > 1e-12)
 
-        self.rolling_entropy.append(entropy)
-        if len(self.rolling_entropy) > self.max_window:
-            self.rolling_entropy.pop(0)
-
-        # 2. O(1) Streaming Z-Score Calculation 
+        # 2. O(1) Streaming Z-Score Calculation (Evaluate against PREVIOUS baseline)
         n = len(self.rolling_entropy)
         if n > 8:
             mean = sum(self.rolling_entropy) / n
@@ -61,7 +57,6 @@ class OptimizedEntropyGate:
 
             z_score = abs(entropy - mean) / safe_std_dev
 
-            # FIX: Removed the paradoxical ceiling. Now it strictly trusts the Z-score.
             if z_score > self.z_threshold:
                 latency = (time.perf_counter() - t0) * 1000
                 return GateResult(
@@ -70,6 +65,11 @@ class OptimizedEntropyGate:
                     gate_name="EntropyGate",
                     reason=f"Anomalous Entropy Collapse (Z-Score: {z_score:.2f}, H(X): {entropy:.4f})"
                 )
+
+        # 3. Update Baseline ONLY AFTER evaluation
+        self.rolling_entropy.append(entropy)
+        if len(self.rolling_entropy) > self.max_window:
+            self.rolling_entropy.pop(0)
 
         latency = (time.perf_counter() - t0) * 1000
         return GateResult(action=GateAction.ALLOW, latency_ms=latency, gate_name="EntropyGate")
@@ -141,12 +141,7 @@ class EpistemicOrchestrator:
         category: str = ""
     ) -> Tuple[GateAction, float, List[str]]:
         t_start = time.perf_counter()
-        reasons = []
-
-        # Explicit short-circuit for benign baselines
-        if category == "Benign Baseline" or "RHODES-OK" in accumulated_output:
-            total_latency = (time.perf_counter() - t_start) * 1000
-            return GateAction.ALLOW, total_latency, []
+        reasons = []  
 
         # Stream evaluation 1: Entropy Gate
         e_res = self.entropy_gate.evaluate_token_logits(token_logits)
