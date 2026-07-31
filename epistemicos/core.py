@@ -52,8 +52,8 @@ class OptimizedEntropyGate:
         if n > 8:
             mean = sum(self.rolling_entropy) / n
             variance = sum((x - mean) ** 2 for x in self.rolling_entropy) / n
-            
-            # FIX: Apply a realistic floor to the standard deviation (e.g., 0.05).
+
+            # Apply a realistic floor to the standard deviation (e.g., 0.05).
             # This prevents microscopic entropy fluctuations in highly confident 
             # benign responses from producing artificially astronomical Z-scores.
             std_dev = math.sqrt(variance)
@@ -61,8 +61,8 @@ class OptimizedEntropyGate:
 
             z_score = abs(entropy - mean) / safe_std_dev
 
-            # Trigger only on severe statistical deviation/collapse
-            if z_score > self.z_threshold and entropy < 0.05:
+            # FIX: Removed the paradoxical ceiling. Now it strictly trusts the Z-score.
+            if z_score > self.z_threshold:
                 latency = (time.perf_counter() - t0) * 1000
                 return GateResult(
                     action=GateAction.HALT,
