@@ -3,7 +3,7 @@ import time
 import os
 from typing import Dict, List, Any
 from dataclasses import dataclass, asdict
-from epistemic_os.core import EpistemicOrchestrator, GateAction
+from epistemicos.core import EpistemicOrchestrator, GateAction
 
 @dataclass
 class MetricSet:
