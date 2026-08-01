@@ -1,4 +1,4 @@
-import numpy as np
+import math
 from typing import List, Dict, Any
 
 class TokenSurprisalSensor:
@@ -22,10 +22,12 @@ class TokenSurprisalSensor:
 
             start_idx = max(0, i - self.window_size)
             baseline = surprisals[start_idx:i]
-            
-            mean_h = np.mean(baseline)
-            std_h = max(float(np.std(baseline)), self.std_floor)
-            
+
+            # Standard Library Mean and Variance calculation
+            mean_h = sum(baseline) / len(baseline)
+            variance = sum((x - mean_h) ** 2 for x in baseline) / len(baseline)
+            std_h = max(math.sqrt(variance), self.std_floor)
+
             z_scores.append(float((h - mean_h) / std_h))
 
         return z_scores
@@ -33,7 +35,7 @@ class TokenSurprisalSensor:
     def evaluate(self, logprobs: List[float]) -> Dict[str, Any]:
         z_scores = self.compute_z_scores(logprobs)
         flagged_count = sum(1 for z in z_scores if z > self.z_threshold)
-        max_z = float(np.max(z_scores)) if z_scores else 0.0
+        max_z = float(max(z_scores)) if z_scores else 0.0
 
         return {
             "passed": flagged_count == 0,
