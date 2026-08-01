@@ -30,6 +30,11 @@ class GateResult:
     reason: Optional[str] = None
     confidence: float = 1.0
 
+    @property
+    def passed(self) -> bool:
+        """Compatibility adapter for orchestrator check engine expectations."""
+        return self.action == GateAction.ALLOW
+
 
 class Gate(ABC):
     """Base interface for all EpistemicOS governance plugins."""
