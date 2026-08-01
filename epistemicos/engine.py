@@ -1,7 +1,7 @@
 """
 EpistemicOS Orchestrator Engine.
 Coordinates dynamic multi-gate validation, server-side stateful attempt tracking,
-and Saga-pattern compensating rollbacks.
+hardware telemetry profiling, and Saga-pattern compensating rollbacks.
 """
 
 import logging
@@ -9,6 +9,7 @@ from threading import RLock
 from typing import Dict, Any, List, Optional, Union
 
 from epistemicos.cpr import CanonicalProblemRepresentation
+from epistemicos.profiler import ResourceProfiler
 
 logger = logging.getLogger("EpistemicOS.Orchestrator")
 
@@ -54,7 +55,7 @@ class EpistemicOrchestrator:
         """
         Processes transaction submissions against all registered governance gates.
         Enforces server-side attempt counts, evaluates dynamic gate suites,
-        and triggers Saga compensating rollbacks upon gate rejection.
+        profiles hardware telemetry, and triggers Saga compensating rollbacks upon gate rejection.
         """
         token_logprobs = token_logprobs or []
         proposed_actions = proposed_actions or []
@@ -117,41 +118,64 @@ class EpistemicOrchestrator:
             "likelihoods": likelihoods
         }
 
-        # 6. Dynamic Governance Gate Evaluation Loop
-        for gate_name, gate_instance in self.gates.items():
-            gate_result = gate_instance.evaluate(payload_dict, context)
-            event_log.append({
-                "type": f"GateEvaluated:{gate_name}",
-                "details": gate_result
-            })
+        gate_failed = False
+        gate_result = {}
+        gate_name = ""
 
-            if not gate_result.get("passed", True):
-                # Execute Saga Compensating Rollbacks in reverse order
-                executed_rollbacks = list(reversed(rollbacks_to_run))
-                reason = gate_result.get("reason", f"VETOED_BY_{gate_name}")
+        # 6. Dynamic Governance Gate Evaluation Loop (Wrapped in Hardware Profiler)
+        token_count = len(token_logprobs) if token_logprobs else 1
+        with ResourceProfiler(device="cuda", token_count=token_count) as profiler:
+            for g_name, gate_instance in self.gates.items():
+                gate_name = g_name
+                gate_result = gate_instance.evaluate(payload_dict, context)
+                event_log.append({
+                    "type": f"GateEvaluated:{gate_name}",
+                    "details": gate_result
+                })
 
-                if executed_rollbacks:
-                    status = "ROLLED_BACK"
-                elif "SCOPE" in str(reason).upper() or "ATTEMPT" in str(reason).upper():
-                    status = "HALTED"
-                else:
-                    status = "REJECTED"
+                if not gate_result.get("passed", True):
+                    gate_failed = True
+                    break
 
-                logger.warning(f"Gate [{gate_name}] vetoed execution for [{tx_key}]. Reason: {reason}. Status: {status}.")
+        # 7. Extract Hardware Telemetry & Enforce VRAM Defragmentation
+        telemetry = profiler.get_telemetry()
+        logger.info(f"Governance Overhead for [{tx_key}]: {telemetry.ms_per_token} ms/token. Peak VRAM: {telemetry.vram_peak_mb} MB")
 
-                return {
-                    "receipt": {
-                        "status": status,
-                        "reason": reason,
-                        "gate": gate_name,
-                        "transaction_id": tx_key,
-                        "attempt_count": server_attempt_count,
-                        "event_log": event_log
-                    },
-                    "rollbacks_executed": executed_rollbacks
-                }
+        if telemetry.fragmentation_index > 0.35:
+            logger.warning(f"CRITICAL VRAM FRAGMENTATION: {telemetry.fragmentation_index * 100:.2f}%. Executing emergency cache clear.")
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
-        # 7. Transaction Commit
+        # 8. Handle Rejection & Compensating Rollbacks
+        if gate_failed:
+            # Execute Saga Compensating Rollbacks in reverse order
+            executed_rollbacks = list(reversed(rollbacks_to_run))
+            reason = gate_result.get("reason", f"VETOED_BY_{gate_name}")
+
+            if executed_rollbacks:
+                status = "ROLLED_BACK"
+            elif "SCOPE" in str(reason).upper() or "ATTEMPT" in str(reason).upper():
+                status = "HALTED"
+            else:
+                status = "REJECTED"
+
+            logger.warning(f"Gate [{gate_name}] vetoed execution for [{tx_key}]. Reason: {reason}. Status: {status}.")
+
+            return {
+                "receipt": {
+                    "status": status,
+                    "reason": reason,
+                    "gate": gate_name,
+                    "transaction_id": tx_key,
+                    "attempt_count": server_attempt_count,
+                    "hardware_telemetry": telemetry.__dict__,
+                    "event_log": event_log
+                },
+                "rollbacks_executed": executed_rollbacks
+            }
+
+        # 9. Transaction Commit
         self.reset_transaction_attempts(tx_key)
         logger.info(f"Transaction [{tx_key}] successfully committed.")
 
@@ -160,6 +184,7 @@ class EpistemicOrchestrator:
                 "status": "COMMITTED",
                 "transaction_id": tx_key,
                 "attempt_count": server_attempt_count,
+                "hardware_telemetry": telemetry.__dict__,
                 "event_log": event_log
             },
             "rollbacks_executed": []
