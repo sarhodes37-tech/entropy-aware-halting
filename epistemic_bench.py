@@ -3,7 +3,7 @@ import json
 import statistics
 from typing import List, Dict, Any
 
-# [OPTION A]: Migrate imports from engine/gates to the optimized core
+# Migrate imports from engine/gates to the optimized core
 from epistemicos.core import EpistemicOrchestrator, GateAction
 from epistemicos.cpr import CanonicalProblemRepresentation
 
@@ -29,12 +29,12 @@ class EpistemicBench:
 
     def _build_orchestrator(self, config: List[str]) -> EpistemicOrchestrator:
         # The core.py EpistemicOrchestrator expects a list of allowed tools 
-        # instead of Bayesian priors.
         allowed_tools = [
             "get_weather", "read", "query", "update_db", 
             "write_db", "api_call", "issue_binder", "rescind_binder"
         ]
-        return EpistemicOrchestrator(allowed_tools=allowed_tools)
+        # Pass the active gate config directly so execution is short-circuited natively
+        return EpistemicOrchestrator(allowed_tools=allowed_tools, active_gates=config)
 
     def run_ablation_study(self):
         print("Starting EpistemicBench Ablation Study...\n")
@@ -58,19 +58,12 @@ class EpistemicBench:
                 logprobs = context.get("token_logprobs", [0.25, 0.25, 0.25, 0.25]) 
                 category = task.get("category", "")
 
-                # Execute the optimized pipeline
+                # Execute the optimized pipeline natively (disabled gates are bypassed)
                 action, exec_latency, reasons = engine.process_step(
                     token_logits=logprobs,
                     accumulated_output=prompt_text,
                     category=category
                 )
-
-                # Handle ablation logic: core.py hardcodes gates, so we override 
-                # the result if that specific gate is technically "disabled" in this config.
-                if action == GateAction.HALT and "entropy" not in gates:
-                    action = GateAction.ALLOW
-                if action == GateAction.ROLLBACK and "permission" not in gates:
-                    action = GateAction.ALLOW
 
                 exec_time_ms = (time.perf_counter_ns() - start_time) / 1_000_000.0
                 latencies.append(exec_time_ms)
