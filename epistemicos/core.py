@@ -1,7 +1,7 @@
 import math
 import re
 import time
-from typing import Dict, Any, Tuple, Optional, List
+from typing import Dict, Any, Tuple, Optional, List, Set
 from dataclasses import dataclass
 from enum import Enum
 
@@ -50,10 +50,7 @@ class OptimizedEntropyGate:
             variance = sum((x - mean) ** 2 for x in self.rolling_entropy) / n
 
             # Apply a realistic floor to the standard deviation (e.g., 0.05).
-            # This prevents microscopic entropy fluctuations in highly confident 
-            # benign responses from producing artificially astronomical Z-scores.
-            std_dev = math.sqrt(variance)
-            safe_std_dev = max(std_dev, 0.05) 
+            safe_std_dev = max(math.sqrt(variance), 0.05) 
 
             z_score = abs(entropy - mean) / safe_std_dev
 
@@ -122,12 +119,19 @@ class EpistemicOrchestrator:
     def __init__(
         self,
         allowed_tools: List[str],
+        active_gates: Optional[List[str]] = None,
         model_id: str = "target-llm-v1",
         log_file_path: Optional[str] = None
     ):
         self.entropy_gate = OptimizedEntropyGate()
         self.permission_gate = OptimizedPermissionGate(allowed_actions=allowed_tools)
         self.model_id = model_id
+
+        # Normalize active gates to a lookup set (e.g., ["entropy", "permission"])
+        if active_gates is None:
+            self.active_gates: Set[str] = {"entropy", "permission", "triangulation"}
+        else:
+            self.active_gates = {g.lower().replace("gate", "") for g in active_gates}
 
         if log_file_path:
             self.audit_logger = TamperEvidentAuditTrail(log_file_path=log_file_path)
@@ -143,39 +147,41 @@ class EpistemicOrchestrator:
         t_start = time.perf_counter()
         reasons = []  
 
-        # Stream evaluation 1: Entropy Gate
-        e_res = self.entropy_gate.evaluate_token_logits(token_logits)
-        if e_res.action != GateAction.ALLOW:
-            total_latency = (time.perf_counter() - t_start) * 1000
-            reason_str = e_res.reason or "Entropy Violation"
-            reasons.append(reason_str)
+        # Stream evaluation 1: Entropy Gate (Skipped completely if disabled in config)
+        if "entropy" in self.active_gates:
+            e_res = self.entropy_gate.evaluate_token_logits(token_logits)
+            if e_res.action != GateAction.ALLOW:
+                total_latency = (time.perf_counter() - t_start) * 1000
+                reason_str = e_res.reason or "Entropy Violation"
+                reasons.append(reason_str)
 
-            self.audit_logger.record_event(
-                event_type=AuditLogLevel.HALT,
-                gate_name=e_res.gate_name,
-                reason=reason_str,
-                model_id=self.model_id,
-                execution_latency_ms=total_latency,
-                payload_snippet=accumulated_output
-            )
-            return e_res.action, total_latency, reasons
+                self.audit_logger.record_event(
+                    event_type=AuditLogLevel.HALT,
+                    gate_name=e_res.gate_name,
+                    reason=reason_str,
+                    model_id=self.model_id,
+                    execution_latency_ms=total_latency,
+                    payload_snippet=accumulated_output
+                )
+                return e_res.action, total_latency, reasons
 
-        # Stream evaluation 2: Permission Gate
-        p_res = self.permission_gate.evaluate_payload(accumulated_output)
-        if p_res.action != GateAction.ALLOW:
-            total_latency = (time.perf_counter() - t_start) * 1000
-            reason_str = p_res.reason or "Permission Boundary Violation"
-            reasons.append(reason_str)
+        # Stream evaluation 2: Permission Gate (Skipped completely if disabled in config)
+        if "permission" in self.active_gates:
+            p_res = self.permission_gate.evaluate_payload(accumulated_output)
+            if p_res.action != GateAction.ALLOW:
+                total_latency = (time.perf_counter() - t_start) * 1000
+                reason_str = p_res.reason or "Permission Boundary Violation"
+                reasons.append(reason_str)
 
-            self.audit_logger.record_event(
-                event_type=AuditLogLevel.ROLLBACK,
-                gate_name=p_res.gate_name,
-                reason=reason_str,
-                model_id=self.model_id,
-                execution_latency_ms=total_latency,
-                payload_snippet=accumulated_output
-            )
-            return p_res.action, total_latency, reasons
+                self.audit_logger.record_event(
+                    event_type=AuditLogLevel.ROLLBACK,
+                    gate_name=p_res.gate_name,
+                    reason=reason_str,
+                    model_id=self.model_id,
+                    execution_latency_ms=total_latency,
+                    payload_snippet=accumulated_output
+                )
+                return p_res.action, total_latency, reasons
 
         total_latency = (time.perf_counter() - t_start) * 1000
         return GateAction.ALLOW, total_latency, []
