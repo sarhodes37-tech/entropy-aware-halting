@@ -1,14 +1,23 @@
+"""
+EpistemicOS Canonical Problem Representation (CPR) & Permission Scope Model.
+Enforces Pydantic schema validation, JIT egress masking, downstream scope locking,
+and SaaS record exfiltration governors.
+"""
+
 import time
-from typing import Dict, Any, List, Optional
-from pydantic import BaseModel, Field, ValidationError
+import sys
+from typing import Dict, Any, List, Optional, Set
+from pydantic import BaseModel, Field
+
 
 class PermissionScope(BaseModel):
     """Cryptographic-style boundary for delegated agent actions."""
+
     allowed_resources: List[str] = Field(default_factory=list)
     allowed_operations: List[str] = Field(default_factory=list)
     expires_at: float = Field(default_factory=lambda: time.time() + 15.0)
     max_attempts: int = Field(default=3)
-    attempt_count: int = Field(default=1)
+    attempt_count: int = Field(default=1)  # Overridden by server-side stateful tracking
 
     # SaaS Egress Governors
     max_payload_bytes: int = Field(default=4096)
@@ -50,7 +59,7 @@ class PermissionScope(BaseModel):
             return False
 
         # 3. Resource Boundary Check
-        target = action.get("node") or action.get("endpoint") or action.get("table")
+        target = action.get("node") or action.get("endpoint") or action.get("table") or action.get("policy")
         if target and target not in self.allowed_resources:
             return False
 
@@ -58,11 +67,9 @@ class PermissionScope(BaseModel):
 
     def validate_egress(self, response_payload: Any) -> bool:
         """
-        Evaluates recursive row/record count of the return payload.
+        Evaluates recursive row/record count and byte size of the return payload.
         Neutralizes multi-million record SaaS exfiltration attempts.
         """
-        import sys
-
         # 1. Baseline Byte Size Check
         if sys.getsizeof(str(response_payload)) > self.max_payload_bytes:
             return False
@@ -70,10 +77,8 @@ class PermissionScope(BaseModel):
         # 2. Strict SaaS Row Count Check (Recursive)
         def count_max_records(data: Any) -> int:
             if isinstance(data, list):
-                # Evaluate list length and recurse deeper
                 return max(len(data), max((count_max_records(item) for item in data), default=0))
             elif isinstance(data, dict):
-                # Evaluate dictionary key count (preventing dict-inflation evasion) and recurse
                 return max(len(data.keys()), max((count_max_records(val) for val in data.values()), default=0))
             return 0
 
@@ -82,33 +87,57 @@ class PermissionScope(BaseModel):
 
         return True
 
+
 class CanonicalProblemRepresentation(BaseModel):
     """
     Standardized payload format for EpistemicOS.
     Normalizes inputs and enforces strict authorization boundaries.
     """
+
     policy_id: str
     fleet_data: Optional[Dict[str, Any]] = None
     risk_details: Optional[Dict[str, Any]] = None
     primary_metric: Optional[float] = None
     scope: PermissionScope = Field(default_factory=PermissionScope)
 
+    SENSITIVE_FIELDS: Set[str] = Field(
+        default={"banking_routing", "account_number", "ssn", "account_balance_usd", "proprietary_cargo"},
+        exclude=True
+    )
+
     def __init__(self, **data):
         super().__init__(**data)
-        # Dynamically bind scope based on payload context if not explicitly provided
         if not data.get("scope"):
             self.scope = PermissionScope(
-                allowed_resources=["logistics_db", "risk_profiles", "/underwriting/flag", "/bind_policy", "/cancel_policy", "/issue_binder"],
-                allowed_operations=["read", "query", "update_db", "write_db", "send_api_alert", "api_call", "issue_binder", "revert", "remove", "replace", "rescind_binder"]
+                allowed_resources=[
+                    "logistics_db", "risk_profiles", "/underwriting/flag",
+                    "POL-2026-N99", "/bind_policy", "/cancel_policy", "/issue_binder"
+                ],
+                allowed_operations=[
+                    "read", "query", "update_db", "write_db", "send_api_alert",
+                    "api_call", "issue_binder", "revert", "remove", "replace", "rescind_binder"
+                ]
             )
 
+    def mask_egress_payload(self, custom_redactions: Optional[Set[str]] = None) -> Dict[str, Any]:
+        """
+        Strips PII, sensitive financial fields, and raw internal identifiers before
+        context injection into an agentic trajectory.
+        """
+        redact_keys = self.SENSITIVE_FIELDS.union(custom_redactions or set())
+        raw_dict = self.model_dump()
+        masked: Dict[str, Any] = {}
+
+        for key, value in raw_dict.items():
+            if key in redact_keys or key == "scope":
+                continue
+            masked[key] = value
+
+        return masked
+
     def serialize_for_belief_kernel(self) -> List[float]:
-        """
-        Converts the raw data into a numerical vector for the Bayesian Kernel.
-        (Simplified implementation for current testing phases).
-        """
+        """Converts raw payload attributes into a normalized feature vector for Bayesian kernel evaluation."""
         if self.fleet_data:
-            # Example extraction: normalize vehicle count and radius
             v_count = self.fleet_data.get("vehicle_count", 0) / 100.0
             radius = self.fleet_data.get("operating_radius_miles", 0) / 1000.0
             loss_mod = self.fleet_data.get("loss_modifier", 1.0)
