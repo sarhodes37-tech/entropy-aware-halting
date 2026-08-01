@@ -133,7 +133,7 @@ class EpistemicOrchestrator:
                     "details": gate_result
                 })
 
-                if not gate_result.get("passed", True):
+                if not gate_result.passed:
                     gate_failed = True
                     break
 
