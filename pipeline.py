@@ -10,9 +10,6 @@ import uuid
 from datetime import datetime, timezone
 from typing import Dict, Any, List, Optional, Tuple
 
-import torch
-import torch.nn.functional as F
-
 from scheduler import EntropyAwareScheduler
 from utils import get_model_and_tokenizer
 from vector_hygiene import VectorHygieneManager
@@ -33,7 +30,11 @@ def _get_execution_context() -> Tuple[Any, Any, str]:
 
 
 def _append_audit_ledger(audit_entry: Dict[str, Any], ledger_path: str = "audit_ledger.json") -> None:
-    """Helper to append audit veto entries safely to the audit ledger JSON array."""
+    """
+    Helper to append audit veto entries to the audit ledger JSON array.
+    TODO (V2): Replace basic file I/O with an append-only WAL or Redis stream 
+    to prevent race conditions during highly concurrent inference requests.
+    """
     ledger = []
     try:
         with open(ledger_path, "r", encoding="utf-8") as f:
@@ -71,6 +72,10 @@ def evaluate_eac_robust(
     Returns:
         Dict containing trace_steps, final_text, halt_directive, halt_step, and trajectory_id.
     """
+    # Isolate heavy ML dependencies to the execution path
+    import torch
+    import torch.nn.functional as F
+
     # 1. Resolve Model Dependencies
     if model is None or tokenizer is None or device is None:
         exec_model, exec_tokenizer, exec_device = _get_execution_context()
