@@ -3,24 +3,42 @@ EpistemicOS Governance Gates Suite.
 Defines abstract base interface and concrete implementations for:
 - EntropyGate (Token Surprisal Anomaly Detection)
 - PermissionGate (Scope & Action Boundary Validation)
-- CryptoAttestationGate (Post-Quantum Attestation & OCSP Revocation)
 - TriangulationGate (Data Washing & Synthetic Index Inflation Defense)
+- CryptoAttestationGate (Post-Quantum Attestation & OCSP Revocation)
 """
 
 from abc import ABC, abstractmethod
+import math
+import re
 import time
 from typing import Dict, Any, List, Optional
-import numpy as np
+from dataclasses import dataclass
+from enum import Enum
+
+
+class GateAction(Enum):
+    ALLOW = "ALLOW"
+    HALT = "DETERMINISTIC_HALT"
+    ROLLBACK = "ACTION_ROLLBACK"
+
+
+@dataclass
+class GateResult:
+    action: GateAction
+    latency_ms: float
+    gate_name: str
+    reason: Optional[str] = None
+    confidence: float = 1.0
 
 
 class Gate(ABC):
     """Base interface for all EpistemicOS governance plugins."""
 
     @abstractmethod
-    def evaluate(self, payload: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
+    def evaluate(self, payload: Dict[str, Any], context: Dict[str, Any]) -> GateResult:
         """
         Evaluates payload and runtime context.
-        Must return a dict containing at least 'passed' (bool) and 'confidence' (float 0.0-1.0).
+        Must return a GateResult dictating the deterministic action.
         """
         pass
 
@@ -31,190 +49,188 @@ class EntropyGate(Gate):
     Trips when surprisal Z-scores exceed the dynamic envelope z_threshold.
     """
 
-    def __init__(self, z_threshold: float = 2.85, window_size: int = 10):
+    def __init__(self, z_threshold: float = 3.5, max_window: int = 64):
         self.z_threshold = z_threshold
-        self.window_size = window_size
+        self.max_window = max_window
+        self.rolling_entropy: List[float] = []
 
-    def evaluate(self, payload: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
-        logprobs = context.get("token_logprobs", [])
-        if not logprobs:
-            return {
-                "passed": True,
-                "max_z_score": 0.0,
-                "flagged_tokens": 0,
-                "confidence": 1.0,
-                "reason": "NO_TOKENS_PROVIDED"
-            }
+    def evaluate(self, payload: Dict[str, Any], context: Dict[str, Any]) -> GateResult:
+        t0 = time.perf_counter()
+        logits = context.get("token_logits", [])
+        
+        if not logits:
+            return GateResult(
+                action=GateAction.ALLOW, 
+                latency_ms=(time.perf_counter() - t0) * 1000, 
+                gate_name="EntropyGate", 
+                reason="NO_LOGITS_PROVIDED"
+            )
 
-        entropies = [-lp for lp in logprobs]
-        z_scores: List[float] = []
+        max_logit = max(logits)
+        exps = [math.exp(l - max_logit) for l in logits]
+        sum_exps = sum(exps)
+        probs = [e / sum_exps for e in exps]
+        
+        entropy = -sum(p * math.log2(p) for p in probs if p > 1e-12)
 
-        for i, h in enumerate(entropies):
-            if i < 2:
-                z_scores.append(0.0)
-                continue
-            baseline = entropies[:i] if i < self.window_size else entropies[i - self.window_size:i]
-            std_h = max(float(np.std(baseline)), 0.05)
-            z_scores.append((h - float(np.mean(baseline))) / std_h)
+        n = len(self.rolling_entropy)
+        if n > 8:
+            mean = sum(self.rolling_entropy) / n
+            variance = sum((x - mean) ** 2 for x in self.rolling_entropy) / n
+            safe_std_dev = max(math.sqrt(variance), 0.05) 
+            z_score = abs(entropy - mean) / safe_std_dev
 
-        max_z = float(np.max(z_scores)) if z_scores else 0.0
-        flagged_count = sum(1 for z in z_scores if z > self.z_threshold)
+            if z_score > self.z_threshold:
+                latency = (time.perf_counter() - t0) * 1000
+                return GateResult(
+                    action=GateAction.HALT,
+                    latency_ms=latency,
+                    gate_name="EntropyGate",
+                    reason=f"Anomalous Entropy Collapse (Z-Score: {z_score:.2f}, H(X): {entropy:.4f})",
+                    confidence=0.0
+                )
 
-        # Semantic confidence degrades as Z-score approaches critical threshold
-        confidence = max(0.0, 1.0 - (max_z / self.z_threshold)) if max_z > 0 else 1.0
+        self.rolling_entropy.append(entropy)
+        if len(self.rolling_entropy) > self.max_window:
+            self.rolling_entropy.pop(0)
 
-        return {
-            "passed": flagged_count == 0,
-            "max_z_score": round(max_z, 4),
-            "flagged_tokens": flagged_count,
-            "confidence": round(confidence, 4),
-            "reason": "CLEAN_ENTROPY_TRAJECTORY" if flagged_count == 0 else "ENTROPY_SPIKE_DETECTED"
-        }
+        latency = (time.perf_counter() - t0) * 1000
+        return GateResult(action=GateAction.ALLOW, latency_ms=latency, gate_name="EntropyGate")
 
 
 class PermissionGate(Gate):
     """
-    Evaluates proposed actions against CanonicalProblemRepresentation (CPR)
-    scope boundaries and server-side stateful retry limits.
+    Pre-compiled JIT Schema Gate enforcing strict contract boundaries,
+    intercepting unauthorized tool calls and sandbox escape attempts.
     """
 
-    def __init__(self, contract_model: Any):
-        self.contract_model = contract_model
+    def __init__(self, allowed_actions: List[str]):
+        self.allowed_actions = set(allowed_actions)
+        self.tool_call_regex = re.compile(r"<tool_call>.*?\"name\":\s*\"([^\"]+)\".*?</tool_call>", re.DOTALL)
+        self.system_cmd_regex = re.compile(
+            r"(\b(sudo|rm|curl|wget|bash|sh|exec|nc|netcat|nmap|ping)\b|[;|`]|&&|\$\()", 
+            re.IGNORECASE
+        )
 
-    def evaluate(self, payload: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
-        actions = context.get("proposed_actions", [])
+    def evaluate(self, payload: Dict[str, Any], context: Dict[str, Any]) -> GateResult:
+        t0 = time.perf_counter()
+        raw_output = context.get("accumulated_output", "")
 
+        tool_matches = self.tool_call_regex.findall(raw_output)
+        for tool_name in tool_matches:
+            if tool_name not in self.allowed_actions:
+                latency = (time.perf_counter() - t0) * 1000
+                return GateResult(
+                    action=GateAction.ROLLBACK,
+                    latency_ms=latency,
+                    gate_name="PermissionGate",
+                    reason=f"Unauthorized Function Call Attempted: '{tool_name}'",
+                    confidence=0.0
+                )
+
+        if self.system_cmd_regex.search(raw_output):
+            latency = (time.perf_counter() - t0) * 1000
+            return GateResult(
+                action=GateAction.ROLLBACK,
+                latency_ms=latency,
+                gate_name="PermissionGate",
+                reason="Unsafe System Command Injection Intercepted",
+                confidence=0.0
+            )
+
+        latency = (time.perf_counter() - t0) * 1000
+        return GateResult(action=GateAction.ALLOW, latency_ms=latency, gate_name="PermissionGate")
+
+
+class TriangulationGate(Gate):
+    """
+    Input Integrity and Telemetry Cross-Check Module.
+    Detects adversarial data washing by cross-referencing primary metrics
+    against isolated background telemetry vectors.
+    """
+
+    def __init__(self, max_divergence_threshold: float = 0.15):
+        self.max_divergence_threshold = max_divergence_threshold
+
+    def evaluate(self, payload: Dict[str, Any], context: Dict[str, Any]) -> GateResult:
+        t0 = time.perf_counter()
+        
+        primary = payload.get("primary_metric")
+        telemetry = context.get("heterogeneous_telemetry", payload.get("heterogeneous_telemetry", []))
+        
+        if primary is None or not telemetry:
+            return GateResult(
+                action=GateAction.ALLOW, 
+                latency_ms=(time.perf_counter() - t0) * 1000, 
+                gate_name="TriangulationGate"
+            )
+            
         try:
-            if isinstance(payload, self.contract_model):
-                cpr = payload
-            else:
-                cpr = self.contract_model(**payload)
-        except Exception as e:
-            return {
-                "passed": False,
-                "reason": f"Contract Schema Failure: {e}",
-                "confidence": 0.0
-            }
-
-        # Sync authoritative server-side attempt count if present in execution context
-        if "server_attempt_count" in context:
-            cpr.scope.attempt_count = context["server_attempt_count"]
-
-        for item in actions:
-            action = item.get("action", {})
-            if not cpr.scope.validate_action(action):
-                return {
-                    "passed": False,
-                    "reason": "Permission scope validation failed",
-                    "action": action,
-                    "confidence": 0.0
-                }
-
-        return {
-            "passed": True,
-            "confidence": 1.0,
-            "reason": "SCOPE_VALIDATED"
-        }
+            primary = float(primary)
+            telemetry = [float(x) for x in telemetry]
+            baseline_mean = sum(telemetry) / len(telemetry)
+            
+            divergence = 0.0 if baseline_mean == 0 else abs(primary - baseline_mean) / abs(baseline_mean)
+                
+            if divergence > self.max_divergence_threshold:
+                latency = (time.perf_counter() - t0) * 1000
+                return GateResult(
+                    action=GateAction.HALT,
+                    latency_ms=latency,
+                    gate_name="TriangulationGate",
+                    reason=f"Data Washing Detected: Metric diverged {divergence:.1%} from baseline.",
+                    confidence=0.0
+                )
+        except (ValueError, TypeError):
+            return GateResult(
+                action=GateAction.HALT,
+                latency_ms=(time.perf_counter() - t0) * 1000,
+                gate_name="TriangulationGate",
+                reason="Malformed telemetry data type.",
+                confidence=0.0
+            )
+            
+        latency = (time.perf_counter() - t0) * 1000
+        return GateResult(action=GateAction.ALLOW, latency_ms=latency, gate_name="TriangulationGate")
 
 
 class CryptoAttestationGate(Gate):
     """Evaluates cryptographic health, OCSP Key Revocation State, and Quantum Trust Epochs."""
 
-    def __init__(
-        self,
-        required_algorithm: str = "ML-DSA",
-        expiry_year: int = 2030,
-        ocsp_endpoint: str = "https://ca.epistemicos.internal/ocsp"
-    ):
+    def __init__(self, required_algorithm: str = "ML-DSA", expiry_year: int = 2030):
         self.required_algorithm = required_algorithm
         self.expiry_year = expiry_year
-        self.ocsp_endpoint = ocsp_endpoint
 
     def _check_ocsp_revocation(self, key_id: str) -> bool:
-        """Simulates low-latency OCSP responder lookup for compromised/revoked keys."""
         revoked_keys = {"KEY-000-COMPROMISED", "KEY-999-STOLEN"}
         return key_id in revoked_keys
 
-    def evaluate(self, payload: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
+    def evaluate(self, payload: Dict[str, Any], context: Dict[str, Any]) -> GateResult:
+        t0 = time.perf_counter()
         crypto_meta = context.get("cryptography", {})
         algo = crypto_meta.get("algorithm", "RSA-2048")
         key_id = crypto_meta.get("key_id", "UNKNOWN_KEY")
 
-        # 1. Hot-path OCSP Revocation Check
         if self._check_ocsp_revocation(key_id):
-            return {
-                "passed": False,
-                "reason": f"CRITICAL: Key {key_id} is flagged as REVOKED by OCSP.",
-                "confidence": 0.0
-            }
+            return GateResult(
+                action=GateAction.HALT, 
+                latency_ms=(time.perf_counter() - t0) * 1000, 
+                gate_name="CryptoAttestationGate", 
+                reason=f"CRITICAL: Key {key_id} is flagged as REVOKED by OCSP.",
+                confidence=0.0
+            )
 
-        # 2. Cryptographic Epoch Check (Enforce Post-Quantum Algorithm Standard)
         if algo != self.required_algorithm:
-            return {
-                "passed": False,
-                "reason": f"Deprecated algorithm {algo}. Requires quantum-resistant {self.required_algorithm}",
-                "confidence": 0.15
-            }
+            return GateResult(
+                action=GateAction.HALT, 
+                latency_ms=(time.perf_counter() - t0) * 1000, 
+                gate_name="CryptoAttestationGate", 
+                reason=f"Deprecated algorithm {algo}. Requires quantum-resistant {self.required_algorithm}",
+                confidence=0.15
+            )
 
-        current_year = time.gmtime().tm_year
-        time_to_expiry = max(0, self.expiry_year - current_year)
-        confidence = min(1.0, time_to_expiry / 5.0)
-
-        return {
-            "passed": True,
-            "confidence": round(confidence, 4),
-            "reason": "ATTESTATION_VALIDATED"
-        }
-
-
-class TriangulationGate(Gate):
-    """Guards against Data Washing by cross-referencing metrics against secondary telemetry feeds."""
-
-    def __init__(self, max_divergence_threshold: float = 0.15):
-        self.max_divergence_threshold = max_divergence_threshold
-
-    def evaluate(self, payload: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
-        primary_metric = payload.get("primary_metric")
-
-        # Check context first; fall back to raw_payload
-        secondary_feeds = context.get("heterogeneous_telemetry")
-        if secondary_feeds is None:
-            secondary_feeds = payload.get("heterogeneous_telemetry", [])
-
-        if primary_metric is None:
-            return {
-                "passed": True,
-                "confidence": 1.0,
-                "reason": "NO_PRIMARY_METRIC_TO_TRIANGULATE"
-            }
-
-        if not secondary_feeds:
-            return {
-                "passed": True,
-                "confidence": 0.50,
-                "reason": "UNVERIFIED_SINGLE_SOURCE"
-            }
-
-        # Compute mean absolute normalized divergence across secondary telemetry
-        variances = [
-            abs(primary_metric - feed_val) / max(abs(primary_metric), 1e-5)
-            for feed_val in secondary_feeds
-        ]
-        mean_divergence = sum(variances) / len(variances)
-
-        if mean_divergence > self.max_divergence_threshold:
-            return {
-                "passed": False,
-                "divergence": round(mean_divergence, 4),
-                "threshold": self.max_divergence_threshold,
-                "confidence": 0.0,
-                "reason": f"DATA_WASHING_DIVERGENCE_EXCEEDED: Metric {primary_metric} failed triangulation against secondary telemetry."
-            }
-
-        confidence = round(1.0 - mean_divergence, 4)
-        return {
-            "passed": True,
-            "divergence": round(mean_divergence, 4),
-            "confidence": max(0.0, min(1.0, confidence)),
-            "reason": "CLEAN_TRIANGULATION"
-        }
+        return GateResult(
+            action=GateAction.ALLOW, 
+            latency_ms=(time.perf_counter() - t0) * 1000, 
+            gate_name="CryptoAttestationGate"
+        )
