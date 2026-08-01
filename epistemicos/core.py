@@ -48,10 +48,7 @@ class OptimizedEntropyGate:
         if n > 8:
             mean = sum(self.rolling_entropy) / n
             variance = sum((x - mean) ** 2 for x in self.rolling_entropy) / n
-
-            # Apply a realistic floor to the standard deviation (e.g., 0.05).
             safe_std_dev = max(math.sqrt(variance), 0.05) 
-
             z_score = abs(entropy - mean) / safe_std_dev
 
             if z_score > self.z_threshold:
@@ -80,12 +77,14 @@ class OptimizedPermissionGate:
     def __init__(self, allowed_actions: List[str]):
         self.allowed_actions = set(allowed_actions)
         self.tool_call_regex = re.compile(r"<tool_call>.*?\"name\":\s*\"([^\"]+)\".*?</tool_call>", re.DOTALL)
-        self.system_cmd_regex = re.compile(r"(sudo|rm\s+-rf|curl|wget|bash|sh|exec)\s+", re.IGNORECASE)
+        self.system_cmd_regex = re.compile(
+            r"(\b(sudo|rm|curl|wget|bash|sh|exec|nc|netcat|nmap|ping)\b|[;|`]|&&|\$\()", 
+            re.IGNORECASE
+        )
 
     def evaluate_payload(self, raw_output: str) -> GateResult:
         t0 = time.perf_counter()
 
-        # Check 1: Tool Call Contract Bounding
         tool_matches = self.tool_call_regex.findall(raw_output)
         for tool_name in tool_matches:
             if tool_name not in self.allowed_actions:
@@ -97,7 +96,6 @@ class OptimizedPermissionGate:
                     reason=f"Unauthorized Function Call Attempted: '{tool_name}'"
                 )
 
-        # Check 2: Unsafe Command Execution Escapes
         if self.system_cmd_regex.search(raw_output):
             latency = (time.perf_counter() - t0) * 1000
             return GateResult(
@@ -109,6 +107,59 @@ class OptimizedPermissionGate:
 
         latency = (time.perf_counter() - t0) * 1000
         return GateResult(action=GateAction.ALLOW, latency_ms=latency, gate_name="PermissionGate")
+
+
+class TriangulationGate:
+    """
+    Input Integrity and Telemetry Cross-Check Module.
+    Detects adversarial data washing by cross-referencing primary metrics
+    against isolated background telemetry vectors.
+    """
+    def __init__(self, max_divergence_threshold: float = 0.15):
+        self.max_divergence_threshold = max_divergence_threshold
+
+    def evaluate_payload(self, raw_payload: Dict[str, Any]) -> GateResult:
+        t0 = time.perf_counter()
+        
+        primary = raw_payload.get("primary_metric")
+        telemetry = raw_payload.get("heterogeneous_telemetry", [])
+        
+        if primary is None or not telemetry:
+            return GateResult(
+                action=GateAction.ALLOW, 
+                latency_ms=(time.perf_counter() - t0) * 1000, 
+                gate_name="TriangulationGate"
+            )
+            
+        try:
+            primary = float(primary)
+            telemetry = [float(x) for x in telemetry]
+            
+            baseline_mean = sum(telemetry) / len(telemetry)
+            
+            if baseline_mean == 0:
+                divergence = 0.0 
+            else:
+                divergence = abs(primary - baseline_mean) / abs(baseline_mean)
+                
+            if divergence > self.max_divergence_threshold:
+                latency = (time.perf_counter() - t0) * 1000
+                return GateResult(
+                    action=GateAction.HALT,
+                    latency_ms=latency,
+                    gate_name="TriangulationGate",
+                    reason=f"Data Washing Detected: Metric diverged {divergence:.1%} from baseline. Threshold is {self.max_divergence_threshold:.1%}."
+                )
+        except (ValueError, TypeError):
+            return GateResult(
+                    action=GateAction.HALT,
+                    latency_ms=(time.perf_counter() - t0) * 1000,
+                    gate_name="TriangulationGate",
+                    reason="Malformed telemetry data type."
+                )
+            
+        latency = (time.perf_counter() - t0) * 1000
+        return GateResult(action=GateAction.ALLOW, latency_ms=latency, gate_name="TriangulationGate")
 
 
 class EpistemicOrchestrator:
@@ -125,9 +176,9 @@ class EpistemicOrchestrator:
     ):
         self.entropy_gate = OptimizedEntropyGate()
         self.permission_gate = OptimizedPermissionGate(allowed_actions=allowed_tools)
+        self.triangulation_gate = TriangulationGate()
         self.model_id = model_id
 
-        # Normalize active gates to a lookup set (e.g., ["entropy", "permission"])
         if active_gates is None:
             self.active_gates: Set[str] = {"entropy", "permission", "triangulation"}
         else:
@@ -142,12 +193,31 @@ class EpistemicOrchestrator:
         self,
         token_logits: List[float],
         accumulated_output: str,
+        raw_payload: Optional[Dict[str, Any]] = None,
         category: str = ""
     ) -> Tuple[GateAction, float, List[str]]:
         t_start = time.perf_counter()
         reasons = []  
 
-        # Stream evaluation 1: Entropy Gate (Skipped completely if disabled in config)
+        # Stream evaluation 1: Triangulation Gate (Ingestion Boundary)
+        if "triangulation" in self.active_gates and raw_payload:
+            t_res = self.triangulation_gate.evaluate_payload(raw_payload)
+            if t_res.action != GateAction.ALLOW:
+                total_latency = (time.perf_counter() - t_start) * 1000
+                reason_str = t_res.reason or "Data Washing Violation"
+                reasons.append(reason_str)
+
+                self.audit_logger.record_event(
+                    event_type=AuditLogLevel.HALT,
+                    gate_name=t_res.gate_name,
+                    reason=reason_str,
+                    model_id=self.model_id,
+                    execution_latency_ms=total_latency,
+                    payload_snippet=str(raw_payload)
+                )
+                return t_res.action, total_latency, reasons
+
+        # Stream evaluation 2: Entropy Gate
         if "entropy" in self.active_gates:
             e_res = self.entropy_gate.evaluate_token_logits(token_logits)
             if e_res.action != GateAction.ALLOW:
@@ -165,7 +235,7 @@ class EpistemicOrchestrator:
                 )
                 return e_res.action, total_latency, reasons
 
-        # Stream evaluation 2: Permission Gate (Skipped completely if disabled in config)
+        # Stream evaluation 3: Permission Gate
         if "permission" in self.active_gates:
             p_res = self.permission_gate.evaluate_payload(accumulated_output)
             if p_res.action != GateAction.ALLOW:
