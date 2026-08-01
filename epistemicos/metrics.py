@@ -7,7 +7,6 @@ and Structural Risk Index (SRI) calculations.
 import ast
 from collections import Counter
 from typing import Dict, List, Optional
-import numpy as np
 
 
 class ASTAnalyzer:
@@ -77,11 +76,11 @@ def calculate_entropy_differential(current_entropy: float, prev_entropy: Optiona
 
 
 def calculate_rolling_entropy(entropy_history: List[float], window_size: int = 5) -> float:
-    """Calculates smoothed rolling mean entropy over recent token history."""
+    """Calculates smoothed rolling mean entropy over recent token history using standard library math."""
     if not entropy_history:
         return 0.0
     window = entropy_history[-window_size:]
-    return round(float(np.mean(window)), 4)
+    return round(sum(window) / len(window), 4)
 
 
 def calculate_trigram_repetition(text: str) -> float:
