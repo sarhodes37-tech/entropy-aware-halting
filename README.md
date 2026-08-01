@@ -72,3 +72,10 @@ Setup:
 git clone [https://github.com/sarhodes37-tech/entropy-aware-halting.git](https://github.com/sarhodes37-tech/entropy-aware-halting.git)
 cd entropy-aware-halting
 pip install -r requirements.txt  # Installs dev/testing tools (optional)
+
+
+Running the Integration Suite
+
+To execute this test suite against your environment:
+
+pytest tests/integration/test_pipeline_gamma.py -v
