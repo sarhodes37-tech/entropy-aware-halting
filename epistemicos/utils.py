@@ -6,13 +6,15 @@ and VRAM-optimized precision configuration for benchmarking and trace extraction
 
 import logging
 from typing import Tuple, Any, Optional
-import torch
 
 logger = logging.getLogger("EpistemicOS.Utils")
 
 
 def get_optimal_device() -> str:
     """Detects best available compute device (CUDA -> MPS -> CPU)."""
+    # Lazy import isolates heavy dependencies to the test harness execution
+    import torch 
+    
     if torch.cuda.is_available():
         return "cuda"
     elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
@@ -30,6 +32,8 @@ def get_model_and_tokenizer(
     Initializes and returns the HuggingFace model, tokenizer, and compute device.
     Applies automatic float16/bfloat16 casting on GPU backends to optimize memory usage.
     """
+    # Lazy imports ensure the core package remains zero-dependency
+    import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
     target_device = device or get_optimal_device()
