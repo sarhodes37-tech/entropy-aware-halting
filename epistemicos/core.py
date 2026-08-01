@@ -1,165 +1,11 @@
-import math
-import re
 import time
 from typing import Dict, Any, Tuple, Optional, List, Set
-from dataclasses import dataclass
-from enum import Enum
 
 from epistemicos.audit import TamperEvidentAuditTrail, AuditLogLevel
-
-
-class GateAction(Enum):
-    ALLOW = "ALLOW"
-    HALT = "DETERMINISTIC_HALT"
-    ROLLBACK = "ACTION_ROLLBACK"
-
-
-@dataclass
-class GateResult:
-    action: GateAction
-    latency_ms: float
-    gate_name: str
-    reason: Optional[str] = None
-
-
-class OptimizedEntropyGate:
-    """
-    Evaluates Shannon Entropy and Z-score variance using O(1) streaming updates
-    to intercept structural collapse, N-gram loops, and epistemic hallucination states.
-    """
-    def __init__(self, z_threshold: float = 3.5, max_window: int = 64):
-        self.z_threshold = z_threshold
-        self.max_window = max_window
-        self.rolling_entropy: List[float] = []
-
-    def evaluate_token_logits(self, logits: List[float]) -> GateResult:
-        t0 = time.perf_counter()
-
-        # 1. Compute Shannon Entropy H(X) = -sum(P(x) * log2(P(x)))
-        max_logit = max(logits)
-        exps = [math.exp(l - max_logit) for l in logits]
-        sum_exps = sum(exps)
-        probs = [e / sum_exps for e in exps]
-
-        entropy = -sum(p * math.log2(p) for p in probs if p > 1e-12)
-
-        # 2. O(1) Streaming Z-Score Calculation (Evaluate against PREVIOUS baseline)
-        n = len(self.rolling_entropy)
-        if n > 8:
-            mean = sum(self.rolling_entropy) / n
-            variance = sum((x - mean) ** 2 for x in self.rolling_entropy) / n
-            safe_std_dev = max(math.sqrt(variance), 0.05) 
-            z_score = abs(entropy - mean) / safe_std_dev
-
-            if z_score > self.z_threshold:
-                latency = (time.perf_counter() - t0) * 1000
-                return GateResult(
-                    action=GateAction.HALT,
-                    latency_ms=latency,
-                    gate_name="EntropyGate",
-                    reason=f"Anomalous Entropy Collapse (Z-Score: {z_score:.2f}, H(X): {entropy:.4f})"
-                )
-
-        # 3. Update Baseline ONLY AFTER evaluation
-        self.rolling_entropy.append(entropy)
-        if len(self.rolling_entropy) > self.max_window:
-            self.rolling_entropy.pop(0)
-
-        latency = (time.perf_counter() - t0) * 1000
-        return GateResult(action=GateAction.ALLOW, latency_ms=latency, gate_name="EntropyGate")
-
-
-class OptimizedPermissionGate:
-    """
-    Pre-compiled JIT Schema Gate enforcing strict contract boundaries,
-    intercepting unauthorized tool calls and sandbox escape attempts.
-    """
-    def __init__(self, allowed_actions: List[str]):
-        self.allowed_actions = set(allowed_actions)
-        self.tool_call_regex = re.compile(r"<tool_call>.*?\"name\":\s*\"([^\"]+)\".*?</tool_call>", re.DOTALL)
-        self.system_cmd_regex = re.compile(
-            r"(\b(sudo|rm|curl|wget|bash|sh|exec|nc|netcat|nmap|ping)\b|[;|`]|&&|\$\()", 
-            re.IGNORECASE
-        )
-
-    def evaluate_payload(self, raw_output: str) -> GateResult:
-        t0 = time.perf_counter()
-
-        tool_matches = self.tool_call_regex.findall(raw_output)
-        for tool_name in tool_matches:
-            if tool_name not in self.allowed_actions:
-                latency = (time.perf_counter() - t0) * 1000
-                return GateResult(
-                    action=GateAction.ROLLBACK,
-                    latency_ms=latency,
-                    gate_name="PermissionGate",
-                    reason=f"Unauthorized Function Call Attempted: '{tool_name}'"
-                )
-
-        if self.system_cmd_regex.search(raw_output):
-            latency = (time.perf_counter() - t0) * 1000
-            return GateResult(
-                action=GateAction.ROLLBACK,
-                latency_ms=latency,
-                gate_name="PermissionGate",
-                reason="Unsafe System Command Injection Intercepted"
-            )
-
-        latency = (time.perf_counter() - t0) * 1000
-        return GateResult(action=GateAction.ALLOW, latency_ms=latency, gate_name="PermissionGate")
-
-
-class TriangulationGate:
-    """
-    Input Integrity and Telemetry Cross-Check Module.
-    Detects adversarial data washing by cross-referencing primary metrics
-    against isolated background telemetry vectors.
-    """
-    def __init__(self, max_divergence_threshold: float = 0.15):
-        self.max_divergence_threshold = max_divergence_threshold
-
-    def evaluate_payload(self, raw_payload: Dict[str, Any]) -> GateResult:
-        t0 = time.perf_counter()
-        
-        primary = raw_payload.get("primary_metric")
-        telemetry = raw_payload.get("heterogeneous_telemetry", [])
-        
-        if primary is None or not telemetry:
-            return GateResult(
-                action=GateAction.ALLOW, 
-                latency_ms=(time.perf_counter() - t0) * 1000, 
-                gate_name="TriangulationGate"
-            )
-            
-        try:
-            primary = float(primary)
-            telemetry = [float(x) for x in telemetry]
-            
-            baseline_mean = sum(telemetry) / len(telemetry)
-            
-            if baseline_mean == 0:
-                divergence = 0.0 
-            else:
-                divergence = abs(primary - baseline_mean) / abs(baseline_mean)
-                
-            if divergence > self.max_divergence_threshold:
-                latency = (time.perf_counter() - t0) * 1000
-                return GateResult(
-                    action=GateAction.HALT,
-                    latency_ms=latency,
-                    gate_name="TriangulationGate",
-                    reason=f"Data Washing Detected: Metric diverged {divergence:.1%} from baseline. Threshold is {self.max_divergence_threshold:.1%}."
-                )
-        except (ValueError, TypeError):
-            return GateResult(
-                    action=GateAction.HALT,
-                    latency_ms=(time.perf_counter() - t0) * 1000,
-                    gate_name="TriangulationGate",
-                    reason="Malformed telemetry data type."
-                )
-            
-        latency = (time.perf_counter() - t0) * 1000
-        return GateResult(action=GateAction.ALLOW, latency_ms=latency, gate_name="TriangulationGate")
+from epistemicos.gates import (
+    GateAction, GateResult, EntropyGate, PermissionGate, 
+    TriangulationGate, CryptoAttestationGate
+)
 
 
 class EpistemicOrchestrator:
@@ -174,11 +20,17 @@ class EpistemicOrchestrator:
         model_id: str = "target-llm-v1",
         log_file_path: Optional[str] = None
     ):
-        self.entropy_gate = OptimizedEntropyGate()
-        self.permission_gate = OptimizedPermissionGate(allowed_actions=allowed_tools)
-        self.triangulation_gate = TriangulationGate()
         self.model_id = model_id
-
+        
+        # Initialize concrete gate instances mapped to keys
+        self.gate_registry = {
+            "entropy": EntropyGate(),
+            "permission": PermissionGate(allowed_actions=allowed_tools),
+            "triangulation": TriangulationGate(),
+            "crypto": CryptoAttestationGate()
+        }
+        
+        # Normalize active gates to a lookup set
         if active_gates is None:
             self.active_gates: Set[str] = {"entropy", "permission", "triangulation"}
         else:
@@ -194,64 +46,44 @@ class EpistemicOrchestrator:
         token_logits: List[float],
         accumulated_output: str,
         raw_payload: Optional[Dict[str, Any]] = None,
-        category: str = ""
+        crypto_context: Optional[Dict[str, Any]] = None
     ) -> Tuple[GateAction, float, List[str]]:
         t_start = time.perf_counter()
         reasons = []  
 
-        # Stream evaluation 1: Triangulation Gate (Ingestion Boundary)
-        if "triangulation" in self.active_gates and raw_payload:
-            t_res = self.triangulation_gate.evaluate_payload(raw_payload)
-            if t_res.action != GateAction.ALLOW:
+        # Construct standard evaluation contexts 
+        payload = raw_payload or {}
+        context = {
+            "token_logits": token_logits,
+            "accumulated_output": accumulated_output,
+            "cryptography": crypto_context or {}
+        }
+
+        # Stream evaluation pipeline
+        for gate_name in self.active_gates:
+            gate = self.gate_registry.get(gate_name)
+            if not gate:
+                continue
+
+            res = gate.evaluate(payload, context)
+            
+            if res.action != GateAction.ALLOW:
                 total_latency = (time.perf_counter() - t_start) * 1000
-                reason_str = t_res.reason or "Data Washing Violation"
+                reason_str = res.reason or f"{res.gate_name} Boundary Violation"
                 reasons.append(reason_str)
 
+                # Map standard actions to audit log levels
+                audit_level = AuditLogLevel.HALT if res.action == GateAction.HALT else AuditLogLevel.ROLLBACK
+
                 self.audit_logger.record_event(
-                    event_type=AuditLogLevel.HALT,
-                    gate_name=t_res.gate_name,
+                    event_type=audit_level,
+                    gate_name=res.gate_name,
                     reason=reason_str,
                     model_id=self.model_id,
                     execution_latency_ms=total_latency,
-                    payload_snippet=str(raw_payload)
+                    payload_snippet=accumulated_output if accumulated_output else str(payload)
                 )
-                return t_res.action, total_latency, reasons
-
-        # Stream evaluation 2: Entropy Gate
-        if "entropy" in self.active_gates:
-            e_res = self.entropy_gate.evaluate_token_logits(token_logits)
-            if e_res.action != GateAction.ALLOW:
-                total_latency = (time.perf_counter() - t_start) * 1000
-                reason_str = e_res.reason or "Entropy Violation"
-                reasons.append(reason_str)
-
-                self.audit_logger.record_event(
-                    event_type=AuditLogLevel.HALT,
-                    gate_name=e_res.gate_name,
-                    reason=reason_str,
-                    model_id=self.model_id,
-                    execution_latency_ms=total_latency,
-                    payload_snippet=accumulated_output
-                )
-                return e_res.action, total_latency, reasons
-
-        # Stream evaluation 3: Permission Gate
-        if "permission" in self.active_gates:
-            p_res = self.permission_gate.evaluate_payload(accumulated_output)
-            if p_res.action != GateAction.ALLOW:
-                total_latency = (time.perf_counter() - t_start) * 1000
-                reason_str = p_res.reason or "Permission Boundary Violation"
-                reasons.append(reason_str)
-
-                self.audit_logger.record_event(
-                    event_type=AuditLogLevel.ROLLBACK,
-                    gate_name=p_res.gate_name,
-                    reason=reason_str,
-                    model_id=self.model_id,
-                    execution_latency_ms=total_latency,
-                    payload_snippet=accumulated_output
-                )
-                return p_res.action, total_latency, reasons
+                return res.action, total_latency, reasons
 
         total_latency = (time.perf_counter() - t_start) * 1000
         return GateAction.ALLOW, total_latency, []
