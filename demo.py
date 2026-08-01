@@ -77,7 +77,7 @@ def simulate_epistemic_os_wrapped():
     # 2. Initialize Dual-Gate Orchestrator
     orchestrator = EpistemicOrchestrator()
     orchestrator.register_gate("EntropyGate", EntropyGate(z_threshold=2.85))
-    orchestrator.register_gate("PermissionGate", PermissionGate(contract_model=CanonicalProblemRepresentation))
+    orchestrator.register_gate("PermissionGate", PermissionGate(allowed_actions=["get_weather", "read_local"]))
 
     # 3. Step A: Demonstrate JIT Egress Data Masking
     raw_payload = {
