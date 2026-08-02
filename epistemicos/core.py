@@ -6,6 +6,19 @@ and tamper-evident audit logs into a single defense-in-depth pipeline.
 """
 import json
 from typing import Dict, Any
+from epistemicos.scheduler import EntropyAwareScheduler, DecisionResult
+
+class EpistemicOrchestrator:
+    def __init__(self, scheduler: Optional[EntropyAwareScheduler] = None, ...):
+        self.scheduler = scheduler or EntropyAwareScheduler()
+
+    def process_step(self, probabilities, cost, state) -> DecisionResult:
+        # Pass token probabilities directly into the scheduling loop
+        decision = self.scheduler.step(probabilities, cost, state)
+        if decision.halt:
+            # Trigger governance logging or halt generation
+            pass
+        return decision
 
 from epistemicos.models import CanonicalProblemRepresentation
 from epistemicos.telemetry import ResourceProfiler
