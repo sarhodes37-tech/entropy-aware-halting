@@ -101,7 +101,15 @@ class EpistemicBench:
 
 def test_ablation_study():
     """PyTest entry point for running ablation studies against benchmark datasets."""
-    bench = EpistemicBench("dataset_adversarial.jsonl")
+    from pathlib import Path
+
+# Resolve path relative to tests/fixtures/
+FIXTURES_DIR = Path(__file__).parent.parent / "fixtures"
+DATASET_PATH = FIXTURES_DIR / "dataset_adversarial.jsonl"
+
+def test_ablation_study():
+    """PyTest entry point for running ablation studies against benchmark datasets."""
+    bench = EpistemicBench(str(DATASET_PATH))
     results = bench.run_ablation_study()
     if results:
         assert "Full EpistemicOS" in results
