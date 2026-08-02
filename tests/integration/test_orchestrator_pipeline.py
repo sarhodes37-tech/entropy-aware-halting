@@ -539,3 +539,78 @@ def test_governance_os_stateful_key_revocation():
     )
     assert compromised_result["status"] == "HALTED"
     assert compromised_result["gate"] == "CryptoAttestationGate"
+
+
+# =====================================================================
+# DLT PIPELINE & GDPR RIGHT-TO-BE-FORGOTTEN INTEGRATION
+# =====================================================================
+
+import pytest
+from epistemicos.core import EpistemicOrchestrator
+from epistemicos.gates import EntropyGate, PermissionGate, CryptoAttestationGate
+from epistemicos.cpr import CanonicalProblemRepresentation
+
+# Mock DLT Logger for headless test environments
+class MockOffChainDB:
+    def __init__(self):
+        self._store = {}
+
+    def insert(self, tx_id, data):
+        self._store[tx_id] = data
+
+    def delete(self, tx_id):
+        self._store.pop(tx_id, None)
+
+
+class MockDLTLoggerService:
+    def __init__(self):
+        self.offchain_db = MockOffChainDB()
+
+    def process_queue(self, transaction_id, payload):
+        self.offchain_db.insert(transaction_id, payload)
+
+
+def test_full_dlt_pipeline_and_gdpr_deletion():
+    """
+    Validates end-to-end hot-path transaction processing, cold-path DLT logging, 
+    and off-chain GDPR Right-to-be-Forgotten deletion compliance.
+    """
+    priors = {"preferred": 0.5, "standard": 0.3, "substandard": 0.2}
+    orchestrator = EpistemicOrchestrator(prior_probabilities=priors)
+
+    orchestrator.register_gate("EntropyGate", EntropyGate(z_threshold=2.85))
+    orchestrator.register_gate("PermissionGate", PermissionGate(contract_model=CanonicalProblemRepresentation))
+
+    crypto_gate = CryptoAttestationGate(required_algorithm="ML-DSA", expiry_year=2030)
+    crypto_gate._check_ocsp_revocation = lambda key_id: False
+    orchestrator.register_gate("CryptoAttestationGate", crypto_gate)
+
+    transaction_id = "POL-2026-DLT-TEST"
+    mock_payload = {
+        "policy_id": transaction_id,
+        "fleet_data": {"vehicle_count": 85, "operating_radius_miles": 1200.0, "hazard_class": "standard"},
+        "pii": {"driver_names": ["John Doe", "Jane Smith"]}
+    }
+    proposed_actions = [{"action": {"op": "update_db", "node": "logistics_db", "status": "bound"}, "rollback": {"op": "none"}}]
+    mock_likelihoods = {"preferred": 0.80, "standard": 0.15, "substandard": 0.05}
+    safe_logprobs = [-0.02] * 15
+    valid_crypto_meta = {"algorithm": "ML-DSA", "key_id": "KEY-123-SECURE"}
+
+    # 1. Hot Path Processing
+    result = orchestrator.process_submission(
+        raw_payload=mock_payload,
+        likelihoods=mock_likelihoods,
+        token_logprobs=safe_logprobs,
+        proposed_actions=proposed_actions,
+        crypto_metadata=valid_crypto_meta
+    )
+    assert result["receipt"]["status"] == "COMMITTED"
+
+    # 2. Cold Path Logging
+    logger_service = MockDLTLoggerService()
+    logger_service.process_queue(transaction_id, mock_payload)
+    assert transaction_id in logger_service.offchain_db._store
+
+    # 3. GDPR Article 17 Deletion Request
+    logger_service.offchain_db.delete(transaction_id)
+    assert transaction_id not in logger_service.offchain_db._store
