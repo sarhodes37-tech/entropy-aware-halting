@@ -10,7 +10,7 @@ from epistemicos.gates import (
     CryptoAttestationGate,
     TriangulationGate
 )
-from epistemicos.cpr import CanonicalProblemRepresentation
+from epistemicos.models import CanonicalProblemRepresentation
 
 
 def test_entropy_gate_clean_and_spike():
