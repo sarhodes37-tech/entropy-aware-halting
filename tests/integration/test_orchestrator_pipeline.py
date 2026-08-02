@@ -768,3 +768,79 @@ def test_right_to_be_forgotten_gdpr_purge(compliance_broker):
     assert ledger_block is not None
     assert ledger_block["payload_hash"] == anchored_hash
 
+
+# =====================================================================
+# PART 5: SAAS EGRESS GOVERNOR & CRYPTO ATTESTATION (ML-DSA)
+# =====================================================================
+
+from epistemicos.gates import CryptoAttestationGate
+
+
+def test_saas_egress_governor_row_limits_and_dict_evasion():
+    """
+    Validates that PermissionScope egress boundaries enforce row limits and block 
+    both array-based bulk dumps and dictionary key inflation evasion techniques.
+    """
+    scope = PermissionScope(
+        origin_subnet="192.168.1.10",
+        allowed_resources=["salesforce_api"],
+        allowed_operations=["query"],
+        max_row_count=50,
+        max_payload_bytes=10_000_000
+    )
+
+    # 1. Safe payload (5 records <= 50 max)
+    safe_salesforce_payload = {
+        "query": "SELECT Id, Name FROM Policy__c WHERE Region = 'VA'",
+        "records": [{"id": f"POL-{i}", "name": f"Regional Freight {i}"} for i in range(5)],
+        "totalSize": 5
+    }
+    assert scope.validate_egress(safe_salesforce_payload) is True
+
+    # 2. Mass exfiltration payload via array (15,000 records > 50 max)
+    malicious_list_payload = {
+        "query": "SELECT * FROM Account",
+        "records": [{"id": f"ACT-{i}", "name": "Bulk Dump"} for i in range(15000)],
+        "totalSize": 15000
+    }
+    assert scope.validate_egress(malicious_list_payload) is False
+
+    # 3. Evasion payload using dictionary key inflation (60 keys > 50 max)
+    malicious_dict_evasion_payload = {
+        f"ACT-{i}": {"name": "Bulk Dump", "status": "Active"} for i in range(60)
+    }
+    assert scope.validate_egress(malicious_dict_evasion_payload) is False
+
+
+def test_crypto_attestation_gate_pqc_verification():
+    """
+    Validates that requests lacking valid ML-DSA (Post-Quantum Cryptography) 
+    attestation signatures or using expired algorithms are halted at the perimeter.
+    """
+    orchestrator = EpistemicOrchestrator()
+    orchestrator.register_gate("CryptoAttestationGate", CryptoAttestationGate(required_algorithm="ML-DSA", expiry_year=2030))
+
+    payload = {"policy_id": "POL-PQC-2026", "action": "issue_binder"}
+    context = {"token_count": 5, "token_logprobs": [-0.01] * 5}
+
+    # Case A: Missing/Invalid Cryptography Metadata -> Halted
+    invalid_crypto_context = {
+        **context,
+        "cryptography": {"algorithm": "RSA-2048", "signature": "legacy_sig"}
+    }
+    result_invalid = orchestrator.process_submission(payload, invalid_crypto_context)
+    assert result_invalid["status"] == "HALTED"
+    assert result_invalid["gate"] == "CryptoAttestationGate"
+
+    # Case B: Valid ML-DSA Attestation -> Allowed
+    valid_crypto_context = {
+        **context,
+        "cryptography": {
+            "algorithm": "ML-DSA",
+            "signature": "valid_mldsa_attestation_proof",
+            "expiry_year": 2028
+        }
+    }
+    result_valid = orchestrator.process_submission(payload, valid_crypto_context)
+    assert result_valid["status"] == "ALLOWED"
+
