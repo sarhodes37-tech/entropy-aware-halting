@@ -25,15 +25,25 @@ from epistemicos.gates import (
 class EpistemicOrchestrator:
     def __init__(
         self, 
-        model_id: str = "epistemic-core-v1",
-        scheduler: Optional[EntropyAwareScheduler] = None,
-        db_client: Any = None
+        audit_log_path="logs/audit.jsonl", 
+        enforce_determinism=True, 
+        enable_telemetry=False,
+        scheduler=None,
+        db_client=None,
+        model_id="epistemic-core-v1"  # Fixed missing model_id
     ):
+        self.audit_log_path = audit_log_path
+        self.enforce_determinism = enforce_determinism
+        self.enable_telemetry = enable_telemetry
         self.model_id = model_id
         
         # Core Subsystems
         self.scheduler = scheduler or EntropyAwareScheduler()
-        self.audit_logger = TamperEvidentAuditTrail()
+        
+        # Plug the dead wire back in so logs actually route to Google Drive
+        self.audit_logger = TamperEvidentAuditTrail(log_path=self.audit_log_path) 
+        
+        # Pass the db_client properly
         self.vector_manager = VectorHygieneManager(db_client=db_client)
 
         # Initialize Governance Gates in priority order
@@ -43,6 +53,7 @@ class EpistemicOrchestrator:
             TriangulationGate(),
             EntropyGate(z_threshold=2.85, window_size=10)
         ]
+
 
     def process_step(self, probabilities, cost, state) -> DecisionResult:
         """Handles the low-level entropy scheduling loop."""
