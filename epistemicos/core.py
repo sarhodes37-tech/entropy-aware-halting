@@ -15,6 +15,12 @@ class EpistemicOrchestrator:
     """
     def __init__(
         self,
+        convergence_threshold: float, 
+        cost_lambda: float = 0.01,  # Add this parameter!
+        **kwargs
+    ):
+        self.convergence_threshold = convergence_threshold
+        self.cost_lambda = cost_lambda
         allowed_tools: List[str],
         active_gates: Optional[List[str]] = None,
         model_id: str = "target-llm-v1",
