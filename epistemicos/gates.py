@@ -41,6 +41,8 @@ class GateResult:
     def passed(self) -> bool:
         """Compatibility adapter for orchestrator check engine expectations."""
         return self.action == GateAction.ALLOW
+    def __getitem__(self, key):
+        return getattr(self, key)
 
 
 class Gate(ABC):
