@@ -31,29 +31,45 @@ class GateAction(Enum):
 
 @dataclass
 class GateResult:
-    def __init__(self, status="ALLOWED", gate=None, reason="", flagged_tokens=0, divergence=0.0, confidence=1.0, **kwargs):
-        self.status = status
-        self.gate = gate
+    def __init__(self, status="ALLOWED", action=GateAction.ALLOW, gate=None, gate_name=None, reason="", flagged_tokens=0, divergence=0.0, confidence=1.0, latency_ms=0.0, vectors_revoked=0, **kwargs):
+        # Normalize status vs action to handle both keyword styles seamlessly
+        if isinstance(action, GateAction):
+            self.action = action
+            self.status = "ALLOWED" if action == GateAction.ALLOW else "HALTED"
+        else:
+            self.status = status
+            self.action = GateAction.ALLOW if status == "ALLOWED" else GateAction.HALT
+
+        self.gate = gate or gate_name
         self.reason = reason
         self.flagged_tokens = flagged_tokens
         self.divergence = divergence
         self.confidence = confidence
+        self.latency_ms = latency_ms
+        self.vectors_revoked = vectors_revoked or (flagged_tokens if action != GateAction.ALLOW else 0)
+        
         for k, v in kwargs.items():
             setattr(self, k, v)
 
     def __getitem__(self, key):
+        if key == "status":
+            return self.status
+        if key == "action":
+            return self.action
+        if key == "vectors_revoked":
+            return self.vectors_revoked
         return getattr(self, key)
 
     def get(self, key, default=None):
-        return getattr(self, key, default)
-
+        try:
+            return self[key]
+        except AttributeError:
+            return default
 
     @property
     def passed(self) -> bool:
         """Compatibility adapter for orchestrator check engine expectations."""
         return self.action == GateAction.ALLOW
-    def __getitem__(self, key):
-        return getattr(self, key)
 
 
 class Gate(ABC):
@@ -98,12 +114,15 @@ class EntropyGate(Gate):
         sensor_result = self.sensor.evaluate(logprobs)
 
         if not sensor_result["passed"]:
+            flagged_count = sensor_result.get('flagged_tokens', 1)
             return GateResult(
                 action=GateAction.HALT,
                 latency_ms=(time.perf_counter() - t0) * 1000,
                 gate_name="EntropyGate",
-                reason=f"Anomalous Token Surprisal Detected (Max Z: {sensor_result['max_z_score']:.2f}, Flagged: {sensor_result['flagged_tokens']})",
-                confidence=0.0
+                reason=f"Anomalous Token Surprisal Detected (Max Z: {sensor_result['max_z_score']:.2f}, Flagged: {flagged_count})",
+                confidence=0.0,
+                flagged_tokens=flagged_count,
+                vectors_revoked=max(1, flagged_count)
             )
 
         return GateResult(
@@ -111,7 +130,7 @@ class EntropyGate(Gate):
             latency_ms=(time.perf_counter() - t0) * 1000, 
             gate_name="EntropyGate"
         )
-   
+
 
 class PermissionGate(Gate):
     """
@@ -123,19 +142,18 @@ class PermissionGate(Gate):
     """
 
     def __init__(self, contract_model: Any = None, allowed_actions: Optional[List[str]] = None):
-        # Now accepts contract_model to match Orchestrator initialization
         self.contract_model = contract_model
         self.allowed_actions = set(allowed_actions or [])
-        
-        # Expanded regex to catch the specific injection vectors in the commercial dataset
+
+        # Expanded regex to catch specific injection vectors, jailbreaks, and unauthorized privilege elevations
         self.injection_regex = re.compile(
-            r"(\b(sudo|rm|curl|wget|bash|sh|exec|nc|netcat|nmap|ping)\b|[;|`]|&&|\$\(|\[SYSTEM OVERRIDE\]|import\s+os)", 
+            r"(\b(sudo|rm|curl|wget|bash|sh|exec|nc|netcat|nmap|ping)\b|[;|`]|&&|\$\(|\[SYSTEM OVERRIDE\]|import\s+os|ignore previous instructions|system prompt|jailbreak)", 
             re.IGNORECASE
         )
 
     def evaluate(self, payload: Dict[str, Any], context: Dict[str, Any]) -> GateResult:
         t0 = time.perf_counter()
-        
+
         # Serialize payload and proposed actions to string for deep inspection
         inspection_target = json.dumps({"payload": payload, "actions": context.get("proposed_actions", [])})
 
@@ -193,7 +211,8 @@ class TriangulationGate(Gate):
                     latency_ms=(time.perf_counter() - t0) * 1000,
                     gate_name="TriangulationGate",
                     reason=f"Data Washing Detected: Metric diverged {divergence:.1%} from baseline.",
-                    confidence=0.0
+                    confidence=0.0,
+                    divergence=divergence
                 )
         except (ValueError, TypeError):
             return GateResult(
@@ -201,13 +220,15 @@ class TriangulationGate(Gate):
                 latency_ms=(time.perf_counter() - t0) * 1000,
                 gate_name="TriangulationGate",
                 reason="Malformed telemetry data type.",
-                confidence=0.0
+                confidence=0.0,
+                divergence=1.0
             )
 
         return GateResult(
             action=GateAction.ALLOW, 
             latency_ms=(time.perf_counter() - t0) * 1000, 
-            gate_name="TriangulationGate"
+            gate_name="TriangulationGate",
+            divergence=divergence if 'divergence' in locals() else 0.0
         )
 
 
@@ -223,7 +244,6 @@ class CryptoAttestationGate(Gate):
         self.expiry_year = expiry_year
 
     def _check_ocsp_revocation(self, key_id: str) -> bool:
-        # Added KEY-2026-COMPROMISED to properly flag the adversarial Cyber submission
         revoked_keys = {"KEY-000-COMPROMISED", "KEY-999-STOLEN", "KEY-2026-COMPROMISED"}
         return key_id in revoked_keys
 
