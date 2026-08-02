@@ -355,7 +355,7 @@ def test_lateral_breakout_blocked_by_permission_gate():
 # PART 4: ENTERPRISE DLT & TRANSACTIONAL COMPLIANCE (GDPR / CCPA)
 # =====================================================================
 
-from epistemicos.enterprise.compliance import (
+from epistemicos.compliance import (
     TransactionalComplianceBroker,
     OffChainStoreAdapter,
     ImmutableLedgerAdapter
