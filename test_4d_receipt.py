@@ -1,6 +1,6 @@
 import json
 import random
-from epistemicos.engine import EpistemicOrchestrator
+from epistemicos.core import EpistemicOrchestrator
 from epistemicos.gates import EntropyGate, PermissionGate, CryptoAttestationGate
 from epistemicos.cpr import CanonicalProblemRepresentation
 
