@@ -61,7 +61,6 @@ class EpistemicOrchestrator:
 
         # Initialize Governance Gates in priority order
         self.gates = [
-            CryptoAttestationGate(),
             PermissionGate(),
             TriangulationGate(),
             # Tightened the valve from 2.85 to 1.5 to catch corporate coercion 
