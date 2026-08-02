@@ -203,7 +203,7 @@ class TamperEvidentAuditTrail:
                 expected_prev_hash = recorded_hash
                 count += 1
 
-    return True, count, None
+return True, count, None
 
 
 class ReceiptGenerator:
