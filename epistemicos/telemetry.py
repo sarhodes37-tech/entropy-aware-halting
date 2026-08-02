@@ -9,12 +9,18 @@ a single source of truth for system monitoring.
 import ast
 import time
 import logging
-import torch
 from collections import Counter
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Any
 
 logger = logging.getLogger("EpistemicOS.Telemetry")
+
+# Defensive lazy-loading to maintain zero-dependency core
+try:
+    import torch
+    HAS_TORCH = True
+except ImportError:
+    HAS_TORCH = False
 
 # ==========================================
 # HARDWARE PROFILING & VRAM TELEMETRY
@@ -35,18 +41,20 @@ class HardwareTelemetry:
 class ResourceProfiler:
     """
     Context manager for high-precision hardware profiling.
-    Safely degrades to standard time.perf_counter() if running on CPU.
+    Safely degrades to standard time.perf_counter() if running on CPU
+    or if PyTorch is not installed in the current environment.
     """
 
     def __init__(self, device: str = "cuda", token_count: int = 0):
         self.device = device
         self.token_count = max(1, token_count)
-        self.use_cuda = "cuda" in self.device and torch.cuda.is_available()
+        
+        # Failsafe hardware detection
+        self.use_cuda = HAS_TORCH and "cuda" in self.device and torch.cuda.is_available()
 
         if self.use_cuda:
             self.start_event = torch.cuda.Event(enable_timing=True)
             self.end_event = torch.cuda.Event(enable_timing=True)
-
     def __enter__(self):
         self.start_wall = time.perf_counter()
 
