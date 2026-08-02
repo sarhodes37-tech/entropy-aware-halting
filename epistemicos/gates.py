@@ -31,11 +31,21 @@ class GateAction(Enum):
 
 @dataclass
 class GateResult:
-    action: GateAction
-    latency_ms: float
-    gate_name: str
-    reason: Optional[str] = None
-    confidence: float = 1.0
+    def __init__(self, status="ALLOWED", gate=None, reason="", flagged_tokens=0, divergence=0.0, **kwargs):
+        self.status = status
+        self.gate = gate
+        self.reason = reason
+        self.flagged_tokens = flagged_tokens
+        self.divergence = divergence
+        # Capture any extra dynamic fields
+        for k, v in kwargs.items():
+            setattr(self, k, v)
+
+    def __getitem__(self, key):
+        return getattr(self, key)
+
+    def get(self, key, default=None):
+        return getattr(self, key, default)
 
     @property
     def passed(self) -> bool:
