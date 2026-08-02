@@ -12,7 +12,7 @@ from typing import Dict, Any, List, Optional, Tuple
 
 from scheduler import EntropyAwareScheduler
 from utils import get_model_and_tokenizer
-from vector_hygiene import VectorHygieneManager
+from epistemicos.vector_hygiene import VectorHygieneManager
 from friction_window import PreExecutionFrictionGate
 
 # Lazy-loaded global singletons
