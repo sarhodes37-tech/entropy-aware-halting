@@ -188,7 +188,8 @@ class PermissionGate(Gate):
                 latency_ms=(time.perf_counter() - t0) * 1000,
                 gate_name="PermissionGate",
                 reason="Unsafe Command Injection, Jailbreak, or System Override Intercepted",
-                confidence=0.0
+                confidence=0.0,
+                vectors_revoked=1
             )
 
         return GateResult(
