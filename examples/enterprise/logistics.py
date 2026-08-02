@@ -1,5 +1,3 @@
-# epistemicos/domain/logistics.py
-
 import hashlib
 from typing import Dict, Any, List, Set
 from pydantic import BaseModel, Field
