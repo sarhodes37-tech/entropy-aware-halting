@@ -1,103 +1,95 @@
-import time
-from typing import Dict, Any, Tuple, Optional, List, Set
+"""
+EpistemicOS Main Orchestrator (core.py).
 
+Unifies the domain models, hardware telemetry, governance gates, 
+and tamper-evident audit logs into a single defense-in-depth pipeline.
+"""
+import json
+from typing import Dict, Any
+
+from epistemicos.models import CanonicalProblemRepresentation
+from epistemicos.telemetry import ResourceProfiler
 from epistemicos.audit import TamperEvidentAuditTrail, AuditLogLevel
-from epistemicos.gates import GateAction
-
+from epistemicos.gates import (
+    EntropyGate,
+    PermissionGate,
+    TriangulationGate,
+    CryptoAttestationGate,
+    GateAction
+)
 
 class EpistemicOrchestrator:
-    """
-    Consolidated runtime wrapper coordinating dynamic hard gates,
-    stateful revocation, and cryptographic audit logging.
-    """
-    def __init__(
-        self,
-        prior_probabilities: Optional[Dict[str, float]] = None,
-        model_id: str = "target-llm-v1",
-        log_file_path: Optional[str] = None
-    ):
+    def __init__(self, model_id: str = "epistemic-core-v1"):
         self.model_id = model_id
-        self.prior_probabilities = prior_probabilities or {}
+        self.audit_logger = TamperEvidentAuditTrail()
         
-        # Dynamic registries to support stateful testing
-        self.gate_registry: Dict[str, Any] = {}
-        self.active_gates: Set[str] = set()
+        # Initialize Governance Gates in priority order
+        self.gates = [
+            CryptoAttestationGate(),
+            PermissionGate(),
+            TriangulationGate(),
+            EntropyGate(z_threshold=2.85, window_size=10)
+        ]
 
-        if log_file_path:
-            self.audit_logger = TamperEvidentAuditTrail(log_file_path=log_file_path)
-        else:
-            self.audit_logger = TamperEvidentAuditTrail()
-
-    def register_gate(self, name: str, gate_instance: Any) -> None:
-        """Dynamically add a gate to the execution pipeline."""
-        self.gate_registry[name] = gate_instance
-        self.active_gates.add(name)
-
-    def process_submission(
-        self,
-        raw_payload: Dict[str, Any],
-        likelihoods: Optional[Dict[str, float]] = None,
-        token_logprobs: Optional[List[float]] = None,
-        proposed_actions: Optional[List[Dict[str, Any]]] = None,
-        crypto_metadata: Optional[Dict[str, Any]] = None,
-        **kwargs
-    ) -> Dict[str, Any]:
+    def process_submission(self, raw_payload: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Evaluates payloads against all registered gates and returns a stateful receipt.
+        Ingests a raw payload, normalizes it into a CPR, evaluates it across 
+        all governance gates under hardware telemetry, and immutably logs the outcome.
         """
-        t_start = time.perf_counter()
-        reasons = []  
-        final_action = GateAction.ALLOW
+        # 1. Normalize into the Domain Model
+        try:
+            cpr = CanonicalProblemRepresentation(**raw_payload)
+        except Exception as e:
+            # If it fails schema validation, halt and log immediately
+            self.audit_logger.record_event(
+                event_type=AuditLogLevel.HALT,
+                gate_name="CPR_Validation",
+                reason=f"Schema violation: {str(e)}",
+                model_id=self.model_id,
+                payload_snippet=json.dumps(raw_payload)
+            )
+            return {"status": "HALTED", "reason": "Schema validation failed"}
 
-        # Construct standard evaluation contexts 
-        context = {
-            "likelihoods": likelihoods or {},
-            "token_logprobs": token_logprobs or [],
-            "proposed_actions": proposed_actions or [],
-            "cryptography": crypto_metadata or {},
-            "prior_probabilities": self.prior_probabilities,
-            **kwargs  # Absorbs any extra metadata seamlessly
-        }
-
-        # Stream evaluation pipeline
-        for gate_name in self.active_gates:
-            gate = self.gate_registry.get(gate_name)
-            if not gate:
-                continue
-
-            res = gate.evaluate(raw_payload, context)
-
-            if res.action != GateAction.ALLOW:
-                final_action = res.action
-                reason_str = res.reason or f"{gate_name} Boundary Violation"
-                reasons.append(reason_str)
-
-                # Map standard actions to audit log levels
-                audit_level = AuditLogLevel.HALT if res.action == GateAction.HALT else AuditLogLevel.ROLLBACK
-
-                self.audit_logger.record_event(
-                    event_type=audit_level,
-                    gate_name=gate_name,
-                    reason=reason_str,
-                    model_id=self.model_id,
-                    execution_latency_ms=(time.perf_counter() - t_start) * 1000,
-                    payload_snippet=str(raw_payload)
-                )
+        # 2. Execute Defense-in-Depth Pipeline under Telemetry
+        with ResourceProfiler(device="cuda", token_count=context.get("token_count", 1)) as profiler:
+            payload_dump = cpr.model_dump()
+            
+            for gate in self.gates:
+                result = gate.evaluate(payload=payload_dump, context=context)
                 
-                # Short-circuit on the first hard failure
-                break
-
-        total_latency = (time.perf_counter() - t_start) * 1000
+                if result.action == GateAction.HALT:
+                    # 3a. Pipeline Halt (e.g., prompt injection or permission breach detected)
+                    telemetry = profiler.get_telemetry()
+                    self.audit_logger.record_event(
+                        event_type=AuditLogLevel.HALT,
+                        gate_name=result.gate_name,
+                        reason=result.reason,
+                        model_id=self.model_id,
+                        payload_snippet=json.dumps(raw_payload),
+                        cpr_snapshot=cpr,
+                        telemetry=telemetry
+                    )
+                    return {
+                        "status": "HALTED", 
+                        "gate": result.gate_name, 
+                        "reason": result.reason
+                    }
         
-        # Stateful Receipt Generation
-        receipt = {
-            "status": "APPROVED" if final_action == GateAction.ALLOW else "REJECTED",
-            "latency_ms": total_latency,
-            "reasons": reasons,
-            "crypto_state": "VERIFIED" if (final_action == GateAction.ALLOW and crypto_metadata) else "REVOKED_OR_MISSING"
-        }
-
+        # 3b. Pipeline Success
+        telemetry = profiler.get_telemetry()
+        self.audit_logger.record_event(
+            event_type=AuditLogLevel.INFO,
+            gate_name="Pipeline_Complete",
+            reason="All governance gates passed",
+            model_id=self.model_id,
+            payload_snippet=json.dumps(raw_payload),
+            cpr_snapshot=cpr,
+            telemetry=telemetry
+        )
+        
         return {
-            "action": final_action,
-            "receipt": receipt
+            "status": "ALLOWED",
+            # Context injection is strictly masked to prevent PII leakage
+            "masked_payload": cpr.mask_egress_payload(),
+            "telemetry": telemetry.__dict__
         }
