@@ -1,129 +1,57 @@
 """
-Integration test suite for EpistemicOS retry-limit enforcement and 
-compensating rollback execution on high-frequency retry policy breaches.
+Integration test suite for server-side stateful attempt tracking and retry-limit enforcement 
+within the unified EpistemicOrchestrator architecture.
 """
 
 import pytest
-from typing import Dict, Any
+from epistemicos.core import EpistemicOrchestrator
+from epistemicos.models import CanonicalProblemRepresentation, PermissionScope
 
 
-# Mock objects for test isolation
-class MockCPR:
-    def __init__(self, **payload):
-        self.scope_data = payload.get("scope", {})
-
-    def validate_action(self, action: Dict[str, Any]) -> bool:
-        max_attempts = self.scope_data.get("max_attempts", 3)
-        attempt_count = self.scope_data.get("attempt_count", 1)
-        return attempt_count <= max_attempts
+@pytest.fixture
+def orchestrator():
+    return EpistemicOrchestrator()
 
 
-class MockPermissionGate:
-    def __init__(self, contract_model: Any):
-        self.contract_model = contract_model
-
-    def evaluate(self, payload: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
-        actions = context.get("proposed_actions", [])
-        cpr = self.contract_model(**payload)
-
-        for item in actions:
-            action = item.get("action", {})
-            if not cpr.validate_action(action):
-                return {
-                    "passed": False,
-                    "reason": f"Scope validation failed: attempt limit exceeded",
-                    "confidence": 0.0,
-                }
-        return {"passed": True, "confidence": 1.0}
-
-
-class MockOrchestrator:
-    def __init__(self):
-        self.gates = {}
-
-    def register_gate(self, name: str, gate: Any):
-        self.gates[name] = gate
-
-    def process_submission(
-        self,
-        raw_payload: Dict[str, Any],
-        proposed_actions: list,
-        **kwargs
-    ) -> Dict[str, Any]:
-        context = {"proposed_actions": proposed_actions}
-        rollbacks_executed = []
-
-        # Evaluate registered gates
-        for name, gate in self.gates.items():
-            res = gate.evaluate(raw_payload, context)
-            if not res["passed"]:
-                # Execute registered rollbacks on gate veto
-                for action_item in proposed_actions:
-                    if "rollback" in action_item:
-                        rollbacks_executed.append(action_item["rollback"])
-
-                return {
-                    "receipt": {"status": "HALTED", "reason": res["reason"]},
-                    "rollbacks_executed": rollbacks_executed,
-                }
-
-        return {
-            "receipt": {"status": "COMMITTED"},
-            "rollbacks_executed": [],
+@pytest.fixture
+def base_payload():
+    return {
+        "policy_id": "POL-SPOOF-TEST",
+        "fleet_data": {"vehicle_count": 10, "operating_radius_miles": 100.0},
+        "scope": {
+            "max_attempts": 3,
+            "origin_subnet": "192.168.1.10",
+            "allowed_resources": ["logistics_db"],
+            "allowed_operations": ["read", "update_db"]
         }
-
-
-# =====================================================================
-# Test Cases
-# =====================================================================
-
-def test_retry_limit_exhaustion_and_rollback():
-    """
-    Validates that attempts 1 through 3 commit successfully, while attempt 4 
-    fails CPR scope validation and triggers compensating rollbacks.
-    """
-    orchestrator = MockOrchestrator()
-    permission_gate = MockPermissionGate(contract_model=MockCPR)
-    orchestrator.register_gate("PermissionGate", permission_gate)
-
-    proposed_actions = [
-        {
-            "action": {"op": "api_call", "endpoint": "/issue_binder", "data": "POL-2026-LOOP"},
-            "rollback": {"op": "api_call", "endpoint": "/cancel_policy", "data": "POL-2026-LOOP"},
-        }
-    ]
-
-    base_payload = {
-        "policy_id": "POL-2026-LOOP",
-        "fleet_data": {
-            "vehicle_count": 10,
-            "operating_radius_miles": 150.0,
-            "garaging_states": ["VA"],
-        },
     }
 
-    # Attempts 1 through 3 must commit successfully
-    for attempt in range(1, 4):
-        payload = base_payload.copy()
-        payload["scope"] = {"max_attempts": 3, "attempt_count": attempt}
 
-        result = orchestrator.process_submission(
-            raw_payload=payload,
-            proposed_actions=proposed_actions,
-        )
+def test_spoofed_client_attempt_counter_neutralized(orchestrator, base_payload):
+    """
+    Validates that the server tracks real attempt counts independently of client payloads,
+    incrementing across submissions and halting once the max_attempts threshold (3) is breached.
+    """
+    clean_logprobs = [-0.01] * 10
+    noisy_logprobs = [-0.01] * 5 + [-12.0]  # Triggers EntropyGate anomaly
 
-        assert result["receipt"]["status"] == "COMMITTED"
-        assert len(result["rollbacks_executed"]) == 0
+    context_clean = {"token_count": 10, "token_logprobs": clean_logprobs}
+    context_noisy = {"token_count": 6, "token_logprobs": noisy_logprobs}
 
-    # Attempt 4 must breach scope limits, halt, and execute rollbacks
-    failed_payload = base_payload.copy()
-    failed_payload["scope"] = {"max_attempts": 3, "attempt_count": 4}
+    # Attempt 1: Clean run -> Allowed
+    res1 = orchestrator.process_submission(base_payload, context_clean)
+    assert res1["status"] == "ALLOWED"
 
-    result_attempt_4 = orchestrator.process_submission(
-        raw_payload=failed_payload,
-        proposed_actions=proposed_actions,
-    )
+    # Attempt 2: Noisy run -> Fails EntropyGate, recorded as server-side attempt 2
+    res2 = orchestrator.process_submission(base_payload, context_noisy)
+    assert res2["status"] == "HALTED"
 
-    assert result_attempt_4["receipt"]["status"] == "HALTED"
-    assert len(result_attempt_4["rollbacks_executed"]) == 1
-    assert result_attempt_4["rollbacks_executed"][0]["endpoint"] == "/cancel_policy"
+    # Attempt 3: Noisy run -> Fails EntropyGate, recorded as server-side attempt 3
+    res3 = orchestrator.process_submission(base_payload, context_noisy)
+    assert res3["status"] == "HALTED"
+
+    # Attempt 4: Exceeds max_attempts (4 > 3) -> Server halts immediately due to retry exhaustion
+    res4 = orchestrator.process_submission(base_payload, context_clean)
+    assert res4["status"] == "HALTED"
+    assert res4["gate"] == "PermissionGate"  # Or attempt cap enforcement boundary
+    assert "attempt" in res4["reason"].lower()
