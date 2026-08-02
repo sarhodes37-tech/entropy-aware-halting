@@ -3,8 +3,9 @@ Unit test suite for epistemicos.utils module.
 Validates device auto-detection and helper configuration.
 """
 
-from unittest.mock import MagicMock, patch
 import pytest
+pytest.importorskip("transformers")
+from unittest.mock import MagicMock, patch
 from epistemicos.utils import get_optimal_device, get_model_and_tokenizer
 
 
