@@ -34,10 +34,19 @@ jobs:
         # Install strictly quarantined external simulation tools
         pip install numpy pandas scipy requests openai anthropic pytest
 
-    - name: Run RhodesBench (Hard Gate Interception)
+        - name: Run Flake8 (Syntax & Style)
       run: |
-        echo "Executing baseline epistemic boundary tests..."
-        python tests/test_rhodes_bench.py --target-model ci-pipeline-test
+        # --exit-zero ensures syntax warnings are logged but don't instantly kill the pipeline
+        flake8 . --exit-zero 
+
+    - name: Execute Epistemic Layer Benchmarks
+      env:
+        PYTHONPATH: .
+      run: |
+        echo "Executing layered boundary tests and ablation matrix..."
+        # This will automatically find and run every test_*.py file in your benchmarks directory
+        pytest benchmarks/ -v
+
 
     - name: Execute Formal Ablation Matrix
       run: |
