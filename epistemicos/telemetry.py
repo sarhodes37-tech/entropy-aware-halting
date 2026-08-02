@@ -48,13 +48,14 @@ class ResourceProfiler:
     def __init__(self, device: str = "cuda", token_count: int = 0):
         self.device = device
         self.token_count = max(1, token_count)
-        
+
         # Failsafe hardware detection
         self.use_cuda = HAS_TORCH and "cuda" in self.device and torch.cuda.is_available()
 
         if self.use_cuda:
             self.start_event = torch.cuda.Event(enable_timing=True)
             self.end_event = torch.cuda.Event(enable_timing=True)
+            
     def __enter__(self):
         self.start_wall = time.perf_counter()
 
@@ -92,12 +93,16 @@ class ResourceProfiler:
             if res_mb > 0:
                 frag_index = (res_mb - alloc_mb) / res_mb
 
-        # Default to wall clock if CUDA timing isn't available, with a safe fallback
-        effective_time = getattr(self, "cuda_time_ms", 0.0) if getattr(self, "use_cuda", False) else getattr(self, "wall_clock_ms", 0.0)
+        # Safely extract timings with fallbacks in case the pipeline halts before __exit__
+        safe_wall_clock = getattr(self, "wall_clock_ms", 0.0)
+        safe_cuda_time = getattr(self, "cuda_time_ms", 0.0)
+
+        # Default to wall clock if CUDA timing isn't available
+        effective_time = safe_cuda_time if self.use_cuda else safe_wall_clock
 
         return HardwareTelemetry(
-            wall_clock_ms=round(self.wall_clock_ms, 2),
-            cuda_time_ms=round(self.cuda_time_ms, 2),
+            wall_clock_ms=round(safe_wall_clock, 2),
+            cuda_time_ms=round(safe_cuda_time, 2),
             vram_allocated_mb=round(alloc_mb, 2),
             vram_reserved_mb=round(res_mb, 2),
             vram_peak_mb=round(peak_mb, 2),
