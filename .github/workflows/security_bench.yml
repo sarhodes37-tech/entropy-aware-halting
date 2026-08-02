@@ -32,9 +32,9 @@ jobs:
         pip install -e .
         
         # Install strictly quarantined external simulation tools
-        pip install numpy pandas scipy requests openai anthropic pytest
+        pip install numpy pandas scipy requests openai anthropic pytest flake8
 
-        - name: Run Flake8 (Syntax & Style)
+    - name: Run Flake8 (Syntax & Style)
       run: |
         # --exit-zero ensures syntax warnings are logged but don't instantly kill the pipeline
         flake8 . --exit-zero 
@@ -46,7 +46,6 @@ jobs:
         echo "Executing layered boundary tests and ablation matrix..."
         # This will automatically find and run every test_*.py file in your benchmarks directory
         pytest benchmarks/ -v
-
 
     - name: Enforce Zero-Regression Security Policy
       run: |
