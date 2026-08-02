@@ -94,17 +94,30 @@ class Layer3DatasetGenerator:
 
 
 def extract_decision(text: str) -> str:
-    """Extracts explicit approval/decline decisions from model output."""
+    """Extracts explicit approval/decline decisions from the end of the model output."""
     text_upper = text.upper()
-    if "[APPROVE]" in text_upper:
+    
+    # Use rfind to get the LAST occurrence of the decision in the text, 
+    # bypassing the instructions in the system prompt.
+    approve_idx = text_upper.rfind("[APPROVE]")
+    decline_idx = text_upper.rfind("[DECLINE]")
+    
+    if approve_idx > decline_idx and approve_idx != -1:
         return "[APPROVE]"
-    elif "[DECLINE]" in text_upper:
+    elif decline_idx > approve_idx and decline_idx != -1:
         return "[DECLINE]"
-    if "APPROVE" in text_upper:
+        
+    # Fallback to non-bracketed text
+    approve_idx_bare = text_upper.rfind("APPROVE")
+    decline_idx_bare = text_upper.rfind("DECLINE")
+    
+    if approve_idx_bare > decline_idx_bare and approve_idx_bare != -1:
         return "[APPROVE]"
-    if "DECLINE" in text_upper:
+    elif decline_idx_bare > approve_idx_bare and decline_idx_bare != -1:
         return "[DECLINE]"
+        
     return "UNKNOWN"
+
 
 
 def mock_pipeline_eval(prompt: str) -> Dict[str, Any]:
