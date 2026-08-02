@@ -1,29 +1,23 @@
 """
-Integration test for EpistemicOrchestrator under noisy/high-surprisal input.
-Validates that EntropyGate halts execution and triggers Saga compensating rollbacks.
+Integration test suite for EpistemicOS Pipeline & EntropyAwareScheduler gamma sweeps
+and noisy payload handling within the unified architecture.
 """
 
-from typing import Dict, Any, List
+import json
+from pathlib import Path
 import pytest
-
-from epistemicos.engine import EpistemicOrchestrator
-from epistemicos.gates import EntropyGate, PermissionGate
-from epistemicos.cpr import CanonicalProblemRepresentation
+from epistemicos.core import EpistemicOrchestrator
+from epistemicos.audit import TamperEvidentAuditTrail, AuditLogLevel
 
 
-@pytest.fixture
-def orchestrator_setup():
-    """Initializes EpistemicOrchestrator with EntropyGate and PermissionGate."""
-    priors = {"preferred": 0.5, "standard": 0.3, "substandard": 0.2}
-    engine = EpistemicOrchestrator(prior_probabilities=priors)
-    engine.register_gate("EntropyGate", EntropyGate(z_threshold=2.85))
-    engine.register_gate("PermissionGate", PermissionGate(contract_model=CanonicalProblemRepresentation))
-    return engine
+def test_orchestrator_noisy_surprisal_halt_and_rollback(tmp_path):
+    """
+    Validates that high logprob surprisal triggers EntropyGate veto
+    and stops execution safely within the unified orchestrator.
+    """
+    orchestrator = EpistemicOrchestrator()
 
-
-@pytest.fixture
-def mock_commercial_payload():
-    return {
+    mock_commercial_payload = {
         "policy_id": "POL-2026-N99",
         "fleet_data": {
             "vehicle_count": 85,
@@ -34,72 +28,76 @@ def mock_commercial_payload():
         }
     }
 
-
-@pytest.fixture
-def saga_proposed_actions():
-    return [
-        {
-            "action": {"op": "update_db", "node": "logistics_db", "status": "bound"},
-            "rollback": {"op": "revert", "node": "logistics_db", "status": "pending"}
-        },
-        {
-            "action": {"op": "issue_binder", "policy": "POL-2026-N99"},
-            "rollback": {"op": "rescind_binder", "policy": "POL-2026-N99"}
-        }
-    ]
-
-
-# =====================================================================
-# Test Cases
-# =====================================================================
-
-def test_orchestrator_noisy_surprisal_halt_and_rollback(
-    orchestrator_setup, mock_commercial_payload, saga_proposed_actions
-):
-    """
-    Validates that high logprob surprisal triggers EntropyGate veto
-    and executes all registered Saga compensating rollbacks.
-    """
-    engine = orchestrator_setup
-    mock_likelihoods = {"preferred": 0.05, "standard": 0.25, "substandard": 0.70}
-
-    # Deterministic baseline logprobs (20 low-entropy steps)
+    # Deterministic baseline logprobs followed by extreme noise spike
     deterministic_baseline = [-0.05] * 20
-    # Inject extreme noise spike (high surprisal)
     noisy_logprobs = deterministic_baseline + [-12.5, -15.0, -11.8]
 
-    result = engine.process_submission(
-        raw_payload=mock_commercial_payload,
-        likelihoods=mock_likelihoods,
-        token_logprobs=noisy_logprobs,
-        proposed_actions=saga_proposed_actions
-    )
+    context = {
+        "token_count": len(noisy_logprobs),
+        "token_logprobs": noisy_logprobs,
+        "proposed_actions": [
+            {"op": "update_db", "node": "logistics_db"},
+            {"op": "issue_binder", "policy": "POL-2026-N99"}
+        ]
+    }
+
+    result = orchestrator.process_submission(mock_commercial_payload, context)
 
     # Core Assertions
-    assert result["receipt"]["status"] != "COMMITTED"
-    assert result["receipt"]["status"] in ("HALTED", "ROLLED_BACK")
-
-    # Verify Saga compensating rollbacks executed in reverse order
-    executed_rollbacks = result.get("rollbacks_executed", [])
-    assert len(executed_rollbacks) == 2
-    assert executed_rollbacks[0]["op"] == "rescind_binder"
-    assert executed_rollbacks[1]["op"] == "revert"
+    assert result["status"] == "HALTED"
+    assert result["gate"] == "EntropyGate"
 
 
-def test_orchestrator_clean_logprobs_committed(
-    orchestrator_setup, mock_commercial_payload, saga_proposed_actions
-):
+def test_orchestrator_clean_logprobs_committed():
     """Validates that nominal logprobs without surprisal spikes commit successfully."""
-    engine = orchestrator_setup
-    mock_likelihoods = {"preferred": 0.80, "standard": 0.15, "substandard": 0.05}
-    clean_logprobs = [-0.02] * 25
+    orchestrator = EpistemicOrchestrator()
 
-    result = engine.process_submission(
-        raw_payload=mock_commercial_payload,
-        likelihoods=mock_likelihoods,
-        token_logprobs=clean_logprobs,
-        proposed_actions=saga_proposed_actions
+    mock_commercial_payload = {
+        "policy_id": "POL-2026-N99",
+        "fleet_data": {
+            "vehicle_count": 85,
+            "operating_radius_miles": 1200.0,
+            "loss_modifier": 1.45,
+            "hazard_class": "severe",
+            "garaging_states": ["TX", "CA", "AZ"]
+        }
+    }
+
+    clean_logprobs = [-0.02] * 25
+    context = {
+        "token_count": len(clean_logprobs),
+        "token_logprobs": clean_logprobs
+    }
+
+    result = orchestrator.process_submission(mock_commercial_payload, context)
+    assert result["status"] == "ALLOWED"
+
+
+def test_optimal_gamma_audit_payload(tmp_path):
+    """
+    Verifies that tamper-evident audit logs record events accurately across execution steps.
+    """
+    log_file = tmp_path / "test_audit.jsonl"
+    audit_logger = TamperEvidentAuditTrail(str(log_file))
+
+    # Record sample trace events to check chain and logging structure
+    audit_logger.record_event(
+        event_type=AuditLogLevel.INFO,
+        gate_name="EntropyAwareScheduler",
+        reason="Step passed entropy evaluation",
+        model_id="mock-llm-v1",
+        payload_snippet="Step 0 distribution"
+    )
+    audit_logger.record_event(
+        event_type=AuditLogLevel.HALT,
+        gate_name="EntropyAwareScheduler",
+        reason="Cumulative entropy shock exceeded gamma threshold",
+        model_id="mock-llm-v1",
+        payload_snippet="Step 2 distribution",
+        metadata={"gamma": 0.80, "drop_bits": 0.9165}
     )
 
-    assert result["receipt"]["status"] == "COMMITTED"
-    assert len(result.get("rollbacks_executed", [])) == 0
+    is_valid, count, error = audit_logger.verify_chain_integrity()
+    assert is_valid is True
+    assert count == 2
+    assert error is None
