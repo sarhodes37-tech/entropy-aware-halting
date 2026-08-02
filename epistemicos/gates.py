@@ -57,18 +57,17 @@ class Gate(ABC):
 
 class EntropyGate(Gate):
     """
-    Monitors autoregressive token logprobs for anomaly detection.
+    Monitors autoregressive token logprobs for anomaly detection using a 
+    granular, token-by-token surprisal sensor.
     
-    Calculates sequence surprisal (cross-entropy). Trips when Z-scores 
-    exceed the dynamic envelope z_threshold, or when a static surprisal 
-    threshold is breached, indicating a likely prompt injection or 
-    model hallucination event.
+    Trips when individual token Z-scores exceed the dynamic envelope 
+    z_threshold, indicating a likely prompt injection or model hallucination event 
+    buried within the payload.
     """
 
-    def __init__(self, z_threshold: float = 3.5, max_window: int = 64):
-        self.z_threshold = z_threshold
-        self.max_window = max_window
-        self.rolling_surprisal: List[float] = []
+    def __init__(self, z_threshold: float = 2.85, window_size: int = 10):
+        # Delegate statistical analysis to the consolidated domain model
+        self.sensor = TokenSurprisalSensor(z_threshold=z_threshold, window_size=window_size)
 
     def evaluate(self, payload: Dict[str, Any], context: Dict[str, Any]) -> GateResult:
         t0 = time.perf_counter()
@@ -82,46 +81,24 @@ class EntropyGate(Gate):
                 reason="NO_LOGPROBS_PROVIDED"
             )
 
-        # Calculate average sequence surprisal (cross-entropy)
-        sequence_surprisal = sum(abs(lp) for lp in logprobs) / len(logprobs)
+        # Evaluate sequence using the token-by-token kernel
+        sensor_result = self.sensor.evaluate(logprobs)
 
-        # Day-zero fallback: If surprisal is extraordinarily high, halt immediately 
-        # even if the rolling window hasn't established a baseline.
-        if sequence_surprisal > 5.0:
+        if not sensor_result["passed"]:
             return GateResult(
                 action=GateAction.HALT,
                 latency_ms=(time.perf_counter() - t0) * 1000,
                 gate_name="EntropyGate",
-                reason=f"Anomalous Entropy Spike Detected (Surprisal: {sequence_surprisal:.2f})",
+                reason=f"Anomalous Token Surprisal Detected (Max Z: {sensor_result['max_z_score']:.2f}, Flagged: {sensor_result['flagged_tokens']})",
                 confidence=0.0
             )
-
-        n = len(self.rolling_surprisal)
-        if n > 8:
-            mean = sum(self.rolling_surprisal) / n
-            variance = sum((x - mean) ** 2 for x in self.rolling_surprisal) / n
-            safe_std_dev = max(math.sqrt(variance), 0.05) 
-            z_score = abs(sequence_surprisal - mean) / safe_std_dev
-
-            if z_score > self.z_threshold:
-                return GateResult(
-                    action=GateAction.HALT,
-                    latency_ms=(time.perf_counter() - t0) * 1000,
-                    gate_name="EntropyGate",
-                    reason=f"Entropy Z-Score Violation (Z: {z_score:.2f}, Mean: {mean:.2f})",
-                    confidence=0.0
-                )
-
-        self.rolling_surprisal.append(sequence_surprisal)
-        if len(self.rolling_surprisal) > self.max_window:
-            self.rolling_surprisal.pop(0)
 
         return GateResult(
             action=GateAction.ALLOW, 
             latency_ms=(time.perf_counter() - t0) * 1000, 
             gate_name="EntropyGate"
         )
-
+   
 
 class PermissionGate(Gate):
     """
