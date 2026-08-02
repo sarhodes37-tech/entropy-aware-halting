@@ -21,7 +21,7 @@ class EpistemicOrchestrator:
         log_file_path: Optional[str] = None
     ):
         self.model_id = model_id
-        
+
         # Initialize concrete gate instances mapped to keys
         self.gate_registry = {
             "entropy": EntropyGate(),
@@ -29,7 +29,7 @@ class EpistemicOrchestrator:
             "triangulation": TriangulationGate(),
             "crypto": CryptoAttestationGate()
         }
-        
+
         # Normalize active gates to a lookup set
         if active_gates is None:
             self.active_gates: Set[str] = {"entropy", "permission", "triangulation"}
@@ -41,7 +41,7 @@ class EpistemicOrchestrator:
         else:
             self.audit_logger = TamperEvidentAuditTrail()
 
-            def process_step(
+    def process_step(
         self,
         token_logits: List[float],
         accumulated_output: str,
@@ -49,6 +49,7 @@ class EpistemicOrchestrator:
         crypto_context: Optional[Dict[str, Any]] = None,
         **kwargs
     ) -> Tuple[GateAction, float, List[str]]:
+        
         t_start = time.perf_counter()
         reasons = []  
 
