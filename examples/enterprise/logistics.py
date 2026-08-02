@@ -1,7 +1,7 @@
 import hashlib
 from typing import Dict, Any, List, Set
 from pydantic import BaseModel, Field
-from epistemicos.cpr import PermissionScope
+from epistemicos.models import PermissionScope
 
 class SupplyChainNodeRepresentation(BaseModel):
     """
