@@ -41,12 +41,13 @@ class EpistemicOrchestrator:
         else:
             self.audit_logger = TamperEvidentAuditTrail()
 
-    def process_step(
+        def process_step(
         self,
         token_logits: List[float],
         accumulated_output: str,
         raw_payload: Optional[Dict[str, Any]] = None,
-        crypto_context: Optional[Dict[str, Any]] = None
+        crypto_context: Optional[Dict[str, Any]] = None,
+        **kwargs  # Added to absorb arbitrary test metadata like 'category'
     ) -> Tuple[GateAction, float, List[str]]:
         t_start = time.perf_counter()
         reasons = []  
@@ -56,7 +57,8 @@ class EpistemicOrchestrator:
         context = {
             "token_logits": token_logits,
             "accumulated_output": accumulated_output,
-            "cryptography": crypto_context or {}
+            "cryptography": crypto_context or {},
+            **kwargs  # Merges any extra arguments into the context dictionary
         }
 
         # Stream evaluation pipeline
