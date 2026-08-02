@@ -25,11 +25,13 @@ def get_model_and_tokenizer(
     model_name: str = "Qwen/Qwen2.5-Coder-1.5B-Instruct",
     device: Optional[str] = None,
     torch_dtype: Optional[Any] = None,
-    trust_remote_code: bool = True
+    trust_remote_code: bool = True,
+    revision: Optional[str] = "main"  # <--- Bandit B615 Compliance
 ) -> Tuple[Any, Any, str]:
     """
     Initializes and returns the HuggingFace model, tokenizer, and compute device.
     Applies automatic float16/bfloat16 casting on GPU backends to optimize memory usage.
+    Enforces revision pinning to prevent supply chain injection attacks.
     """
     import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -46,11 +48,12 @@ def get_model_and_tokenizer(
     else:
         dtype = torch_dtype
 
-    logger.info(f"Loading '{model_name}' on [{target_device}] with dtype {dtype}...")
+    logger.info(f"Loading '{model_name}' (rev: {revision}) on [{target_device}] with dtype {dtype}...")
 
     tokenizer = AutoTokenizer.from_pretrained(
         model_name,
-        trust_remote_code=trust_remote_code
+        trust_remote_code=trust_remote_code,
+        revision=revision  # <--- Bandit B615 Compliance
     )
 
     if tokenizer.pad_token is None:
@@ -59,7 +62,8 @@ def get_model_and_tokenizer(
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
         torch_dtype=dtype,
-        trust_remote_code=trust_remote_code
+        trust_remote_code=trust_remote_code,
+        revision=revision  # <--- Bandit B615 Compliance
     ).to(target_device)
 
     model.eval()
