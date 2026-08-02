@@ -12,7 +12,7 @@ import json
 import time
 import uuid
 from pathlib import Path
-from typing import Tuple, Optional, Dict, Any
+from typing import Tuple, Optional, Dict, Any, List
 from enum import Enum
 
 try:
