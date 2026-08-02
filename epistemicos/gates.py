@@ -21,7 +21,7 @@ import time
 from typing import Dict, Any, List, Optional
 from dataclasses import dataclass
 from enum import Enum
-
+from epistemicos.models import TokenSurprisalSensor
 
 class GateAction(Enum):
     ALLOW = "ALLOW"
