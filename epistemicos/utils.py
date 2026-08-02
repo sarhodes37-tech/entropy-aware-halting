@@ -59,7 +59,8 @@ def get_model_and_tokenizer(
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-        model = AutoModelForCausalLM.from_pretrained(
+    # Fixed: Moved model instantiation outside the pad_token guard block
+    model = AutoModelForCausalLM.from_pretrained(
         model_name,
         torch_dtype=dtype,
         trust_remote_code=trust_remote_code,
@@ -69,5 +70,5 @@ def get_model_and_tokenizer(
     # Safely call eval if it's a real model or a mock that supports it
     if hasattr(model, "eval") and callable(model.eval):
         model.eval()
-        
+
     return model, tokenizer, target_device
