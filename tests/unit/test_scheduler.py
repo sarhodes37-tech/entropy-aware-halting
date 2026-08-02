@@ -6,7 +6,7 @@ OPTIMAL_CONVERGENCE, IRREDUCIBLE_UNCERTAINTY).
 
 import pytest
 import torch
-from scheduler import EntropyAwareScheduler
+from epistemicos.scheduler import EntropyAwareScheduler
 
 
 # =====================================================================
