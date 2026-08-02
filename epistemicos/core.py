@@ -43,7 +43,9 @@ class EpistemicOrchestrator:
         if scheduler:
             self.scheduler = scheduler
         else:
+            # Initialize without passing **kwargs to prevent TypeError
             self.scheduler = EntropyAwareScheduler()
+
 
         # Plug the dead wire back in so logs actually route to Google Drive
         self.audit_logger = TamperEvidentAuditTrail(log_path=self.audit_log_path) 
