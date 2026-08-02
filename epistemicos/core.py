@@ -41,13 +41,13 @@ class EpistemicOrchestrator:
         else:
             self.audit_logger = TamperEvidentAuditTrail()
 
-        def process_step(
+            def process_step(
         self,
         token_logits: List[float],
         accumulated_output: str,
         raw_payload: Optional[Dict[str, Any]] = None,
         crypto_context: Optional[Dict[str, Any]] = None,
-        **kwargs  # Added to absorb arbitrary test metadata like 'category'
+        **kwargs
     ) -> Tuple[GateAction, float, List[str]]:
         t_start = time.perf_counter()
         reasons = []  
@@ -68,7 +68,7 @@ class EpistemicOrchestrator:
                 continue
 
             res = gate.evaluate(payload, context)
-            
+
             if res.action != GateAction.ALLOW:
                 total_latency = (time.perf_counter() - t_start) * 1000
                 reason_str = res.reason or f"{res.gate_name} Boundary Violation"
