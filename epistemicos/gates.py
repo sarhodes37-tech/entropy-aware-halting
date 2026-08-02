@@ -155,12 +155,28 @@ class PermissionGate(Gate):
 
         # Expanded regex to catch specific injection vectors, jailbreaks, and unauthorized privilege elevations
         self.injection_regex = re.compile(
-            r"(\b(sudo|rm|curl|wget|bash|sh|exec|nc|netcat|nmap|ping)\b|[;|`]|&&|\$\(|\[SYSTEM OVERRIDE\]|import\s+os|ignore previous instructions|system prompt|jailbreak)", 
-            re.IGNORECASE
+            r"(\b(sudo|rm|curl|wget|bash|sh|exec|nc|netcat|nmap|ping)\b|[;|`]|&&|\$\(|\[SYSTEM OVERRIDE\]|import\s+os|ignore previous instructions|system prompt|jailbreak|exfiltrate|web_search)", 
+            res.IGNORECASE if 'res' in globals() else re.IGNORECASE
         )
 
     def evaluate(self, payload: Dict[str, Any], context: Dict[str, Any]) -> GateResult:
         t0 = time.perf_counter()
+
+        # Check scope restrictions and RMM quarantine rules from the payload/context
+        scope = payload.get("scope", {}) or context.get("scope", {})
+        if scope.get("is_rmm_origin", False):
+            proposed_actions = context.get("proposed_actions", [])
+            for action in proposed_actions:
+                op = action.get("op") if isinstance(action, dict) else getattr(action, "op", None)
+                if op in {"update_db", "issue_binder", "api_call", "web_search"}:
+                    return GateResult(
+                        action=GateAction.HALT,
+                        status="HALTED",
+                        latency_ms=(time.perf_counter() - t0) * 1000,
+                        gate_name="PermissionGate",
+                        reason="Downstream Scope Lock: State-mutating action prohibited from RMM quarantine subnet.",
+                        confidence=0.0
+                    )
 
         # Serialize payload and proposed actions to string for deep inspection
         inspection_target = json.dumps({"payload": payload, "actions": context.get("proposed_actions", [])})
