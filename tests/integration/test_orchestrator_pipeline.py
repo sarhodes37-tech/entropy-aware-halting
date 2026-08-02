@@ -286,21 +286,23 @@ def test_spoofed_client_attempt_counter_neutralized(orchestrator, base_spoof_pay
 
     context_clean = {"token_count": 10, "token_logprobs": clean_logprobs}
     context_noisy = {"token_count": 6, "token_logprobs": noisy_logprobs}
+    
+    session_id = "TRACKED-SESSION-001"
 
     # Attempt 1: Clean run -> Allowed
-    res1 = orchestrator.process_submission(base_spoof_payload, context_clean)
+    res1 = orchestrator.process_submission(base_spoof_payload, context_clean, trajectory_id=session_id)
     assert res1["status"] == "ALLOWED"
 
     # Attempt 2: Noisy run -> Fails EntropyGate, recorded as server-side attempt 2
-    res2 = orchestrator.process_submission(base_spoof_payload, context_noisy)
+    res2 = orchestrator.process_submission(base_spoof_payload, context_noisy, trajectory_id=session_id)
     assert res2["status"] == "HALTED"
 
     # Attempt 3: Noisy run -> Fails EntropyGate, recorded as server-side attempt 3
-    res3 = orchestrator.process_submission(base_spoof_payload, context_noisy)
+    res3 = orchestrator.process_submission(base_spoof_payload, context_noisy, trajectory_id=session_id)
     assert res3["status"] == "HALTED"
 
     # Attempt 4: Exceeds max_attempts (4 > 3) -> Server halts immediately due to retry exhaustion
-    res4 = orchestrator.process_submission(base_spoof_payload, context_clean)
+    res4 = orchestrator.process_submission(base_spoof_payload, context_clean, trajectory_id=session_id)
     assert res4["status"] == "HALTED"
     assert res4["gate"] == "PermissionGate"  # Or attempt cap enforcement boundary
     assert "attempt" in res4["reason"].lower()
@@ -465,7 +467,7 @@ def test_crypto_attestation_gate_pqc_verification():
     attestation signatures or using expired algorithms are halted at the perimeter.
     """
     orchestrator = EpistemicOrchestrator()
-    orchestrator.register_gate("CryptoAttestationGate", CryptoAttestationGate(required_algorithm="ML-DSA", expiry_year=2030))
+    orchestrator.register_gate(CryptoAttestationGate(required_algorithm="ML-DSA", expiry_year=2030))
 
     payload = {"policy_id": "POL-PQC-2026", "action": "issue_binder"}
     context = {"token_count": 5, "token_logprobs": [-0.01] * 5}
@@ -501,9 +503,9 @@ def test_governance_os_stateful_key_revocation():
     priors = {"preferred": 0.5, "standard": 0.3, "substandard": 0.2}
     orchestrator = EpistemicOrchestrator(prior_probabilities=priors)
 
-    orchestrator.register_gate("EntropyGate", EntropyGate(z_threshold=2.85))
-    orchestrator.register_gate("PermissionGate", PermissionGate(contract_model=CanonicalProblemRepresentation))
-    orchestrator.register_gate("CryptoAttestationGate", CryptoAttestationGate(required_algorithm="ML-DSA", expiry_year=2030))
+    orchestrator.register_gate(EntropyGate(z_threshold=2.85))
+    orchestrator.register_gate(PermissionGate(contract_model=CanonicalProblemRepresentation))
+    orchestrator.register_gate(CryptoAttestationGate(required_algorithm="ML-DSA", expiry_year=2030))
 
     mock_payload = {
         "policy_id": "POL-2026-QUANTUM",
@@ -518,24 +520,30 @@ def test_governance_os_stateful_key_revocation():
 
     # Scenario 1: Valid PQC Key -> ALLOWED
     valid_crypto_meta = {"algorithm": "ML-DSA", "key_id": "KEY-123-SECURE"}
+    valid_context = {
+        "likelihoods": mock_likelihoods,
+        "token_logprobs": safe_logprobs,
+        "proposed_actions": proposed_actions,
+        "crypto_metadata": valid_crypto_meta
+    }
     valid_result = orchestrator.process_submission(
         raw_payload=mock_payload,
-        likelihoods=mock_likelihoods,
-        token_logprobs=safe_logprobs,
-        proposed_actions=proposed_actions,
-        crypto_metadata=valid_crypto_meta
+        context=valid_context
     )
     assert valid_result["status"] == "ALLOWED"
     assert "receipt" in valid_result
 
     # Scenario 2: Compromised PQC Key -> HALTED (Stateful Revocation)
     compromised_crypto_meta = {"algorithm": "ML-DSA", "key_id": "KEY-000-COMPROMISED"}
+    compromised_context = {
+        "likelihoods": mock_likelihoods,
+        "token_logprobs": safe_logprobs,
+        "proposed_actions": proposed_actions,
+        "crypto_metadata": compromised_crypto_meta
+    }
     compromised_result = orchestrator.process_submission(
         raw_payload=mock_payload,
-        likelihoods=mock_likelihoods,
-        token_logprobs=safe_logprobs,
-        proposed_actions=proposed_actions,
-        crypto_metadata=compromised_crypto_meta
+        context=compromised_context
     )
     assert compromised_result["status"] == "HALTED"
     assert compromised_result["gate"] == "CryptoAttestationGate"
@@ -544,11 +552,6 @@ def test_governance_os_stateful_key_revocation():
 # =====================================================================
 # DLT PIPELINE & GDPR RIGHT-TO-BE-FORGOTTEN INTEGRATION
 # =====================================================================
-
-import pytest
-from epistemicos.core import EpistemicOrchestrator
-from epistemicos.gates import EntropyGate, PermissionGate, CryptoAttestationGate
-from epistemicos.models import CanonicalProblemRepresentation
 
 # Mock DLT Logger for headless test environments
 class MockOffChainDB:
@@ -578,12 +581,12 @@ def test_full_dlt_pipeline_and_gdpr_deletion():
     priors = {"preferred": 0.5, "standard": 0.3, "substandard": 0.2}
     orchestrator = EpistemicOrchestrator(prior_probabilities=priors)
 
-    orchestrator.register_gate("EntropyGate", EntropyGate(z_threshold=2.85))
-    orchestrator.register_gate("PermissionGate", PermissionGate(contract_model=CanonicalProblemRepresentation))
+    orchestrator.register_gate(EntropyGate(z_threshold=2.85))
+    orchestrator.register_gate(PermissionGate(contract_model=CanonicalProblemRepresentation))
 
     crypto_gate = CryptoAttestationGate(required_algorithm="ML-DSA", expiry_year=2030)
     crypto_gate._check_ocsp_revocation = lambda key_id: False
-    orchestrator.register_gate("CryptoAttestationGate", crypto_gate)
+    orchestrator.register_gate(crypto_gate)
 
     transaction_id = "POL-2026-DLT-TEST"
     mock_payload = {
@@ -596,13 +599,17 @@ def test_full_dlt_pipeline_and_gdpr_deletion():
     safe_logprobs = [-0.02] * 15
     valid_crypto_meta = {"algorithm": "ML-DSA", "key_id": "KEY-123-SECURE"}
 
+    valid_context = {
+        "likelihoods": mock_likelihoods,
+        "token_logprobs": safe_logprobs,
+        "proposed_actions": proposed_actions,
+        "crypto_metadata": valid_crypto_meta
+    }
+
     # 1. Hot Path Processing
     result = orchestrator.process_submission(
         raw_payload=mock_payload,
-        likelihoods=mock_likelihoods,
-        token_logprobs=safe_logprobs,
-        proposed_actions=proposed_actions,
-        crypto_metadata=valid_crypto_meta
+        context=valid_context
     )
     assert result["receipt"]["status"] == "COMMITTED"
 
