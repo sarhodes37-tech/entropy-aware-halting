@@ -62,7 +62,7 @@ class EntropyGate(Gate):
     def evaluate(self, payload: Dict[str, Any], context: Dict[str, Any]) -> GateResult:
         t0 = time.perf_counter()
         logits = context.get("token_logits", [])
-        
+
         if not logits:
             return GateResult(
                 action=GateAction.ALLOW, 
@@ -75,7 +75,7 @@ class EntropyGate(Gate):
         exps = [math.exp(l - max_logit) for l in logits]
         sum_exps = sum(exps)
         probs = [e / sum_exps for e in exps]
-        
+
         entropy = -sum(p * math.log2(p) for p in probs if p > 1e-12)
 
         n = len(self.rolling_entropy)
@@ -119,7 +119,7 @@ class PermissionGate(Gate):
 
     def evaluate(self, payload: Dict[str, Any], context: Dict[str, Any]) -> GateResult:
         t0 = time.perf_counter()
-        raw_output = context.get("accumulated_output", "")
+        raw_output = context.get("accumulated_output") or ""
 
         tool_matches = self.tool_call_regex.findall(raw_output)
         for tool_name in tool_matches:
@@ -159,24 +159,24 @@ class TriangulationGate(Gate):
 
     def evaluate(self, payload: Dict[str, Any], context: Dict[str, Any]) -> GateResult:
         t0 = time.perf_counter()
-        
+
         primary = payload.get("primary_metric")
         telemetry = context.get("heterogeneous_telemetry", payload.get("heterogeneous_telemetry", []))
-        
+
         if primary is None or not telemetry:
             return GateResult(
                 action=GateAction.ALLOW, 
                 latency_ms=(time.perf_counter() - t0) * 1000, 
                 gate_name="TriangulationGate"
             )
-            
+
         try:
             primary = float(primary)
             telemetry = [float(x) for x in telemetry]
             baseline_mean = sum(telemetry) / len(telemetry)
-            
+
             divergence = 0.0 if baseline_mean == 0 else abs(primary - baseline_mean) / abs(baseline_mean)
-                
+
             if divergence > self.max_divergence_threshold:
                 latency = (time.perf_counter() - t0) * 1000
                 return GateResult(
@@ -194,7 +194,7 @@ class TriangulationGate(Gate):
                 reason="Malformed telemetry data type.",
                 confidence=0.0
             )
-            
+
         latency = (time.perf_counter() - t0) * 1000
         return GateResult(action=GateAction.ALLOW, latency_ms=latency, gate_name="TriangulationGate")
 
@@ -212,7 +212,7 @@ class CryptoAttestationGate(Gate):
 
     def evaluate(self, payload: Dict[str, Any], context: Dict[str, Any]) -> GateResult:
         t0 = time.perf_counter()
-        crypto_meta = context.get("cryptography", {})
+        crypto_meta = context.get("cryptography") or payload.get("raw_payload", {}).get("cryptography", {})
         algo = crypto_meta.get("algorithm", "RSA-2048")
         key_id = crypto_meta.get("key_id", "UNKNOWN_KEY")
 
