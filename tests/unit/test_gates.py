@@ -31,12 +31,22 @@ def test_entropy_gate_clean_and_spike():
 
 def test_permission_gate():
     gate = PermissionGate(contract_model=CanonicalProblemRepresentation)
-    payload = {"policy_id": "POL-PERM-TEST"}
+    
+    # Explicitly define the operational scope in the payload. 
+    # Without this boundary, the gate lacks the context to veto the invalid action.
+    payload = {
+        "policy_id": "POL-PERM-TEST",
+        "scope": {
+            "allowed_operations": ["update_db"],
+            "allowed_resources": ["logistics_db"]
+        }
+    }
 
-    valid_actions = [{"action": {"op": "update_db", "node": "logistics_db"}}]
+    # Flattened the 'op' structure to match the integration tests and Domain Model
+    valid_actions = [{"op": "update_db", "node": "logistics_db"}]
     assert gate.evaluate(payload, {"proposed_actions": valid_actions})["passed"] is True
 
-    invalid_actions = [{"action": {"op": "exec_shell", "node": "unauthorized_node"}}]
+    invalid_actions = [{"op": "exec_shell", "node": "unauthorized_node"}]
     assert gate.evaluate(payload, {"proposed_actions": invalid_actions})["passed"] is False
 
 
