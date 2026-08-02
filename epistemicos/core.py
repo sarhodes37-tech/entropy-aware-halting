@@ -62,9 +62,8 @@ class EpistemicOrchestrator:
         # Initialize Governance Gates in priority order
         self.gates = [
             PermissionGate(),
-            TriangulationGate(),
-            # Tightened the valve from 2.85 to 1.5 to catch corporate coercion 
-            EntropyGate(z_threshold=1.5, window_size=10)
+            EntropyGate(z_threshold=1.5, window_size=10),
+            TriangulationGate()
         ]
 
     def process_step(self, probabilities, cost, state) -> DecisionResult:
