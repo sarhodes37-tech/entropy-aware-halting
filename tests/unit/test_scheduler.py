@@ -198,9 +198,14 @@ def test_scheduler_step_irreducible_uncertainty():
     scheduler = EntropyAwareScheduler(stagnation_window=2, entropy_delta_threshold=0.01)
 
     scheduler.step(torch.tensor([0.5, 0.5]), cost=0, state="s1")
+    
     res1 = scheduler.step(torch.tensor([0.5, 0.5]), cost=0, state="s2")
     assert res1.directive == "CONTINUE"
 
     res2 = scheduler.step(torch.tensor([0.5, 0.5]), cost=0, state="s3")
-    assert res2.directive == "IRREDUCIBLE_UNCERTAINTY"
-    assert res2.halt is True
+    assert res2.directive == "CONTINUE"
+    
+    # 3rd transition is required to fulfill the > stagnation_window condition
+    res3 = scheduler.step(torch.tensor([0.5, 0.5]), cost=0, state="s4")
+    assert res3.directive == "IRREDUCIBLE_UNCERTAINTY"
+    assert res3.halt is True
