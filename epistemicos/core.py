@@ -48,7 +48,7 @@ class EpistemicOrchestrator:
 
 
         # Plug the dead wire back in so logs actually route to Google Drive
-        self.audit_logger = TamperEvidentAuditTrail(log_path=self.audit_log_path) 
+        self.audit_logger = TamperEvidentAuditTrail(log_file_path=self.audit_log_path) 
 
         # Pass the db_client properly
         self.vector_manager = VectorHygieneManager(db_client=db_client)
