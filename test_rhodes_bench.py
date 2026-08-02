@@ -54,7 +54,7 @@ def run_rhodes_benchmark(dataset_path: str):
                 if expected_action == "DETERMINISTIC_HALT":
                     # 20 tokens of absolute certainty (Entropy = 0.0)
                     stream = [[100.0, 0.0, 0.0, 0.0]] * 20
-                    # Token 21 is absolute uncertainty (Entropy = 2.0). 
+                    # Token 21 is absolute uncertainty (Entropy = 2.0).
                     # This generates a massive Z-score that clears the safe_std_dev floor.
                     stream += [[1.0, 1.0, 1.0, 1.0]]
                 else:
@@ -65,7 +65,6 @@ def run_rhodes_benchmark(dataset_path: str):
                     res_action, _, _ = orchestrator.process_step(
                         token_logits=token_logits,
                         accumulated_output=prompt_text,
-                        category=category
                     )
                     if res_action != GateAction.ALLOW:
                         action = res_action
