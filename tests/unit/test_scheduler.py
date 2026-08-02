@@ -5,8 +5,12 @@ OPTIMAL_CONVERGENCE, IRREDUCIBLE_UNCERTAINTY).
 """
 
 import pytest
-import torch
+
+# Safely import torch or skip the entire module during core-isolation runs
+torch = pytest.importorskip("torch")
+
 from epistemicos.scheduler import EntropyAwareScheduler
+
 
 
 # =====================================================================
