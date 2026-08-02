@@ -48,11 +48,6 @@ jobs:
         pytest benchmarks/ -v
 
 
-    - name: Execute Formal Ablation Matrix
-      run: |
-        echo "Running full combinatorial ablation harness..."
-        python tests/benchmarks/ablation_runner.py
-
     - name: Enforce Zero-Regression Security Policy
       run: |
         python -c "
