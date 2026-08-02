@@ -11,9 +11,9 @@ import json
 from unittest.mock import MagicMock
 
 # Core EpistemicOS Modules
-from epistemicos.engine import EpistemicOrchestrator
+from epistemicos.core import EpistemicOrchestrator
 from epistemicos.gates import EntropyGate, PermissionGate
-from epistemicos.cpr import CanonicalProblemRepresentation, PermissionScope
+from epistemicos.models import CanonicalProblemRepresentation, PermissionScope
 from epistemicos.vector_hygiene import VectorHygieneManager
 
 # Terminal Formatting
