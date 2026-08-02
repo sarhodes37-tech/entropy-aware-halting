@@ -12,12 +12,16 @@ logger = logging.getLogger("EpistemicOS.Utils")
 
 def get_optimal_device() -> str:
     """Detects best available compute device (CUDA -> MPS -> CPU)."""
-    import torch 
+    try:
+        import torch
 
-    if torch.cuda.is_available():
-        return "cuda"
-    elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-        return "mps"
+        if torch.cuda.is_available():
+            return "cuda"
+        elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+            return "mps"
+    except ImportError:
+        pass
+
     return "cpu"
 
 
@@ -33,8 +37,13 @@ def get_model_and_tokenizer(
     Applies automatic float16/bfloat16 casting on GPU backends to optimize memory usage.
     Enforces revision pinning to prevent supply chain injection attacks.
     """
-    import torch
-    from transformers import AutoModelForCausalLM, AutoTokenizer
+    try:
+        import torch
+        from transformers import AutoModelForCausalLM, AutoTokenizer
+    except ImportError as e:
+        raise ImportError(
+            "get_model_and_tokenizer requires 'torch' and 'transformers' to be installed."
+        ) from e
 
     target_device = device or get_optimal_device()
 
