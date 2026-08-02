@@ -40,7 +40,11 @@ class GateResult:
             self.status = status
             self.action = GateAction.ALLOW if status == "ALLOWED" else GateAction.HALT
 
-        self.gate = gate or gate_name
+        # Assign gate and gate_name interchangeably so either attribute is always valid
+        resolved_gate = gate or gate_name
+        self.gate = resolved_gate
+        self.gate_name = resolved_gate
+        
         self.reason = reason
         self.flagged_tokens = flagged_tokens
         self.divergence = divergence
@@ -58,6 +62,10 @@ class GateResult:
             return self.action
         if key == "vectors_revoked":
             return self.vectors_revoked
+        if key == "gate":
+            return self.gate
+        if key == "gate_name":
+            return self.gate_name
         return getattr(self, key)
 
     def get(self, key, default=None):
@@ -159,15 +167,17 @@ class PermissionGate(Gate):
 
         if self.injection_regex.search(inspection_target):
             return GateResult(
-                action=GateAction.ROLLBACK,
+                action=GateAction.HALT,
+                status="HALTED",
                 latency_ms=(time.perf_counter() - t0) * 1000,
                 gate_name="PermissionGate",
-                reason="Unsafe Command Injection or System Override Intercepted",
+                reason="Unsafe Command Injection, Jailbreak, or System Override Intercepted",
                 confidence=0.0
             )
 
         return GateResult(
-            action=GateAction.ALLOW, 
+            action=GateAction.ALLOW,
+            status="ALLOWED",
             latency_ms=(time.perf_counter() - t0) * 1000, 
             gate_name="PermissionGate"
         )
