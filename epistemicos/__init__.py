@@ -1,9 +1,10 @@
-from pathlib import Path
+# epistemicos/__init__.py
+from epistemicos.core import EpistemicOrchestrator
+from epistemicos.scheduler import EntropyAwareScheduler, StepMetrics, DecisionResult
 
-# Create package structure and empty __init__.py files
-pkg_dir = Path("epistemicos")
-pkg_dir.mkdir(exist_ok=True)
-
-init_file = pkg_dir / "__init__.py"
-if not init_file.exists():
-    init_file.touch()
+__all__ = [
+    "EpistemicOrchestrator",
+    "EntropyAwareScheduler",
+    "StepMetrics",
+    "DecisionResult",
+]
