@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from enum import Enum
 from epistemicos.models import TokenSurprisalSensor
 
+
 class GateAction(Enum):
     ALLOW = "ALLOW"
     HALT = "DETERMINISTIC_HALT"
@@ -31,7 +32,20 @@ class GateAction(Enum):
 
 @dataclass
 class GateResult:
-    def __init__(self, status="ALLOWED", action=GateAction.ALLOW, gate=None, gate_name=None, reason="", flagged_tokens=0, divergence=0.0, confidence=1.0, latency_ms=0.0, vectors_revoked=0, **kwargs):
+    def __init__(
+        self,
+        status="ALLOWED",
+        action=GateAction.ALLOW,
+        gate=None,
+        gate_name=None,
+        reason="",
+        flagged_tokens=0,
+        divergence=0.0,
+        confidence=1.0,
+        latency_ms=0.0,
+        vectors_revoked=0,
+        **kwargs
+    ):
         # Normalize status vs action to handle both keyword styles seamlessly
         if isinstance(action, GateAction):
             self.action = action
@@ -44,14 +58,14 @@ class GateResult:
         resolved_gate = gate or gate_name
         self.gate = resolved_gate
         self.gate_name = resolved_gate
-        
+
         self.reason = reason
         self.flagged_tokens = flagged_tokens
         self.divergence = divergence
         self.confidence = confidence
         self.latency_ms = latency_ms
         self.vectors_revoked = vectors_revoked or (flagged_tokens if action != GateAction.ALLOW else 0)
-        
+
         for k, v in kwargs.items():
             setattr(self, k, v)
 
@@ -60,6 +74,8 @@ class GateResult:
             return self.status
         if key == "action":
             return self.action
+        if key == "passed":
+            return self.passed
         if key == "vectors_revoked":
             return self.vectors_revoked
         if key == "gate":
@@ -71,7 +87,7 @@ class GateResult:
     def get(self, key, default=None):
         try:
             return self[key]
-        except AttributeError:
+        except (AttributeError, KeyError):
             return default
 
     @property
@@ -153,19 +169,59 @@ class PermissionGate(Gate):
         self.contract_model = contract_model
         self.allowed_actions = set(allowed_actions or [])
 
-        # Expanded regex to catch specific injection vectors, jailbreaks, and unauthorized privilege elevations
+        # Regex to catch command injections, jailbreaks, and unauthorized privilege elevations
         self.injection_regex = re.compile(
             r"(\b(sudo|rm|curl|wget|bash|sh|exec|nc|netcat|nmap|ping)\b|[;|`]|&&|\$\(|\[SYSTEM OVERRIDE\]|import\s+os|ignore previous instructions|system prompt|jailbreak|exfiltrate|web_search)", 
-            res.IGNORECASE if 'res' in globals() else re.IGNORECASE
+            re.IGNORECASE
         )
 
     def evaluate(self, payload: Dict[str, Any], context: Dict[str, Any]) -> GateResult:
         t0 = time.perf_counter()
 
-        # Check scope restrictions and RMM quarantine rules from the payload/context
         scope = payload.get("scope", {}) or context.get("scope", {})
+        proposed_actions = context.get("proposed_actions", []) or payload.get("proposed_actions", [])
+
+        # Validate explicit scope boundaries if specified in payload or context
+        allowed_ops = scope.get("allowed_operations")
+        allowed_res = scope.get("allowed_resources")
+
+        if allowed_ops is not None or allowed_res is not None or self.allowed_actions:
+            for action in proposed_actions:
+                op = action.get("op") if isinstance(action, dict) else getattr(action, "op", None)
+                node = action.get("node") if isinstance(action, dict) else getattr(action, "node", None)
+
+                if allowed_ops is not None and op not in allowed_ops:
+                    return GateResult(
+                        action=GateAction.HALT,
+                        status="HALTED",
+                        latency_ms=(time.perf_counter() - t0) * 1000,
+                        gate_name="PermissionGate",
+                        reason=f"Operation '{op}' outside allowed scope operations: {allowed_ops}",
+                        confidence=0.0
+                    )
+
+                if allowed_res is not None and node not in allowed_res:
+                    return GateResult(
+                        action=GateAction.HALT,
+                        status="HALTED",
+                        latency_ms=(time.perf_counter() - t0) * 1000,
+                        gate_name="PermissionGate",
+                        reason=f"Resource node '{node}' outside allowed scope resources: {allowed_res}",
+                        confidence=0.0
+                    )
+
+                if self.allowed_actions and op not in self.allowed_actions:
+                    return GateResult(
+                        action=GateAction.HALT,
+                        status="HALTED",
+                        latency_ms=(time.perf_counter() - t0) * 1000,
+                        gate_name="PermissionGate",
+                        reason=f"Operation '{op}' not in gate allowed_actions",
+                        confidence=0.0
+                    )
+
+        # Check scope restrictions and RMM quarantine rules from the payload/context
         if scope.get("is_rmm_origin", False):
-            proposed_actions = context.get("proposed_actions", [])
             for action in proposed_actions:
                 op = action.get("op") if isinstance(action, dict) else getattr(action, "op", None)
                 if op in {"update_db", "issue_binder", "api_call", "web_search"}:
@@ -178,8 +234,8 @@ class PermissionGate(Gate):
                         confidence=0.0
                     )
 
-        # Serialize payload and proposed actions to string for deep inspection
-        inspection_target = json.dumps({"payload": payload, "actions": context.get("proposed_actions", [])})
+        # Serialize payload and proposed actions to string for deep regex inspection
+        inspection_target = json.dumps({"payload": payload, "actions": proposed_actions})
 
         if self.injection_regex.search(inspection_target):
             return GateResult(
@@ -255,7 +311,7 @@ class TriangulationGate(Gate):
             action=GateAction.ALLOW, 
             latency_ms=(time.perf_counter() - t0) * 1000, 
             gate_name="TriangulationGate",
-            divergence=divergence if 'divergence' in locals() else 0.0
+            divergence=divergence
         )
 
 
