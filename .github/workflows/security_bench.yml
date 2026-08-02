@@ -39,6 +39,9 @@ jobs:
         # --exit-zero ensures syntax warnings are logged but don't instantly kill the pipeline
         flake8 . --exit-zero 
 
+    - name: Prepare Telemetry Artifact Directory
+      run: mkdir -p results
+
     - name: Execute Epistemic Layer Benchmarks
       env:
         PYTHONPATH: .
