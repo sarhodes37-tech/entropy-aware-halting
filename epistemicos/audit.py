@@ -1,4 +1,3 @@
-
 """
 EpistemicOS Tamper-Evident Audit Logger.
 
@@ -108,7 +107,7 @@ class TamperEvidentAuditTrail:
 
         # Compile strict structural metadata
         event_metadata = metadata or {}
-        
+
         if cpr_snapshot:
             # Enforce egress masking to keep PII out of the permanent immutable log
             event_metadata["cpr_state"] = cpr_snapshot.mask_egress_payload()
@@ -202,8 +201,8 @@ class TamperEvidentAuditTrail:
 
                 expected_prev_hash = recorded_hash
                 count += 1
-
-return True, count, None
+                
+        return True, count, None
 
 
 class ReceiptGenerator:
