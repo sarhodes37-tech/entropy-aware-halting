@@ -43,9 +43,7 @@ class EpistemicOrchestrator:
         if scheduler:
             self.scheduler = scheduler
         else:
-            # Pass priors down to the scheduler if they exist
-            kwargs = {"prior_probabilities": prior_probabilities} if prior_probabilities else {}
-            self.scheduler = EntropyAwareScheduler(**kwargs)
+            self.scheduler = EntropyAwareScheduler()
 
         # Plug the dead wire back in so logs actually route to Google Drive
         self.audit_logger = TamperEvidentAuditTrail(log_path=self.audit_log_path) 
