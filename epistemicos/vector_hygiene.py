@@ -25,7 +25,7 @@ class VectorStoreAdapter:
 
         try:
             # 1. Pinecone Client Interface
-            if hasattr(self.db_client, "delete"):
+            if hasattr(self.db_client, "delete") and callable(getattr(self.db_client, "delete")):
                 if namespace:
                     self.db_client.delete(ids=vector_ids, namespace=namespace)
                 else:
@@ -33,12 +33,12 @@ class VectorStoreAdapter:
                 return True
 
             # 2. ChromaDB / Qdrant Interface
-            elif hasattr(self.db_client, "delete_vectors"):
+            if hasattr(self.db_client, "delete_vectors") and callable(getattr(self.db_client, "delete_vectors")):
                 self.db_client.delete_vectors(vector_ids=vector_ids)
                 return True
 
             # 3. Generic ID-based Deletion Interface
-            elif hasattr(self.db_client, "delete_by_ids"):
+            if hasattr(self.db_client, "delete_by_ids") and callable(getattr(self.db_client, "delete_by_ids")):
                 self.db_client.delete_by_ids(vector_ids)
                 return True
 
@@ -119,9 +119,8 @@ class VectorHygieneManager:
         """
         try:
             yield self
-            with self._lock:
-                if trajectory_id in self._active_trajectories:
-                    self.commit_trajectory(trajectory_id)
+            if self.get_staged_count(trajectory_id) > 0:
+                self.commit_trajectory(trajectory_id)
         except Exception as err:
             logger.error(f"Trajectory [{trajectory_id}] aborted due to exception: {err}. Auto-revoking vectors.")
             self.revoke_trajectory(trajectory_id, namespace=namespace)
