@@ -23,7 +23,7 @@ from epistemicos.gates import (
 )
 
 class EpistemicOrchestrator:
-        def register_gate(self, gate, *args, **kwargs):
+    def register_gate(self, gate, *args, **kwargs):
         """Dynamically append a security gate to the pipeline."""
         if not hasattr(self, "gates") or self.gates is None:
             self.gates = []
