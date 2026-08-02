@@ -1,0 +1,81 @@
+name: EpistemicOS CI/CD
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  static-analysis:
+    name: Lint & Security Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          
+      - name: Install Linting & Security Tools
+        run: |
+          python -m pip install --upgrade pip
+          pip install flake8 bandit mypy
+          
+      - name: Run Flake8 (Syntax & Style)
+        run: flake8 epistemicos/ tests/ --count --select=E9,F63,F7,F82 --show-source --statistics
+        
+      - name: Run Bandit (Security Auditing)
+        # B101 ignores standard asserts in tests. We want to catch real vulnerabilities.
+        run: bandit -r epistemicos/ -ll -ii
+
+  test-core-isolation:
+    name: Core Isolation Test (Zero-Dependency)
+    needs: static-analysis
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          
+      - name: Install Core Package Only
+        run: |
+          python -m pip install --upgrade pip
+          # Installs ONLY the local package, no heavy extras
+          pip install -e .
+          
+      - name: Verify Lazy Loading
+        # If any heavy dependency leaked into the global scope, this import will crash the pipeline
+        run: |
+          python -c "import epistemicos; print('Core imported successfully without PyTorch.')"
+
+  test-full-execution:
+    name: Full Execution Suite
+    needs: test-core-isolation
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.11"]
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          
+      - name: Install Full Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          # Assumes you have an [all] or [test] extra in your setup.py/pyproject.toml
+          # Example: pip install -e ".[test]"
+          pip install pytest pytest-cov torch transformers
+          pip install -e .
+          
+      - name: Run Pytest with Coverage
+        run: |
+          pytest tests/ --cov=epistemicos --cov-report=xml --cov-report=term-missing
