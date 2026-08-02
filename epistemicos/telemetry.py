@@ -92,8 +92,8 @@ class ResourceProfiler:
             if res_mb > 0:
                 frag_index = (res_mb - alloc_mb) / res_mb
 
-        # Default to wall clock if CUDA timing isn't available
-        effective_time = self.cuda_time_ms if self.use_cuda else self.wall_clock_ms
+        # Default to wall clock if CUDA timing isn't available, with a safe fallback
+        effective_time = getattr(self, "cuda_time_ms", 0.0) if getattr(self, "use_cuda", False) else getattr(self, "wall_clock_ms", 0.0)
 
         return HardwareTelemetry(
             wall_clock_ms=round(self.wall_clock_ms, 2),
