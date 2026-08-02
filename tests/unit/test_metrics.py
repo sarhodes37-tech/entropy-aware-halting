@@ -5,7 +5,7 @@ AST persistence streaks, and Structural Risk Index calculations.
 """
 
 import pytest
-from epistemicos.telemtry import (
+from epistemicos.telemetry import (
     ASTAnalyzer,
     calculate_entropy_differential,
     calculate_rolling_entropy,
