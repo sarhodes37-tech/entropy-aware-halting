@@ -548,7 +548,7 @@ def test_governance_os_stateful_key_revocation():
 import pytest
 from epistemicos.core import EpistemicOrchestrator
 from epistemicos.gates import EntropyGate, PermissionGate, CryptoAttestationGate
-from epistemicos.cpr import CanonicalProblemRepresentation
+from epistemicos.models import CanonicalProblemRepresentation
 
 # Mock DLT Logger for headless test environments
 class MockOffChainDB:
