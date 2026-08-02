@@ -2,70 +2,61 @@ import time
 from typing import Dict, Any, Tuple, Optional, List, Set
 
 from epistemicos.audit import TamperEvidentAuditTrail, AuditLogLevel
-from epistemicos.gates import (
-    GateAction, GateResult, EntropyGate, PermissionGate, 
-    TriangulationGate, CryptoAttestationGate
-)
+from epistemicos.gates import GateAction
 
 
 class EpistemicOrchestrator:
     """
-    The main runtime wrapper coordinating low-latency hard gates and
-    cryptographic audit logging.
+    Consolidated runtime wrapper coordinating dynamic hard gates,
+    stateful revocation, and cryptographic audit logging.
     """
     def __init__(
         self,
-        convergence_threshold: float, 
-        cost_lambda: float = 0.01,  # Add this parameter!
-        **kwargs
-    ):
-        self.convergence_threshold = convergence_threshold
-        self.cost_lambda = cost_lambda
-        allowed_tools: List[str],
-        active_gates: Optional[List[str]] = None,
+        prior_probabilities: Optional[Dict[str, float]] = None,
         model_id: str = "target-llm-v1",
         log_file_path: Optional[str] = None
     ):
         self.model_id = model_id
-
-        # Initialize concrete gate instances mapped to keys
-        self.gate_registry = {
-            "entropy": EntropyGate(),
-            "permission": PermissionGate(allowed_actions=allowed_tools),
-            "triangulation": TriangulationGate(),
-            "crypto": CryptoAttestationGate()
-        }
-
-        # Normalize active gates to a lookup set
-        if active_gates is None:
-            self.active_gates: Set[str] = {"entropy", "permission", "triangulation"}
-        else:
-            self.active_gates = {g.lower().replace("gate", "") for g in active_gates}
+        self.prior_probabilities = prior_probabilities or {}
+        
+        # Dynamic registries to support stateful testing
+        self.gate_registry: Dict[str, Any] = {}
+        self.active_gates: Set[str] = set()
 
         if log_file_path:
             self.audit_logger = TamperEvidentAuditTrail(log_file_path=log_file_path)
         else:
             self.audit_logger = TamperEvidentAuditTrail()
 
-    def process_step(
+    def register_gate(self, name: str, gate_instance: Any) -> None:
+        """Dynamically add a gate to the execution pipeline."""
+        self.gate_registry[name] = gate_instance
+        self.active_gates.add(name)
+
+    def process_submission(
         self,
-        token_logits: List[float],
-        accumulated_output: str,
-        raw_payload: Optional[Dict[str, Any]] = None,
-        crypto_context: Optional[Dict[str, Any]] = None,
+        raw_payload: Dict[str, Any],
+        likelihoods: Optional[Dict[str, float]] = None,
+        token_logprobs: Optional[List[float]] = None,
+        proposed_actions: Optional[List[Dict[str, Any]]] = None,
+        crypto_metadata: Optional[Dict[str, Any]] = None,
         **kwargs
-    ) -> Tuple[GateAction, float, List[str]]:
-        
+    ) -> Dict[str, Any]:
+        """
+        Evaluates payloads against all registered gates and returns a stateful receipt.
+        """
         t_start = time.perf_counter()
         reasons = []  
+        final_action = GateAction.ALLOW
 
         # Construct standard evaluation contexts 
-        payload = raw_payload or {}
         context = {
-            "token_logits": token_logits,
-            "accumulated_output": accumulated_output,
-            "cryptography": crypto_context or {},
-            **kwargs  # Merges any extra arguments into the context dictionary
+            "likelihoods": likelihoods or {},
+            "token_logprobs": token_logprobs or [],
+            "proposed_actions": proposed_actions or [],
+            "cryptography": crypto_metadata or {},
+            "prior_probabilities": self.prior_probabilities,
+            **kwargs  # Absorbs any extra metadata seamlessly
         }
 
         # Stream evaluation pipeline
@@ -74,11 +65,11 @@ class EpistemicOrchestrator:
             if not gate:
                 continue
 
-            res = gate.evaluate(payload, context)
+            res = gate.evaluate(raw_payload, context)
 
             if res.action != GateAction.ALLOW:
-                total_latency = (time.perf_counter() - t_start) * 1000
-                reason_str = res.reason or f"{res.gate_name} Boundary Violation"
+                final_action = res.action
+                reason_str = res.reason or f"{gate_name} Boundary Violation"
                 reasons.append(reason_str)
 
                 # Map standard actions to audit log levels
@@ -86,13 +77,27 @@ class EpistemicOrchestrator:
 
                 self.audit_logger.record_event(
                     event_type=audit_level,
-                    gate_name=res.gate_name,
+                    gate_name=gate_name,
                     reason=reason_str,
                     model_id=self.model_id,
-                    execution_latency_ms=total_latency,
-                    payload_snippet=accumulated_output if accumulated_output else str(payload)
+                    execution_latency_ms=(time.perf_counter() - t_start) * 1000,
+                    payload_snippet=str(raw_payload)
                 )
-                return res.action, total_latency, reasons
+                
+                # Short-circuit on the first hard failure
+                break
 
         total_latency = (time.perf_counter() - t_start) * 1000
-        return GateAction.ALLOW, total_latency, []
+        
+        # Stateful Receipt Generation
+        receipt = {
+            "status": "APPROVED" if final_action == GateAction.ALLOW else "REJECTED",
+            "latency_ms": total_latency,
+            "reasons": reasons,
+            "crypto_state": "VERIFIED" if (final_action == GateAction.ALLOW and crypto_metadata) else "REVOKED_OR_MISSING"
+        }
+
+        return {
+            "action": final_action,
+            "receipt": receipt
+        }
