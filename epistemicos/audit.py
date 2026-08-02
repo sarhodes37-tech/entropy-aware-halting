@@ -1,3 +1,11 @@
+"""
+EpistemicOS Tamper-Evident Audit Logger.
+
+Append-only, cryptographically chained JSON-Lines audit logger.
+Now natively integrates unified domain models and hardware telemetry 
+for regulatory compliance and enterprise security audits.
+"""
+
 import os
 import hashlib
 import json
@@ -12,6 +20,10 @@ try:
     HAS_FCNTL = True
 except ImportError:
     HAS_FCNTL = False
+
+# Import unified models and telemetry layers
+from epistemicos.models import CanonicalProblemRepresentation, BeliefObject
+from epistemicos.telemetry import HardwareTelemetry
 
 
 class AuditLogLevel(Enum):
@@ -78,25 +90,45 @@ class TamperEvidentAuditTrail:
         gate_name: str,
         reason: str,
         model_id: str,
-        execution_latency_ms: float,
         payload_snippet: str,
+        execution_latency_ms: Optional[float] = None,
+        cpr_snapshot: Optional[CanonicalProblemRepresentation] = None,
+        telemetry: Optional[HardwareTelemetry] = None,
+        belief_snapshot: Optional[BeliefObject] = None,
         metadata: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """
         Logs an event and appends it to the immutable hash chain with file locking.
+        Automatically masks PII from CPR before serialization.
         """
         event_id = str(uuid.uuid4())
         timestamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-
-        # Payload hash to avoid logging sensitive raw data directly into disk logs
         payload_hash = hashlib.sha256(payload_snippet.encode("utf-8")).hexdigest()
+
+        # Compile strict structural metadata
+        event_metadata = metadata or {}
+        
+        if cpr_snapshot:
+            # Enforce egress masking to keep PII out of the permanent immutable log
+            event_metadata["cpr_state"] = cpr_snapshot.mask_egress_payload()
+        if telemetry:
+            # Dataclass serialization
+            event_metadata["hardware_telemetry"] = telemetry.__dict__
+            # Use hardware telemetry wall clock if execution latency wasn't manually passed
+            if execution_latency_ms is None:
+                execution_latency_ms = telemetry.wall_clock_ms
+        if belief_snapshot:
+            # Pydantic serialization
+            event_metadata["belief_state"] = belief_snapshot.model_dump()
+
+        # Fallback if no latency provided
+        final_latency = round(execution_latency_ms, 4) if execution_latency_ms is not None else 0.0
 
         with open(self.log_path, "a+", encoding="utf-8") as f:
             if HAS_FCNTL:
                 fcntl.flock(f, fcntl.LOCK_EX)
 
             try:
-                # Re-fetch last_hash under file lock to eliminate multi-process race conditions
                 last_hash = self._get_last_hash()
 
                 entry_data = {
@@ -106,18 +138,16 @@ class TamperEvidentAuditTrail:
                     "gate_name": gate_name,
                     "reason": reason,
                     "model_id": model_id,
-                    "latency_ms": round(execution_latency_ms, 4),
+                    "latency_ms": final_latency,
                     "payload_hash": payload_hash,
-                    "payload_snippet": payload_snippet[:200],  # Truncated snippet
-                    "metadata": metadata or {},
+                    "payload_snippet": payload_snippet[:200],
+                    "metadata": event_metadata,
                     "prev_hash": last_hash
                 }
 
-                # Calculate entry hash incorporating the previous entry's hash
                 entry_hash = self._compute_hash(last_hash, entry_data)
                 entry_data["entry_hash"] = entry_hash
 
-                # Write record and flush to disk
                 f.write(json.dumps(entry_data) + "\n")
                 f.flush()
 
@@ -152,7 +182,6 @@ class TamperEvidentAuditTrail:
                 recorded_hash = entry.get("entry_hash")
                 recorded_prev_hash = entry.get("prev_hash")
 
-                # Verify previous chain link matches
                 if recorded_prev_hash != expected_prev_hash:
                     return (
                         False,
@@ -160,7 +189,6 @@ class TamperEvidentAuditTrail:
                         f"Broken chain link at line {line_idx}. Expected prev_hash {expected_prev_hash}, got {recorded_prev_hash}"
                     )
 
-                # Re-compute entry hash excluding the entry_hash field itself
                 check_data = {k: v for k, v in entry.items() if k != "entry_hash"}
                 computed_hash = self._compute_hash(recorded_prev_hash, check_data)
 
@@ -173,5 +201,3 @@ class TamperEvidentAuditTrail:
 
                 expected_prev_hash = recorded_hash
                 count += 1
-
-        return True, count, None
