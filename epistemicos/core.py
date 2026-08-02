@@ -30,19 +30,26 @@ class EpistemicOrchestrator:
         enable_telemetry=False,
         scheduler=None,
         db_client=None,
-        model_id="epistemic-core-v1"  # Fixed missing model_id
+        model_id="epistemic-core-v1",
+        prior_probabilities=None  # Restored to fix Layer 4 Benchmark crashes
     ):
         self.audit_log_path = audit_log_path
         self.enforce_determinism = enforce_determinism
         self.enable_telemetry = enable_telemetry
         self.model_id = model_id
-        
+        self.prior_probabilities = prior_probabilities
+
         # Core Subsystems
-        self.scheduler = scheduler or EntropyAwareScheduler()
-        
+        if scheduler:
+            self.scheduler = scheduler
+        else:
+            # Pass priors down to the scheduler if they exist
+            kwargs = {"prior_probabilities": prior_probabilities} if prior_probabilities else {}
+            self.scheduler = EntropyAwareScheduler(**kwargs)
+
         # Plug the dead wire back in so logs actually route to Google Drive
         self.audit_logger = TamperEvidentAuditTrail(log_path=self.audit_log_path) 
-        
+
         # Pass the db_client properly
         self.vector_manager = VectorHygieneManager(db_client=db_client)
 
@@ -51,9 +58,9 @@ class EpistemicOrchestrator:
             CryptoAttestationGate(),
             PermissionGate(),
             TriangulationGate(),
-            EntropyGate(z_threshold=2.85, window_size=10)
+            # Tightened the valve from 2.85 to 1.5 to catch corporate coercion 
+            EntropyGate(z_threshold=1.5, window_size=10)
         ]
-
 
     def process_step(self, probabilities, cost, state) -> DecisionResult:
         """Handles the low-level entropy scheduling loop."""
@@ -92,7 +99,7 @@ class EpistemicOrchestrator:
 
         # 2. Execute Defense-in-Depth Pipeline under Telemetry
         with ResourceProfiler(device="cuda", token_count=context.get("token_count", 1)) as profiler:
-            
+
             # Wrap execution in the vector hygiene scope to catch runtime crashes
             with self.vector_manager.trajectory_scope(traj_id):
                 payload_dump = cpr.model_dump()
@@ -103,10 +110,10 @@ class EpistemicOrchestrator:
                     if result.action == GateAction.HALT:
                         # 3a. Pipeline Halt: Veto triggers audit log AND vector revocation
                         telemetry = profiler.get_telemetry()
-                        
+
                         # Explicitly revoke vectors before returning
                         revoked_ids = self.vector_manager.revoke_trajectory(traj_id)
-                        
+
                         self.audit_logger.record_event(
                             event_type=AuditLogLevel.HALT,
                             gate_name=result.gate_name,
