@@ -1,5 +1,5 @@
 from typing import Dict, Any, Tuple
-from epistemicos.engine import EpistemicOrchestrator
+from epistemicos.core import EpistemicOrchestrator
 
 class ReplayEngine:
     def __init__(self, current_orchestrator: EpistemicOrchestrator):
