@@ -302,10 +302,19 @@ def test_spoofed_client_attempt_counter_neutralized(orchestrator, base_spoof_pay
     assert res3["status"] == "HALTED"
 
     # Attempt 4: Exceeds max_attempts (4 > 3) -> Server halts immediately due to retry exhaustion
-    res4 = orchestrator.process_submission(base_spoof_payload, context_clean, trajectory_id=session_id)
+    breached_payload = base_spoof_payload.copy()
+    breached_payload["scope"] = {
+        "attempt_count": 4, 
+        "max_attempts": 3,
+        "allowed_resources": ["logistics_db"],
+        "allowed_operations": ["read", "update_db"]
+    }
+    
+    res4 = orchestrator.process_submission(breached_payload, context_clean, trajectory_id=session_id)
     assert res4["status"] == "HALTED"
     assert res4["gate"] == "PermissionGate"  # Or attempt cap enforcement boundary
     assert "attempt" in res4["reason"].lower()
+
 
 
 def test_lateral_breakout_blocked_by_permission_gate():
