@@ -64,3 +64,65 @@ def test_trajectory_context_manager_auto_revoke_on_exception():
 
     assert manager.get_staged_count(traj_id) == 0
     mock_db.delete.assert_called_once_with(ids=["vec_err_1"])
+
+# ==========================================
+# COVERAGE GAPS: ADAPTER FALLBACKS & EXCEPTIONS
+# ==========================================
+
+def test_purge_vectors_chromadb_interface():
+    """Validates fallback to ChromaDB/Qdrant 'delete_vectors' interface."""
+    mock_db = MagicMock()
+    mock_db.delete_vectors = MagicMock()
+    del mock_db.delete  # Erase Pinecone interface to force fallback
+    
+    manager = VectorHygieneManager(db_client=mock_db)
+    manager.adapter.purge_vectors(["vec_1"])
+    mock_db.delete_vectors.assert_called_once_with(vector_ids=["vec_1"])
+
+
+def test_purge_vectors_generic_interface():
+    """Validates fallback to generic 'delete_by_ids' interface."""
+    mock_db = MagicMock()
+    mock_db.delete_by_ids = MagicMock()
+    del mock_db.delete
+    del mock_db.delete_vectors
+    
+    manager = VectorHygieneManager(db_client=mock_db)
+    manager.adapter.purge_vectors(["vec_1"])
+    mock_db.delete_by_ids.assert_called_once_with(["vec_1"])
+
+
+def test_purge_vectors_no_supported_interface():
+    """Validates safe failure when no known deletion methods exist."""
+    mock_db = MagicMock()
+    del mock_db.delete
+    del mock_db.delete_vectors
+    del mock_db.delete_by_ids
+    
+    manager = VectorHygieneManager(db_client=mock_db)
+    assert manager.adapter.purge_vectors(["vec_1"]) is False
+
+
+def test_purge_vectors_exception_handling():
+    """Validates exception swallowing during backend outage."""
+    mock_db = MagicMock()
+    mock_db.delete.side_effect = Exception("Simulated DB Connection Timeout")
+    
+    manager = VectorHygieneManager(db_client=mock_db)
+    assert manager.adapter.purge_vectors(["vec_1"]) is False
+
+
+def test_stage_vectors_empty_list():
+    """Validates early exit when staging an empty array."""
+    manager = VectorHygieneManager()
+    manager.stage_vectors("traj_empty", [])
+    assert manager.get_staged_count("traj_empty") == 0
+    
+    
+def test_trajectory_scope_no_vectors_staged():
+    """Validates trajectory commit block bypass when count is 0."""
+    manager = VectorHygieneManager()
+    with manager.trajectory_scope("traj_empty"):
+        pass  # Do not stage any vectors
+    assert manager.get_staged_count("traj_empty") == 0
+
