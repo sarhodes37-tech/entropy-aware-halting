@@ -303,8 +303,8 @@ def test_spoofed_client_attempt_counter_neutralized(orchestrator, base_spoof_pay
     breached_payload["scope"] = {
         "attempt_count": 4,
         "max_attempts": 3,
-        "allowed_resources": ["logistics_db"],
-        "allowed_operations": ["read", "update_db"]
+        "allowed_resources": ["NONE"],
+        "allowed_operations": ["read"]
     }
 
     res4 = orchestrator.process_submission(breached_payload, context_clean, trajectory_id=session_id)
