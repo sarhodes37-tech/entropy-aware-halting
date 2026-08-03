@@ -28,7 +28,7 @@ def test_telemetry_no_torch_fallback():
 
 
 @patch("epistemicos.telemetry.HAS_TORCH", True)
-@patch("epistemicos.telemetry.torch")
+@patch("epistemicos.telemetry.torch",create=True)
 def test_resource_profiler_cuda_active(mock_torch):
     """Validates VRAM and fragmentation math when CUDA profiling is active."""
     mock_torch.cuda.is_available.return_value = True
