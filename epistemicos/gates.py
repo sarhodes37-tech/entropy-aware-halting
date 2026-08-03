@@ -162,7 +162,7 @@ class PermissionGate(Gate):
     
     Intercepts unauthorized tool calls, sandbox escape attempts, and 
     system override prompt injections embedded deep within commercial 
-    underwriting text fields (like operations_description or special_conditions).
+    underwriting text fields.
     """
 
     def __init__(self, contract_model: Any = None, allowed_actions: Optional[List[str]] = None):
@@ -180,15 +180,34 @@ class PermissionGate(Gate):
 
         scope = payload.get("scope", {}) or context.get("scope", {})
         proposed_actions = context.get("proposed_actions", []) or payload.get("proposed_actions", [])
+        llm_output = context.get("llm_output") or payload.get("llm_output")
 
-        # Validate explicit scope boundaries if specified in payload or context
+        # 1. Enforce Pydantic Contract Model validation on LLM output if provided
+        if self.contract_model is not None and llm_output is not None:
+            try:
+                if isinstance(llm_output, dict):
+                    self.contract_model(**llm_output)
+                elif hasattr(self.contract_model, "model_validate"):
+                    self.contract_model.model_validate(llm_output)
+            except Exception as e:
+                return GateResult(
+                    action=GateAction.HALT,
+                    status="HALTED",
+                    latency_ms=(time.perf_counter() - t0) * 1000,
+                    gate_name="PermissionGate",
+                    reason=f"Contract Schema Violation: {str(e)}",
+                    confidence=0.0,
+                    vectors_revoked=1
+                )
+
+        # 2. Validate explicit scope boundaries if specified
         allowed_ops = scope.get("allowed_operations")
         allowed_res = scope.get("allowed_resources")
 
         if allowed_ops is not None or allowed_res is not None or self.allowed_actions:
             for action in proposed_actions:
                 op = action.get("op") if isinstance(action, dict) else getattr(action, "op", None)
-                node = action.get("node") if isinstance(action, dict) else getattr(action, "node", None)
+                node = (action.get("node") or action.get("endpoint")) if isinstance(action, dict) else (getattr(action, "node", None) or getattr(action, "endpoint", None))
 
                 if allowed_ops is not None and op not in allowed_ops:
                     return GateResult(
@@ -200,7 +219,7 @@ class PermissionGate(Gate):
                         confidence=0.0
                     )
 
-                if allowed_res is not None and node not in allowed_res:
+                if allowed_res is not None and node is not None and node not in allowed_res:
                     return GateResult(
                         action=GateAction.HALT,
                         status="HALTED",
@@ -220,7 +239,7 @@ class PermissionGate(Gate):
                         confidence=0.0
                     )
 
-        # Check scope restrictions and RMM quarantine rules from the payload/context
+        # 3. Check RMM quarantine rules
         if scope.get("is_rmm_origin", False):
             for action in proposed_actions:
                 op = action.get("op") if isinstance(action, dict) else getattr(action, "op", None)
@@ -234,8 +253,8 @@ class PermissionGate(Gate):
                         confidence=0.0
                     )
 
-        # Serialize payload and proposed actions to string for deep regex inspection
-        inspection_target = json.dumps({"payload": payload, "actions": proposed_actions})
+        # 4. Deep Regex inspection for injections/jailbreaks
+        inspection_target = json.dumps({"payload": payload, "actions": proposed_actions, "output": llm_output})
 
         if self.injection_regex.search(inspection_target):
             return GateResult(
@@ -254,6 +273,7 @@ class PermissionGate(Gate):
             latency_ms=(time.perf_counter() - t0) * 1000, 
             gate_name="PermissionGate"
         )
+
 
 
 class TriangulationGate(Gate):
