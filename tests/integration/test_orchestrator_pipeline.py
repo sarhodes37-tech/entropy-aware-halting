@@ -560,5 +560,3 @@ def test_full_dlt_pipeline_and_gdpr_deletion():
     """
     priors = {"preferred": 0.5, "standard": 0.3, "substandard": 0.2}
     orchestrator = EpistemicOrchestrator(prior_probabilities=priors)
-
-    o
