@@ -27,15 +27,11 @@ jobs:
     - name: Install Core Package & Test Harness Dependencies
       run: |
         python -m pip install --upgrade pip
-        
-        # Aligning with the main pipeline to ensure all required telemetry plugins are present
         pip install -e .[ml,test]
-        # Explicitly install flake8 for the syntax step
         pip install flake8
 
     - name: Run Flake8 (Syntax & Style)
       run: |
-        # --exit-zero ensures syntax warnings are logged but don't instantly kill the pipeline
         flake8 . --exit-zero 
 
     - name: Prepare Telemetry Artifact Directory
@@ -46,16 +42,18 @@ jobs:
         PYTHONPATH: .
       run: |
         echo "Executing layered boundary tests and ablation matrix..."
-        # Running the full suite ensures conftest.py fixtures that generate the JSON are triggered
         pytest tests/ benchmarks/ -v
         
-        # Universal catch-and-move for the artifact
-        file_path=$(find . -name "ablation_telemetry.json" -type f | head -n 1)
-        if [ -n "$file_path" ]; then
-          echo "Found telemetry artifact at: $file_path"
-          cp "$file_path" results/ablation_telemetry.json
+        if [ -f "results/ablation_telemetry.json" ]; then
+          echo "Telemetry artifact verified at results/ablation_telemetry.json."
         else
-          echo "WARNING: Pytest finished but no telemetry file was generated."
+          file_path=$(find . -name "ablation_telemetry.json" -type f | head -n 1)
+          if [ -n "$file_path" ]; then
+            echo "Found telemetry artifact at: $file_path. Copying to results/..."
+            cp "$file_path" results/ablation_telemetry.json
+          else
+            echo "WARNING: Pytest finished but no telemetry file was generated."
+          fi
         fi
 
     - name: Enforce Zero-Regression Security Policy
