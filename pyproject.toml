@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}
 authors = [
-    {name = "EpistemicOS Engineering", email = "admin@epistemicos.org"}
+    {name = "Steven Rhodes", email = "sarhodes37@gmail.com"}
 ]
 classifiers = [
     "Development Status :: 4 - Beta",
