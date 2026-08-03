@@ -1,9 +1,10 @@
 """
 Unit tests for epistemicos.models.
 Targets edge cases in Popperian contracts, Bayesian updates, 
-PermissionScope quarantine logic, and CPR serialization.
+PermissionScope quarantine logic, CPR serialization, and Surprisal Sensors.
 """
 
+import math
 import pytest
 from epistemicos.models import (
     PopperianContract,
@@ -11,11 +12,44 @@ from epistemicos.models import (
     BeliefObject,
     PermissionScope,
     CanonicalProblemRepresentation,
-    EpistemicStatus
+    EpistemicStatus,
+    BayesianBeliefKernel,
+    TokenSurprisalSensor
 )
 
 # ==========================================
-# POPPERIAN CONTRACT TESTS (Lines 115-123)
+# TOKEN SURPRISAL SENSOR TESTS
+# ==========================================
+def test_token_surprisal_sensor_empty_logprobs():
+    """Validates safe handling of empty telemetry streams."""
+    sensor = TokenSurprisalSensor()
+    assert sensor.compute_z_scores([]) == []
+
+
+# ==========================================
+# BAYESIAN BELIEF KERNEL TESTS
+# ==========================================
+def test_bayesian_belief_kernel_update_and_map():
+    """Validates posterior normalization and MAP estimation in the core kernel."""
+    priors = {"H_SAFE": 0.6, "H_COMPROMISED": 0.4}
+    kernel = BayesianBeliefKernel(prior_probabilities=priors)
+
+    # Evidence strongly suggests compromise
+    likelihoods = {"H_SAFE": 0.2, "H_COMPROMISED": 0.8}
+    
+    posteriors = kernel.update_beliefs(likelihoods)
+    
+    # Unnormalized: H_SAFE = 0.6 * 0.2 = 0.12. H_COMPROMISED = 0.4 * 0.8 = 0.32
+    # Total evidence = 0.44
+    # Normalized: 0.12/0.44 = 0.2727..., 0.32/0.44 = 0.7272...
+    assert math.isclose(posteriors["H_SAFE"], 0.27272727, rel_tol=1e-5)
+    assert math.isclose(posteriors["H_COMPROMISED"], 0.72727272, rel_tol=1e-5)
+    
+    assert kernel.get_map_estimate() == "H_COMPROMISED"
+
+
+# ==========================================
+# POPPERIAN CONTRACT TESTS
 # ==========================================
 @pytest.mark.parametrize("operator, observed, threshold, expected", [
     (">", 10.0, 5.0, True),
@@ -54,7 +88,7 @@ def test_popperian_contract_unsupported_operator():
 
 
 # ==========================================
-# BAYESIAN BELIEF KERNEL TESTS (Lines 137-142, 160-167, 170-174)
+# BELIEF OBJECT TESTS
 # ==========================================
 def test_bayes_factor_update_computation():
     """Validates the Pydantic validator computes Bayes factors correctly."""
@@ -65,7 +99,7 @@ def test_bayes_factor_update_computation():
         p_evidence_given_not_hypothesis=0.2
     )
     assert update.bayes_factor == 4.0
-    assert update.bayes_factor_db == 6.02  # 10 * log10(4)
+    assert update.bayes_factor_db == 6.02
 
 
 def test_belief_object_update_and_falsify():
@@ -88,7 +122,6 @@ def test_belief_object_update_and_falsify():
         popp_contract=contract
     )
 
-    # 1. Update belief (Lines 160-167)
     update = BayesFactorUpdate(
         evidence_id="ev_002",
         source_provenance=["telemetry"],
@@ -96,19 +129,42 @@ def test_belief_object_update_and_falsify():
         p_evidence_given_not_hypothesis=0.1
     )
     belief.update_belief(update)
-    assert belief.current_posterior == 0.9  # BF is 9.0, Prior odds 1.0 -> Posterior odds 9.0 -> Prob 0.9
+    assert belief.current_posterior == 0.9
     assert len(belief.evidence_ledger) == 1
 
-    # 2. Check and Apply Falsification (Lines 170-174)
-    # Threshold is > 200. We pass 250 to trigger falsification.
+    # Apply Falsification (True branch)
     falsified = belief.check_and_apply_falsification(250.0)
     assert falsified is True
     assert belief.status == EpistemicStatus.FALSIFIED
     assert belief.current_posterior == 0.01
 
 
+def test_belief_object_falsification_safe_bounds():
+    """Validates the negative branch when observation remains within safe parameters."""
+    contract = PopperianContract(
+        claim_id="claim_004",
+        target_metric="latency",
+        falsification_threshold=200.0,
+        comparison_operator=">",
+        observation_window_days=7
+    )
+    belief = BeliefObject(
+        belief_id="bel_002",
+        cpr_frame_id="cpr_002",
+        assertion="System stable",
+        prior_probability=0.5,
+        current_posterior=0.5,
+        popp_contract=contract
+    )
+    
+    # Metric is 150 (Safe, does not breach > 200 threshold)
+    falsified = belief.check_and_apply_falsification(150.0)
+    assert falsified is False
+    assert belief.status == EpistemicStatus.UNVERIFIED
+
+
 # ==========================================
-# PERMISSION SCOPE TESTS (Lines 198, 206-209)
+# PERMISSION SCOPE TESTS
 # ==========================================
 def test_permission_scope_quarantine_rmm_mutating_action():
     """Validates RMM origin flag blocks mutating operations like 'update_db'."""
@@ -116,14 +172,8 @@ def test_permission_scope_quarantine_rmm_mutating_action():
         allowed_operations=["read", "update_db"],
         is_rmm_origin=True
     )
-    
-    # Should be true because of is_rmm_origin
     assert scope.is_quarantined_channel() is True
-    
-    # update_db is explicitly in the mutating_operations set
     assert scope.validate_action({"op": "update_db"}) is False
-    
-    # read is not mutating, should be allowed
     assert scope.validate_action({"op": "read"}) is True
 
 
@@ -131,15 +181,24 @@ def test_permission_scope_quarantine_subnet_mutating_action():
     """Validates subnet prefix matching blocks mutating operations."""
     scope = PermissionScope(
         allowed_operations=["read", "issue_binder"],
-        origin_subnet="10.240.5.15"  # Matches quarantine prefix "10.240."
+        origin_subnet="10.240.5.15"
     )
-    
     assert scope.is_quarantined_channel() is True
     assert scope.validate_action({"op": "issue_binder"}) is False
 
 
+def test_permission_scope_clean_internal_subnet():
+    """Validates safe internal subnets bypass the quarantine lock."""
+    scope = PermissionScope(
+        allowed_operations=["read", "issue_binder"],
+        origin_subnet="192.168.1.150"
+    )
+    assert scope.is_quarantined_channel() is False
+    assert scope.validate_action({"op": "issue_binder"}) is True
+
+
 # ==========================================
-# CPR SERIALIZATION TESTS (Lines 254-262)
+# CPR SERIALIZATION TESTS
 # ==========================================
 def test_cpr_serialize_fleet_data():
     """Validates metric extraction when fleet_data is present."""
@@ -151,7 +210,6 @@ def test_cpr_serialize_fleet_data():
             "loss_modifier": 1.25
         }
     )
-    # Expected: [500/100, 2500/1000, 1.25]
     assert cpr.serialize_for_belief_kernel() == [5.0, 2.5, 1.25]
 
 
@@ -164,8 +222,6 @@ def test_cpr_serialize_risk_details():
             "loss_ratio_3yr": 0.95
         }
     )
-    # Expected: [primary_metric, loss_ratio_3yr, 0.0] (Wait, code returns [metric, mod], let's check exact return length)
-    # The code returns [self.primary_metric or 0.0, loss_mod]. 
     assert cpr.serialize_for_belief_kernel() == [0.85, 0.95]
 
 
