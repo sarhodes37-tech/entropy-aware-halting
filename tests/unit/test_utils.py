@@ -25,6 +25,8 @@ def test_get_model_and_tokenizer_mocked(mock_model, mock_tokenizer):
     mock_tokenizer.return_value = fake_tokenizer
 
     fake_model = MagicMock()
+    # CRITICAL FIX: Ensure .to(device) returns the original mock instance
+    fake_model.to.return_value = fake_model
     mock_model.return_value = fake_model
 
     model, tokenizer, device = get_model_and_tokenizer(
@@ -34,4 +36,6 @@ def test_get_model_and_tokenizer_mocked(mock_model, mock_tokenizer):
 
     assert device == "cpu"
     assert tokenizer.pad_token == "<|endoftext|>"
+    
+    # Now this will correctly register the call
     fake_model.eval.assert_called_once()
