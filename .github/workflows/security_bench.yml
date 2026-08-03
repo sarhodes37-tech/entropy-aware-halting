@@ -30,6 +30,8 @@ jobs:
         
         # Aligning with the main pipeline to ensure all required telemetry plugins are present
         pip install -e .[ml,test]
+        # Explicitly install flake8 for the syntax step
+        pip install flake8
 
     - name: Run Flake8 (Syntax & Style)
       run: |
