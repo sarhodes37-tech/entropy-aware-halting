@@ -301,7 +301,7 @@ def test_spoofed_client_attempt_counter_neutralized(orchestrator, base_spoof_pay
 
     # Attempt 4: Exceeds max_attempts (4 > 3) -> Server halts immediately due to retry exhaustion
     res4 = orchestrator.process_submission(base_spoof_payload, context_clean, trajectory_id=session_id)
-    assert res4["status"] == "HALTED”
+    assert res4["status"] == "HALTED"
 
 
 
