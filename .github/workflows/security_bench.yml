@@ -49,13 +49,24 @@ jobs:
         echo "Executing layered boundary tests and ablation matrix..."
         # This will automatically find and run every test_*.py file in your benchmarks directory
         pytest benchmarks/ -v
+        
+        # Catch the artifact if pytest dumps it into the root directory instead of results/
+        if [ -f "ablation_telemetry.json" ]; then
+          echo "Found artifact in root. Moving to results/ directory."
+          mv ablation_telemetry.json results/
+        fi
 
     - name: Enforce Zero-Regression Security Policy
       run: |
         python -c "
-        import json, sys
+        import json, sys, os
         
         artifact_path = 'results/ablation_telemetry.json'
+        
+        # Fallback check just in case the shell move failed or the path is relative
+        if not os.path.exists(artifact_path):
+            artifact_path = 'ablation_telemetry.json'
+            
         try:
             with open(artifact_path, 'r') as f:
                 data = json.load(f)
@@ -72,6 +83,10 @@ jobs:
                 sys.exit(1)
             
             print('\n[SUCCESS] Zero regressions. C4 Full Stack maintained 100% boundary integrity.')
+        except FileNotFoundError:
+            print(f'\n[FATAL ERROR] Telemetry artifact not found in root or results/ directory.')
+            print('Check your pytest configuration. The benchmark suite is not generating the JSON file.')
+            sys.exit(1)
         except Exception as e:
             print(f'\n[FATAL ERROR] Failed to parse telemetry artifact: {e}')
             sys.exit(1)
