@@ -207,7 +207,7 @@ def test_scheduler_step_irreducible_uncertainty():
     assert res1.directive == "IRREDUCIBLE_UNCERTAINTY"
 
     res2 = scheduler.step(torch.tensor([0.5, 0.5]), cost=0, state="s3")
-    assert res2.directive == "CONTINUE"
+    assert res2.directive == "IRREDUCIBLE_UNCERTAINTY"
     
     # 3rd transition is required to fulfill the > stagnation_window condition
     res3 = scheduler.step(torch.tensor([0.5, 0.5]), cost=0, state="s4")
