@@ -6,11 +6,6 @@ anchoring, and compensating rollback mechanisms.
 
 import pytest
 from unittest.mock import MagicMock
-from epistemicos.compliance import (
-    OffChainStoreAdapter,
-    ImmutableLedgerAdapter,
-    TransactionalComplianceBroker
-)
 
 
 def test_offchain_store_delete_pii_not_found():
