@@ -28,11 +28,8 @@ jobs:
       run: |
         python -m pip install --upgrade pip
         
-        # Install the actual package to verify build configuration
-        pip install -e .
-        
-        # Install strictly quarantined external simulation tools
-        pip install numpy pandas scipy requests openai anthropic pytest flake8
+        # Aligning with the main pipeline to ensure all required telemetry plugins are present
+        pip install -e .[ml,test]
 
     - name: Run Flake8 (Syntax & Style)
       run: |
@@ -47,13 +44,16 @@ jobs:
         PYTHONPATH: .
       run: |
         echo "Executing layered boundary tests and ablation matrix..."
-        # This will automatically find and run every test_*.py file in your benchmarks directory
-        pytest benchmarks/ -v
+        # Running the full suite ensures conftest.py fixtures that generate the JSON are triggered
+        pytest tests/ benchmarks/ -v
         
-        # Catch the artifact if pytest dumps it into the root directory instead of results/
-        if [ -f "ablation_telemetry.json" ]; then
-          echo "Found artifact in root. Moving to results/ directory."
-          mv ablation_telemetry.json results/
+        # Universal catch-and-move for the artifact
+        file_path=$(find . -name "ablation_telemetry.json" -type f | head -n 1)
+        if [ -n "$file_path" ]; then
+          echo "Found telemetry artifact at: $file_path"
+          cp "$file_path" results/ablation_telemetry.json
+        else
+          echo "WARNING: Pytest finished but no telemetry file was generated."
         fi
 
     - name: Enforce Zero-Regression Security Policy
@@ -63,9 +63,10 @@ jobs:
         
         artifact_path = 'results/ablation_telemetry.json'
         
-        # Fallback check just in case the shell move failed or the path is relative
         if not os.path.exists(artifact_path):
-            artifact_path = 'ablation_telemetry.json'
+            print(f'\n[FATAL ERROR] Telemetry artifact not found at {artifact_path}.')
+            print('The Pytest suite is failing to generate the JSON file during execution.')
+            sys.exit(1)
             
         try:
             with open(artifact_path, 'r') as f:
@@ -83,10 +84,6 @@ jobs:
                 sys.exit(1)
             
             print('\n[SUCCESS] Zero regressions. C4 Full Stack maintained 100% boundary integrity.')
-        except FileNotFoundError:
-            print(f'\n[FATAL ERROR] Telemetry artifact not found in root or results/ directory.')
-            print('Check your pytest configuration. The benchmark suite is not generating the JSON file.')
-            sys.exit(1)
         except Exception as e:
             print(f'\n[FATAL ERROR] Failed to parse telemetry artifact: {e}')
             sys.exit(1)
