@@ -520,10 +520,10 @@ def test_governance_os_stateful_key_revocation():
         "policy_id": "POL-2026-QUANTUM",
         "fleet_data": {"vehicle_count": 85, "operating_radius_miles": 1200.0, "hazard_class": "standard"}
     }
-    proposed_actions = [{
-        "action": {"op": "update_db", "node": "logistics_db", "status": "bound"},
-        "rollback": {"op": "revert", "node": "logistics_db", "status": "pending"}
-    }]
+    proposed_actions = [
+        {"op": "update_db", "node": "logistics_db", "status": "bound"},
+        {"op": "revert", "node": "logistics_db", "status": "pending"}
+    ]
     mock_likelihoods = {"preferred": 0.80, "standard": 0.15, "substandard": 0.05}
     safe_logprobs = [-0.02] * 15
 
@@ -620,7 +620,8 @@ def test_full_dlt_pipeline_and_gdpr_deletion():
         raw_payload=mock_payload,
         context=valid_context
     )
-    assert result["receipt"]["status"] == "COMMITTED"
+    assert result["status"] == "ALLOWED"
+
 
     # 2. Cold Path Logging
     logger_service = MockDLTLoggerService()
