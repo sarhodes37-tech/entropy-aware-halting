@@ -4,7 +4,7 @@ Validates GDPR/CCPA off-chain mutable store operations, immutable ledger
 anchoring, and compensating rollback mechanisms.
 """
 
-from typing import Dict, Tuple, Any
+from typing import Dict, Tuple, Any, Optional
 import pytest
 from unittest.mock import MagicMock
 
