@@ -17,7 +17,7 @@ import pytest
 
 from epistemicos.core import EpistemicOrchestrator
 from epistemicos.models import CanonicalProblemRepresentation, PermissionScope
-from epistemicos.gates import GateAction, CryptoAttestationGate, EntropyGate, PermissionGate
+from epistemicos.gates import CryptoAttestationGate, EntropyGate, PermissionGate
 from epistemicos.audit import TamperEvidentAuditTrail, AuditLogLevel
 
 
