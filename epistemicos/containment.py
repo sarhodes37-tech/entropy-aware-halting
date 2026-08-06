@@ -7,11 +7,13 @@ Provides active ingress, egress, and tool-execution guardrails to prevent:
 3. Agent Containment Escape / Goal Mutation (Agentic Integrity)
 """
 
+import ipaddress
 import re
+import socket
 import urllib.parse
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 
 class ContainmentViolationType(Enum):
@@ -82,6 +84,43 @@ class ContainmentGuard:
             self.forbidden_commands.update(custom_forbidden_commands)
         self.strict_mode = strict_mode
 
+    def _is_restricted_target(self, hostname: str) -> bool:
+        """Parses and checks if a hostname or IP resolves to private, loopback, or cloud metadata ranges."""
+        if not hostname:
+            return True
+
+        # 1. Direct IP parsing (handles hex, octal, integer, and standard IPv4/IPv6 literals)
+        try:
+            ip = ipaddress.ip_address(hostname)
+            return (
+                ip.is_loopback
+                or ip.is_private
+                or ip.is_link_local
+                or ip.is_reserved
+                or ip.is_unspecified
+            )
+        except ValueError:
+            pass  # Hostname is a domain name, proceed to DNS resolution
+
+        # 2. Resolve DNS hostnames to verify underlying IP destinations
+        try:
+            addr_info = socket.getaddrinfo(hostname, None)
+            for res in addr_info:
+                resolved_ip = ipaddress.ip_address(res[4][0])
+                if (
+                    resolved_ip.is_loopback
+                    or resolved_ip.is_private
+                    or resolved_ip.is_link_local
+                    or resolved_ip.is_reserved
+                    or resolved_ip.is_unspecified
+                ):
+                    return True
+        except socket.gaierror:
+            # Block hostnames that fail DNS resolution as a safety measure
+            return True
+
+        return False
+
     # =========================================================================
     # 1. INGRESS FILTERING (Prompt & Context Inspection)
     # =========================================================================
@@ -120,10 +159,15 @@ class ContainmentGuard:
             parsed = urllib.parse.urlparse(target_url)
             hostname = parsed.hostname.lower() if parsed.hostname else ""
 
-            # 1. Block Local/Metadata SSRF Targets
-            if hostname in self.blocked_hosts or any(
-                hostname.startswith(b) for b in ["127.", "10.", "172.16.", "192.168."]
-            ):
+            if not hostname:
+                return ContainmentReceipt(
+                    passed=False,
+                    violation_type=ContainmentViolationType.UNAUTHORIZED_EGRESS_ATTEMPT,
+                    reason="Egress blocked: Missing or invalid target hostname.",
+                )
+
+            # 1. Block Local/Metadata SSRF Targets via static list & robust IP/DNS resolution
+            if hostname in self.blocked_hosts or self._is_restricted_target(hostname):
                 return ContainmentReceipt(
                     passed=False,
                     violation_type=ContainmentViolationType.UNAUTHORIZED_EGRESS_ATTEMPT,
