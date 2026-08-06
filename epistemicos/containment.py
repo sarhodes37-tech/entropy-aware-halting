@@ -48,7 +48,7 @@ class ContainmentGuard:
     }
 
     # Default Forbidden Shell/System Operations for Code Agents
-    DEFAULT_FORBIDDEN_COMMANDS = {
+    DEFAULT_FORBIDDEN_COMMANDS = [
         r"rm\s+-rf",
         r"chmod\s+777",
         r"wget\s+",
@@ -58,16 +58,32 @@ class ContainmentGuard:
         r"python\s+-c\s+'import\s+socket",
         r"subprocesses?\.Popen",
         r"os\.system",
-    }
+    ]
 
-    # Common Jailbreak and System Override Patterns
-    INJECTION_PATTERNS = [
-        r"ignore\s+all\s+previous\s+instructions",
-        r"disregard\s+the\s+above",
-        r"you\s+are\n+now\s+in\s+DAN\s+mode",
-        r"system\s*:\s*override",
-        r"<\|im_start\|>\s*system",
-        r"\]\s*;\s*DROP\s+TABLE",
+    # Pre-compile Injection Patterns (Fix for Ingress Prompt Inspection Loop)
+    INJECTION_PATTERNS_COMPILED = [
+        re.compile(p, re.IGNORECASE) for p in [
+            r"ignore\s+all\s+previous\s+instructions",
+            r"disregard\s+the\s+above",
+            r"you\s+are\n+now\s+in\s+DAN\s+mode",
+            r"system\s*:\s*override",
+            r"<\|im_start\|>\s*system",
+            r"\]\s*;\s*DROP\s+TABLE",
+        ]
+    ]
+
+    # Pre-compile System Delimiter Regex (Fix for String Substitution)
+    SYSTEM_DELIMITERS_REGEX = re.compile(r"<\|im_start\|>|<\|im_end\|>")
+
+    # Pre-compile Goal Mutation Cheat Keywords (Fix for Goal Integrity Validation)
+    CHEAT_KEYWORDS_COMPILED = [
+        re.compile(kw, re.IGNORECASE) for kw in [
+            r"assert\s+True",
+            r"return\s+True\s+#\s*skip\s*test",
+            r"sys\.exit\(0\)",
+            r"unittest\.skip",
+            r"pytest\.mark\.skip",
+        ]
     ]
 
     def __init__(
@@ -79,9 +95,15 @@ class ContainmentGuard:
     ):
         self.allowed_domains = set(allowed_egress_domains or [])
         self.blocked_hosts = blocked_hosts or self.DEFAULT_BLOCKED_HOSTS
-        self.forbidden_commands = set(self.DEFAULT_FORBIDDEN_COMMANDS)
+        
+        # Pre-compile forbidden commands dynamically (Fix for Tool Command Inspection Loop)
+        raw_forbidden = list(self.DEFAULT_FORBIDDEN_COMMANDS)
         if custom_forbidden_commands:
-            self.forbidden_commands.update(custom_forbidden_commands)
+            raw_forbidden.extend(custom_forbidden_commands)
+        self.forbidden_commands_compiled = [
+            re.compile(p, re.IGNORECASE) for p in raw_forbidden
+        ]
+        
         self.strict_mode = strict_mode
 
     def _is_restricted_target(self, hostname: str) -> bool:
@@ -129,19 +151,17 @@ class ContainmentGuard:
         """Inspects user/planner input for prompt injection or system override attempts."""
         cleaned_prompt = prompt_text.strip()
 
-        # Check against injection/jailbreak patterns
-        for pattern in self.INJECTION_PATTERNS:
-            if re.search(pattern, cleaned_prompt, re.IGNORECASE):
+        # Check against compiled injection/jailbreak patterns
+        for pattern in self.INJECTION_PATTERNS_COMPILED:
+            if pattern.search(cleaned_prompt):
                 return ContainmentReceipt(
                     passed=False,
                     violation_type=ContainmentViolationType.PROMPT_INJECTION_DETECTED,
-                    reason=f"Detected restricted prompt manipulation pattern: '{pattern}'",
+                    reason=f"Detected restricted prompt manipulation pattern: '{pattern.pattern}'",
                 )
 
         # Sanitize raw system delimiters if injected into user prompt
-        sanitized = re.sub(
-            r"<\|im_start\|>|<\|im_end\|>", "", cleaned_prompt
-        )
+        sanitized = self.SYSTEM_DELIMITERS_REGEX.sub("", cleaned_prompt)
 
         return ContainmentReceipt(
             passed=True,
@@ -193,12 +213,12 @@ class ContainmentGuard:
 
     def inspect_tool_command(self, code_or_command: str) -> ContainmentReceipt:
         """Inspects generated code or shell execution commands for OS-level escape attempts."""
-        for pattern in self.forbidden_commands:
-            if re.search(pattern, code_or_command, re.IGNORECASE):
+        for pattern in self.forbidden_commands_compiled:
+            if pattern.search(code_or_command):
                 return ContainmentReceipt(
                     passed=False,
                     violation_type=ContainmentViolationType.FORBIDDEN_COMMAND_EXECUTION,
-                    reason=f"Command execution blocked: Contains restricted OS-level directive matching '{pattern}'.",
+                    reason=f"Command execution blocked: Contains restricted OS-level directive matching '{pattern.pattern}'.",
                 )
 
         return ContainmentReceipt(passed=True)
@@ -211,21 +231,12 @@ class ContainmentGuard:
         self, original_goal: str, proposed_action: str
     ) -> ContainmentReceipt:
         """Detects whether an agent is attempting to alter its primary objective or cheat on evaluation tests."""
-        # Detect attempts to edit test harnesses or evaluation scripts
-        cheat_keywords = [
-            r"assert\s+True",
-            r"return\s+True\s+#\s*skip\s*test",
-            r"sys\.exit\(0\)",
-            r"unittest\.skip",
-            r"pytest\.mark\.skip",
-        ]
-
-        for kw in cheat_keywords:
-            if re.search(kw, proposed_action, re.IGNORECASE):
+        for pattern in self.CHEAT_KEYWORDS_COMPILED:
+            if pattern.search(proposed_action):
                 return ContainmentReceipt(
                     passed=False,
                     violation_type=ContainmentViolationType.GOAL_MUTATION_REWARD_CHEATING,
-                    reason=f"Reward-cheating attempt detected: Proposed action overrides test verification via '{kw}'.",
+                    reason=f"Reward-cheating attempt detected: Proposed action overrides test verification via '{pattern.pattern}'.",
                 )
 
         return ContainmentReceipt(passed=True)
