@@ -56,21 +56,23 @@ class ContainmentGuard:
         r"nc\s+-e",
         r"bash\s+-i",
         r"python\s+-c\s+'import\s+socket",
-        r"subprocesses?\.Popen",
+        r"subprocess\.Popen",  # Fixed typo (was subprocesses?)
         r"os\.system",
     ]
+
 
     # Pre-compile Injection Patterns (Fix for Ingress Prompt Inspection Loop)
     INJECTION_PATTERNS_COMPILED = [
         re.compile(p, re.IGNORECASE) for p in [
             r"ignore\s+all\s+previous\s+instructions",
             r"disregard\s+the\s+above",
-            r"you\s+are\n+now\s+in\s+DAN\s+mode",
+            r"you\s+are\s+now\s+in\s+DAN\s+mode",  # Fixed \n+ to \s+
             r"system\s*:\s*override",
             r"<\|im_start\|>\s*system",
             r"\]\s*;\s*DROP\s+TABLE",
         ]
     ]
+
 
     # Pre-compile System Delimiter Regex (Fix for String Substitution)
     SYSTEM_DELIMITERS_REGEX = re.compile(r"<\|im_start\|>|<\|im_end\|>")
