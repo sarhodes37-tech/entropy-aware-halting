@@ -2,8 +2,7 @@ import pytest
 from unittest.mock import patch
 import socket
 
-# Adjust the import path based on your project structure (e.g., epistemic_os.containment)
-from epistemic_os.containment import (
+from epistemicos.containment import (
     ContainmentGuard,
     ContainmentViolationType,
     ContainmentReceipt,
