@@ -11,7 +11,7 @@ import time
 import logging
 from collections import Counter
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional
 
 logger = logging.getLogger("EpistemicOS.Telemetry")
 
