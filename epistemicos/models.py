@@ -16,6 +16,32 @@ from pydantic import BaseModel, Field, model_validator
 
 
 # ==========================================
+# MEMORY PROFILING UTILITIES
+# ==========================================
+
+def _estimate_payload_size(obj: Any, seen: Optional[Set[int]] = None) -> int:
+    """
+    Recursively estimates memory footprint of nested structures 
+    without triggering expensive string allocation overhead.
+    """
+    if seen is None:
+        seen = set()
+    
+    obj_id = id(obj)
+    if obj_id in seen:
+        return 0
+    seen.add(obj_id)
+    
+    size = sys.getsizeof(obj)
+    if isinstance(obj, dict):
+        size += sum(_estimate_payload_size(k, seen) + _estimate_payload_size(v, seen) for k, v in obj.items())
+    elif isinstance(obj, (list, tuple, set, frozenset)):
+        size += sum(_estimate_payload_size(item, seen) for item in obj)
+    
+    return size
+
+
+# ==========================================
 # ENUMS & STATUSES
 # ==========================================
 
@@ -209,12 +235,18 @@ class PermissionScope(BaseModel):
         return True
 
     def validate_egress(self, response_payload: Any) -> bool:
-        if sys.getsizeof(str(response_payload)) > self.max_payload_bytes: return False
+        # Replaced inefficient string serialization with recursive size estimation
+        if _estimate_payload_size(response_payload) > self.max_payload_bytes: 
+            return False
+            
         def count_max_records(data: Any) -> int:
             if isinstance(data, list): return max(len(data), max((count_max_records(item) for item in data), default=0))
             elif isinstance(data, dict): return max(len(data.keys()), max((count_max_records(val) for val in data.values()), default=0))
             return 0
-        if count_max_records(response_payload) > self.max_row_count: return False
+            
+        if count_max_records(response_payload) > self.max_row_count: 
+            return False
+            
         return True
 
 
