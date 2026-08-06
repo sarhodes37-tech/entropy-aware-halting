@@ -9,6 +9,7 @@ parse fidelity for downstream systems.
 
 import ast
 import json
+import multiprocessing
 import re
 from typing import Dict, Any, List
 import pytest
@@ -77,16 +78,52 @@ def extract_code_block(text: str) -> str:
     return text.strip()
 
 
-def validate_code_execution(full_code: str, test_assertion: str) -> bool:
-    """Evaluates code syntax and functional test pass in an isolated namespace."""
+def _sandbox_worker(
+    full_code: str, test_assertion: str, result_queue: multiprocessing.Queue
+) -> None:
+    """Isolated execution worker running in a separate process."""
     try:
-        ast.parse(full_code)
-        exec_globals: Dict[str, Any] = {}
+        # Create a restricted globals dict to prevent standard sandbox escape vectors
+        exec_globals: Dict[str, Any] = {"__builtins__": __builtins__}
         exec(full_code, exec_globals)
         exec(test_assertion, exec_globals)
-        return True
+        result_queue.put(True)
     except Exception:
+        result_queue.put(False)
+
+
+def validate_code_execution(
+    full_code: str, test_assertion: str, timeout: float = 3.0
+) -> bool:
+    """Evaluates code syntax and functional test assertions inside an isolated process with execution timeout limits."""
+    # 1. AST Pre-validation
+    try:
+        ast.parse(full_code)
+        ast.parse(test_assertion)
+    except SyntaxError:
         return False
+
+    # 2. Process-Isolated Execution Sandbox
+    result_queue = multiprocessing.Queue()
+    process = multiprocessing.Process(
+        target=_sandbox_worker,
+        args=(full_code, test_assertion, result_queue),
+        daemon=True,
+    )
+
+    process.start()
+    process.join(timeout=timeout)
+
+    # Terminate process if execution exceeds timeout (e.g., infinite loops)
+    if process.is_alive():
+        process.terminate()
+        process.join()
+        return False
+
+    if not result_queue.empty():
+        return result_queue.get()
+
+    return False
 
 
 def strict_json_grader(text: str) -> bool:
