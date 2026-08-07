@@ -2,26 +2,9 @@
 EpistemicOS is a low-latency security middleware designed to enforce deterministic halting and strict sandbox boundaries on Large Language Model (LLM) outputs. It intercepts structural collapse, N-gram loops, epistemic hallucinations, and unauthorized tool-calling vectors before they can execute within a broader system.
 Think of standard LLM safety filters like a bouncer checking every single patron's ID one by one—a high-latency bottleneck. EpistemicOS operates more like a thermodynamic sensor. It detects the sudden statistical pressure drop of an anomalous token stream in O(1) time and drops the blast doors instantly, only applying heavier regex and AST parsing to stable, baseline traffic.
 ## 📊 Empirical Validation & Benchmarks
-EpistemicOS has been rigorously tested across both active trajectory recovery benchmarks and targeted adversarial datasets.
-### 1. Active Trajectory Recovery (Qwen2.5-1.5B / HumanEval)
-The EAC-EXEC (Execution-Gated) core was benchmarked on N=164 trajectories to measure the recovery of corrupted generations.
- * **Standard Pass@1 (Ungated EOS Baseline):** 6.1%
- * **Passive Entropy Stopping:** 6.1%
- * **EpistemicOS Active EAC-EXEC:** **37.2%**
- * **Theoretical Oracle Maximum (P_{\text{oracle}}):** 37.2%
-**Key Efficiency Gains:**
- * **+31.1% Absolute Accuracy Gain** (hitting the theoretical reachability ceiling).
- * **100% Recovery Rate** for "Case A" corrupted trajectories.
- * **139 Tokens Saved** on average per solved prompt by terminating dead-end loops early.
-### 2. RhodesBench Adversarial Ablation Study
-The architecture's gating efficacy was tested against RhodesBench, a targeted adversarial dataset containing recursive self-reference, impossible observations, and hallucination vectors.
-| Configuration | Precision | Recall | Avg Latency | Anomalies Caught | Misses |
-|---|---|---|---|---|---|
-| **C0: Baseline (No Gates)** | 20.00% | 0.00% | ~0.0012 ms | 0 / 8 | 8 |
-| **C1: Entropy Only** | 20.00% | 0.00% | ~0.0075 ms | 0 / 8 | 8 |
-| **C2: Permission Only** | 50.00% | 75.00% | ~0.0195 ms | 6 / 8 | 2 |
-| **C4: Full EpistemicOS** | 100.00% | 100.00% | ~0.0229 ms | 8 / 8 | 0 |
-**The O(1) Overhead:** By positioning the OptimizedEntropyGate strictly before the OptimizedPermissionGate, the system establishes a statistical baseline before applying heavier string evaluation. The full C4 configuration captures the remaining blind spots of the permission gate (boosting Recall to 100%) while only adding an average execution overhead of ~0.0034 ms.
+
+**Under revision**
+
 ## 🏗 Core Architecture
 EpistemicOS routes the token stream through sequential hard gates to guarantee deterministic containment.
 ### 1. Optimized Entropy Gate (Statistical Sandbox)
