@@ -35,7 +35,7 @@ class OffChainStoreAdapter:
 class ImmutableLedgerAdapter:
     """Immutable append-only ledger interface for transaction receipt anchoring."""
     def __init__(self):
-        self._blocks: List[Dict[str, Any]] = []
+        self._blocks: Dict[str, Dict[str, Any]] = {}
         self._lock = RLock()
 
     def commit_block(self, transaction_id: str, payload_hash: str, receipt: Dict[str, Any]) -> Dict[str, Any]:
@@ -46,15 +46,12 @@ class ImmutableLedgerAdapter:
             "receipt": receipt
         }
         with self._lock:
-            self._blocks.append(block)
+            self._blocks[transaction_id] = block
         return block
 
     def get_block(self, transaction_id: str) -> Optional[Dict[str, Any]]:
         with self._lock:
-            for b in self._blocks:
-                if b["transaction_id"] == transaction_id:
-                    return b
-            return None
+            return self._blocks.get(transaction_id)
 
 
 class TransactionalComplianceBroker:
