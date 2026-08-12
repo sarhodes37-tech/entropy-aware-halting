@@ -21,7 +21,7 @@ class OffChainDatabase:
 class PermissionedLedger:
     """Simulates an immutable blockchain for storing transaction receipts and payload hashes."""
     def __init__(self):
-        self._blocks: list = []
+        self._blocks: Dict[str, Dict[str, Any]] = {}
 
     def commit_block(self, transaction_id: str, payload_hash: str, receipt: Dict[str, Any]):
         block = {
@@ -30,7 +30,7 @@ class PermissionedLedger:
             "payload_hash": payload_hash,
             "receipt": receipt
         }
-        self._blocks.append(block)
+        self._blocks[transaction_id] = block
         print(f"  [Immutable Ledger] Committed block for {transaction_id} (Hash: {payload_hash[:8]}...)")
 
 class DLTLoggerService:
