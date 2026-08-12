@@ -10,6 +10,7 @@ Provides active ingress, egress, and tool-execution guardrails to prevent:
 import ipaddress
 import re
 import socket
+import string
 import urllib.parse
 from dataclasses import dataclass, field
 from enum import Enum
@@ -175,11 +176,51 @@ class ContainmentGuard:
     # 2. EGRESS & TOOL PARAMETER FILTERING
     # =========================================================================
 
+    def _extract_hostname_secure(self, url: str) -> str:
+        """Extracts the hostname securely to prevent SSRF bypasses via URL parsing inconsistencies."""
+        try:
+            # 1. Strip whitespace and normalize backslashes
+            url = url.strip()
+            url_norm = url.replace('\\', '/')
+
+            # 2. Parse URL
+            parsed = urllib.parse.urlsplit(url_norm)
+
+            # 3. Unquote the netloc to prevent URL-encoding bypasses (e.g. %40 for @)
+            decoded_netloc = urllib.parse.unquote(parsed.netloc)
+
+            # 4. Remove any whitespace characters injected into the netloc (requests strips these)
+            for ws in string.whitespace:
+                decoded_netloc = decoded_netloc.replace(ws, '')
+
+            # 5. Extract host port part by splitting at last @
+            if '@' in decoded_netloc:
+                host_port = decoded_netloc.rsplit('@', 1)[-1]
+            else:
+                host_port = decoded_netloc
+
+            # 6. Remove port if present, safely handling IPv6
+            # An IPv6 address is enclosed in brackets, e.g., [::1] or [::1]:80
+            if host_port.startswith('['):
+                end_bracket = host_port.find(']')
+                if end_bracket != -1:
+                    hostname = host_port[1:end_bracket]
+                else:
+                    hostname = host_port
+            else:
+                if ':' in host_port:
+                    hostname = host_port.rsplit(':', 1)[0]
+                else:
+                    hostname = host_port
+
+            return hostname.lower()
+        except Exception:
+            return ""
+
     def inspect_network_egress(self, target_url: str) -> ContainmentReceipt:
         """Inspects outbound network attempts from agentic tools to prevent exfiltration or internal SSRF."""
         try:
-            parsed = urllib.parse.urlparse(target_url)
-            hostname = parsed.hostname.lower() if parsed.hostname else ""
+            hostname = self._extract_hostname_secure(target_url)
 
             if not hostname:
                 return ContainmentReceipt(
