@@ -25,7 +25,7 @@ def test_get_model_and_tokenizer_mocked(mock_model, mock_tokenizer):
     mock_tokenizer.return_value = fake_tokenizer
 
     fake_model = MagicMock()
-    # CRITICAL FIX: Ensure .to(device) returns the original mock instance
+    # Ensure .to(device) returns the original mock instance
     fake_model.to.return_value = fake_model
     mock_model.return_value = fake_model
 
