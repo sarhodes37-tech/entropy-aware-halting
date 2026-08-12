@@ -14,8 +14,69 @@ from epistemicos.models import (
     CanonicalProblemRepresentation,
     EpistemicStatus,
     BayesianBeliefKernel,
-    TokenSurprisalSensor
+    TokenSurprisalSensor,
+    _estimate_payload_size
 )
+
+# ==========================================
+# ESTIMATE PAYLOAD SIZE TESTS
+# ==========================================
+import sys
+
+def test_estimate_payload_size_primitives():
+    """Validates memory estimation for basic primitive types."""
+    assert _estimate_payload_size(1) == sys.getsizeof(1)
+    assert _estimate_payload_size("test") == sys.getsizeof("test")
+    assert _estimate_payload_size(True) == sys.getsizeof(True)
+    assert _estimate_payload_size(None) == sys.getsizeof(None)
+
+
+def test_estimate_payload_size_collections():
+    """Validates memory estimation for basic collections without nesting."""
+    lst = [1, 2, 3]
+    expected_lst = sys.getsizeof(lst) + sys.getsizeof(1) + sys.getsizeof(2) + sys.getsizeof(3)
+    assert _estimate_payload_size(lst) == expected_lst
+
+    tpl = (1, 2)
+    expected_tpl = sys.getsizeof(tpl) + sys.getsizeof(1) + sys.getsizeof(2)
+    assert _estimate_payload_size(tpl) == expected_tpl
+
+    st = {1, 2}
+    expected_st = sys.getsizeof(st) + sys.getsizeof(1) + sys.getsizeof(2)
+    assert _estimate_payload_size(st) == expected_st
+
+
+def test_estimate_payload_size_nested_dict():
+    """Validates memory estimation for nested dictionaries."""
+    d = {"a": 1, "b": {"c": 2}}
+
+    expected_size = sys.getsizeof(d)
+    expected_size += sys.getsizeof("a") + sys.getsizeof(1)
+    expected_size += sys.getsizeof("b")
+
+    inner_d = d["b"]
+    expected_size += sys.getsizeof(inner_d)
+    expected_size += sys.getsizeof("c") + sys.getsizeof(2)
+
+    assert _estimate_payload_size(d) == expected_size
+
+
+def test_estimate_payload_size_circular_reference():
+    """Validates that circular references do not cause infinite recursion and are sized correctly."""
+    lst = [1, 2]
+    lst.append(lst) # Circular reference
+
+    # Size should be size of list + size of 1 + size of 2 + 0 (since lst is already seen)
+    expected_size = sys.getsizeof(lst) + sys.getsizeof(1) + sys.getsizeof(2)
+    assert _estimate_payload_size(lst) == expected_size
+
+    d = {"a": 1}
+    d["self"] = d # Circular reference
+
+    # Size should be size of d + size of "a" + size of 1 + size of "self" + 0
+    expected_size_d = sys.getsizeof(d) + sys.getsizeof("a") + sys.getsizeof(1) + sys.getsizeof("self")
+    assert _estimate_payload_size(d) == expected_size_d
+
 
 # ==========================================
 # TOKEN SURPRISAL SENSOR TESTS
