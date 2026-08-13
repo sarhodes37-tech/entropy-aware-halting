@@ -11,7 +11,7 @@ import sys
 import time
 from enum import Enum
 from datetime import datetime, timezone
-from typing import Dict, Any, List, Optional, Set
+from typing import Dict, Any, List, Optional, Set, ClassVar
 from pydantic import BaseModel, Field, model_validator
 
 
@@ -205,6 +205,8 @@ class BeliefObject(BaseModel):
 # ==========================================
 
 class PermissionScope(BaseModel):
+    _MUTATING_OPERATIONS: ClassVar[Set[str]] = {"update_db", "write_db", "reroute_freight", "halt_payments", "issue_binder", "bind_policy", "cancel_policy", "release_buffer"}
+
     allowed_resources: List[str] = Field(default_factory=list)
     allowed_operations: List[str] = Field(default_factory=list)
     expires_at: float = Field(default_factory=lambda: time.time() + 15.0)
@@ -227,8 +229,7 @@ class PermissionScope(BaseModel):
         if self.attempt_count > self.max_attempts or time.time() > self.expires_at: return False
         op = action.get("op")
         if self.is_quarantined_channel():
-            mutating_operations = {"update_db", "write_db", "reroute_freight", "halt_payments", "issue_binder", "bind_policy", "cancel_policy", "release_buffer"}
-            if op in mutating_operations: return False
+            if op in self._MUTATING_OPERATIONS: return False
         if op and op not in self.allowed_operations: return False
         target = action.get("node") or action.get("endpoint") or action.get("table") or action.get("policy")
         if target and target not in self.allowed_resources: return False
