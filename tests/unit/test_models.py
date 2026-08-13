@@ -6,6 +6,7 @@ PermissionScope quarantine logic, CPR serialization, and Surprisal Sensors.
 
 import math
 import pytest
+from unittest.mock import patch
 from epistemicos.models import (
     PopperianContract,
     BayesFactorUpdate,
@@ -85,6 +86,34 @@ def test_token_surprisal_sensor_empty_logprobs():
     """Validates safe handling of empty telemetry streams."""
     sensor = TokenSurprisalSensor()
     assert sensor.compute_z_scores([]) == []
+
+def test_token_surprisal_sensor_evaluate_empty():
+    sensor = TokenSurprisalSensor()
+    result = sensor.evaluate([])
+    assert result["passed"] is True
+    assert result["max_z_score"] == 0.0
+    assert result["flagged_tokens"] == 0
+    assert result["token_z_scores"] == []
+
+@patch.object(TokenSurprisalSensor, 'compute_z_scores')
+def test_token_surprisal_sensor_evaluate_passed(mock_compute):
+    mock_compute.return_value = [0.0, 1.0, 2.0]
+    sensor = TokenSurprisalSensor(z_threshold=2.85)
+    result = sensor.evaluate([-0.1, -0.2, -0.3]) # Dummy logprobs, mocked anyway
+    assert result["passed"] is True
+    assert result["max_z_score"] == 2.0
+    assert result["flagged_tokens"] == 0
+    assert result["token_z_scores"] == [0.0, 1.0, 2.0]
+
+@patch.object(TokenSurprisalSensor, 'compute_z_scores')
+def test_token_surprisal_sensor_evaluate_flagged(mock_compute):
+    mock_compute.return_value = [0.0, 1.0, 3.0, 4.5]
+    sensor = TokenSurprisalSensor(z_threshold=2.85)
+    result = sensor.evaluate([-0.1, -0.2, -0.3, -0.4])
+    assert result["passed"] is False
+    assert result["max_z_score"] == 4.5
+    assert result["flagged_tokens"] == 2
+    assert result["token_z_scores"] == [0.0, 1.0, 3.0, 4.5]
 
 
 # ==========================================
