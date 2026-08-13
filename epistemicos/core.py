@@ -95,12 +95,28 @@ class EpistemicOrchestrator:
         try:
             cpr = CanonicalProblemRepresentation(**raw_payload)
         except Exception as e:
+            # Mask sensitive fields to prevent raw data exposure in the audit log
+            if isinstance(raw_payload, dict):
+                # We instantiate a dummy CPR to get the correct defaults without relying on internals
+                try:
+                    dummy = CanonicalProblemRepresentation(policy_id="dummy")
+                    sensitive_fields = dummy.SENSITIVE_FIELDS
+                except Exception:
+                    # Fallback to hardcoded defaults if instantiation fails completely
+                    sensitive_fields = {"banking_routing", "account_number", "ssn", "account_balance_usd", "proprietary_cargo"}
+                masked_payload = {
+                    k: v for k, v in raw_payload.items()
+                    if k not in sensitive_fields
+                }
+            else:
+                masked_payload = raw_payload
+
             self.audit_logger.record_event(
                 event_type=AuditLogLevel.HALT,
                 gate_name="CPR_Validation",
                 reason=f"Schema violation: {str(e)}",
                 model_id=self.model_id,
-                payload_snippet=json.dumps(raw_payload)
+                payload_snippet=json.dumps(masked_payload)
             )
             return {"status": "HALTED", "reason": "Schema validation failed"}
 
