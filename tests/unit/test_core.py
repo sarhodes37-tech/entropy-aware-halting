@@ -69,9 +69,9 @@ def test_cpr_validation_failure_sanitizes_payload():
     assert result["reason"] == "Schema validation failed"
 
     orchestrator.audit_logger.record_event.assert_called_once()
-    kwargs = orchestrator.audit_logger.record_event.call_args.kwargs
+    event_arg = orchestrator.audit_logger.record_event.call_args.args[0]
 
-    logged_payload_snippet = kwargs.get("payload_snippet")
+    logged_payload_snippet = event_arg.payload_snippet
     assert logged_payload_snippet is not None
 
     logged_data = json.loads(logged_payload_snippet)
@@ -96,9 +96,9 @@ def test_cpr_validation_failure_non_dict_payload():
     assert result["reason"] == "Schema validation failed"
 
     orchestrator.audit_logger.record_event.assert_called_once()
-    kwargs = orchestrator.audit_logger.record_event.call_args.kwargs
+    event_arg = orchestrator.audit_logger.record_event.call_args.args[0]
 
-    logged_payload_snippet = kwargs.get("payload_snippet")
+    logged_payload_snippet = event_arg.payload_snippet
     assert logged_payload_snippet is not None
 
     logged_data = json.loads(logged_payload_snippet)
