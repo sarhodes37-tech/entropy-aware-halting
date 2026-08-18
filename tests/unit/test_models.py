@@ -87,6 +87,26 @@ def test_token_surprisal_sensor_empty_logprobs():
     sensor = TokenSurprisalSensor()
     assert sensor.compute_z_scores([]) == []
 
+def test_compute_z_scores_short_sequence():
+    sensor = TokenSurprisalSensor()
+    assert sensor.compute_z_scores([-0.1]) == [0.0]
+    assert sensor.compute_z_scores([-0.1, -0.2]) == [0.0, 0.0]
+
+def test_compute_z_scores_constant():
+    sensor = TokenSurprisalSensor(std_floor=0.05)
+    z_scores = sensor.compute_z_scores([-0.5, -0.5, -0.5])
+    assert z_scores == [0.0, 0.0, 0.0]
+
+def test_compute_z_scores_typical():
+    sensor = TokenSurprisalSensor(window_size=2, std_floor=0.01)
+    z_scores = sensor.compute_z_scores([-0.1, -0.1, -0.2])
+    assert z_scores == [0.0, 0.0, 10.0]
+
+def test_compute_z_scores_rolling_window():
+    sensor = TokenSurprisalSensor(window_size=2, std_floor=0.05)
+    z_scores = sensor.compute_z_scores([-0.1, -0.2, -0.3, -0.4, -0.5])
+    assert z_scores == pytest.approx([0.0, 0.0, 3.0, 3.0, 3.0])
+
 def test_token_surprisal_sensor_evaluate_empty():
     sensor = TokenSurprisalSensor()
     result = sensor.evaluate([])
