@@ -11,6 +11,7 @@ from unittest.mock import patch, MagicMock
 import epistemicos.telemetry
 from epistemicos.telemetry import (
     ResourceProfiler,
+    calculate_rolling_entropy,
     calculate_trigram_repetition,
     calculate_ast_persistence,
     calculate_structural_risk_index
@@ -77,3 +78,21 @@ def test_calculate_structural_risk_index():
     # sri = max(0.0, dH_pos) * omega * float(dA)
     # sri = 0.5 * 2.0 * 3.0 = 3.0
     assert calculate_structural_risk_index(dH_pos=0.5, omega=2.0, dA=3) == 3.0
+
+
+def test_calculate_rolling_entropy():
+    """Validates the calculation of smoothed rolling mean entropy."""
+    # Empty history
+    assert calculate_rolling_entropy([]) == 0.0
+
+    # History smaller than window size (default 5)
+    assert calculate_rolling_entropy([1.0, 2.0, 3.0]) == 2.0
+
+    # History equal to window size (default 5)
+    assert calculate_rolling_entropy([1.0, 2.0, 3.0, 4.0, 5.0]) == 3.0
+
+    # History larger than window size (default 5)
+    assert calculate_rolling_entropy([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]) == 5.0
+
+    # Custom window size
+    assert calculate_rolling_entropy([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0], window_size=3) == 6.0
