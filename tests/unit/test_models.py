@@ -319,3 +319,36 @@ def test_cpr_serialize_empty():
     """Validates default empty state serialization."""
     cpr = CanonicalProblemRepresentation(policy_id="POL-125")
     assert cpr.serialize_for_belief_kernel() == [0.0, 0.0, 0.0]
+
+
+def test_cpr_mask_egress_payload_default():
+    """Validates that sensitive fields and the scope field are removed by default."""
+    class ExtendedCPR(CanonicalProblemRepresentation):
+        account_number: str = "1234"
+        ssn: str = "000-00-0000"
+        some_public_field: str = "public"
+
+    cpr = ExtendedCPR(policy_id="POL-126", account_number="5678", ssn="123", some_public_field="hi")
+    masked = cpr.mask_egress_payload()
+
+    assert "account_number" not in masked
+    assert "ssn" not in masked
+    assert "scope" not in masked
+    assert masked.get("policy_id") == "POL-126"
+    assert masked.get("some_public_field") == "hi"
+
+
+def test_cpr_mask_egress_payload_custom_redactions():
+    """Validates that custom fields are additionally redacted."""
+    cpr = CanonicalProblemRepresentation(
+        policy_id="POL-127",
+        fleet_data={"vehicle_count": 500},
+        risk_details={"loss_ratio_3yr": 0.95}
+    )
+
+    masked = cpr.mask_egress_payload(custom_redactions={"fleet_data", "policy_id"})
+
+    assert "fleet_data" not in masked
+    assert "policy_id" not in masked
+    assert "scope" not in masked
+    assert masked.get("risk_details") == {"loss_ratio_3yr": 0.95}
