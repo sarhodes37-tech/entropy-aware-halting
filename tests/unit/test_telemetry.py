@@ -96,3 +96,17 @@ def test_calculate_rolling_entropy():
 
     # Custom window size
     assert calculate_rolling_entropy([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0], window_size=3) == 6.0
+
+def test_calculate_rolling_entropy_edge_cases():
+    """Validates edge case behavior for window size in calculating smoothed rolling mean entropy."""
+    # Explicitly testing the empty history edge case again as requested by the rationale
+    assert calculate_rolling_entropy([]) == 0.0
+
+    # Window size 0 evaluates as an empty slice which sum to 0.0 and len to 0. But in Python [-0:] is [0:], i.e. full list
+    assert calculate_rolling_entropy([1.0], window_size=0) == 1.0
+
+    # Negative window size behaves strangely with slices
+    assert calculate_rolling_entropy([1.0, 2.0], window_size=-1) == 2.0
+
+    # Large floats
+    assert calculate_rolling_entropy([1.123456, 2.123456], window_size=2) == 1.6235
