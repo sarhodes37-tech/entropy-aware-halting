@@ -319,3 +319,30 @@ def test_cpr_serialize_empty():
     """Validates default empty state serialization."""
     cpr = CanonicalProblemRepresentation(policy_id="POL-125")
     assert cpr.serialize_for_belief_kernel() == [0.0, 0.0, 0.0]
+
+def test_token_surprisal_sensor_evaluate_integration_passed():
+    """Validates the evaluate method using the real compute_z_scores when values pass."""
+    sensor = TokenSurprisalSensor(z_threshold=2.85, window_size=10, std_floor=0.05)
+    # Log probabilities representing normal, expected tokens (low surprisal/high probability)
+    # Using logprobs close to 0, meaning very high probability.
+    logprobs = [-0.1, -0.15, -0.2, -0.1, -0.15, -0.2, -0.1, -0.15, -0.2, -0.1, -0.1]
+
+    result = sensor.evaluate(logprobs)
+
+    assert result["passed"] is True
+    assert result["flagged_tokens"] == 0
+    assert result["max_z_score"] < 2.85
+    assert len(result["token_z_scores"]) == len(logprobs)
+
+def test_token_surprisal_sensor_evaluate_integration_flagged():
+    """Validates the evaluate method using the real compute_z_scores when an anomaly occurs."""
+    sensor = TokenSurprisalSensor(z_threshold=2.85, window_size=10, std_floor=0.05)
+    # Log probabilities representing normal tokens followed by a highly surprising one (large negative logprob)
+    logprobs = [-0.1, -0.15, -0.2, -0.1, -0.15, -0.2, -0.1, -0.15, -0.2, -0.1, -5.0]
+
+    result = sensor.evaluate(logprobs)
+
+    assert result["passed"] is False
+    assert result["flagged_tokens"] > 0
+    assert result["max_z_score"] > 2.85
+    assert len(result["token_z_scores"]) == len(logprobs)
