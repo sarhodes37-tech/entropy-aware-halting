@@ -145,8 +145,7 @@ class EntropyAwareScheduler:
         directive = "CONTINUE"
         negative_yield_detected = False
         if len(self.history) >= self.negative_yield_window:
-            recent_delta = [x.delta_h for x in self.history[-self.negative_yield_window:]]
-            negative_yield_detected = all(x < -self.divergence_threshold for x in recent_delta)
+            negative_yield_detected = all(x.delta_h < -self.divergence_threshold for x in self.history[-self.negative_yield_window:])
 
         if negative_yield_detected:
             directive = "NEGATIVE_YIELD"
