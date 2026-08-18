@@ -14,6 +14,7 @@ import uuid
 from pathlib import Path
 from typing import Tuple, Optional, Dict, Any, List
 from enum import Enum
+from dataclasses import dataclass
 
 try:
     import fcntl
@@ -31,6 +32,21 @@ class AuditLogLevel(Enum):
     WARNING = "WARNING"
     HALT = "DETERMINISTIC_HALT"
     ROLLBACK = "ACTION_ROLLBACK"
+
+
+
+@dataclass
+class AuditEvent:
+    event_type: AuditLogLevel
+    gate_name: str
+    reason: str
+    model_id: str
+    payload_snippet: str
+    execution_latency_ms: Optional[float] = None
+    cpr_snapshot: Optional[CanonicalProblemRepresentation] = None
+    telemetry: Optional[HardwareTelemetry] = None
+    belief_snapshot: Optional[BeliefObject] = None
+    metadata: Optional[Dict[str, Any]] = None
 
 
 class TamperEvidentAuditTrail:
@@ -86,16 +102,7 @@ class TamperEvidentAuditTrail:
 
     def record_event(
         self,
-        event_type: AuditLogLevel,
-        gate_name: str,
-        reason: str,
-        model_id: str,
-        payload_snippet: str,
-        execution_latency_ms: Optional[float] = None,
-        cpr_snapshot: Optional[CanonicalProblemRepresentation] = None,
-        telemetry: Optional[HardwareTelemetry] = None,
-        belief_snapshot: Optional[BeliefObject] = None,
-        metadata: Optional[Dict[str, Any]] = None
+        event: AuditEvent
     ) -> Dict[str, Any]:
         """
         Logs an event and appends it to the immutable hash chain with file locking.
@@ -103,26 +110,26 @@ class TamperEvidentAuditTrail:
         """
         event_id = str(uuid.uuid4())
         timestamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-        payload_hash = hashlib.sha256(payload_snippet.encode("utf-8")).hexdigest()
+        payload_hash = hashlib.sha256(event.payload_snippet.encode("utf-8")).hexdigest()
 
         # Compile strict structural metadata
-        event_metadata = metadata or {}
+        event_metadata = event.metadata or {}
 
-        if cpr_snapshot:
+        if event.cpr_snapshot:
             # Enforce egress masking to keep PII out of the permanent immutable log
-            event_metadata["cpr_state"] = cpr_snapshot.mask_egress_payload()
-        if telemetry:
+            event_metadata["cpr_state"] = event.cpr_snapshot.mask_egress_payload()
+        if event.telemetry:
             # Dataclass serialization
-            event_metadata["hardware_telemetry"] = telemetry.__dict__
+            event_metadata["hardware_telemetry"] = event.telemetry.__dict__
             # Use hardware telemetry wall clock if execution latency wasn't manually passed
-            if execution_latency_ms is None:
-                execution_latency_ms = telemetry.wall_clock_ms
-        if belief_snapshot:
+            if event.execution_latency_ms is None:
+                event.execution_latency_ms = event.telemetry.wall_clock_ms
+        if event.belief_snapshot:
             # Pydantic serialization
-            event_metadata["belief_state"] = belief_snapshot.model_dump()
+            event_metadata["belief_state"] = event.belief_snapshot.model_dump()
 
         # Fallback if no latency provided
-        final_latency = round(execution_latency_ms, 4) if execution_latency_ms is not None else 0.0
+        final_latency = round(event.execution_latency_ms, 4) if event.execution_latency_ms is not None else 0.0
 
         with open(self.log_path, "a+", encoding="utf-8") as f:
             if HAS_FCNTL:
@@ -134,13 +141,13 @@ class TamperEvidentAuditTrail:
                 entry_data = {
                     "event_id": event_id,
                     "timestamp": timestamp,
-                    "event_type": event_type.value,
-                    "gate_name": gate_name,
-                    "reason": reason,
-                    "model_id": model_id,
+                    "event_type": event.event_type.value,
+                    "gate_name": event.gate_name,
+                    "reason": event.reason,
+                    "model_id": event.model_id,
                     "latency_ms": final_latency,
                     "payload_hash": payload_hash,
-                    "payload_snippet": payload_snippet[:200],
+                    "payload_snippet": event.payload_snippet[:200],
                     "metadata": event_metadata,
                     "prev_hash": last_hash
                 }

@@ -12,7 +12,8 @@ from unittest.mock import patch
 from epistemicos.audit import (
     TamperEvidentAuditTrail,
     AuditLogLevel,
-    ReceiptGenerator
+    ReceiptGenerator,
+    AuditEvent
 )
 
 
@@ -41,7 +42,7 @@ def test_verify_chain_integrity_json_error(temp_audit_file):
 def test_verify_chain_integrity_broken_link(temp_audit_file):
     """Validates chain verification flags mismatched previous hashes (Line 175)."""
     audit = TamperEvidentAuditTrail(temp_audit_file)
-    audit.record_event(AuditLogLevel.INFO, "gate", "reason", "model", "snippet")
+    audit.record_event(AuditEvent(AuditLogLevel.INFO, "gate", "reason", "model", "snippet"))
     
     # Manually append an entry with a fabricated prev_hash to break the chain
     bad_entry = {
@@ -72,7 +73,7 @@ def test_verify_chain_integrity_broken_link(temp_audit_file):
 def test_verify_chain_integrity_tampered_entry(temp_audit_file):
     """Validates chain verification detects modified payload data (Lines 179-180, 186)."""
     audit = TamperEvidentAuditTrail(temp_audit_file)
-    audit.record_event(AuditLogLevel.INFO, "gate", "reason", "model", "snippet")
+    audit.record_event(AuditEvent(AuditLogLevel.INFO, "gate", "reason", "model", "snippet"))
     
     # Read the file and maliciously alter the data without updating the cryptographic hash
     with open(temp_audit_file, "r") as f:
@@ -135,7 +136,7 @@ def test_audit_no_fcntl_fallback(tmp_path):
         
         # Test fallback on record_event (bypassing fcntl.flock entirely)
         audit = epistemicos.audit.TamperEvidentAuditTrail(test_file)
-        audit.record_event(epistemicos.audit.AuditLogLevel.INFO, "gate", "reason", "m", "s")
+        audit.record_event(epistemicos.audit.AuditEvent(epistemicos.audit.AuditLogLevel.INFO, "gate", "reason", "m", "s"))
         
         assert os.path.exists(test_file)
         
