@@ -287,6 +287,34 @@ def test_permission_scope_clean_internal_subnet():
     assert scope.validate_action({"op": "issue_binder"}) is True
 
 
+def test_permission_scope_validate_egress_valid_payload():
+    """Validates egress allowed when payload size and row count are within limits."""
+    scope = PermissionScope(max_payload_bytes=4096, max_row_count=10)
+    payload = {"data": [1, 2, 3]}
+    assert scope.validate_egress(payload) is True
+
+
+def test_permission_scope_validate_egress_exceeds_payload_bytes():
+    """Validates egress blocked when payload size exceeds max_payload_bytes."""
+    scope = PermissionScope(max_payload_bytes=50, max_row_count=10)
+    payload = {"data": "x" * 100}
+    assert scope.validate_egress(payload) is False
+
+
+def test_permission_scope_validate_egress_exceeds_row_count_list():
+    """Validates egress blocked when nested list size exceeds max_row_count."""
+    scope = PermissionScope(max_payload_bytes=4096, max_row_count=5)
+    payload = {"data": [1, 2, 3, 4, 5, 6]}
+    assert scope.validate_egress(payload) is False
+
+
+def test_permission_scope_validate_egress_exceeds_row_count_dict():
+    """Validates egress blocked when nested dict keys exceed max_row_count."""
+    scope = PermissionScope(max_payload_bytes=4096, max_row_count=3)
+    payload = {"a": 1, "b": {"c": 2, "d": 3, "e": 4, "f": 5}}
+    assert scope.validate_egress(payload) is False
+
+
 # ==========================================
 # CPR SERIALIZATION TESTS
 # ==========================================
