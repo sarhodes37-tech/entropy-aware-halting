@@ -96,3 +96,20 @@ def test_calculate_rolling_entropy():
 
     # Custom window size
     assert calculate_rolling_entropy([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0], window_size=3) == 6.0
+
+
+def test_calculate_entropy_differential():
+    """Validates entropy differential calculation."""
+    from epistemicos.telemetry import calculate_entropy_differential
+
+    # Test when prev_entropy is None
+    assert calculate_entropy_differential(2.5, None) == 0.0
+
+    # Test positive surge
+    assert calculate_entropy_differential(3.0, 1.5) == 1.5
+
+    # Test negative drop (should be ignored, return 0.0)
+    assert calculate_entropy_differential(1.5, 3.0) == 0.0
+
+    # Test identical entropy (zero differential)
+    assert calculate_entropy_differential(2.5, 2.5) == 0.0
