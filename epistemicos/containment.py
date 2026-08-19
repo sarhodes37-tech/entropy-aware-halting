@@ -61,6 +61,9 @@ class ContainmentGuard:
         r"os\.system",
     ]
 
+    DEFAULT_FORBIDDEN_COMMANDS_COMPILED = [
+        re.compile(p, re.IGNORECASE) for p in DEFAULT_FORBIDDEN_COMMANDS
+    ]
 
     # Pre-compile Injection Patterns (Fix for Ingress Prompt Inspection Loop)
     INJECTION_PATTERNS_COMPILED = [
@@ -100,12 +103,11 @@ class ContainmentGuard:
         self.blocked_hosts = blocked_hosts or self.DEFAULT_BLOCKED_HOSTS
         
         # Pre-compile forbidden commands dynamically (Fix for Tool Command Inspection Loop)
-        raw_forbidden = list(self.DEFAULT_FORBIDDEN_COMMANDS)
+        self.forbidden_commands_compiled = list(self.DEFAULT_FORBIDDEN_COMMANDS_COMPILED)
         if custom_forbidden_commands:
-            raw_forbidden.extend(custom_forbidden_commands)
-        self.forbidden_commands_compiled = [
-            re.compile(p, re.IGNORECASE) for p in raw_forbidden
-        ]
+            self.forbidden_commands_compiled.extend(
+                re.compile(p, re.IGNORECASE) for p in custom_forbidden_commands
+            )
         
         self.strict_mode = strict_mode
 
