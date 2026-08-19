@@ -12,6 +12,26 @@ from epistemicos.compliance import (
     TransactionalComplianceBroker
 )
 
+def test_compute_canonical_hash_same_content_different_order():
+    """Validates dictionaries with the same content but different key insertion orders produce identical hashes."""
+    payload1 = {"user": "alice", "age": 30, "metadata": {"role": "admin", "active": True}}
+    payload2 = {"age": 30, "metadata": {"active": True, "role": "admin"}, "user": "alice"}
+
+    hash1 = TransactionalComplianceBroker.compute_canonical_hash(payload1)
+    hash2 = TransactionalComplianceBroker.compute_canonical_hash(payload2)
+
+    assert hash1 == hash2
+
+def test_compute_canonical_hash_different_content():
+    """Validates dictionaries with different content produce different hashes."""
+    payload1 = {"user": "alice", "age": 30}
+    payload2 = {"user": "bob", "age": 30}
+
+    hash1 = TransactionalComplianceBroker.compute_canonical_hash(payload1)
+    hash2 = TransactionalComplianceBroker.compute_canonical_hash(payload2)
+
+    assert hash1 != hash2
+
 def test_offchain_store_delete_pii_not_found():
     """Validates deletion returns False for non-existent transactions."""
     store = OffChainStoreAdapter()
