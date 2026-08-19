@@ -61,14 +61,19 @@ class TamperEvidentAuditTrail:
         self.log_path = Path(log_file_path)
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
         self.genesis_hash = hashlib.sha256(self.GENESIS_SEED).hexdigest()
+        self.last_hash: Optional[str] = None
 
     def _get_last_hash(self) -> str:
         """
         Efficiently retrieves the entry_hash of the final line without loading 
         the entire log file into memory (O(1) tail read).
         """
+        if self.last_hash is not None:
+            return self.last_hash
+
         if not self.log_path.exists() or self.log_path.stat().st_size == 0:
-            return self.genesis_hash
+            self.last_hash = self.genesis_hash
+            return self.last_hash
 
         try:
             with open(self.log_path, "rb") as f:
@@ -88,11 +93,13 @@ class TamperEvidentAuditTrail:
                     line_str = line.strip().decode("utf-8")
                     if line_str:
                         last_entry = json.loads(line_str)
-                        return last_entry.get("entry_hash", self.genesis_hash)
+                        self.last_hash = last_entry.get("entry_hash", self.genesis_hash)
+                        return self.last_hash
         except Exception:
             pass
 
-        return self.genesis_hash
+        self.last_hash = self.genesis_hash
+        return self.last_hash
 
     def _compute_hash(self, prev_hash: str, payload_data: Dict[str, Any]) -> str:
         """Computes SHA-256 over the canonical JSON representation of the entry + prev_hash."""
@@ -157,6 +164,8 @@ class TamperEvidentAuditTrail:
 
                 f.write(json.dumps(entry_data) + "\n")
                 f.flush()
+
+                self.last_hash = entry_hash
 
                 return entry_data
 
