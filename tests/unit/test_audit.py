@@ -94,6 +94,18 @@ def test_verify_chain_integrity_tampered_entry(temp_audit_file):
 # RECEIPT GENERATION & TRANSACTION ROLLBACKS
 # =====================================================================
 
+def test_receipt_generator_log_event():
+    """Validates atomic event logging logic (Line 220)."""
+    rg = ReceiptGenerator()
+
+    with patch("time.time", return_value=1700000000.0):
+        rg.log_event("EventTest", {"foo": "bar"})
+
+    assert len(rg._events) == 1
+    assert rg._events[0]["timestamp"] == 1700000000.0
+    assert rg._events[0]["type"] == "EventTest"
+    assert rg._events[0]["details"] == {"foo": "bar"}
+
 def test_receipt_generator_lifecycle():
     """Validates atomic transaction logging, minting, and stack-based rollbacks (Lines 196-242)."""
     rg = ReceiptGenerator()
