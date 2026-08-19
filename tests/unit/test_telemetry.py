@@ -14,7 +14,8 @@ from epistemicos.telemetry import (
     calculate_rolling_entropy,
     calculate_trigram_repetition,
     calculate_ast_persistence,
-    calculate_structural_risk_index
+    calculate_structural_risk_index,
+    ASTAnalyzer
 )
 
 def test_telemetry_no_torch_fallback():
@@ -96,3 +97,15 @@ def test_calculate_rolling_entropy():
 
     # Custom window size
     assert calculate_rolling_entropy([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0], window_size=3) == 6.0
+
+
+def test_count_ast_nodes():
+    """Validates AST node counting for both valid and invalid syntax."""
+    # Valid syntax: x = 1 (Module, Assign, Name, Store, Constant) -> 5 nodes
+    assert ASTAnalyzer.count_ast_nodes("x = 1") == 5
+
+    # Empty string should just be a Module node -> 1 node
+    assert ASTAnalyzer.count_ast_nodes("") == 1
+
+    # Invalid syntax should trigger SyntaxError and return 0
+    assert ASTAnalyzer.count_ast_nodes("x = ") == 0
