@@ -11,6 +11,7 @@ from unittest.mock import patch, MagicMock
 import epistemicos.telemetry
 from epistemicos.telemetry import (
     ResourceProfiler,
+    ASTAnalyzer,
     calculate_rolling_entropy,
     calculate_trigram_repetition,
     calculate_ast_persistence,
@@ -96,3 +97,23 @@ def test_calculate_rolling_entropy():
 
     # Custom window size
     assert calculate_rolling_entropy([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0], window_size=3) == 6.0
+
+
+def test_ast_analyzer_get_node_weight():
+    """Validates AST node weight lookup including fallbacks."""
+    analyzer = ASTAnalyzer()
+
+    # Exact key match
+    assert analyzer.get_node_weight("For") == 3.53
+    assert analyzer.get_node_weight("ast.Call") == 6.17
+
+    # Fallback key match (stripping namespace)
+    assert analyzer.get_node_weight("custom_namespace.Return") == 1.52
+
+    # Unknown key defaults to 1.0
+    assert analyzer.get_node_weight("UnknownNode") == 1.0
+
+    # Custom omega map
+    custom_analyzer = ASTAnalyzer(omega_map={"Assign": 2.0})
+    assert custom_analyzer.get_node_weight("Assign") == 2.0
+    assert custom_analyzer.get_node_weight("Unknown") == 1.0
