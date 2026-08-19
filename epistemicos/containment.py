@@ -12,6 +12,7 @@ import re
 import socket
 import string
 import urllib.parse
+from functools import lru_cache
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
@@ -34,6 +35,12 @@ class ContainmentReceipt:
     reason: Optional[str] = None
     sanitized_payload: Optional[Any] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
+
+
+@lru_cache(maxsize=128)
+def _resolve_dns_cached(hostname: str):
+    """Cached DNS resolution to improve performance during containment checks."""
+    return socket.getaddrinfo(hostname, None)
 
 
 class ContainmentGuard:
@@ -132,7 +139,7 @@ class ContainmentGuard:
 
         # 2. Resolve DNS hostnames to verify underlying IP destinations
         try:
-            addr_info = socket.getaddrinfo(hostname, None)
+            addr_info = _resolve_dns_cached(hostname)
             for res in addr_info:
                 resolved_ip = ipaddress.ip_address(res[4][0])
                 if (
