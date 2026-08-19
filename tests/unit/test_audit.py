@@ -90,6 +90,22 @@ def test_verify_chain_integrity_tampered_entry(temp_audit_file):
     assert "Tampered entry detected" in msg
 
 
+def test_record_event_payload_too_large(temp_audit_file):
+    """Validates that a payload exceeding 1MB triggers a ValueError."""
+    audit = TamperEvidentAuditTrail(temp_audit_file)
+    oversized_payload = "A" * (1048576 + 1)
+
+    event = AuditEvent(
+        event_type=AuditLogLevel.INFO,
+        gate_name="test_gate",
+        reason="test",
+        model_id="test_model",
+        payload_snippet=oversized_payload
+    )
+
+    with pytest.raises(ValueError, match="Payload snippet exceeds maximum allowed length"):
+        audit.record_event(event)
+
 # =====================================================================
 # RECEIPT GENERATION & TRANSACTION ROLLBACKS
 # =====================================================================
