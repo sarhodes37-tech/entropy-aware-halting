@@ -63,16 +63,17 @@ class ContainmentGuard:
 
 
     # Pre-compile Injection Patterns (Fix for Ingress Prompt Inspection Loop)
-    INJECTION_PATTERNS_COMPILED = [
-        re.compile(p, re.IGNORECASE) for p in [
+    INJECTION_PATTERNS_COMPILED = re.compile(
+        "|".join([
             r"ignore\s+all\s+previous\s+instructions",
             r"disregard\s+the\s+above",
             r"you\s+are\s+now\s+in\s+DAN\s+mode",  # Fixed \n+ to \s+
             r"system\s*:\s*override",
             r"<\|im_start\|>\s*system",
             r"\]\s*;\s*DROP\s+TABLE",
-        ]
-    ]
+        ]),
+        re.IGNORECASE
+    )
 
 
     # Pre-compile System Delimiter Regex (Fix for String Substitution)
@@ -155,13 +156,12 @@ class ContainmentGuard:
         cleaned_prompt = prompt_text.strip()
 
         # Check against compiled injection/jailbreak patterns
-        for pattern in self.INJECTION_PATTERNS_COMPILED:
-            if pattern.search(cleaned_prompt):
-                return ContainmentReceipt(
-                    passed=False,
-                    violation_type=ContainmentViolationType.PROMPT_INJECTION_DETECTED,
-                    reason=f"Detected restricted prompt manipulation pattern: '{pattern.pattern}'",
-                )
+        if match := self.INJECTION_PATTERNS_COMPILED.search(cleaned_prompt):
+            return ContainmentReceipt(
+                passed=False,
+                violation_type=ContainmentViolationType.PROMPT_INJECTION_DETECTED,
+                reason=f"Detected restricted prompt manipulation pattern: '{match.group(0)}'",
+            )
 
         # Sanitize raw system delimiters if injected into user prompt
         sanitized = self.SYSTEM_DELIMITERS_REGEX.sub("", cleaned_prompt)
