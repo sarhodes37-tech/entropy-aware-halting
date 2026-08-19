@@ -108,6 +108,9 @@ class TamperEvidentAuditTrail:
         Logs an event and appends it to the immutable hash chain with file locking.
         Automatically masks PII from CPR before serialization.
         """
+        if len(event.payload_snippet) > 1048576:
+            raise ValueError("Payload snippet exceeds maximum allowed length of 1MB")
+
         event_id = str(uuid.uuid4())
         timestamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         payload_hash = hashlib.sha256(event.payload_snippet.encode("utf-8")).hexdigest()
