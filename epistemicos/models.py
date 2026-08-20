@@ -287,9 +287,8 @@ class CanonicalProblemRepresentation(BaseModel):
             )
 
     def mask_egress_payload(self, custom_redactions: Optional[Set[str]] = None) -> Dict[str, Any]:
-        redact_keys = self.SENSITIVE_FIELDS.union(custom_redactions or set())
-        redact_keys.add("scope")
-        return {k: v for k, v in self.model_dump().items() if k not in redact_keys}
+        redact_keys = self.SENSITIVE_FIELDS | (custom_redactions or set()) | {"scope"}
+        return self.model_dump(exclude=redact_keys)
 
     def serialize_for_belief_kernel(self) -> List[float]:
         if self.fleet_data:
