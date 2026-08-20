@@ -184,11 +184,22 @@ class ContainmentGuard:
             url = url.strip()
             url_norm = url.replace('\\', '/')
 
+            # Reject URLs where `#` appears before the first `/` or `?` in the path to prevent parsing inconsistencies
+            if "://" in url_norm:
+                rest = url_norm.split("://", 1)[1]
+                authority = rest.split("/", 1)[0].split("?", 1)[0]
+                if "#" in authority or "%23" in authority.lower():
+                    return ""
+
             # 2. Parse URL
             parsed = urllib.parse.urlsplit(url_norm)
 
             # 3. Unquote the netloc to prevent URL-encoding bypasses (e.g. %40 for @)
             decoded_netloc = urllib.parse.unquote(parsed.netloc)
+
+            # Reject URLs that have `#` in the authority component
+            if '#' in decoded_netloc:
+                return ""
 
             # 4. Remove any whitespace characters injected into the netloc (requests strips these)
             for ws in string.whitespace:
@@ -214,7 +225,13 @@ class ContainmentGuard:
                 else:
                     hostname = host_port
 
-            return hostname.lower()
+            hostname = hostname.lower()
+
+            # Reject extracted hostnames containing invalid characters
+            if not re.match(r'^[\w\-\.\[\]\:]+$', hostname):
+                return ""
+
+            return hostname
         except Exception:
             return ""
 

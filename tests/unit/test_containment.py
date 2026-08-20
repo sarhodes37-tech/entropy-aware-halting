@@ -68,6 +68,10 @@ def test_network_egress_clean(default_guard):
     "http://0.0.0.0:5000",
     "http://169.254.169.254/latest/meta-data/",  # AWS Metadata
     "http://metadata.google.internal/computeMetadata/v1/", # GCP Metadata
+    "http://127.0.0.1#@example.com/",  # SSRF Bypass via `#`
+    "http://example.com#@127.0.0.1/",  # SSRF Bypass via `#`
+    "http://127.0.0.1%23@example.com/",  # SSRF Bypass via URL-encoded `#`
+    "http://example.com%23@127.0.0.1/",  # SSRF Bypass via URL-encoded `#`
 ])
 def test_network_egress_blocked_hosts(default_guard, blocked_url):
     """Verifies that local, loopback, and cloud metadata IPs are blocked."""
