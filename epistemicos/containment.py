@@ -62,19 +62,19 @@ class ContainmentGuard:
     ]
 
     DEFAULT_FORBIDDEN_COMMANDS_COMPILED = [
-        re.compile(p, re.IGNORECASE) for p in DEFAULT_FORBIDDEN_COMMANDS
+        re.compile("|".join(DEFAULT_FORBIDDEN_COMMANDS), re.IGNORECASE)
     ]
 
     # Pre-compile Injection Patterns (Fix for Ingress Prompt Inspection Loop)
     INJECTION_PATTERNS_COMPILED = [
-        re.compile(p, re.IGNORECASE) for p in [
+        re.compile("|".join([
             r"ignore\s+all\s+previous\s+instructions",
             r"disregard\s+the\s+above",
             r"you\s+are\s+now\s+in\s+DAN\s+mode",  # Fixed \n+ to \s+
             r"system\s*:\s*override",
             r"<\|im_start\|>\s*system",
             r"\]\s*;\s*DROP\s+TABLE",
-        ]
+        ]), re.IGNORECASE)
     ]
 
 
@@ -83,13 +83,13 @@ class ContainmentGuard:
 
     # Pre-compile Goal Mutation Cheat Keywords (Fix for Goal Integrity Validation)
     CHEAT_KEYWORDS_COMPILED = [
-        re.compile(kw, re.IGNORECASE) for kw in [
+        re.compile("|".join([
             r"assert\s+True",
             r"return\s+True\s+#\s*skip\s*test",
             r"sys\.exit\(0\)",
             r"unittest\.skip",
             r"pytest\.mark\.skip",
-        ]
+        ]), re.IGNORECASE)
     ]
 
     def __init__(
@@ -104,8 +104,8 @@ class ContainmentGuard:
         
         self.forbidden_commands_compiled = list(self.DEFAULT_FORBIDDEN_COMMANDS_COMPILED)
         if custom_forbidden_commands:
-            self.forbidden_commands_compiled.extend(
-                [re.compile(p, re.IGNORECASE) for p in custom_forbidden_commands]
+            self.forbidden_commands_compiled.append(
+                re.compile("|".join(custom_forbidden_commands), re.IGNORECASE)
             )
         
         self.strict_mode = strict_mode
@@ -157,11 +157,12 @@ class ContainmentGuard:
 
         # Check against compiled injection/jailbreak patterns
         for pattern in self.INJECTION_PATTERNS_COMPILED:
-            if pattern.search(cleaned_prompt):
+            match = pattern.search(cleaned_prompt)
+            if match:
                 return ContainmentReceipt(
                     passed=False,
                     violation_type=ContainmentViolationType.PROMPT_INJECTION_DETECTED,
-                    reason=f"Detected restricted prompt manipulation pattern: '{pattern.pattern}'",
+                    reason=f"Detected restricted prompt manipulation pattern: '{match.group(0)}'",
                 )
 
         # Sanitize raw system delimiters if injected into user prompt
@@ -258,11 +259,12 @@ class ContainmentGuard:
     def inspect_tool_command(self, code_or_command: str) -> ContainmentReceipt:
         """Inspects generated code or shell execution commands for OS-level escape attempts."""
         for pattern in self.forbidden_commands_compiled:
-            if pattern.search(code_or_command):
+            match = pattern.search(code_or_command)
+            if match:
                 return ContainmentReceipt(
                     passed=False,
                     violation_type=ContainmentViolationType.FORBIDDEN_COMMAND_EXECUTION,
-                    reason=f"Command execution blocked: Contains restricted OS-level directive matching '{pattern.pattern}'.",
+                    reason=f"Command execution blocked: Contains restricted OS-level directive matching '{match.group(0)}'.",
                 )
 
         return ContainmentReceipt(passed=True)
@@ -276,11 +278,12 @@ class ContainmentGuard:
     ) -> ContainmentReceipt:
         """Detects whether an agent is attempting to alter its primary objective or cheat on evaluation tests."""
         for pattern in self.CHEAT_KEYWORDS_COMPILED:
-            if pattern.search(proposed_action):
+            match = pattern.search(proposed_action)
+            if match:
                 return ContainmentReceipt(
                     passed=False,
                     violation_type=ContainmentViolationType.GOAL_MUTATION_REWARD_CHEATING,
-                    reason=f"Reward-cheating attempt detected: Proposed action overrides test verification via '{pattern.pattern}'.",
+                    reason=f"Reward-cheating attempt detected: Proposed action overrides test verification via '{match.group(0)}'.",
                 )
 
         return ContainmentReceipt(passed=True)
