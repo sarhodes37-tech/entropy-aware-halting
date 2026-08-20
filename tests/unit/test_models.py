@@ -87,6 +87,26 @@ def test_token_surprisal_sensor_empty_logprobs():
     sensor = TokenSurprisalSensor()
     assert sensor.compute_z_scores([]) == []
 
+def test_compute_z_scores_short_sequence():
+    sensor = TokenSurprisalSensor()
+    assert sensor.compute_z_scores([-0.1]) == [0.0]
+    assert sensor.compute_z_scores([-0.1, -0.2]) == [0.0, 0.0]
+
+def test_compute_z_scores_constant():
+    sensor = TokenSurprisalSensor(std_floor=0.05)
+    z_scores = sensor.compute_z_scores([-0.5, -0.5, -0.5])
+    assert z_scores == [0.0, 0.0, 0.0]
+
+def test_compute_z_scores_typical():
+    sensor = TokenSurprisalSensor(window_size=2, std_floor=0.01)
+    z_scores = sensor.compute_z_scores([-0.1, -0.1, -0.2])
+    assert z_scores == [0.0, 0.0, 10.0]
+
+def test_compute_z_scores_rolling_window():
+    sensor = TokenSurprisalSensor(window_size=2, std_floor=0.05)
+    z_scores = sensor.compute_z_scores([-0.1, -0.2, -0.3, -0.4, -0.5])
+    assert z_scores == pytest.approx([0.0, 0.0, 3.0, 3.0, 3.0])
+
 def test_token_surprisal_sensor_evaluate_empty():
     sensor = TokenSurprisalSensor()
     result = sensor.evaluate([])
@@ -192,6 +212,63 @@ def test_bayes_factor_update_computation():
     assert update.bayes_factor_db == 6.02
 
 
+from pydantic import ValidationError
+
+def test_bayes_factor_update_negative_log():
+    """Validates Bayes factor and db computation when evidence opposes the hypothesis."""
+    update = BayesFactorUpdate(
+        evidence_id="ev_neg",
+        source_provenance=["log_b"],
+        p_evidence_given_hypothesis=0.2,
+        p_evidence_given_not_hypothesis=0.8
+    )
+    assert update.bayes_factor == 0.25
+    assert update.bayes_factor_db == -6.02
+
+
+def test_bayes_factor_update_zero_log():
+    """Validates Bayes factor and db computation when evidence is neutral."""
+    update = BayesFactorUpdate(
+        evidence_id="ev_neut",
+        source_provenance=["log_c"],
+        p_evidence_given_hypothesis=0.5,
+        p_evidence_given_not_hypothesis=0.5
+    )
+    assert update.bayes_factor == 1.0
+    assert update.bayes_factor_db == 0.0
+
+
+def test_bayes_factor_update_extreme_values():
+    """Validates Bayes factor calculation handles high confidence extreme values without overflow."""
+    update = BayesFactorUpdate(
+        evidence_id="ev_ext",
+        source_provenance=["log_d"],
+        p_evidence_given_hypothesis=0.999,
+        p_evidence_given_not_hypothesis=0.001
+    )
+    assert update.bayes_factor == 999.0
+    assert update.bayes_factor_db == 30.0
+
+
+@pytest.mark.parametrize("p_h, p_nh", [
+    (0.0, 0.5),   # Lower bound violation (p_h)
+    (1.0, 0.5),   # Upper bound violation (p_h)
+    (0.5, 0.0),   # Lower bound violation (p_nh)
+    (0.5, 1.0),   # Upper bound violation (p_nh)
+    (-0.1, 0.5),  # Negative value
+    (0.5, 1.5)    # Greater than 1 value
+])
+def test_bayes_factor_update_validation_errors(p_h, p_nh):
+    """Validates that Pydantic enforces gt=0.0 and lt=1.0 for probabilities."""
+    with pytest.raises(ValidationError):
+        BayesFactorUpdate(
+            evidence_id="ev_val",
+            source_provenance=["log_e"],
+            p_evidence_given_hypothesis=p_h,
+            p_evidence_given_not_hypothesis=p_nh
+        )
+
+
 def test_belief_object_update_and_falsify():
     """Validates posterior math and status state transitions."""
     contract = PopperianContract(
@@ -287,6 +364,34 @@ def test_permission_scope_clean_internal_subnet():
     assert scope.validate_action({"op": "issue_binder"}) is True
 
 
+def test_permission_scope_validate_egress_valid_payload():
+    """Validates egress allowed when payload size and row count are within limits."""
+    scope = PermissionScope(max_payload_bytes=4096, max_row_count=10)
+    payload = {"data": [1, 2, 3]}
+    assert scope.validate_egress(payload) is True
+
+
+def test_permission_scope_validate_egress_exceeds_payload_bytes():
+    """Validates egress blocked when payload size exceeds max_payload_bytes."""
+    scope = PermissionScope(max_payload_bytes=50, max_row_count=10)
+    payload = {"data": "x" * 100}
+    assert scope.validate_egress(payload) is False
+
+
+def test_permission_scope_validate_egress_exceeds_row_count_list():
+    """Validates egress blocked when nested list size exceeds max_row_count."""
+    scope = PermissionScope(max_payload_bytes=4096, max_row_count=5)
+    payload = {"data": [1, 2, 3, 4, 5, 6]}
+    assert scope.validate_egress(payload) is False
+
+
+def test_permission_scope_validate_egress_exceeds_row_count_dict():
+    """Validates egress blocked when nested dict keys exceed max_row_count."""
+    scope = PermissionScope(max_payload_bytes=4096, max_row_count=3)
+    payload = {"a": 1, "b": {"c": 2, "d": 3, "e": 4, "f": 5}}
+    assert scope.validate_egress(payload) is False
+
+
 # ==========================================
 # CPR SERIALIZATION TESTS
 # ==========================================
@@ -352,3 +457,29 @@ def test_cpr_mask_egress_payload_custom_redactions():
     assert "policy_id" not in masked
     assert "scope" not in masked
     assert masked.get("risk_details") == {"loss_ratio_3yr": 0.95}
+def test_token_surprisal_sensor_evaluate_integration_passed():
+    """Validates the evaluate method using the real compute_z_scores when values pass."""
+    sensor = TokenSurprisalSensor(z_threshold=2.85, window_size=10, std_floor=0.05)
+    # Log probabilities representing normal, expected tokens (low surprisal/high probability)
+    # Using logprobs close to 0, meaning very high probability.
+    logprobs = [-0.1, -0.15, -0.2, -0.1, -0.15, -0.2, -0.1, -0.15, -0.2, -0.1, -0.1]
+
+    result = sensor.evaluate(logprobs)
+
+    assert result["passed"] is True
+    assert result["flagged_tokens"] == 0
+    assert result["max_z_score"] < 2.85
+    assert len(result["token_z_scores"]) == len(logprobs)
+
+def test_token_surprisal_sensor_evaluate_integration_flagged():
+    """Validates the evaluate method using the real compute_z_scores when an anomaly occurs."""
+    sensor = TokenSurprisalSensor(z_threshold=2.85, window_size=10, std_floor=0.05)
+    # Log probabilities representing normal tokens followed by a highly surprising one (large negative logprob)
+    logprobs = [-0.1, -0.15, -0.2, -0.1, -0.15, -0.2, -0.1, -0.15, -0.2, -0.1, -5.0]
+
+    result = sensor.evaluate(logprobs)
+
+    assert result["passed"] is False
+    assert result["flagged_tokens"] > 0
+    assert result["max_z_score"] > 2.85
+    assert len(result["token_z_scores"]) == len(logprobs)

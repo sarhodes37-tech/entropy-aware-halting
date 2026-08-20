@@ -11,7 +11,7 @@ from typing import Dict, Any, Optional
 
 from epistemicos.models import CanonicalProblemRepresentation
 from epistemicos.telemetry import ResourceProfiler
-from epistemicos.audit import TamperEvidentAuditTrail, AuditLogLevel
+from epistemicos.audit import TamperEvidentAuditTrail, AuditLogLevel, AuditEvent
 from epistemicos.scheduler import EntropyAwareScheduler, DecisionResult
 from epistemicos.vector_hygiene import VectorHygieneManager
 from epistemicos.gates import (
@@ -111,13 +111,13 @@ class EpistemicOrchestrator:
             else:
                 masked_payload = raw_payload
 
-            self.audit_logger.record_event(
+            self.audit_logger.record_event(AuditEvent(
                 event_type=AuditLogLevel.HALT,
                 gate_name="CPR_Validation",
                 reason=f"Schema violation: {str(e)}",
                 model_id=self.model_id,
                 payload_snippet=json.dumps(masked_payload)
-            )
+            ))
             return {"status": "HALTED", "reason": "Schema validation failed"}
 
         # 2. Execute Defense-in-Depth Pipeline under Telemetry
@@ -140,7 +140,7 @@ class EpistemicOrchestrator:
                         # Fallback to the gate's revocation count if the vector manager is mocked/empty
                         actual_revoked_count = max(len(revoked_ids), getattr(result, "vectors_revoked", 0))
 
-                        self.audit_logger.record_event(
+                        self.audit_logger.record_event(AuditEvent(
                             event_type=AuditLogLevel.HALT,
                             gate_name=result.gate_name,
                             reason=f"{result.reason} | Vectors Revoked: {actual_revoked_count}",
@@ -148,7 +148,7 @@ class EpistemicOrchestrator:
                             payload_snippet=json.dumps(raw_payload),
                             cpr_snapshot=cpr,
                             telemetry=telemetry
-                        )
+                        ))
                         return {
                             "status": "HALTED", 
                             "gate": result.gate_name, 
@@ -158,7 +158,7 @@ class EpistemicOrchestrator:
 
             # 3b. Pipeline Success: Vectors are automatically committed by the context manager
             telemetry = profiler.get_telemetry()
-            self.audit_logger.record_event(
+            self.audit_logger.record_event(AuditEvent(
                 event_type=AuditLogLevel.INFO,
                 gate_name="Pipeline_Complete",
                 reason="All governance gates passed",
@@ -166,7 +166,7 @@ class EpistemicOrchestrator:
                 payload_snippet=json.dumps(raw_payload),
                 cpr_snapshot=cpr,
                 telemetry=telemetry
-            )
+            ))
 
             return {
                 "status": "ALLOWED",

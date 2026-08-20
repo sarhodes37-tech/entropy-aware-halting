@@ -253,9 +253,9 @@ class PermissionGate(Gate):
                     )
 
         # 4. Deep Regex inspection for injections/jailbreaks
-        inspection_target = json.dumps({"payload": payload, "actions": proposed_actions, "output": llm_output})
-
-        if self.injection_regex.search(inspection_target):
+        if (self.injection_regex.search(str(payload)) or
+            self.injection_regex.search(str(proposed_actions)) or
+            self.injection_regex.search(str(llm_output))):
             return GateResult(
                 action=GateAction.HALT,
                 status="HALTED",

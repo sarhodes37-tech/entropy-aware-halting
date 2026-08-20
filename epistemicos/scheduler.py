@@ -92,10 +92,14 @@ class EntropyAwareScheduler:
         self.best_step = -1
         self.best_utility = float("-inf")
         self.initial_entropy = None
+        self._torch = None
 
     def entropy(self, probabilities):
         # Lazy import isolates heavy tensor packages to execution boundary
-        import torch
+        if self._torch is None:
+            import torch
+            self._torch = torch
+        torch = self._torch
 
         if not isinstance(probabilities, torch.Tensor):
             probabilities = torch.tensor(probabilities)
@@ -145,8 +149,7 @@ class EntropyAwareScheduler:
         directive = "CONTINUE"
         negative_yield_detected = False
         if len(self.history) >= self.negative_yield_window:
-            recent_delta = [x.delta_h for x in self.history[-self.negative_yield_window:]]
-            negative_yield_detected = all(x < -self.divergence_threshold for x in recent_delta)
+            negative_yield_detected = all(x.delta_h < -self.divergence_threshold for x in self.history[-self.negative_yield_window:])
 
         if negative_yield_detected:
             directive = "NEGATIVE_YIELD"
