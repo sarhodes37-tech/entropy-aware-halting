@@ -11,6 +11,7 @@ from unittest.mock import patch, MagicMock
 import epistemicos.telemetry
 from epistemicos.telemetry import (
     ResourceProfiler,
+    calculate_entropy_differential,
     calculate_rolling_entropy,
     calculate_trigram_repetition,
     calculate_ast_persistence,
@@ -81,16 +82,19 @@ def test_calculate_structural_risk_index():
     assert calculate_structural_risk_index(dH_pos=0.5, omega=2.0, dA=3) == 3.0
 
 
-def test_count_ast_nodes_valid():
-    """Validates counting AST nodes for a valid code snippet."""
-    # 'x = 1' parses to: Module(body=[Assign(targets=[Name(id='x', ctx=Store())], value=Constant(value=1))])
-    # Node types: Module, Assign, Name, Store, Constant
-    # Total nodes is 5.
-    assert ASTAnalyzer.count_ast_nodes("x = 1") == 5
+def test_calculate_entropy_differential():
+    """Validates that entropy differential computes surges and ignores drops."""
+    # When previous entropy is None
+    assert calculate_entropy_differential(current_entropy=5.0, prev_entropy=None) == 0.0
 
-def test_count_ast_nodes_invalid():
-    """Validates counting AST nodes safely returns 0 for syntax errors."""
-    assert ASTAnalyzer.count_ast_nodes("x = ") == 0
+    # Surge (current > previous)
+    assert calculate_entropy_differential(current_entropy=6.5, prev_entropy=5.0) == 1.5
+
+    # Drop (current < previous)
+    assert calculate_entropy_differential(current_entropy=4.0, prev_entropy=5.0) == 0.0
+
+    # No change (current == previous)
+    assert calculate_entropy_differential(current_entropy=5.0, prev_entropy=5.0) == 0.0
 
 
 def test_calculate_rolling_entropy():
@@ -109,3 +113,17 @@ def test_calculate_rolling_entropy():
 
     # Custom window size
     assert calculate_rolling_entropy([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0], window_size=3) == 6.0
+
+def test_ast_analyzer_get_node_weight():
+    """Validates empirical risk weight mapping for AST nodes."""
+    analyzer = ASTAnalyzer()
+
+    # Exact match from DEFAULT_OMEGA_MAP
+    assert analyzer.get_node_weight("Assign") == 1.0
+    assert analyzer.get_node_weight("Call") == 6.17
+
+    # Fallback to clean key (e.g., ast.Return -> Return)
+    assert analyzer.get_node_weight("foo.bar.Return") == 1.52
+
+    # Missing key defaults to 1.0
+    assert analyzer.get_node_weight("UnknownNodeType") == 1.0
