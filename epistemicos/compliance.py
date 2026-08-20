@@ -87,11 +87,24 @@ class TransactionalComplianceBroker:
             self.offchain_store.delete_pii(transaction_id)
             raise RuntimeError(f"Ledger commitment failed. Off-chain rollback executed: {e}") from e
 
-    def execute_right_to_be_forgotten(self, transaction_id: str) -> Tuple[bool, Optional[str]]:
+    def execute_right_to_be_forgotten(self, transaction_id: str, file_path: Optional[str] = None) -> Tuple[bool, Optional[str]]:
         """
         Purges raw PII from off-chain store while preserving cryptographic proof on ledger.
+        If file_path is provided, reads lines from the file, replaces entity references
+        (transaction_id) with [REDACTED], and writes back to file.
         """
         deleted_from_store = self.offchain_store.delete_pii(transaction_id)
         ledger_block = self.ledger.get_block(transaction_id)
         anchored_hash = ledger_block["payload_hash"] if ledger_block else None
+
+        if file_path:
+            import os
+            if os.path.exists(file_path):
+                with open(file_path, "r") as f:
+                    lines = f.readlines()
+
+                with open(file_path, "w") as f:
+                    for line in lines:
+                        f.write(line.replace(transaction_id, "[REDACTED]"))
+
         return deleted_from_store, anchored_hash
