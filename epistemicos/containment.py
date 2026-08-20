@@ -76,6 +76,14 @@ class ContainmentGuard:
             r"\]\s*;\s*DROP\s+TABLE",
         ]), re.IGNORECASE)
     ]
+    INJECTION_PATTERNS_COMPILED = re.compile("|".join([
+        r"ignore\s+all\s+previous\s+instructions",
+        r"disregard\s+the\s+above",
+        r"you\s+are\s+now\s+in\s+DAN\s+mode",  # Fixed \n+ to \s+
+        r"system\s*:\s*override",
+        r"<\|im_start\|>\s*system",
+        r"\]\s*;\s*DROP\s+TABLE",
+    ]), re.IGNORECASE)
 
 
     # Pre-compile System Delimiter Regex (Fix for String Substitution)
@@ -91,6 +99,13 @@ class ContainmentGuard:
             r"pytest\.mark\.skip",
         ]), re.IGNORECASE)
     ]
+    CHEAT_KEYWORDS_COMPILED = re.compile("|".join([
+        r"assert\s+True",
+        r"return\s+True\s+#\s*skip\s*test",
+        r"sys\.exit\(0\)",
+        r"unittest\.skip",
+        r"pytest\.mark\.skip",
+    ]), re.IGNORECASE)
 
     def __init__(
         self,
@@ -102,7 +117,6 @@ class ContainmentGuard:
         self.allowed_domains = set(allowed_egress_domains or [])
         self.blocked_hosts = blocked_hosts or self.DEFAULT_BLOCKED_HOSTS
         
-        self.forbidden_commands_compiled = list(self.DEFAULT_FORBIDDEN_COMMANDS_COMPILED)
         if custom_forbidden_commands:
             self.forbidden_commands_compiled.append(
                 re.compile("|".join(custom_forbidden_commands), re.IGNORECASE)
@@ -164,6 +178,12 @@ class ContainmentGuard:
                     violation_type=ContainmentViolationType.PROMPT_INJECTION_DETECTED,
                     reason=f"Detected restricted prompt manipulation pattern: '{match.group(0)}'",
                 )
+        if match := self.INJECTION_PATTERNS_COMPILED.search(cleaned_prompt):
+            return ContainmentReceipt(
+                passed=False,
+                violation_type=ContainmentViolationType.PROMPT_INJECTION_DETECTED,
+                reason=f"Detected restricted prompt manipulation pattern: '{match.group(0)}'",
+            )
 
         # Sanitize raw system delimiters if injected into user prompt
         sanitized = self.SYSTEM_DELIMITERS_REGEX.sub("", cleaned_prompt)
@@ -185,11 +205,22 @@ class ContainmentGuard:
             url = url.strip()
             url_norm = url.replace('\\', '/')
 
+            # Reject URLs where `#` appears before the first `/` or `?` in the path to prevent parsing inconsistencies
+            if "://" in url_norm:
+                rest = url_norm.split("://", 1)[1]
+                authority = rest.split("/", 1)[0].split("?", 1)[0]
+                if "#" in authority or "%23" in authority.lower():
+                    return ""
+
             # 2. Parse URL
             parsed = urllib.parse.urlsplit(url_norm)
 
             # 3. Unquote the netloc to prevent URL-encoding bypasses (e.g. %40 for @)
             decoded_netloc = urllib.parse.unquote(parsed.netloc)
+
+            # Reject URLs that have `#` in the authority component
+            if '#' in decoded_netloc:
+                return ""
 
             # 4. Remove any whitespace characters injected into the netloc (requests strips these)
             for ws in string.whitespace:
@@ -215,7 +246,13 @@ class ContainmentGuard:
                 else:
                     hostname = host_port
 
-            return hostname.lower()
+            hostname = hostname.lower()
+
+            # Reject extracted hostnames containing invalid characters
+            if not re.match(r'^[\w\-\.\[\]\:]+$', hostname):
+                return ""
+
+            return hostname
         except Exception:
             return ""
 
@@ -261,6 +298,7 @@ class ContainmentGuard:
         for pattern in self.forbidden_commands_compiled:
             match = pattern.search(code_or_command)
             if match:
+            if match := pattern.search(code_or_command):
                 return ContainmentReceipt(
                     passed=False,
                     violation_type=ContainmentViolationType.FORBIDDEN_COMMAND_EXECUTION,
@@ -285,6 +323,12 @@ class ContainmentGuard:
                     violation_type=ContainmentViolationType.GOAL_MUTATION_REWARD_CHEATING,
                     reason=f"Reward-cheating attempt detected: Proposed action overrides test verification via '{match.group(0)}'.",
                 )
+        if match := self.CHEAT_KEYWORDS_COMPILED.search(proposed_action):
+            return ContainmentReceipt(
+                passed=False,
+                violation_type=ContainmentViolationType.GOAL_MUTATION_REWARD_CHEATING,
+                reason=f"Reward-cheating attempt detected: Proposed action overrides test verification via '{match.group(0)}'.",
+            )
 
         return ContainmentReceipt(passed=True)
 
