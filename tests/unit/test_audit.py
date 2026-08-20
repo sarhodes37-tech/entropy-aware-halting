@@ -143,3 +143,12 @@ def test_audit_no_fcntl_fallback(tmp_path):
     # Restore normal state for subsequent test modules
     import epistemicos.audit
     importlib.reload(epistemicos.audit)
+
+
+def test_record_event_payload_too_large(temp_audit_file):
+    """Validates that payload snippets larger than 1MB are rejected to prevent DoS."""
+    audit = TamperEvidentAuditTrail(temp_audit_file)
+    large_snippet = "a" * (1048576 + 1)
+    event = AuditEvent(AuditLogLevel.INFO, "gate", "reason", "model", large_snippet)
+    with pytest.raises(ValueError, match="Payload snippet exceeds"):
+        audit.record_event(event)
