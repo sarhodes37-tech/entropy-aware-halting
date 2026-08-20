@@ -92,14 +92,10 @@ class EntropyAwareScheduler:
         self.best_step = -1
         self.best_utility = float("-inf")
         self.initial_entropy = None
-        self._torch = None
 
     def entropy(self, probabilities):
         # Lazy import isolates heavy tensor packages to execution boundary
-        if self._torch is None:
-            import torch
-            self._torch = torch
-        torch = self._torch
+        import torch
 
         if not isinstance(probabilities, torch.Tensor):
             probabilities = torch.tensor(probabilities)

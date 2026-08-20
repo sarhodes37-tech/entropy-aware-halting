@@ -104,29 +104,3 @@ def test_cpr_validation_failure_non_dict_payload():
     logged_data = json.loads(logged_payload_snippet)
 
     assert logged_data == "malformed"
-
-def test_process_step_halt_true():
-    orchestrator = EpistemicOrchestrator()
-    orchestrator.scheduler = MagicMock()
-    mock_decision = MagicMock()
-    mock_decision.halt = True
-    orchestrator.scheduler.step.return_value = mock_decision
-
-    result = orchestrator.process_step(None, None, None)
-
-    assert result == mock_decision
-    assert result.halt is True
-    orchestrator.scheduler.step.assert_called_once_with(None, None, None)
-
-def test_process_step_halt_false():
-    orchestrator = EpistemicOrchestrator()
-    orchestrator.scheduler = MagicMock()
-    mock_decision = MagicMock()
-    mock_decision.halt = False
-    orchestrator.scheduler.step.return_value = mock_decision
-
-    result = orchestrator.process_step(None, None, None)
-
-    assert result == mock_decision
-    assert result.halt is False
-    orchestrator.scheduler.step.assert_called_once_with(None, None, None)

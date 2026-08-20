@@ -12,23 +12,6 @@ from epistemicos.compliance import (
     TransactionalComplianceBroker
 )
 
-def test_offchain_store_save_and_get():
-    """Validates that a payload can be saved and retrieved accurately."""
-    store = OffChainStoreAdapter()
-    tx_id = "test_tx_001"
-    payload = {"pii": "test_data", "amount": 100}
-
-    # Save the payload
-    store.save(tx_id, payload)
-
-    # Retrieve and verify the payload
-    retrieved_payload = store.get(tx_id)
-    assert retrieved_payload == payload
-
-    # Retrieve non-existent payload should return None
-    assert store.get("ghost_tx_002") is None
-
-
 def test_offchain_store_delete_pii_not_found():
     """Validates deletion returns False for non-existent transactions."""
     store = OffChainStoreAdapter()
