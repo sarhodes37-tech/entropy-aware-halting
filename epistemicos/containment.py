@@ -298,7 +298,7 @@ class ContainmentGuard:
         for pattern in self.forbidden_commands_compiled:
             match = pattern.search(code_or_command)
             if match:
-            if match := pattern.search(code_or_command):
+            if match:= pattern.search(code_or_command):
                 return ContainmentReceipt(
                     passed=False,
                     violation_type=ContainmentViolationType.FORBIDDEN_COMMAND_EXECUTION,
