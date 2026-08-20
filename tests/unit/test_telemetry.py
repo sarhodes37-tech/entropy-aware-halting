@@ -97,3 +97,17 @@ def test_calculate_rolling_entropy():
 
     # Custom window size
     assert calculate_rolling_entropy([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0], window_size=3) == 6.0
+
+def test_ast_analyzer_get_node_weight():
+    """Validates empirical risk weight mapping for AST nodes."""
+    analyzer = ASTAnalyzer()
+
+    # Exact match from DEFAULT_OMEGA_MAP
+    assert analyzer.get_node_weight("Assign") == 1.0
+    assert analyzer.get_node_weight("Call") == 6.17
+
+    # Fallback to clean key (e.g., ast.Return -> Return)
+    assert analyzer.get_node_weight("foo.bar.Return") == 1.52
+
+    # Missing key defaults to 1.0
+    assert analyzer.get_node_weight("UnknownNodeType") == 1.0
