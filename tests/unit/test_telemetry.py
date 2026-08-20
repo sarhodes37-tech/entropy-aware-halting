@@ -99,21 +99,18 @@ def test_calculate_rolling_entropy():
     assert calculate_rolling_entropy([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0], window_size=3) == 6.0
 
 
-def test_ast_analyzer_get_node_weight():
-    """Validates AST node weight lookup including fallbacks."""
-    analyzer = ASTAnalyzer()
+def test_calculate_entropy_differential():
+    """Validates entropy differential calculation."""
+    from epistemicos.telemetry import calculate_entropy_differential
 
-    # Exact key match
-    assert analyzer.get_node_weight("For") == 3.53
-    assert analyzer.get_node_weight("ast.Call") == 6.17
+    # Test when prev_entropy is None
+    assert calculate_entropy_differential(2.5, None) == 0.0
 
-    # Fallback key match (stripping namespace)
-    assert analyzer.get_node_weight("custom_namespace.Return") == 1.52
+    # Test positive surge
+    assert calculate_entropy_differential(3.0, 1.5) == 1.5
 
-    # Unknown key defaults to 1.0
-    assert analyzer.get_node_weight("UnknownNode") == 1.0
+    # Test negative drop (should be ignored, return 0.0)
+    assert calculate_entropy_differential(1.5, 3.0) == 0.0
 
-    # Custom omega map
-    custom_analyzer = ASTAnalyzer(omega_map={"Assign": 2.0})
-    assert custom_analyzer.get_node_weight("Assign") == 2.0
-    assert custom_analyzer.get_node_weight("Unknown") == 1.0
+    # Test identical entropy (zero differential)
+    assert calculate_entropy_differential(2.5, 2.5) == 0.0
