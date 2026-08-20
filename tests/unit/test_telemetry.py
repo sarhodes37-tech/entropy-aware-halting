@@ -11,6 +11,7 @@ from unittest.mock import patch, MagicMock
 import epistemicos.telemetry
 from epistemicos.telemetry import (
     ResourceProfiler,
+    calculate_entropy_differential,
     calculate_rolling_entropy,
     calculate_trigram_repetition,
     calculate_ast_persistence,
@@ -81,6 +82,20 @@ def test_calculate_structural_risk_index():
     assert calculate_structural_risk_index(dH_pos=0.5, omega=2.0, dA=3) == 3.0
 
 
+def test_calculate_entropy_differential():
+    """Validates the calculation of entropy differential, including edge cases."""
+    # Positive differential
+    assert calculate_entropy_differential(3.5, 1.5) == 2.0
+
+    # Negative differential should be clamped to 0.0
+    assert calculate_entropy_differential(1.5, 3.5) == 0.0
+
+    # Zero differential
+    assert calculate_entropy_differential(2.0, 2.0) == 0.0
+
+    # None previous entropy
+    assert calculate_entropy_differential(2.0, None) == 0.0
+
 def test_calculate_rolling_entropy():
     """Validates the calculation of smoothed rolling mean entropy."""
     # Empty history
@@ -97,3 +112,17 @@ def test_calculate_rolling_entropy():
 
     # Custom window size
     assert calculate_rolling_entropy([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0], window_size=3) == 6.0
+
+def test_ast_analyzer_get_node_weight():
+    """Validates empirical risk weight mapping for AST nodes."""
+    analyzer = ASTAnalyzer()
+
+    # Exact match from DEFAULT_OMEGA_MAP
+    assert analyzer.get_node_weight("Assign") == 1.0
+    assert analyzer.get_node_weight("Call") == 6.17
+
+    # Fallback to clean key (e.g., ast.Return -> Return)
+    assert analyzer.get_node_weight("foo.bar.Return") == 1.52
+
+    # Missing key defaults to 1.0
+    assert analyzer.get_node_weight("UnknownNodeType") == 1.0
