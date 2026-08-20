@@ -11,10 +11,12 @@ from unittest.mock import patch, MagicMock
 import epistemicos.telemetry
 from epistemicos.telemetry import (
     ResourceProfiler,
+    ASTAnalyzer,
     calculate_rolling_entropy,
     calculate_trigram_repetition,
     calculate_ast_persistence,
-    calculate_structural_risk_index
+    calculate_structural_risk_index,
+    ASTAnalyzer
 )
 
 def test_telemetry_no_torch_fallback():
@@ -96,3 +98,33 @@ def test_calculate_rolling_entropy():
 
     # Custom window size
     assert calculate_rolling_entropy([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0], window_size=3) == 6.0
+
+
+def test_ast_analyzer_passes_static_ast():
+    """Validates the ASTAnalyzer.passes_static_ast method."""
+    # Valid Python string
+    assert ASTAnalyzer.passes_static_ast("x = 1") is True
+    assert ASTAnalyzer.passes_static_ast("def foo():\n    return 42") is True
+
+    # Invalid Python string (SyntaxError)
+    assert ASTAnalyzer.passes_static_ast("x = ") is False
+    assert ASTAnalyzer.passes_static_ast("if True") is False
+
+    # Empty AST string (valid syntax, but no nodes)
+    assert ASTAnalyzer.passes_static_ast("") is False
+    assert ASTAnalyzer.passes_static_ast("# Just a comment") is False
+def test_calculate_entropy_differential():
+    """Validates entropy differential calculation."""
+    from epistemicos.telemetry import calculate_entropy_differential
+
+    # Test when prev_entropy is None
+    assert calculate_entropy_differential(2.5, None) == 0.0
+
+    # Test positive surge
+    assert calculate_entropy_differential(3.0, 1.5) == 1.5
+
+    # Test negative drop (should be ignored, return 0.0)
+    assert calculate_entropy_differential(1.5, 3.0) == 0.0
+
+    # Test identical entropy (zero differential)
+    assert calculate_entropy_differential(2.5, 2.5) == 0.0
