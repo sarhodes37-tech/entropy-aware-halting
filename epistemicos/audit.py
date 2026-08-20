@@ -117,6 +117,8 @@ class TamperEvidentAuditTrail:
         """
         event_id = str(uuid.uuid4())
         timestamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        if len(event.payload_snippet) > 1048576:
+            raise ValueError("Payload snippet exceeds the maximum allowed length of 1MB.")
         payload_hash = hashlib.sha256(event.payload_snippet.encode("utf-8")).hexdigest()
 
         # Compile strict structural metadata
