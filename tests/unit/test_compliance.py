@@ -101,3 +101,37 @@ def test_execute_right_to_be_forgotten_not_found_anywhere():
 
     assert deleted is False
     assert anchored_hash is None
+
+
+def test_execute_right_to_be_forgotten_file_redaction(tmp_path):
+    """Validates that entity references (transaction_id) are replaced with [REDACTED] in the file."""
+    broker = TransactionalComplianceBroker()
+    tx_id = "tx_redact_123"
+    broker.record_transaction(tx_id, {"pii": "sensitive"}, {"status": "ok"})
+
+    # Create a temporary file with some mock data containing the tx_id
+    test_file = tmp_path / "data.log"
+    test_file.write_text(f"Event: login, user: {tx_id}\nEvent: logout, user: {tx_id}\nEvent: query, user: normal_user")
+
+    deleted, anchored_hash = broker.execute_right_to_be_forgotten(tx_id, file_path=str(test_file))
+
+    assert deleted is True
+    assert anchored_hash is not None
+
+    # Read the file back and check for redactions
+    content = test_file.read_text()
+    assert tx_id not in content
+    assert "[REDACTED]" in content
+    assert content == "Event: login, user: [REDACTED]\nEvent: logout, user: [REDACTED]\nEvent: query, user: normal_user"
+
+
+def test_execute_right_to_be_forgotten_file_not_found():
+    """Validates that a non-existent file is handled gracefully without error."""
+    broker = TransactionalComplianceBroker()
+    tx_id = "tx_missing_file"
+
+    # Ensure it doesn't raise an exception when file doesn't exist
+    deleted, anchored_hash = broker.execute_right_to_be_forgotten(tx_id, file_path="/tmp/non_existent_file_9999.log")
+
+    assert deleted is False
+    assert anchored_hash is None
