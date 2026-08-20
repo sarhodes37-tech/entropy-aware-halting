@@ -101,3 +101,13 @@ def test_execute_right_to_be_forgotten_not_found_anywhere():
 
     assert deleted is False
     assert anchored_hash is None
+
+
+def test_execute_right_to_be_forgotten_empty_transaction_id():
+    """Validates behavior when transaction id is empty."""
+    broker = TransactionalComplianceBroker()
+
+    deleted, anchored_hash = broker.execute_right_to_be_forgotten("")
+
+    assert deleted is False
+    assert anchored_hash is None
