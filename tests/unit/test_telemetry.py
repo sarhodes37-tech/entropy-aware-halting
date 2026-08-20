@@ -14,7 +14,8 @@ from epistemicos.telemetry import (
     calculate_rolling_entropy,
     calculate_trigram_repetition,
     calculate_ast_persistence,
-    calculate_structural_risk_index
+    calculate_structural_risk_index,
+    ASTAnalyzer
 )
 
 def test_telemetry_no_torch_fallback():
