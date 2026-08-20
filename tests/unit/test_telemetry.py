@@ -11,6 +11,7 @@ from unittest.mock import patch, MagicMock
 import epistemicos.telemetry
 from epistemicos.telemetry import (
     ResourceProfiler,
+    ASTAnalyzer,
     calculate_rolling_entropy,
     calculate_trigram_repetition,
     calculate_ast_persistence,
