@@ -83,18 +83,19 @@ def test_calculate_structural_risk_index():
 
 
 def test_calculate_entropy_differential():
-    """Validates the calculation of entropy differential, including edge cases."""
-    # Positive differential
-    assert calculate_entropy_differential(3.5, 1.5) == 2.0
+    """Validates that entropy differential computes surges and ignores drops."""
+    # When previous entropy is None
+    assert calculate_entropy_differential(current_entropy=5.0, prev_entropy=None) == 0.0
 
-    # Negative differential should be clamped to 0.0
-    assert calculate_entropy_differential(1.5, 3.5) == 0.0
+    # Surge (current > previous)
+    assert calculate_entropy_differential(current_entropy=6.5, prev_entropy=5.0) == 1.5
 
-    # Zero differential
-    assert calculate_entropy_differential(2.0, 2.0) == 0.0
+    # Drop (current < previous)
+    assert calculate_entropy_differential(current_entropy=4.0, prev_entropy=5.0) == 0.0
 
-    # None previous entropy
-    assert calculate_entropy_differential(2.0, None) == 0.0
+    # No change (current == previous)
+    assert calculate_entropy_differential(current_entropy=5.0, prev_entropy=5.0) == 0.0
+
 
 def test_calculate_rolling_entropy():
     """Validates the calculation of smoothed rolling mean entropy."""
