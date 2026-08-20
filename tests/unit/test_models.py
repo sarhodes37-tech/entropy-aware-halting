@@ -212,6 +212,63 @@ def test_bayes_factor_update_computation():
     assert update.bayes_factor_db == 6.02
 
 
+from pydantic import ValidationError
+
+def test_bayes_factor_update_negative_log():
+    """Validates Bayes factor and db computation when evidence opposes the hypothesis."""
+    update = BayesFactorUpdate(
+        evidence_id="ev_neg",
+        source_provenance=["log_b"],
+        p_evidence_given_hypothesis=0.2,
+        p_evidence_given_not_hypothesis=0.8
+    )
+    assert update.bayes_factor == 0.25
+    assert update.bayes_factor_db == -6.02
+
+
+def test_bayes_factor_update_zero_log():
+    """Validates Bayes factor and db computation when evidence is neutral."""
+    update = BayesFactorUpdate(
+        evidence_id="ev_neut",
+        source_provenance=["log_c"],
+        p_evidence_given_hypothesis=0.5,
+        p_evidence_given_not_hypothesis=0.5
+    )
+    assert update.bayes_factor == 1.0
+    assert update.bayes_factor_db == 0.0
+
+
+def test_bayes_factor_update_extreme_values():
+    """Validates Bayes factor calculation handles high confidence extreme values without overflow."""
+    update = BayesFactorUpdate(
+        evidence_id="ev_ext",
+        source_provenance=["log_d"],
+        p_evidence_given_hypothesis=0.999,
+        p_evidence_given_not_hypothesis=0.001
+    )
+    assert update.bayes_factor == 999.0
+    assert update.bayes_factor_db == 30.0
+
+
+@pytest.mark.parametrize("p_h, p_nh", [
+    (0.0, 0.5),   # Lower bound violation (p_h)
+    (1.0, 0.5),   # Upper bound violation (p_h)
+    (0.5, 0.0),   # Lower bound violation (p_nh)
+    (0.5, 1.0),   # Upper bound violation (p_nh)
+    (-0.1, 0.5),  # Negative value
+    (0.5, 1.5)    # Greater than 1 value
+])
+def test_bayes_factor_update_validation_errors(p_h, p_nh):
+    """Validates that Pydantic enforces gt=0.0 and lt=1.0 for probabilities."""
+    with pytest.raises(ValidationError):
+        BayesFactorUpdate(
+            evidence_id="ev_val",
+            source_provenance=["log_e"],
+            p_evidence_given_hypothesis=p_h,
+            p_evidence_given_not_hypothesis=p_nh
+        )
+
+
 def test_belief_object_update_and_falsify():
     """Validates posterior math and status state transitions."""
     contract = PopperianContract(

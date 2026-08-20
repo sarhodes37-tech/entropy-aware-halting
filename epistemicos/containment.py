@@ -12,6 +12,7 @@ import re
 import socket
 import string
 import urllib.parse
+from functools import lru_cache
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
@@ -34,6 +35,12 @@ class ContainmentReceipt:
     reason: Optional[str] = None
     sanitized_payload: Optional[Any] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
+
+
+@lru_cache(maxsize=128)
+def _resolve_dns_cached(hostname: str):
+    """Cached DNS resolution to improve performance during containment checks."""
+    return socket.getaddrinfo(hostname, None)
 
 
 class ContainmentGuard:
@@ -61,18 +68,22 @@ class ContainmentGuard:
         r"os\.system",
     ]
 
+    DEFAULT_FORBIDDEN_COMMANDS_COMPILED = [
+        re.compile(p, re.IGNORECASE) for p in DEFAULT_FORBIDDEN_COMMANDS
+    ]
 
     # Pre-compile Injection Patterns (Fix for Ingress Prompt Inspection Loop)
-    INJECTION_PATTERNS_COMPILED = [
-        re.compile(p, re.IGNORECASE) for p in [
+    INJECTION_PATTERNS_COMPILED = re.compile(
+        "|".join([
             r"ignore\s+all\s+previous\s+instructions",
             r"disregard\s+the\s+above",
             r"you\s+are\s+now\s+in\s+DAN\s+mode",  # Fixed \n+ to \s+
             r"system\s*:\s*override",
             r"<\|im_start\|>\s*system",
             r"\]\s*;\s*DROP\s+TABLE",
-        ]
-    ]
+        ]),
+        re.IGNORECASE
+    )
 
 
     # Pre-compile System Delimiter Regex (Fix for String Substitution)
@@ -100,12 +111,11 @@ class ContainmentGuard:
         self.blocked_hosts = blocked_hosts or self.DEFAULT_BLOCKED_HOSTS
         
         # Pre-compile forbidden commands dynamically (Fix for Tool Command Inspection Loop)
-        raw_forbidden = list(self.DEFAULT_FORBIDDEN_COMMANDS)
+        self.forbidden_commands_compiled = list(self.DEFAULT_FORBIDDEN_COMMANDS_COMPILED)
         if custom_forbidden_commands:
-            raw_forbidden.extend(custom_forbidden_commands)
-        self.forbidden_commands_compiled = [
-            re.compile(p, re.IGNORECASE) for p in raw_forbidden
-        ]
+            self.forbidden_commands_compiled.extend(
+                re.compile(p, re.IGNORECASE) for p in custom_forbidden_commands
+            )
         
         self.strict_mode = strict_mode
 
@@ -129,7 +139,7 @@ class ContainmentGuard:
 
         # 2. Resolve DNS hostnames to verify underlying IP destinations
         try:
-            addr_info = socket.getaddrinfo(hostname, None)
+            addr_info = _resolve_dns_cached(hostname)
             for res in addr_info:
                 resolved_ip = ipaddress.ip_address(res[4][0])
                 if (
@@ -155,13 +165,12 @@ class ContainmentGuard:
         cleaned_prompt = prompt_text.strip()
 
         # Check against compiled injection/jailbreak patterns
-        for pattern in self.INJECTION_PATTERNS_COMPILED:
-            if pattern.search(cleaned_prompt):
-                return ContainmentReceipt(
-                    passed=False,
-                    violation_type=ContainmentViolationType.PROMPT_INJECTION_DETECTED,
-                    reason=f"Detected restricted prompt manipulation pattern: '{pattern.pattern}'",
-                )
+        if match := self.INJECTION_PATTERNS_COMPILED.search(cleaned_prompt):
+            return ContainmentReceipt(
+                passed=False,
+                violation_type=ContainmentViolationType.PROMPT_INJECTION_DETECTED,
+                reason=f"Detected restricted prompt manipulation pattern: '{match.group(0)}'",
+            )
 
         # Sanitize raw system delimiters if injected into user prompt
         sanitized = self.SYSTEM_DELIMITERS_REGEX.sub("", cleaned_prompt)
