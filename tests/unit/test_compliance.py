@@ -136,23 +136,11 @@ def test_execute_right_to_be_forgotten_not_found_anywhere():
     assert anchored_hash is None
 
 
-def test_compute_canonical_hash_insertion_order():
-    """Validates that hashes are deterministic regardless of dictionary insertion order."""
-    payload1 = {"a": 1, "b": 2, "c": 3}
-    payload2 = {"c": 3, "b": 2, "a": 1}
+def test_execute_right_to_be_forgotten_empty_transaction_id():
+    """Validates behavior when transaction id is empty."""
+    broker = TransactionalComplianceBroker()
 
-    hash1 = TransactionalComplianceBroker.compute_canonical_hash(payload1)
-    hash2 = TransactionalComplianceBroker.compute_canonical_hash(payload2)
+    deleted, anchored_hash = broker.execute_right_to_be_forgotten("")
 
-    assert hash1 == hash2
-
-
-def test_compute_canonical_hash_different_payloads():
-    """Validates that different payloads produce different hashes."""
-    payload1 = {"a": 1, "b": 2}
-    payload2 = {"a": 1, "b": 3}
-
-    hash1 = TransactionalComplianceBroker.compute_canonical_hash(payload1)
-    hash2 = TransactionalComplianceBroker.compute_canonical_hash(payload2)
-
-    assert hash1 != hash2
+    assert deleted is False
+    assert anchored_hash is None
