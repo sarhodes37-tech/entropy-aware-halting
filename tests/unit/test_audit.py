@@ -12,7 +12,8 @@ from unittest.mock import patch
 from epistemicos.audit import (
     TamperEvidentAuditTrail,
     AuditLogLevel,
-    ReceiptGenerator
+    ReceiptGenerator,
+    AuditEvent
 )
 
 
@@ -41,7 +42,7 @@ def test_verify_chain_integrity_json_error(temp_audit_file):
 def test_verify_chain_integrity_broken_link(temp_audit_file):
     """Validates chain verification flags mismatched previous hashes (Line 175)."""
     audit = TamperEvidentAuditTrail(temp_audit_file)
-    audit.record_event(AuditLogLevel.INFO, "gate", "reason", "model", "snippet")
+    audit.record_event(AuditEvent(AuditLogLevel.INFO, "gate", "reason", "model", "snippet"))
     
     # Manually append an entry with a fabricated prev_hash to break the chain
     bad_entry = {
@@ -72,7 +73,7 @@ def test_verify_chain_integrity_broken_link(temp_audit_file):
 def test_verify_chain_integrity_tampered_entry(temp_audit_file):
     """Validates chain verification detects modified payload data (Lines 179-180, 186)."""
     audit = TamperEvidentAuditTrail(temp_audit_file)
-    audit.record_event(AuditLogLevel.INFO, "gate", "reason", "model", "snippet")
+    audit.record_event(AuditEvent(AuditLogLevel.INFO, "gate", "reason", "model", "snippet"))
     
     # Read the file and maliciously alter the data without updating the cryptographic hash
     with open(temp_audit_file, "r") as f:
@@ -89,9 +90,37 @@ def test_verify_chain_integrity_tampered_entry(temp_audit_file):
     assert "Tampered entry detected" in msg
 
 
+def test_record_event_payload_too_large(temp_audit_file):
+    """Validates that a payload exceeding 1MB triggers a ValueError."""
+    audit = TamperEvidentAuditTrail(temp_audit_file)
+    oversized_payload = "A" * (1048576 + 1)
+
+    event = AuditEvent(
+        event_type=AuditLogLevel.INFO,
+        gate_name="test_gate",
+        reason="test",
+        model_id="test_model",
+        payload_snippet=oversized_payload
+    )
+
+    with pytest.raises(ValueError, match="Payload snippet exceeds maximum allowed length"):
+        audit.record_event(event)
+
 # =====================================================================
 # RECEIPT GENERATION & TRANSACTION ROLLBACKS
 # =====================================================================
+
+def test_receipt_generator_log_event():
+    """Validates atomic event logging logic (Line 220)."""
+    rg = ReceiptGenerator()
+
+    with patch("time.time", return_value=1700000000.0):
+        rg.log_event("EventTest", {"foo": "bar"})
+
+    assert len(rg._events) == 1
+    assert rg._events[0]["timestamp"] == 1700000000.0
+    assert rg._events[0]["type"] == "EventTest"
+    assert rg._events[0]["details"] == {"foo": "bar"}
 
 def test_receipt_generator_lifecycle():
     """Validates atomic transaction logging, minting, and stack-based rollbacks (Lines 196-242)."""
@@ -135,7 +164,7 @@ def test_audit_no_fcntl_fallback(tmp_path):
         
         # Test fallback on record_event (bypassing fcntl.flock entirely)
         audit = epistemicos.audit.TamperEvidentAuditTrail(test_file)
-        audit.record_event(epistemicos.audit.AuditLogLevel.INFO, "gate", "reason", "m", "s")
+        audit.record_event(epistemicos.audit.AuditEvent(epistemicos.audit.AuditLogLevel.INFO, "gate", "reason", "m", "s"))
         
         assert os.path.exists(test_file)
         

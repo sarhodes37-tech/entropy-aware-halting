@@ -18,7 +18,7 @@ import pytest
 from epistemicos.core import EpistemicOrchestrator
 from epistemicos.models import CanonicalProblemRepresentation, PermissionScope
 from epistemicos.gates import CryptoAttestationGate, EntropyGate, PermissionGate
-from epistemicos.audit import TamperEvidentAuditTrail, AuditLogLevel
+from epistemicos.audit import TamperEvidentAuditTrail, AuditEvent, AuditLogLevel
 
 
 # =====================================================================
@@ -249,22 +249,22 @@ def test_optimal_gamma_audit_payload(tmp_path):
     log_file = tmp_path / "test_audit.jsonl"
     audit_logger = TamperEvidentAuditTrail(str(log_file))
 
-    audit_logger.record_event(
+    audit_logger.record_event(AuditEvent(
         event_type=AuditLogLevel.INFO,
         gate_name="EntropyAwareScheduler",
         reason="Step passed entropy evaluation",
         model_id="mock-llm-v1",
         payload_snippet="Step 0 distribution"
-    )
+    ))
 
-    audit_logger.record_event(
+    audit_logger.record_event(AuditEvent(
         event_type=AuditLogLevel.HALT,
         gate_name="EntropyAwareScheduler",
         reason="Cumulative entropy shock exceeded gamma threshold",
         model_id="mock-llm-v1",
         payload_snippet="Step 2 distribution",
         metadata={"gamma": 0.80, "drop_bits": 0.9165}
-    )
+    ))
 
     is_valid, count, error = audit_logger.verify_chain_integrity()
     assert is_valid is True
