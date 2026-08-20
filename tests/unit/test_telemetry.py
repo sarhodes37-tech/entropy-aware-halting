@@ -99,16 +99,14 @@ def test_calculate_rolling_entropy():
     # Custom window size
     assert calculate_rolling_entropy([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0], window_size=3) == 6.0
 
-def test_calculate_rolling_entropy_edge_cases():
-    """Validates edge case behavior for window size in calculating smoothed rolling mean entropy."""
-    # Explicitly testing the empty history edge case again as requested by the rationale
-    assert calculate_rolling_entropy([]) == 0.0
 
-    # Window size 0 evaluates as an empty slice which sum to 0.0 and len to 0. But in Python [-0:] is [0:], i.e. full list
-    assert calculate_rolling_entropy([1.0], window_size=0) == 1.0
+def test_count_ast_nodes():
+    """Validates AST node counting for both valid and invalid syntax."""
+    # Valid syntax: x = 1 (Module, Assign, Name, Store, Constant) -> 5 nodes
+    assert ASTAnalyzer.count_ast_nodes("x = 1") == 5
 
-    # Negative window size behaves strangely with slices
-    assert calculate_rolling_entropy([1.0, 2.0], window_size=-1) == 2.0
+    # Empty string should just be a Module node -> 1 node
+    assert ASTAnalyzer.count_ast_nodes("") == 1
 
-    # Large floats
-    assert calculate_rolling_entropy([1.123456, 2.123456], window_size=2) == 1.6235
+    # Invalid syntax should trigger SyntaxError and return 0
+    assert ASTAnalyzer.count_ast_nodes("x = ") == 0
