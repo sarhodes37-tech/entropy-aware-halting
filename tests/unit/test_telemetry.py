@@ -81,6 +81,18 @@ def test_calculate_structural_risk_index():
     assert calculate_structural_risk_index(dH_pos=0.5, omega=2.0, dA=3) == 3.0
 
 
+def test_count_ast_nodes_valid():
+    """Validates counting AST nodes for a valid code snippet."""
+    # 'x = 1' parses to: Module(body=[Assign(targets=[Name(id='x', ctx=Store())], value=Constant(value=1))])
+    # Node types: Module, Assign, Name, Store, Constant
+    # Total nodes is 5.
+    assert ASTAnalyzer.count_ast_nodes("x = 1") == 5
+
+def test_count_ast_nodes_invalid():
+    """Validates counting AST nodes safely returns 0 for syntax errors."""
+    assert ASTAnalyzer.count_ast_nodes("x = ") == 0
+
+
 def test_calculate_rolling_entropy():
     """Validates the calculation of smoothed rolling mean entropy."""
     # Empty history
