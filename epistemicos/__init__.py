@@ -19,7 +19,7 @@ def get_model_and_tokenizer(
     model_name: str = "Qwen/Qwen2.5-Coder-1.5B-Instruct",
     device: Optional[str] = None,
     torch_dtype: Optional[Any] = None,
-    trust_remote_code: bool = False,
+    trust_remote_code: bool = True,
     revision: Optional[str] = "main",
 ) -> Tuple[Any, Any, str]:
     """Lazily import and delegate to epistemicos.utils.get_model_and_tokenizer."""
