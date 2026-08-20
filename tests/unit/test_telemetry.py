@@ -11,6 +11,7 @@ from unittest.mock import patch, MagicMock
 import epistemicos.telemetry
 from epistemicos.telemetry import (
     ResourceProfiler,
+    calculate_entropy_differential,
     calculate_rolling_entropy,
     calculate_trigram_repetition,
     calculate_ast_persistence,
@@ -80,6 +81,20 @@ def test_calculate_structural_risk_index():
     # sri = 0.5 * 2.0 * 3.0 = 3.0
     assert calculate_structural_risk_index(dH_pos=0.5, omega=2.0, dA=3) == 3.0
 
+
+def test_calculate_entropy_differential():
+    """Validates the calculation of entropy differential, including edge cases."""
+    # Positive differential
+    assert calculate_entropy_differential(3.5, 1.5) == 2.0
+
+    # Negative differential should be clamped to 0.0
+    assert calculate_entropy_differential(1.5, 3.5) == 0.0
+
+    # Zero differential
+    assert calculate_entropy_differential(2.0, 2.0) == 0.0
+
+    # None previous entropy
+    assert calculate_entropy_differential(2.0, None) == 0.0
 
 def test_calculate_rolling_entropy():
     """Validates the calculation of smoothed rolling mean entropy."""
