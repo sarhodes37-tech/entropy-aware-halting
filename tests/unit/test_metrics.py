@@ -40,6 +40,22 @@ def test_ast_node_weights_and_aggregate_risk():
     assert risk > 0.0
 
 
+def test_get_node_weight_known_key():
+    analyzer = ASTAnalyzer()
+    assert analyzer.get_node_weight("Assign") == 1.0
+    assert analyzer.get_node_weight("For") == 3.53
+
+
+def test_get_node_weight_fallback_key():
+    analyzer = ASTAnalyzer()
+    assert analyzer.get_node_weight("foo.bar.Return") == 1.52
+
+
+def test_get_node_weight_missing_key():
+    analyzer = ASTAnalyzer()
+    assert analyzer.get_node_weight("UnknownNodeType") == 1.0
+
+
 def test_entropy_differential_positive_lock():
     # Surge in entropy
     assert calculate_entropy_differential(3.5, 1.5) == 2.0
