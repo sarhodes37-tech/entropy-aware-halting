@@ -152,3 +152,15 @@ def test_record_event_payload_too_large(temp_audit_file):
     event = AuditEvent(AuditLogLevel.INFO, "gate", "reason", "model", large_snippet)
     with pytest.raises(ValueError, match="Payload snippet exceeds"):
         audit.record_event(event)
+
+
+def test_record_event_payload_too_large_multibyte(temp_audit_file):
+    """Validates that payload snippets larger than 1MB in bytes (even if fewer chars) are rejected."""
+    audit = TamperEvidentAuditTrail(temp_audit_file)
+    # The character '🌍' (Earth globe) is 4 bytes in UTF-8.
+    # 262144 characters * 4 bytes = 1048576 bytes.
+    # We add 1 character so it exceeds 1MB in bytes, but is only 262,145 characters long.
+    large_snippet = "🌍" * (262144 + 1)
+    event = AuditEvent(AuditLogLevel.INFO, "gate", "reason", "model", large_snippet)
+    with pytest.raises(ValueError, match="Payload snippet exceeds"):
+        audit.record_event(event)
