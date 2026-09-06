@@ -132,6 +132,27 @@ def test_tool_command_forbidden(default_guard, forbidden_cmd):
     assert receipt.violation_type == ContainmentViolationType.FORBIDDEN_COMMAND_EXECUTION
 
 
+def test_custom_forbidden_commands_initialization_and_enforcement():
+    """Verifies that ContainmentGuard initializes with custom_forbidden_commands without error and enforces them."""
+    custom_guard = ContainmentGuard(
+        custom_forbidden_commands=[r"eval\(", r"exec\("]
+    )
+
+    # Standard default forbidden commands should still be blocked
+    receipt_default = custom_guard.inspect_tool_command("rm -rf /")
+    assert receipt_default.passed is False
+    assert receipt_default.violation_type == ContainmentViolationType.FORBIDDEN_COMMAND_EXECUTION
+
+    # Custom forbidden commands should also be blocked
+    receipt_custom = custom_guard.inspect_tool_command("eval('import os')")
+    assert receipt_custom.passed is False
+    assert receipt_custom.violation_type == ContainmentViolationType.FORBIDDEN_COMMAND_EXECUTION
+
+    # Safe commands should pass
+    receipt_safe = custom_guard.inspect_tool_command("print('hello world')")
+    assert receipt_safe.passed is True
+
+
 def test_goal_integrity_cheating(default_guard):
     """Verifies that tests attempting to fake success are blocked."""
     original_goal = "Write a function that sorts an array."
