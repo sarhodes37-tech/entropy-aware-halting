@@ -12,6 +12,7 @@ import re
 import socket
 import string
 import urllib.parse
+from functools import lru_cache
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
@@ -34,6 +35,12 @@ class ContainmentReceipt:
     reason: Optional[str] = None
     sanitized_payload: Optional[Any] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
+
+
+@lru_cache(maxsize=128)
+def _resolve_dns_cached(hostname: str):
+    """Cached DNS resolution to improve performance during containment checks."""
+    return socket.getaddrinfo(hostname, None)
 
 
 class ContainmentGuard:
@@ -62,28 +69,21 @@ class ContainmentGuard:
     ]
 
     DEFAULT_FORBIDDEN_COMMANDS_COMPILED = [
-        re.compile("|".join(DEFAULT_FORBIDDEN_COMMANDS), re.IGNORECASE)
+        re.compile(p, re.IGNORECASE) for p in DEFAULT_FORBIDDEN_COMMANDS
     ]
 
     # Pre-compile Injection Patterns (Fix for Ingress Prompt Inspection Loop)
-    INJECTION_PATTERNS_COMPILED = [
-        re.compile("|".join([
+    INJECTION_PATTERNS_COMPILED = re.compile(
+        "|".join([
             r"ignore\s+all\s+previous\s+instructions",
             r"disregard\s+the\s+above",
             r"you\s+are\s+now\s+in\s+DAN\s+mode",  # Fixed \n+ to \s+
             r"system\s*:\s*override",
             r"<\|im_start\|>\s*system",
             r"\]\s*;\s*DROP\s+TABLE",
-        ]), re.IGNORECASE)
-    ]
-    INJECTION_PATTERNS_COMPILED = re.compile("|".join([
-        r"ignore\s+all\s+previous\s+instructions",
-        r"disregard\s+the\s+above",
-        r"you\s+are\s+now\s+in\s+DAN\s+mode",  # Fixed \n+ to \s+
-        r"system\s*:\s*override",
-        r"<\|im_start\|>\s*system",
-        r"\]\s*;\s*DROP\s+TABLE",
-    ]), re.IGNORECASE)
+        ]),
+        re.IGNORECASE
+    )
 
 
     # Pre-compile System Delimiter Regex (Fix for String Substitution)
@@ -91,21 +91,14 @@ class ContainmentGuard:
 
     # Pre-compile Goal Mutation Cheat Keywords (Fix for Goal Integrity Validation)
     CHEAT_KEYWORDS_COMPILED = [
-        re.compile("|".join([
+        re.compile(kw, re.IGNORECASE) for kw in [
             r"assert\s+True",
             r"return\s+True\s+#\s*skip\s*test",
             r"sys\.exit\(0\)",
             r"unittest\.skip",
             r"pytest\.mark\.skip",
-        ]), re.IGNORECASE)
+        ]
     ]
-    CHEAT_KEYWORDS_COMPILED = re.compile("|".join([
-        r"assert\s+True",
-        r"return\s+True\s+#\s*skip\s*test",
-        r"sys\.exit\(0\)",
-        r"unittest\.skip",
-        r"pytest\.mark\.skip",
-    ]), re.IGNORECASE)
 
     def __init__(
         self,
@@ -116,12 +109,14 @@ class ContainmentGuard:
     ):
         self.allowed_domains = set(allowed_egress_domains or [])
         self.blocked_hosts = blocked_hosts or self.DEFAULT_BLOCKED_HOSTS
-        
+
+        # Pre-compile forbidden commands dynamically (Fix for Tool Command Inspection Loop)
+        self.forbidden_commands_compiled = list(self.DEFAULT_FORBIDDEN_COMMANDS_COMPILED)
         if custom_forbidden_commands:
-            self.forbidden_commands_compiled.append(
-                re.compile("|".join(custom_forbidden_commands), re.IGNORECASE)
+            self.forbidden_commands_compiled.extend(
+                re.compile(p, re.IGNORECASE) for p in custom_forbidden_commands
             )
-        
+
         self.strict_mode = strict_mode
 
     def _is_restricted_target(self, hostname: str) -> bool:
@@ -144,7 +139,7 @@ class ContainmentGuard:
 
         # 2. Resolve DNS hostnames to verify underlying IP destinations
         try:
-            addr_info = socket.getaddrinfo(hostname, None)
+            addr_info = _resolve_dns_cached(hostname)
             for res in addr_info:
                 resolved_ip = ipaddress.ip_address(res[4][0])
                 if (
@@ -170,14 +165,6 @@ class ContainmentGuard:
         cleaned_prompt = prompt_text.strip()
 
         # Check against compiled injection/jailbreak patterns
-        for pattern in self.INJECTION_PATTERNS_COMPILED:
-            match = pattern.search(cleaned_prompt)
-            if match:
-                return ContainmentReceipt(
-                    passed=False,
-                    violation_type=ContainmentViolationType.PROMPT_INJECTION_DETECTED,
-                    reason=f"Detected restricted prompt manipulation pattern: '{match.group(0)}'",
-                )
         if match := self.INJECTION_PATTERNS_COMPILED.search(cleaned_prompt):
             return ContainmentReceipt(
                 passed=False,
@@ -205,7 +192,7 @@ class ContainmentGuard:
             url = url.strip()
             url_norm = url.replace('\\', '/')
 
-            # Reject URLs where `#` appears before the first `/` or `?` in the path to prevent parsing inconsistencies
+            # Reject URLs where `#` or `%23` appears in the authority component
             if "://" in url_norm:
                 rest = url_norm.split("://", 1)[1]
                 authority = rest.split("/", 1)[0].split("?", 1)[0]
@@ -296,13 +283,11 @@ class ContainmentGuard:
     def inspect_tool_command(self, code_or_command: str) -> ContainmentReceipt:
         """Inspects generated code or shell execution commands for OS-level escape attempts."""
         for pattern in self.forbidden_commands_compiled:
-            match = pattern.search(code_or_command)
-            if match:
-            if match:= pattern.search(code_or_command):
+            if pattern.search(code_or_command):
                 return ContainmentReceipt(
                     passed=False,
                     violation_type=ContainmentViolationType.FORBIDDEN_COMMAND_EXECUTION,
-                    reason=f"Command execution blocked: Contains restricted OS-level directive matching '{match.group(0)}'.",
+                    reason=f"Command execution blocked: Contains restricted OS-level directive matching '{pattern.pattern}'.",
                 )
 
         return ContainmentReceipt(passed=True)
@@ -316,19 +301,12 @@ class ContainmentGuard:
     ) -> ContainmentReceipt:
         """Detects whether an agent is attempting to alter its primary objective or cheat on evaluation tests."""
         for pattern in self.CHEAT_KEYWORDS_COMPILED:
-            match = pattern.search(proposed_action)
-            if match:
+            if pattern.search(proposed_action):
                 return ContainmentReceipt(
                     passed=False,
                     violation_type=ContainmentViolationType.GOAL_MUTATION_REWARD_CHEATING,
-                    reason=f"Reward-cheating attempt detected: Proposed action overrides test verification via '{match.group(0)}'.",
+                    reason=f"Reward-cheating attempt detected: Proposed action overrides test verification via '{pattern.pattern}'.",
                 )
-        if match := self.CHEAT_KEYWORDS_COMPILED.search(proposed_action):
-            return ContainmentReceipt(
-                passed=False,
-                violation_type=ContainmentViolationType.GOAL_MUTATION_REWARD_CHEATING,
-                reason=f"Reward-cheating attempt detected: Proposed action overrides test verification via '{match.group(0)}'.",
-            )
 
         return ContainmentReceipt(passed=True)
 
