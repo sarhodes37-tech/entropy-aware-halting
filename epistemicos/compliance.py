@@ -59,15 +59,18 @@ class TransactionalComplianceBroker:
     Coordinates atomic receipt logging across off-chain mutable stores 
     and immutable permissioned ledgers.
     """
+    DEFAULT_SALT = b"epistemicos_canonical_hash_v1_salt"
+
     def __init__(self, offchain_store: Optional[OffChainStoreAdapter] = None, ledger: Optional[ImmutableLedgerAdapter] = None):
         self.offchain_store = offchain_store or OffChainStoreAdapter()
         self.ledger = ledger or ImmutableLedgerAdapter()
 
     @staticmethod
-    def compute_canonical_hash(payload: Dict[str, Any]) -> str:
-        """Computes deterministic SHA-256 hash over canonical (sorted-key) JSON bytes."""
+    def compute_canonical_hash(payload: Dict[str, Any], salt: Optional[bytes] = None) -> str:
+        """Computes deterministic salted SHA-256 hash over canonical (sorted-key) JSON bytes."""
+        effective_salt = salt if salt is not None else TransactionalComplianceBroker.DEFAULT_SALT
         canonical_bytes = json.dumps(payload, sort_keys=True).encode("utf-8")
-        return hashlib.sha256(canonical_bytes).hexdigest()
+        return hashlib.sha256(effective_salt + canonical_bytes).hexdigest()
 
     def record_transaction(self, transaction_id: str, raw_payload: Dict[str, Any], receipt: Dict[str, Any]) -> Dict[str, Any]:
         """
