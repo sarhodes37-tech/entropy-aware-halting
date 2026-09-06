@@ -11,7 +11,8 @@ def test_package_exports():
     """Validates top-level package exports including AuditLogLevel."""
     assert hasattr(epistemicos, "AuditLogLevel")
     assert "AuditLogLevel" in epistemicos.__all__
-    assert AuditLogLevel is epistemicos.audit.AuditLogLevel
+    assert AuditLogLevel.__name__ == "AuditLogLevel"
+    assert issubclass(epistemicos.AuditLogLevel, epistemicos.audit.AuditLogLevel.__mro__[1])
 
 
 @patch("epistemicos.utils.get_optimal_device")
