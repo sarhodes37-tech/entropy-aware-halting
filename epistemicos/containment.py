@@ -66,16 +66,15 @@ class ContainmentGuard:
     ]
 
     # Pre-compile Injection Patterns (Fix for Ingress Prompt Inspection Loop)
-    INJECTION_PATTERNS_COMPILED = [
-        re.compile("|".join([
-            r"ignore\s+all\s+previous\s+instructions",
-            r"disregard\s+the\s+above",
-            r"you\s+are\s+now\s+in\s+DAN\s+mode",  # Fixed \n+ to \s+
-            r"system\s*:\s*override",
-            r"<\|im_start\|>\s*system",
-            r"\]\s*;\s*DROP\s+TABLE",
-        ]), re.IGNORECASE)
-    ]
+    INJECTION_PATTERNS_COMPILED = re.compile("|".join([
+        r"ignore\s+all\s+previous\s+instructions",
+        r"disregard\s+the\s+above",
+        r"you\s+are\s+now\s+in\s+DAN\s+mode",  # Fixed \n+ to \s+
+        r"system\s*:\s*override",
+        r"<\|im_start\|>\s*system",
+        r"\]\s*;\s*DROP\s+TABLE",
+    ]), re.IGNORECASE)
+
 
     # Pre-compile System Delimiter Regex (Fix for String Substitution)
     SYSTEM_DELIMITERS_REGEX = re.compile(r"<\|im_start\|>|<\|im_end\|>")
@@ -104,10 +103,13 @@ class ContainmentGuard:
         
         self.forbidden_commands_compiled = list(self.DEFAULT_FORBIDDEN_COMMANDS_COMPILED)
         if custom_forbidden_commands:
-            self.forbidden_commands_compiled.append(
+            self.forbidden_commands_compiled = [
+                *self.DEFAULT_FORBIDDEN_COMMANDS_COMPILED,
                 re.compile("|".join(custom_forbidden_commands), re.IGNORECASE)
-            )
-        
+            ]
+        else:
+            self.forbidden_commands_compiled = list(self.DEFAULT_FORBIDDEN_COMMANDS_COMPILED)
+
         self.strict_mode = strict_mode
 
     def _is_restricted_target(self, hostname: str) -> bool:
