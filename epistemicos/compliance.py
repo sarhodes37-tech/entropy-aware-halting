@@ -5,7 +5,7 @@ anchoring, and compensating rollback mechanisms.
 
 import json
 import hashlib
-from typing import Dict, Tuple, Any, Optional, List
+from typing import Dict, Tuple, Any, Optional
 from threading import RLock
 from datetime import datetime, timezone
 
