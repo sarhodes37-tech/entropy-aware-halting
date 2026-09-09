@@ -293,6 +293,8 @@ class ContainmentGuard:
     def inspect_tool_command(self, code_or_command: str) -> ContainmentReceipt:
         """Inspects generated code or shell execution commands for OS-level escape attempts."""
         for pattern in self.forbidden_commands_compiled:
+            match = pattern.search(code_or_command)
+            if match:
             if match := pattern.search(code_or_command):
                 return ContainmentReceipt(
                     passed=False,
