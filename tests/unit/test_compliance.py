@@ -23,6 +23,24 @@ def test_compute_canonical_hash_same_data_different_order():
     assert hash_1 == hash_2
 
 
+def test_compute_canonical_hash_salting():
+    """Validates that salting changes hash output and custom salts produce different hashes."""
+    import hashlib, json
+    payload = {"user": "alice", "ssn": "000-00-0000"}
+
+    # Compute unsalted hash directly for comparison
+    canonical_bytes = json.dumps(payload, sort_keys=True).encode("utf-8")
+    unsalted_hash = hashlib.sha256(canonical_bytes).hexdigest()
+
+    default_salted_hash = TransactionalComplianceBroker.compute_canonical_hash(payload)
+    custom_salted_hash = TransactionalComplianceBroker.compute_canonical_hash(payload, salt=b"custom_salt_999")
+
+    # Salted hash should not equal unsalted hash
+    assert default_salted_hash != unsalted_hash
+    # Custom salt hash should not equal default salted hash
+    assert custom_salted_hash != default_salted_hash
+
+
 def test_compute_canonical_hash_different_data():
     """Validates different payloads produce different hashes."""
     payload_1 = {"a": 1, "b": 2}
@@ -158,13 +176,27 @@ def test_execute_right_to_be_forgotten_file_redaction(tmp_path):
     assert content == "Event: login, user: [REDACTED]\nEvent: logout, user: [REDACTED]\nEvent: query, user: normal_user"
 
 
-def test_execute_right_to_be_forgotten_file_not_found():
-    """Validates that a non-existent file is handled gracefully without error."""
+def test_execute_right_to_be_forgotten_file_not_found(tmp_path, monkeypatch):
+    """Validates that a non-existent file within base dir is handled gracefully without error."""
     broker = TransactionalComplianceBroker()
     tx_id = "tx_missing_file"
+    non_existent_path = tmp_path / "non_existent_file_9999.log"
+    monkeypatch.chdir(tmp_path)
 
-    # Ensure it doesn't raise an exception when file doesn't exist
-    deleted, anchored_hash = broker.execute_right_to_be_forgotten(tx_id, file_path="/tmp/non_existent_file_9999.log")
+    # Ensure it doesn't raise an exception when file doesn't exist within allowed directory
+    deleted, anchored_hash = broker.execute_right_to_be_forgotten(tx_id, file_path=str(non_existent_path))
 
     assert deleted is False
     assert anchored_hash is None
+
+
+def test_execute_right_to_be_forgotten_path_traversal_blocked(tmp_path):
+    """Validates that attempting path traversal outside the base directory raises ValueError."""
+    broker = TransactionalComplianceBroker()
+    tx_id = "tx_traversal_123"
+
+    with pytest.raises(ValueError, match="Path traversal detected"):
+        broker.execute_right_to_be_forgotten(tx_id, file_path="../../../etc/passwd")
+
+    with pytest.raises(ValueError, match="Path traversal detected"):
+        broker.execute_right_to_be_forgotten(tx_id, file_path="/etc/passwd")

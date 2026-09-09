@@ -102,10 +102,16 @@ class ContainmentGuard:
         self.blocked_hosts = blocked_hosts or self.DEFAULT_BLOCKED_HOSTS
         self.forbidden_commands_compiled = list(self.DEFAULT_FORBIDDEN_COMMANDS_COMPILED)
 
+        
+        self.forbidden_commands_compiled = list(self.DEFAULT_FORBIDDEN_COMMANDS_COMPILED)
         if custom_forbidden_commands:
-            self.forbidden_commands_compiled.append(
+            self.forbidden_commands_compiled = [
+                *self.DEFAULT_FORBIDDEN_COMMANDS_COMPILED,
                 re.compile("|".join(custom_forbidden_commands), re.IGNORECASE)
             )
+            ]
+        else:
+            self.forbidden_commands_compiled = list(self.DEFAULT_FORBIDDEN_COMMANDS_COMPILED)
 
         self.strict_mode = strict_mode
 
