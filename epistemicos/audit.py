@@ -79,22 +79,41 @@ class TamperEvidentAuditTrail:
             with open(self.log_path, "rb") as f:
                 f.seek(0, os.SEEK_END)
                 pointer = f.tell()
-                buffer_size = 1024
-                lines = []
+                buffer_size = 65536
+                accumulated = []
 
-                while pointer > 0 and len(lines) < 2:
+                while pointer > 0:
                     read_size = min(buffer_size, pointer)
                     pointer -= read_size
                     f.seek(pointer)
                     chunk = f.read(read_size)
-                    lines = chunk.split(b"\n")
 
-                for line in reversed(lines):
-                    line_str = line.strip().decode("utf-8")
-                    if line_str:
-                        last_entry = json.loads(line_str)
-                        self.last_hash = last_entry.get("entry_hash", self.genesis_hash)
-                        return self.last_hash
+                    lines = chunk.split(b"\n")
+                    if len(lines) > 1:
+                        last_part = lines[-1] + b"".join(accumulated)
+                        if last_part.strip():
+                            line_str = last_part.strip().decode("utf-8")
+                            last_entry = json.loads(line_str)
+                            self.last_hash = last_entry.get("entry_hash", self.genesis_hash)
+                            return self.last_hash
+
+                        for i in range(len(lines) - 2, 0, -1):
+                            if lines[i].strip():
+                                line_str = lines[i].strip().decode("utf-8")
+                                last_entry = json.loads(line_str)
+                                self.last_hash = last_entry.get("entry_hash", self.genesis_hash)
+                                return self.last_hash
+
+                        accumulated = [lines[0]]
+                    else:
+                        accumulated.insert(0, chunk)
+
+                full_data = b"".join(accumulated)
+                if full_data.strip():
+                    line_str = full_data.strip().decode("utf-8")
+                    last_entry = json.loads(line_str)
+                    self.last_hash = last_entry.get("entry_hash", self.genesis_hash)
+                    return self.last_hash
         except Exception:
             pass
 
