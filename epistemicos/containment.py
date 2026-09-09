@@ -77,6 +77,8 @@ class ContainmentGuard:
         ]),
         re.IGNORECASE,
     )
+        ]), re.IGNORECASE)
+    ]
 
     # Pre-compile System Delimiter Regex (Fix for String Substitution)
     SYSTEM_DELIMITERS_REGEX = re.compile(r"<\|im_start\|>|<\|im_end\|>")
@@ -92,6 +94,8 @@ class ContainmentGuard:
         ]),
         re.IGNORECASE,
     )
+        ]), re.IGNORECASE)
+    ]
 
     def __init__(
         self,
@@ -102,13 +106,19 @@ class ContainmentGuard:
     ):
         self.allowed_domains = set(allowed_egress_domains or [])
         self.blocked_hosts = blocked_hosts or self.DEFAULT_BLOCKED_HOSTS
+        self.forbidden_commands_compiled = list(self.DEFAULT_FORBIDDEN_COMMANDS_COMPILED)
+
         
         self.forbidden_commands_compiled = list(self.DEFAULT_FORBIDDEN_COMMANDS_COMPILED)
         if custom_forbidden_commands:
-            self.forbidden_commands_compiled.append(
+            self.forbidden_commands_compiled = [
+                *self.DEFAULT_FORBIDDEN_COMMANDS_COMPILED,
                 re.compile("|".join(custom_forbidden_commands), re.IGNORECASE)
             )
-        
+            ]
+        else:
+            self.forbidden_commands_compiled = list(self.DEFAULT_FORBIDDEN_COMMANDS_COMPILED)
+
         self.strict_mode = strict_mode
 
     def _is_restricted_target(self, hostname: str) -> bool:
@@ -163,6 +173,14 @@ class ContainmentGuard:
                 violation_type=ContainmentViolationType.PROMPT_INJECTION_DETECTED,
                 reason=f"Detected restricted prompt manipulation pattern: '{match.group(0)}'",
             )
+        for pattern in self.INJECTION_PATTERNS_COMPILED:
+            match = pattern.search(cleaned_prompt)
+            if match:
+                return ContainmentReceipt(
+                    passed=False,
+                    violation_type=ContainmentViolationType.PROMPT_INJECTION_DETECTED,
+                    reason=f"Detected restricted prompt manipulation pattern: '{match.group(0)}'",
+                )
 
         # Sanitize raw system delimiters if injected into user prompt
         sanitized = self.SYSTEM_DELIMITERS_REGEX.sub("", cleaned_prompt)
@@ -298,6 +316,14 @@ class ContainmentGuard:
                 violation_type=ContainmentViolationType.GOAL_MUTATION_REWARD_CHEATING,
                 reason=f"Reward-cheating attempt detected: Proposed action overrides test verification via '{match.group(0)}'.",
             )
+        for pattern in self.CHEAT_KEYWORDS_COMPILED:
+            match = pattern.search(proposed_action)
+            if match:
+                return ContainmentReceipt(
+                    passed=False,
+                    violation_type=ContainmentViolationType.GOAL_MUTATION_REWARD_CHEATING,
+                    reason=f"Reward-cheating attempt detected: Proposed action overrides test verification via '{match.group(0)}'.",
+                )
 
         return ContainmentReceipt(passed=True)
 

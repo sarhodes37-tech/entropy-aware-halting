@@ -59,15 +59,18 @@ class TransactionalComplianceBroker:
     Coordinates atomic receipt logging across off-chain mutable stores 
     and immutable permissioned ledgers.
     """
+    DEFAULT_SALT = b"epistemicos_canonical_hash_v1_salt"
+
     def __init__(self, offchain_store: Optional[OffChainStoreAdapter] = None, ledger: Optional[ImmutableLedgerAdapter] = None):
         self.offchain_store = offchain_store or OffChainStoreAdapter()
         self.ledger = ledger or ImmutableLedgerAdapter()
 
     @staticmethod
-    def compute_canonical_hash(payload: Dict[str, Any]) -> str:
-        """Computes deterministic SHA-256 hash over canonical (sorted-key) JSON bytes."""
+    def compute_canonical_hash(payload: Dict[str, Any], salt: Optional[bytes] = None) -> str:
+        """Computes deterministic salted SHA-256 hash over canonical (sorted-key) JSON bytes."""
+        effective_salt = salt if salt is not None else TransactionalComplianceBroker.DEFAULT_SALT
         canonical_bytes = json.dumps(payload, sort_keys=True).encode("utf-8")
-        return hashlib.sha256(canonical_bytes).hexdigest()
+        return hashlib.sha256(effective_salt + canonical_bytes).hexdigest()
 
     def record_transaction(self, transaction_id: str, raw_payload: Dict[str, Any], receipt: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -99,11 +102,27 @@ class TransactionalComplianceBroker:
 
         if file_path:
             import os
-            if os.path.exists(file_path):
-                with open(file_path, "r") as f:
+            import tempfile
+            target_path = os.path.realpath(os.path.abspath(file_path))
+            allowed_dirs = [os.path.realpath(os.getcwd()), os.path.realpath(tempfile.gettempdir())]
+
+            is_safe = False
+            for allowed_dir in allowed_dirs:
+                try:
+                    if os.path.commonpath([allowed_dir, target_path]) == allowed_dir:
+                        is_safe = True
+                        break
+                except ValueError:
+                    continue
+
+            if not is_safe:
+                raise ValueError(f"Path traversal detected: '{file_path}' resolves outside allowed base directory.")
+
+            if os.path.exists(target_path):
+                with open(target_path, "r") as f:
                     lines = f.readlines()
 
-                with open(file_path, "w") as f:
+                with open(target_path, "w") as f:
                     for line in lines:
                         f.write(line.replace(transaction_id, "[REDACTED]"))
 
