@@ -4,6 +4,15 @@ Unit test suite for epistemicos package initialization and lazy imports.
 
 from unittest.mock import patch
 import epistemicos
+from epistemicos import AuditLogLevel
+
+
+def test_package_exports():
+    """Validates top-level package exports including AuditLogLevel."""
+    assert hasattr(epistemicos, "AuditLogLevel")
+    assert "AuditLogLevel" in epistemicos.__all__
+    assert AuditLogLevel.__name__ == "AuditLogLevel"
+    assert issubclass(epistemicos.AuditLogLevel, epistemicos.audit.AuditLogLevel.__mro__[1])
 
 
 @patch("epistemicos.utils.get_optimal_device")

@@ -12,6 +12,7 @@ import re
 import socket
 import string
 import urllib.parse
+from functools import lru_cache
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
@@ -34,6 +35,12 @@ class ContainmentReceipt:
     reason: Optional[str] = None
     sanitized_payload: Optional[Any] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
+
+
+@lru_cache(maxsize=128)
+def _resolve_dns_cached(hostname: str):
+    """Cached DNS resolution to improve performance during containment checks."""
+    return socket.getaddrinfo(hostname, None)
 
 
 class ContainmentGuard:
@@ -62,7 +69,7 @@ class ContainmentGuard:
     ]
 
     DEFAULT_FORBIDDEN_COMMANDS_COMPILED = [
-        re.compile("|".join(DEFAULT_FORBIDDEN_COMMANDS), re.IGNORECASE)
+        re.compile(p, re.IGNORECASE) for p in DEFAULT_FORBIDDEN_COMMANDS
     ]
 
     # Pre-compile Injection Patterns (Fix for Ingress Prompt Inspection Loop)
@@ -74,6 +81,22 @@ class ContainmentGuard:
         r"<\|im_start\|>\s*system",
         r"\]\s*;\s*DROP\s+TABLE",
     ]), re.IGNORECASE)
+    INJECTION_PATTERNS_COMPILED = re.compile(
+        "|".join([
+            r"ignore\s+all\s+previous\s+instructions",
+            r"disregard\s+the\s+above",
+            r"you\s+are\s+now\s+in\s+DAN\s+mode",  # Fixed \n+ to \s+
+            r"system\s*:\s*override",
+            r"<\|im_start\|>\s*system",
+            r"\]\s*;\s*DROP\s+TABLE",
+        ]),
+        re.IGNORECASE
+    )
+
+        re.IGNORECASE,
+    )
+        ]), re.IGNORECASE)
+    ]
 
     # Pre-compile System Delimiter Regex (Fix for String Substitution)
     SYSTEM_DELIMITERS_REGEX = re.compile(r"<\|im_start\|>|<\|im_end\|>")
@@ -86,6 +109,21 @@ class ContainmentGuard:
         r"unittest\.skip",
         r"pytest\.mark\.skip",
     ]), re.IGNORECASE)
+    CHEAT_KEYWORDS_COMPILED = [
+        re.compile(kw, re.IGNORECASE) for kw in [
+    CHEAT_KEYWORDS_COMPILED = re.compile(
+        "|".join([
+            r"assert\s+True",
+            r"return\s+True\s+#\s*skip\s*test",
+            r"sys\.exit\(0\)",
+            r"unittest\.skip",
+            r"pytest\.mark\.skip",
+        ]
+        ]),
+        re.IGNORECASE,
+    )
+        ]), re.IGNORECASE)
+    ]
 
     def __init__(
         self,
@@ -99,7 +137,8 @@ class ContainmentGuard:
         self.forbidden_commands_compiled = list(self.DEFAULT_FORBIDDEN_COMMANDS_COMPILED)
 
         if custom_forbidden_commands:
-            self.forbidden_commands_compiled.append(
+            self.forbidden_commands_compiled = [
+                *self.DEFAULT_FORBIDDEN_COMMANDS_COMPILED,
                 re.compile("|".join(custom_forbidden_commands), re.IGNORECASE)
             )
 
@@ -125,7 +164,7 @@ class ContainmentGuard:
 
         # 2. Resolve DNS hostnames to verify underlying IP destinations
         try:
-            addr_info = socket.getaddrinfo(hostname, None)
+            addr_info = _resolve_dns_cached(hostname)
             for res in addr_info:
                 resolved_ip = ipaddress.ip_address(res[4][0])
                 if (
@@ -178,7 +217,7 @@ class ContainmentGuard:
             url = url.strip()
             url_norm = url.replace('\\', '/')
 
-            # Reject URLs where `#` appears before the first `/` or `?` in the path to prevent parsing inconsistencies
+            # Reject URLs where `#` or `%23` appears in the authority component
             if "://" in url_norm:
                 rest = url_norm.split("://", 1)[1]
                 authority = rest.split("/", 1)[0].split("?", 1)[0]
@@ -273,7 +312,7 @@ class ContainmentGuard:
                 return ContainmentReceipt(
                     passed=False,
                     violation_type=ContainmentViolationType.FORBIDDEN_COMMAND_EXECUTION,
-                    reason=f"Command execution blocked: Contains restricted OS-level directive matching '{match.group(0)}'.",
+                    reason=f"Command execution blocked: Contains restricted OS-level directive matching '{pattern.pattern}'.",
                 )
 
         return ContainmentReceipt(passed=True)
@@ -292,6 +331,13 @@ class ContainmentGuard:
                 violation_type=ContainmentViolationType.GOAL_MUTATION_REWARD_CHEATING,
                 reason=f"Reward-cheating attempt detected: Proposed action overrides test verification via '{match.group(0)}'.",
             )
+        for pattern in self.CHEAT_KEYWORDS_COMPILED:
+            if pattern.search(proposed_action):
+                return ContainmentReceipt(
+                    passed=False,
+                    violation_type=ContainmentViolationType.GOAL_MUTATION_REWARD_CHEATING,
+                    reason=f"Reward-cheating attempt detected: Proposed action overrides test verification via '{pattern.pattern}'.",
+                )
 
         return ContainmentReceipt(passed=True)
 
