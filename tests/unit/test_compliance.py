@@ -23,6 +23,24 @@ def test_compute_canonical_hash_same_data_different_order():
     assert hash_1 == hash_2
 
 
+def test_compute_canonical_hash_salting():
+    """Validates that salting changes hash output and custom salts produce different hashes."""
+    import hashlib, json
+    payload = {"user": "alice", "ssn": "000-00-0000"}
+
+    # Compute unsalted hash directly for comparison
+    canonical_bytes = json.dumps(payload, sort_keys=True).encode("utf-8")
+    unsalted_hash = hashlib.sha256(canonical_bytes).hexdigest()
+
+    default_salted_hash = TransactionalComplianceBroker.compute_canonical_hash(payload)
+    custom_salted_hash = TransactionalComplianceBroker.compute_canonical_hash(payload, salt=b"custom_salt_999")
+
+    # Salted hash should not equal unsalted hash
+    assert default_salted_hash != unsalted_hash
+    # Custom salt hash should not equal default salted hash
+    assert custom_salted_hash != default_salted_hash
+
+
 def test_compute_canonical_hash_different_data():
     """Validates different payloads produce different hashes."""
     payload_1 = {"a": 1, "b": 2}
