@@ -73,6 +73,14 @@ class ContainmentGuard:
     ]
 
     # Pre-compile Injection Patterns (Fix for Ingress Prompt Inspection Loop)
+    INJECTION_PATTERNS_COMPILED = re.compile("|".join([
+        r"ignore\s+all\s+previous\s+instructions",
+        r"disregard\s+the\s+above",
+        r"you\s+are\s+now\s+in\s+DAN\s+mode",  # Fixed \n+ to \s+
+        r"system\s*:\s*override",
+        r"<\|im_start\|>\s*system",
+        r"\]\s*;\s*DROP\s+TABLE",
+    ]), re.IGNORECASE)
     INJECTION_PATTERNS_COMPILED = re.compile(
         "|".join([
             r"ignore\s+all\s+previous\s+instructions",
@@ -94,6 +102,13 @@ class ContainmentGuard:
     SYSTEM_DELIMITERS_REGEX = re.compile(r"<\|im_start\|>|<\|im_end\|>")
 
     # Pre-compile Goal Mutation Cheat Keywords (Fix for Goal Integrity Validation)
+    CHEAT_KEYWORDS_COMPILED = re.compile("|".join([
+        r"assert\s+True",
+        r"return\s+True\s+#\s*skip\s*test",
+        r"sys\.exit\(0\)",
+        r"unittest\.skip",
+        r"pytest\.mark\.skip",
+    ]), re.IGNORECASE)
     CHEAT_KEYWORDS_COMPILED = [
         re.compile(kw, re.IGNORECASE) for kw in [
     CHEAT_KEYWORDS_COMPILED = re.compile(
@@ -119,25 +134,13 @@ class ContainmentGuard:
     ):
         self.allowed_domains = set(allowed_egress_domains or [])
         self.blocked_hosts = blocked_hosts or self.DEFAULT_BLOCKED_HOSTS
-
-        # Pre-compile forbidden commands dynamically (Fix for Tool Command Inspection Loop)
-        self.forbidden_commands_compiled = list(self.DEFAULT_FORBIDDEN_COMMANDS_COMPILED)
-        if custom_forbidden_commands:
-            self.forbidden_commands_compiled.extend(
-                re.compile(p, re.IGNORECASE) for p in custom_forbidden_commands
-            )
         self.forbidden_commands_compiled = list(self.DEFAULT_FORBIDDEN_COMMANDS_COMPILED)
 
-        
-        self.forbidden_commands_compiled = list(self.DEFAULT_FORBIDDEN_COMMANDS_COMPILED)
         if custom_forbidden_commands:
             self.forbidden_commands_compiled = [
                 *self.DEFAULT_FORBIDDEN_COMMANDS_COMPILED,
                 re.compile("|".join(custom_forbidden_commands), re.IGNORECASE)
             )
-            ]
-        else:
-            self.forbidden_commands_compiled = list(self.DEFAULT_FORBIDDEN_COMMANDS_COMPILED)
 
         self.strict_mode = strict_mode
 
@@ -193,14 +196,6 @@ class ContainmentGuard:
                 violation_type=ContainmentViolationType.PROMPT_INJECTION_DETECTED,
                 reason=f"Detected restricted prompt manipulation pattern: '{match.group(0)}'",
             )
-        for pattern in self.INJECTION_PATTERNS_COMPILED:
-            match = pattern.search(cleaned_prompt)
-            if match:
-                return ContainmentReceipt(
-                    passed=False,
-                    violation_type=ContainmentViolationType.PROMPT_INJECTION_DETECTED,
-                    reason=f"Detected restricted prompt manipulation pattern: '{match.group(0)}'",
-                )
 
         # Sanitize raw system delimiters if injected into user prompt
         sanitized = self.SYSTEM_DELIMITERS_REGEX.sub("", cleaned_prompt)
@@ -313,9 +308,6 @@ class ContainmentGuard:
     def inspect_tool_command(self, code_or_command: str) -> ContainmentReceipt:
         """Inspects generated code or shell execution commands for OS-level escape attempts."""
         for pattern in self.forbidden_commands_compiled:
-            if pattern.search(code_or_command):
-            match = pattern.search(code_or_command)
-            if match:
             if match := pattern.search(code_or_command):
                 return ContainmentReceipt(
                     passed=False,
