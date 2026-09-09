@@ -80,27 +80,15 @@ class TamperEvidentAuditTrail:
                 f.seek(0, os.SEEK_END)
                 pointer = f.tell()
                 buffer_size = 1024
-                remainder = b""
+                lines = []
 
-                while pointer > 0:
+                while pointer > 0 and len(lines) < 2:
                     read_size = min(buffer_size, pointer)
                     pointer -= read_size
                     f.seek(pointer)
                     chunk = f.read(read_size)
+                    lines = chunk.split(b"\n")
 
-                    remainder = chunk + remainder
-                    lines = remainder.split(b"\n")
-
-                    if len(lines) > 1:
-                        for line in reversed(lines[1:]):
-                            line_str = line.strip().decode("utf-8")
-                            if line_str:
-                                last_entry = json.loads(line_str)
-                                self.last_hash = last_entry.get("entry_hash", self.genesis_hash)
-                                return self.last_hash
-                        remainder = lines[0]
-
-                lines = remainder.split(b"\n")
                 for line in reversed(lines):
                     line_str = line.strip().decode("utf-8")
                     if line_str:
@@ -129,9 +117,10 @@ class TamperEvidentAuditTrail:
         """
         event_id = str(uuid.uuid4())
         timestamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-        if len(event.payload_snippet) > 1048576:
+        payload_bytes = event.payload_snippet.encode("utf-8")
+        if len(payload_bytes) > 1048576:
             raise ValueError("Payload snippet exceeds the maximum allowed length of 1MB.")
-        payload_hash = hashlib.sha256(event.payload_snippet.encode("utf-8")).hexdigest()
+        payload_hash = hashlib.sha256(payload_bytes).hexdigest()
 
         # Compile strict structural metadata
         event_metadata = event.metadata or {}
