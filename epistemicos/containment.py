@@ -66,14 +66,17 @@ class ContainmentGuard:
     ]
 
     # Pre-compile Injection Patterns (Fix for Ingress Prompt Inspection Loop)
-    INJECTION_PATTERNS_COMPILED = [
-        re.compile("|".join([
+    INJECTION_PATTERNS_COMPILED = re.compile(
+        "|".join([
             r"ignore\s+all\s+previous\s+instructions",
             r"disregard\s+the\s+above",
             r"you\s+are\s+now\s+in\s+DAN\s+mode",  # Fixed \n+ to \s+
             r"system\s*:\s*override",
             r"<\|im_start\|>\s*system",
             r"\]\s*;\s*DROP\s+TABLE",
+        ]),
+        re.IGNORECASE,
+    )
         ]), re.IGNORECASE)
     ]
 
@@ -81,13 +84,16 @@ class ContainmentGuard:
     SYSTEM_DELIMITERS_REGEX = re.compile(r"<\|im_start\|>|<\|im_end\|>")
 
     # Pre-compile Goal Mutation Cheat Keywords (Fix for Goal Integrity Validation)
-    CHEAT_KEYWORDS_COMPILED = [
-        re.compile("|".join([
+    CHEAT_KEYWORDS_COMPILED = re.compile(
+        "|".join([
             r"assert\s+True",
             r"return\s+True\s+#\s*skip\s*test",
             r"sys\.exit\(0\)",
             r"unittest\.skip",
             r"pytest\.mark\.skip",
+        ]),
+        re.IGNORECASE,
+    )
         ]), re.IGNORECASE)
     ]
 
@@ -101,12 +107,18 @@ class ContainmentGuard:
         self.allowed_domains = set(allowed_egress_domains or [])
         self.blocked_hosts = blocked_hosts or self.DEFAULT_BLOCKED_HOSTS
         self.forbidden_commands_compiled = list(self.DEFAULT_FORBIDDEN_COMMANDS_COMPILED)
+
         
+        self.forbidden_commands_compiled = list(self.DEFAULT_FORBIDDEN_COMMANDS_COMPILED)
         if custom_forbidden_commands:
-            self.forbidden_commands_compiled.append(
+            self.forbidden_commands_compiled = [
+                *self.DEFAULT_FORBIDDEN_COMMANDS_COMPILED,
                 re.compile("|".join(custom_forbidden_commands), re.IGNORECASE)
             )
-        
+            ]
+        else:
+            self.forbidden_commands_compiled = list(self.DEFAULT_FORBIDDEN_COMMANDS_COMPILED)
+
         self.strict_mode = strict_mode
 
     def _is_restricted_target(self, hostname: str) -> bool:
@@ -155,6 +167,12 @@ class ContainmentGuard:
         cleaned_prompt = prompt_text.strip()
 
         # Check against compiled injection/jailbreak patterns
+        if match := self.INJECTION_PATTERNS_COMPILED.search(cleaned_prompt):
+            return ContainmentReceipt(
+                passed=False,
+                violation_type=ContainmentViolationType.PROMPT_INJECTION_DETECTED,
+                reason=f"Detected restricted prompt manipulation pattern: '{match.group(0)}'",
+            )
         for pattern in self.INJECTION_PATTERNS_COMPILED:
             match = pattern.search(cleaned_prompt)
             if match:
@@ -277,6 +295,7 @@ class ContainmentGuard:
         for pattern in self.forbidden_commands_compiled:
             match = pattern.search(code_or_command)
             if match:
+            if match := pattern.search(code_or_command):
                 return ContainmentReceipt(
                     passed=False,
                     violation_type=ContainmentViolationType.FORBIDDEN_COMMAND_EXECUTION,
@@ -293,6 +312,12 @@ class ContainmentGuard:
         self, original_goal: str, proposed_action: str
     ) -> ContainmentReceipt:
         """Detects whether an agent is attempting to alter its primary objective or cheat on evaluation tests."""
+        if match := self.CHEAT_KEYWORDS_COMPILED.search(proposed_action):
+            return ContainmentReceipt(
+                passed=False,
+                violation_type=ContainmentViolationType.GOAL_MUTATION_REWARD_CHEATING,
+                reason=f"Reward-cheating attempt detected: Proposed action overrides test verification via '{match.group(0)}'.",
+            )
         for pattern in self.CHEAT_KEYWORDS_COMPILED:
             match = pattern.search(proposed_action)
             if match:
