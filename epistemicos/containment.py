@@ -156,13 +156,12 @@ class ContainmentGuard:
         cleaned_prompt = prompt_text.strip()
 
         # Check against compiled injection/jailbreak patterns
-        for pattern in self.INJECTION_PATTERNS_COMPILED:
-            if match := pattern.search(cleaned_prompt):
-                return ContainmentReceipt(
-                    passed=False,
-                    violation_type=ContainmentViolationType.PROMPT_INJECTION_DETECTED,
-                    reason=f"Detected restricted prompt manipulation pattern: '{match.group(0)}'",
-                )
+        if match := self.INJECTION_PATTERNS_COMPILED.search(cleaned_prompt):
+            return ContainmentReceipt(
+                passed=False,
+                violation_type=ContainmentViolationType.PROMPT_INJECTION_DETECTED,
+                reason=f"Detected restricted prompt manipulation pattern: '{match.group(0)}'",
+            )
 
         # Sanitize raw system delimiters if injected into user prompt
         sanitized = self.SYSTEM_DELIMITERS_REGEX.sub("", cleaned_prompt)
@@ -275,7 +274,8 @@ class ContainmentGuard:
     def inspect_tool_command(self, code_or_command: str) -> ContainmentReceipt:
         """Inspects generated code or shell execution commands for OS-level escape attempts."""
         for pattern in self.forbidden_commands_compiled:
-            if match := pattern.search(code_or_command):
+            match = pattern.search(code_or_command)
+            if match:
                 return ContainmentReceipt(
                     passed=False,
                     violation_type=ContainmentViolationType.FORBIDDEN_COMMAND_EXECUTION,
