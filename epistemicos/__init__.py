@@ -6,6 +6,7 @@ from typing import Any, Optional, Tuple
 from epistemicos.core import EpistemicOrchestrator
 from epistemicos.scheduler import EntropyAwareScheduler, StepMetrics, DecisionResult
 from epistemicos.models import CanonicalProblemRepresentation, BeliefObject
+from epistemicos.audit import TamperEvidentAuditTrail
 from epistemicos.audit import TamperEvidentAuditTrail, AuditLogLevel as AuditLogLevel
 from epistemicos.vector_hygiene import VectorHygieneManager
 
@@ -45,7 +46,6 @@ __all__ = [
     
     # Security & Accountability
     "TamperEvidentAuditTrail",
-    "AuditLogLevel",
     "VectorHygieneManager",
     
     # Utilities
