@@ -73,14 +73,6 @@ class ContainmentGuard:
     ]
 
     # Pre-compile Injection Patterns (Fix for Ingress Prompt Inspection Loop)
-    INJECTION_PATTERNS_COMPILED = re.compile("|".join([
-        r"ignore\s+all\s+previous\s+instructions",
-        r"disregard\s+the\s+above",
-        r"you\s+are\s+now\s+in\s+DAN\s+mode",  # Fixed \n+ to \s+
-        r"system\s*:\s*override",
-        r"<\|im_start\|>\s*system",
-        r"\]\s*;\s*DROP\s+TABLE",
-    ]), re.IGNORECASE)
     INJECTION_PATTERNS_COMPILED = re.compile(
         "|".join([
             r"ignore\s+all\s+previous\s+instructions",
@@ -93,24 +85,10 @@ class ContainmentGuard:
         re.IGNORECASE
     )
 
-        re.IGNORECASE,
-    )
-        ]), re.IGNORECASE)
-    ]
-
     # Pre-compile System Delimiter Regex (Fix for String Substitution)
     SYSTEM_DELIMITERS_REGEX = re.compile(r"<\|im_start\|>|<\|im_end\|>")
 
     # Pre-compile Goal Mutation Cheat Keywords (Fix for Goal Integrity Validation)
-    CHEAT_KEYWORDS_COMPILED = re.compile("|".join([
-        r"assert\s+True",
-        r"return\s+True\s+#\s*skip\s*test",
-        r"sys\.exit\(0\)",
-        r"unittest\.skip",
-        r"pytest\.mark\.skip",
-    ]), re.IGNORECASE)
-    CHEAT_KEYWORDS_COMPILED = [
-        re.compile(kw, re.IGNORECASE) for kw in [
     CHEAT_KEYWORDS_COMPILED = re.compile(
         "|".join([
             r"assert\s+True",
@@ -118,12 +96,9 @@ class ContainmentGuard:
             r"sys\.exit\(0\)",
             r"unittest\.skip",
             r"pytest\.mark\.skip",
-        ]
         ]),
-        re.IGNORECASE,
+        re.IGNORECASE
     )
-        ]), re.IGNORECASE)
-    ]
 
     def __init__(
         self,
@@ -140,7 +115,7 @@ class ContainmentGuard:
             self.forbidden_commands_compiled = [
                 *self.DEFAULT_FORBIDDEN_COMMANDS_COMPILED,
                 re.compile("|".join(custom_forbidden_commands), re.IGNORECASE)
-            )
+            ]
 
         self.strict_mode = strict_mode
 

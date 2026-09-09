@@ -46,6 +46,7 @@ __all__ = [
     
     # Security & Accountability
     "TamperEvidentAuditTrail",
+    "AuditLogLevel",
     "VectorHygieneManager",
     
     # Utilities
