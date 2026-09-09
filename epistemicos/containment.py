@@ -100,6 +100,7 @@ class ContainmentGuard:
     ):
         self.allowed_domains = set(allowed_egress_domains or [])
         self.blocked_hosts = blocked_hosts or self.DEFAULT_BLOCKED_HOSTS
+        self.forbidden_commands_compiled = list(self.DEFAULT_FORBIDDEN_COMMANDS_COMPILED)
         
         self.forbidden_commands_compiled = list(self.DEFAULT_FORBIDDEN_COMMANDS_COMPILED)
         if custom_forbidden_commands:
@@ -291,14 +292,6 @@ class ContainmentGuard:
         self, original_goal: str, proposed_action: str
     ) -> ContainmentReceipt:
         """Detects whether an agent is attempting to alter its primary objective or cheat on evaluation tests."""
-        for pattern in self.CHEAT_KEYWORDS_COMPILED:
-            match = pattern.search(proposed_action)
-            if match:
-                return ContainmentReceipt(
-                    passed=False,
-                    violation_type=ContainmentViolationType.GOAL_MUTATION_REWARD_CHEATING,
-                    reason=f"Reward-cheating attempt detected: Proposed action overrides test verification via '{match.group(0)}'.",
-                )
         if match := self.CHEAT_KEYWORDS_COMPILED.search(proposed_action):
             return ContainmentReceipt(
                 passed=False,
