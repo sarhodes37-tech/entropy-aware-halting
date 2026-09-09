@@ -127,3 +127,47 @@ def test_ast_analyzer_get_node_weight():
 
     # Missing key defaults to 1.0
     assert analyzer.get_node_weight("UnknownNodeType") == 1.0
+
+def test_ast_analyzer_passes_static_ast():
+    """Validates if code string parses into a valid, non-empty AST tree."""
+    analyzer = ASTAnalyzer()
+
+    # Valid code
+    assert analyzer.passes_static_ast("x = 1") is True
+    # Empty string
+    assert analyzer.passes_static_ast("") is False
+    # Invalid syntax
+    assert analyzer.passes_static_ast("if True") is False
+
+def test_ast_analyzer_count_ast_nodes():
+    """Validates counting total AST nodes in the code snippet."""
+    analyzer = ASTAnalyzer()
+
+    # Simple assignment
+    assert analyzer.count_ast_nodes("x = 1") == 5
+    # Empty string
+    assert analyzer.count_ast_nodes("") == 1
+    # Invalid syntax
+    assert analyzer.count_ast_nodes("if True") == 0
+
+def test_ast_analyzer_compute_aggregate_ast_risk():
+    """Validates total summed Omega weight across all AST nodes in snippet."""
+    analyzer = ASTAnalyzer()
+
+    # Assign node has weight 1.0, and 4 default nodes have weight 1.0 -> total 5.0
+    assert analyzer.compute_aggregate_ast_risk("x = 1") == 5.0
+    # Invalid syntax
+    assert analyzer.compute_aggregate_ast_risk("if True") == 0.0
+
+def test_ast_analyzer_get_node_weight_custom():
+    """Validates get_node_weight behavior with custom omega map."""
+    analyzer = ASTAnalyzer(omega_map={"CustomNode": 2.5, "ast.CustomNode2": 3.0})
+
+    # Custom weights
+    assert analyzer.get_node_weight("CustomNode") == 2.5
+    assert analyzer.get_node_weight("ast.CustomNode2") == 3.0
+    assert analyzer.get_node_weight("foo.bar.CustomNode") == 2.5 # clean_key check
+    assert analyzer.get_node_weight("foo.bar.CustomNode2") == 1.0
+
+    # Missing weights fallback to 1.0
+    assert analyzer.get_node_weight("Assign") == 1.0

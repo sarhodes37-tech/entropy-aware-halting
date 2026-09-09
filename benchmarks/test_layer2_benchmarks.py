@@ -10,7 +10,6 @@ parse fidelity for downstream systems.
 import ast
 import json
 import multiprocessing
-import re
 from typing import Dict, Any, List
 import pytest
 

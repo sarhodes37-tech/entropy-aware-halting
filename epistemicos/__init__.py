@@ -7,6 +7,7 @@ from epistemicos.core import EpistemicOrchestrator
 from epistemicos.scheduler import EntropyAwareScheduler, StepMetrics, DecisionResult
 from epistemicos.models import CanonicalProblemRepresentation, BeliefObject
 from epistemicos.audit import TamperEvidentAuditTrail
+from epistemicos.audit import TamperEvidentAuditTrail, AuditLogLevel as AuditLogLevel
 from epistemicos.vector_hygiene import VectorHygieneManager
 
 # Utilities: expose via lazy wrappers to avoid heavy imports at package import time
