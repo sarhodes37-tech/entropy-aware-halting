@@ -176,13 +176,27 @@ def test_execute_right_to_be_forgotten_file_redaction(tmp_path):
     assert content == "Event: login, user: [REDACTED]\nEvent: logout, user: [REDACTED]\nEvent: query, user: normal_user"
 
 
-def test_execute_right_to_be_forgotten_file_not_found():
-    """Validates that a non-existent file is handled gracefully without error."""
+def test_execute_right_to_be_forgotten_file_not_found(tmp_path, monkeypatch):
+    """Validates that a non-existent file within base dir is handled gracefully without error."""
     broker = TransactionalComplianceBroker()
     tx_id = "tx_missing_file"
+    non_existent_path = tmp_path / "non_existent_file_9999.log"
+    monkeypatch.chdir(tmp_path)
 
-    # Ensure it doesn't raise an exception when file doesn't exist
-    deleted, anchored_hash = broker.execute_right_to_be_forgotten(tx_id, file_path="/tmp/non_existent_file_9999.log")
+    # Ensure it doesn't raise an exception when file doesn't exist within allowed directory
+    deleted, anchored_hash = broker.execute_right_to_be_forgotten(tx_id, file_path=str(non_existent_path))
 
     assert deleted is False
     assert anchored_hash is None
+
+
+def test_execute_right_to_be_forgotten_path_traversal_blocked(tmp_path):
+    """Validates that attempting path traversal outside the base directory raises ValueError."""
+    broker = TransactionalComplianceBroker()
+    tx_id = "tx_traversal_123"
+
+    with pytest.raises(ValueError, match="Path traversal detected"):
+        broker.execute_right_to_be_forgotten(tx_id, file_path="../../../etc/passwd")
+
+    with pytest.raises(ValueError, match="Path traversal detected"):
+        broker.execute_right_to_be_forgotten(tx_id, file_path="/etc/passwd")

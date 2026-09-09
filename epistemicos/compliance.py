@@ -102,11 +102,27 @@ class TransactionalComplianceBroker:
 
         if file_path:
             import os
-            if os.path.exists(file_path):
-                with open(file_path, "r") as f:
+            import tempfile
+            target_path = os.path.realpath(os.path.abspath(file_path))
+            allowed_dirs = [os.path.realpath(os.getcwd()), os.path.realpath(tempfile.gettempdir())]
+
+            is_safe = False
+            for allowed_dir in allowed_dirs:
+                try:
+                    if os.path.commonpath([allowed_dir, target_path]) == allowed_dir:
+                        is_safe = True
+                        break
+                except ValueError:
+                    continue
+
+            if not is_safe:
+                raise ValueError(f"Path traversal detected: '{file_path}' resolves outside allowed base directory.")
+
+            if os.path.exists(target_path):
+                with open(target_path, "r") as f:
                     lines = f.readlines()
 
-                with open(file_path, "w") as f:
+                with open(target_path, "w") as f:
                     for line in lines:
                         f.write(line.replace(transaction_id, "[REDACTED]"))
 
