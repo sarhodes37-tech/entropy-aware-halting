@@ -80,13 +80,15 @@ class ContainmentGuard:
     SYSTEM_DELIMITERS_REGEX = re.compile(r"<\|im_start\|>|<\|im_end\|>")
 
     # Pre-compile Goal Mutation Cheat Keywords (Fix for Goal Integrity Validation)
-    CHEAT_KEYWORDS_COMPILED = re.compile("|".join([
-        r"assert\s+True",
-        r"return\s+True\s+#\s*skip\s*test",
-        r"sys\.exit\(0\)",
-        r"unittest\.skip",
-        r"pytest\.mark\.skip",
-    ]), re.IGNORECASE)
+    CHEAT_KEYWORDS_COMPILED = [
+        re.compile("|".join([
+            r"assert\s+True",
+            r"return\s+True\s+#\s*skip\s*test",
+            r"sys\.exit\(0\)",
+            r"unittest\.skip",
+            r"pytest\.mark\.skip",
+        ]), re.IGNORECASE)
+    ]
 
     def __init__(
         self,
@@ -97,7 +99,9 @@ class ContainmentGuard:
     ):
         self.allowed_domains = set(allowed_egress_domains or [])
         self.blocked_hosts = blocked_hosts or self.DEFAULT_BLOCKED_HOSTS
+        self.forbidden_commands_compiled = list(self.DEFAULT_FORBIDDEN_COMMANDS_COMPILED)
         
+        self.forbidden_commands_compiled = list(self.DEFAULT_FORBIDDEN_COMMANDS_COMPILED)
         if custom_forbidden_commands:
             self.forbidden_commands_compiled = [
                 *self.DEFAULT_FORBIDDEN_COMMANDS_COMPILED,
@@ -272,7 +276,8 @@ class ContainmentGuard:
     def inspect_tool_command(self, code_or_command: str) -> ContainmentReceipt:
         """Inspects generated code or shell execution commands for OS-level escape attempts."""
         for pattern in self.forbidden_commands_compiled:
-            if match := pattern.search(code_or_command):
+            match = pattern.search(code_or_command)
+            if match:
                 return ContainmentReceipt(
                     passed=False,
                     violation_type=ContainmentViolationType.FORBIDDEN_COMMAND_EXECUTION,
