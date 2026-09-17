@@ -13,6 +13,7 @@ Components:
 - CryptoAttestationGate: Post-Quantum Attestation & OCSP Revocation
 """
 
+import json
 from abc import ABC, abstractmethod
 import re
 import time
