@@ -64,7 +64,7 @@ class ContainmentGuard:
         r"nc\s+-e",
         r"bash\s+-i",
         r"python\s+-c\s+'import\s+socket",
-        r"subprocess\.Popen",  # Fixed typo (was subprocesses?)
+        r"subprocess\.Popen",
         r"os\.system",
     ]
 
@@ -81,11 +81,12 @@ class ContainmentGuard:
         r"<\|im_start\|>\s*system",
         r"\]\s*;\s*DROP\s+TABLE",
     ]), re.IGNORECASE)
+    # Pre-compile Injection Patterns
     INJECTION_PATTERNS_COMPILED = re.compile(
         "|".join([
             r"ignore\s+all\s+previous\s+instructions",
             r"disregard\s+the\s+above",
-            r"you\s+are\s+now\s+in\s+DAN\s+mode",  # Fixed \n+ to \s+
+            r"you\s+are\s+now\s+in\s+DAN\s+mode",
             r"system\s*:\s*override",
             r"<\|im_start\|>\s*system",
             r"\]\s*;\s*DROP\s+TABLE",
@@ -97,6 +98,13 @@ class ContainmentGuard:
     SYSTEM_DELIMITERS_REGEX = re.compile(r"<\|im_start\|>|<\|im_end\|>")
 
     # Pre-compile Goal Mutation Cheat Keywords (Fix for Goal Integrity Validation)
+        re.IGNORECASE,
+    )
+
+    # Pre-compile System Delimiter Regex
+    SYSTEM_DELIMITERS_REGEX = re.compile(r"<\|im_start\|>|<\|im_end\|>")
+
+    # Pre-compile Goal Mutation Cheat Keywords
     CHEAT_KEYWORDS_COMPILED = re.compile(
         "|".join([
             r"assert\s+True",
@@ -132,7 +140,6 @@ class ContainmentGuard:
         if not hostname:
             return True
 
-        # 1. Direct IP parsing (handles hex, octal, integer, and standard IPv4/IPv6 literals)
         try:
             ip = ipaddress.ip_address(hostname)
             return (
@@ -143,9 +150,8 @@ class ContainmentGuard:
                 or ip.is_unspecified
             )
         except ValueError:
-            pass  # Hostname is a domain name, proceed to DNS resolution
+            pass
 
-        # 2. Resolve DNS hostnames to verify underlying IP destinations
         try:
             addr_info = _resolve_dns_cached(hostname)
             for res in addr_info:
@@ -159,7 +165,6 @@ class ContainmentGuard:
                 ):
                     return True
         except socket.gaierror:
-            # Block hostnames that fail DNS resolution as a safety measure
             return True
 
         return False
@@ -172,7 +177,6 @@ class ContainmentGuard:
         """Inspects user/planner input for prompt injection or system override attempts."""
         cleaned_prompt = prompt_text.strip()
 
-        # Check against compiled injection/jailbreak patterns
         if match := self.INJECTION_PATTERNS_COMPILED.search(cleaned_prompt):
             return ContainmentReceipt(
                 passed=False,
@@ -180,7 +184,6 @@ class ContainmentGuard:
                 reason=f"Detected restricted prompt manipulation pattern: '{match.group(0)}'",
             )
 
-        # Sanitize raw system delimiters if injected into user prompt
         sanitized = self.SYSTEM_DELIMITERS_REGEX.sub("", cleaned_prompt)
 
         return ContainmentReceipt(
@@ -196,39 +199,29 @@ class ContainmentGuard:
     def _extract_hostname_secure(self, url: str) -> str:
         """Extracts the hostname securely to prevent SSRF bypasses via URL parsing inconsistencies."""
         try:
-            # 1. Strip whitespace and normalize backslashes
             url = url.strip()
             url_norm = url.replace('\\', '/')
 
-            # Reject URLs where `#` or `%23` appears in the authority component
             if "://" in url_norm:
                 rest = url_norm.split("://", 1)[1]
                 authority = rest.split("/", 1)[0].split("?", 1)[0]
                 if "#" in authority or "%23" in authority.lower():
                     return ""
 
-            # 2. Parse URL
             parsed = urllib.parse.urlsplit(url_norm)
-
-            # 3. Unquote the netloc to prevent URL-encoding bypasses (e.g. %40 for @)
             decoded_netloc = urllib.parse.unquote(parsed.netloc)
 
-            # Reject URLs that have `#` in the authority component
             if '#' in decoded_netloc:
                 return ""
 
-            # 4. Remove any whitespace characters injected into the netloc (requests strips these)
             for ws in string.whitespace:
                 decoded_netloc = decoded_netloc.replace(ws, '')
 
-            # 5. Extract host port part by splitting at last @
             if '@' in decoded_netloc:
                 host_port = decoded_netloc.rsplit('@', 1)[-1]
             else:
                 host_port = decoded_netloc
 
-            # 6. Remove port if present, safely handling IPv6
-            # An IPv6 address is enclosed in brackets, e.g., [::1] or [::1]:80
             if host_port.startswith('['):
                 end_bracket = host_port.find(']')
                 if end_bracket != -1:
@@ -243,7 +236,6 @@ class ContainmentGuard:
 
             hostname = hostname.lower()
 
-            # Reject extracted hostnames containing invalid characters
             if not re.match(r'^[\w\-\.\[\]\:]+$', hostname):
                 return ""
 
@@ -263,7 +255,6 @@ class ContainmentGuard:
                     reason="Egress blocked: Missing or invalid target hostname.",
                 )
 
-            # 1. Block Local/Metadata SSRF Targets via static list & robust IP/DNS resolution
             if hostname in self.blocked_hosts or self._is_restricted_target(hostname):
                 return ContainmentReceipt(
                     passed=False,
@@ -271,7 +262,6 @@ class ContainmentGuard:
                     reason=f"Egress blocked: Attempted access to internal/isolated host '{hostname}'.",
                 )
 
-            # 2. Enforce Allowed Domains Whitelist (if configured)
             if self.allowed_domains and hostname not in self.allowed_domains:
                 return ContainmentReceipt(
                     passed=False,
@@ -314,13 +304,6 @@ class ContainmentGuard:
                 violation_type=ContainmentViolationType.GOAL_MUTATION_REWARD_CHEATING,
                 reason=f"Reward-cheating attempt detected: Proposed action overrides test verification via '{match.group(0)}'.",
             )
-        for pattern in self.CHEAT_KEYWORDS_COMPILED:
-            if pattern.search(proposed_action):
-                return ContainmentReceipt(
-                    passed=False,
-                    violation_type=ContainmentViolationType.GOAL_MUTATION_REWARD_CHEATING,
-                    reason=f"Reward-cheating attempt detected: Proposed action overrides test verification via '{pattern.pattern}'.",
-                )
 
         return ContainmentReceipt(passed=True)
 
@@ -337,7 +320,6 @@ class ContainmentGuard:
     ) -> Tuple[bool, Any, ContainmentReceipt]:
         """Wraps any tool call with active ingress, egress, and command containment checks."""
 
-        # 1. Parameter Inspection
         command_str = str(kwargs.get("command", "")) or str(kwargs.get("script", ""))
         if command_str:
             cmd_receipt = self.inspect_tool_command(command_str)
@@ -355,7 +337,6 @@ class ContainmentGuard:
             if not egress_receipt.passed:
                 return False, None, egress_receipt
 
-        # 2. Safe Tool Execution
         try:
             result = tool_func(**kwargs)
             return True, result, ContainmentReceipt(passed=True)
