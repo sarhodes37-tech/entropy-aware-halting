@@ -68,7 +68,7 @@ class ContainmentGuard:
         r"os\.system",
     ]
 
-        DEFAULT_FORBIDDEN_COMMANDS_COMPILED = [
+    DEFAULT_FORBIDDEN_COMMANDS_COMPILED = [
         re.compile(p, re.IGNORECASE) for p in DEFAULT_FORBIDDEN_COMMANDS
     ]
 
@@ -118,7 +118,6 @@ class ContainmentGuard:
             ]
 
         self.strict_mode = strict_mode
-
 
     def _is_restricted_target(self, hostname: str) -> bool:
         """Parses and checks if a hostname or IP resolves to private, loopback, or cloud metadata ranges."""
