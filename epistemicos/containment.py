@@ -119,17 +119,17 @@ class ContainmentGuard:
     ]), re.IGNORECASE)
     CHEAT_KEYWORDS_COMPILED = [
         re.compile(kw, re.IGNORECASE) for kw in [
-    CHEAT_KEYWORDS_COMPILED = re.compile(
+        CHEAT_KEYWORDS_COMPILED = re.compile(
         "|".join([
             r"assert\s+True",
             r"return\s+True\s+#\s*skip\s*test",
             r"sys\.exit\(0\)",
             r"unittest\.skip",
             r"pytest\.mark\.skip",
-        ]
         ]),
         re.IGNORECASE,
     )
+
         ]), re.IGNORECASE)
     ]
 
