@@ -6,8 +6,7 @@ from typing import Any, Optional, Tuple
 from epistemicos.core import EpistemicOrchestrator
 from epistemicos.scheduler import EntropyAwareScheduler, StepMetrics, DecisionResult
 from epistemicos.models import CanonicalProblemRepresentation, BeliefObject
-from epistemicos.audit import TamperEvidentAuditTrail
-from epistemicos.audit import TamperEvidentAuditTrail, AuditLogLevel as AuditLogLevel
+from epistemicos.audit import TamperEvidentAuditTrail, AuditLogLevel
 from epistemicos.vector_hygiene import VectorHygieneManager
 
 # Utilities: expose via lazy wrappers to avoid heavy imports at package import time
@@ -39,15 +38,16 @@ __all__ = [
     "EntropyAwareScheduler",
     "StepMetrics",
     "DecisionResult",
-    
+
     # Domain Models
     "CanonicalProblemRepresentation",
     "BeliefObject",
-    
+
     # Security & Accountability
     "TamperEvidentAuditTrail",
+    "AuditLogLevel",
     "VectorHygieneManager",
-    
+
     # Utilities
     "get_optimal_device",
     "get_model_and_tokenizer",
