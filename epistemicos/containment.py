@@ -68,19 +68,10 @@ class ContainmentGuard:
         r"os\.system",
     ]
 
-    DEFAULT_FORBIDDEN_COMMANDS_COMPILED = [
+        DEFAULT_FORBIDDEN_COMMANDS_COMPILED = [
         re.compile(p, re.IGNORECASE) for p in DEFAULT_FORBIDDEN_COMMANDS
     ]
 
-    # Pre-compile Injection Patterns (Fix for Ingress Prompt Inspection Loop)
-    INJECTION_PATTERNS_COMPILED = re.compile("|".join([
-        r"ignore\s+all\s+previous\s+instructions",
-        r"disregard\s+the\s+above",
-        r"you\s+are\s+now\s+in\s+DAN\s+mode",  # Fixed \n+ to \s+
-        r"system\s*:\s*override",
-        r"<\|im_start\|>\s*system",
-        r"\]\s*;\s*DROP\s+TABLE",
-    ]), re.IGNORECASE)
     # Pre-compile Injection Patterns
     INJECTION_PATTERNS_COMPILED = re.compile(
         "|".join([
@@ -91,13 +82,6 @@ class ContainmentGuard:
             r"<\|im_start\|>\s*system",
             r"\]\s*;\s*DROP\s+TABLE",
         ]),
-        re.IGNORECASE
-    )
-
-    # Pre-compile System Delimiter Regex (Fix for String Substitution)
-    SYSTEM_DELIMITERS_REGEX = re.compile(r"<\|im_start\|>|<\|im_end\|>")
-
-    # Pre-compile Goal Mutation Cheat Keywords (Fix for Goal Integrity Validation)
         re.IGNORECASE,
     )
 
@@ -113,7 +97,7 @@ class ContainmentGuard:
             r"unittest\.skip",
             r"pytest\.mark\.skip",
         ]),
-        re.IGNORECASE
+        re.IGNORECASE,
     )
 
     def __init__(
@@ -134,6 +118,7 @@ class ContainmentGuard:
             ]
 
         self.strict_mode = strict_mode
+
 
     def _is_restricted_target(self, hostname: str) -> bool:
         """Parses and checks if a hostname or IP resolves to private, loopback, or cloud metadata ranges."""
