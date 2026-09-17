@@ -319,6 +319,54 @@ def test_cpr_serialize_empty():
     cpr = CanonicalProblemRepresentation(policy_id="POL-125")
     assert cpr.serialize_for_belief_kernel() == [0.0, 0.0, 0.0]
 
+
+def test_cpr_mask_egress_payload_default_redaction():
+    """Validates that default SENSITIVE_FIELDS and the 'scope' field are redacted."""
+    # Create a subclass to test arbitrary extra fields, as BaseModel might be strict
+    class ExtendedCPR(CanonicalProblemRepresentation):
+        account_number: str
+        ssn: str
+        safe_field: str
+
+    cpr = ExtendedCPR(
+        policy_id="POL-126",
+        account_number="123456789",
+        ssn="000-00-0000",
+        safe_field="non_sensitive_data"
+    )
+    masked = cpr.mask_egress_payload()
+
+    assert "account_number" not in masked
+    assert "ssn" not in masked
+    assert "scope" not in masked
+    assert masked.get("policy_id") == "POL-126"
+    assert masked.get("safe_field") == "non_sensitive_data"
+
+
+def test_cpr_mask_egress_payload_custom_redaction():
+    """Validates that custom redaction keys are also masked."""
+    class ExtendedCPR(CanonicalProblemRepresentation):
+        proprietary_cargo: str
+        custom_secret: str
+        another_field: str
+
+    cpr = ExtendedCPR(
+        policy_id="POL-127",
+        proprietary_cargo="diamonds",
+        custom_secret="do_not_share",
+        another_field="public_info"
+    )
+
+    custom_redactions = {"custom_secret"}
+    masked = cpr.mask_egress_payload(custom_redactions=custom_redactions)
+
+    assert "proprietary_cargo" not in masked  # default sensitive field
+    assert "custom_secret" not in masked      # custom redaction field
+    assert "scope" not in masked
+    assert masked.get("policy_id") == "POL-127"
+    assert masked.get("another_field") == "public_info"
+
+
 def test_token_surprisal_sensor_evaluate_integration_passed():
     """Validates the evaluate method using the real compute_z_scores when values pass."""
     sensor = TokenSurprisalSensor(z_threshold=2.85, window_size=10, std_floor=0.05)

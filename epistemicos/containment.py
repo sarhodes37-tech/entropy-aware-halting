@@ -81,6 +81,14 @@ class ContainmentGuard:
         r"<\|im_start\|>\s*system",
         r"\]\s*;\s*DROP\s+TABLE",
     ]), re.IGNORECASE)
+    INJECTION_PATTERNS_COMPILED = re.compile("|".join([
+        r"ignore\s+all\s+previous\s+instructions",
+        r"disregard\s+the\s+above",
+        r"you\s+are\s+now\s+in\s+DAN\s+mode",
+        r"system\s*:\s*override",
+        r"<\|im_start\|>\s*system",
+        r"\]\s*;\s*DROP\s+TABLE",
+    ]), re.IGNORECASE)
     INJECTION_PATTERNS_COMPILED = re.compile(
         "|".join([
             r"ignore\s+all\s+previous\s+instructions",
@@ -124,6 +132,7 @@ class ContainmentGuard:
                 *self.DEFAULT_FORBIDDEN_COMMANDS_COMPILED,
                 re.compile("|".join(custom_forbidden_commands), re.IGNORECASE)
             ]
+            )
 
         self.strict_mode = strict_mode
 
