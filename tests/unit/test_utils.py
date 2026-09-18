@@ -15,6 +15,14 @@ def test_get_optimal_device_fallback():
     assert device in ("cuda", "mps", "cpu")
 
 
+def test_get_optimal_device_import_error():
+    """Validates fallback to cpu when torch is not installed."""
+    import sys
+    with patch.dict(sys.modules, {'torch': None}):
+        device = get_optimal_device()
+        assert device == "cpu"
+
+
 @patch("transformers.AutoTokenizer.from_pretrained")
 @patch("transformers.AutoModelForCausalLM.from_pretrained")
 def test_get_model_and_tokenizer_mocked(mock_model, mock_tokenizer):

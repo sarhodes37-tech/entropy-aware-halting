@@ -82,33 +82,19 @@ class TamperEvidentAuditTrail:
                 buffer_size = 1024
                 lines = []
 
-                accumulated = []
-                while pointer > 0:
+                while pointer > 0 and len(lines) < 2:
                     read_size = min(buffer_size, pointer)
                     pointer -= read_size
                     f.seek(pointer)
                     chunk = f.read(read_size)
-                    accumulated.insert(0, chunk)
+                    lines = chunk.split(b"\n")
 
-                    # Check if we have at least one newline in our accumulated data
-                    current_data = b"".join(accumulated)
-                    lines = current_data.split(b"\n")
-
-                    # If we have more than one line, it means we've found a complete line
-                    if len(lines) > 1:
-                        # We iterate from the back, finding the first non-empty line
-                        for line in reversed(lines):
-                            line_str = line.strip().decode("utf-8")
-                            if line_str:
-                                try:
-                                    last_entry = json.loads(line_str)
-                                    self.last_hash = last_entry.get("entry_hash", self.genesis_hash)
-                                    return self.last_hash
-                                except json.JSONDecodeError:
-                                    continue # If it's not valid JSON, maybe it's a corrupted line, keep looking
-                        break
-
-
+                for line in reversed(lines):
+                    line_str = line.strip().decode("utf-8")
+                    if line_str:
+                        last_entry = json.loads(line_str)
+                        self.last_hash = last_entry.get("entry_hash", self.genesis_hash)
+                        return self.last_hash
         except Exception:
             pass
 

@@ -13,6 +13,7 @@ Components:
 - CryptoAttestationGate: Post-Quantum Attestation & OCSP Revocation
 """
 
+import json
 from abc import ABC, abstractmethod
 import re
 import time
@@ -173,14 +174,7 @@ class PermissionGate(Gate):
             re.IGNORECASE
         )
 
-    def evaluate(self, payload: Dict[str, Any], context: Dict[str, Any]) -> GateResult:
-        t0 = time.perf_counter()
-
-        scope = payload.get("scope", {}) or context.get("scope", {})
-        proposed_actions = context.get("proposed_actions", []) or payload.get("proposed_actions", [])
-        llm_output = context.get("llm_output") or payload.get("llm_output")
-
-        # 1. Enforce Pydantic Contract Model validation on LLM output if provided
+    def _enforce_contract_model(self, llm_output: Any, t0: float) -> Optional[GateResult]:
         if self.contract_model is not None and llm_output is not None:
             try:
                 if isinstance(llm_output, dict):
@@ -197,8 +191,9 @@ class PermissionGate(Gate):
                     confidence=0.0,
                     vectors_revoked=1
                 )
+        return None
 
-        # 2. Validate explicit scope boundaries if specified
+    def _validate_scope_boundaries(self, scope: Dict[str, Any], proposed_actions: List[Any], t0: float) -> Optional[GateResult]:
         allowed_ops = scope.get("allowed_operations")
         allowed_res = scope.get("allowed_resources")
 
@@ -236,8 +231,9 @@ class PermissionGate(Gate):
                         reason=f"Operation '{op}' not in gate allowed_actions",
                         confidence=0.0
                     )
+        return None
 
-        # 3. Check RMM quarantine rules
+    def _check_rmm_quarantine(self, scope: Dict[str, Any], proposed_actions: List[Any], t0: float) -> Optional[GateResult]:
         if scope.get("is_rmm_origin", False):
             for action in proposed_actions:
                 op = action.get("op") if isinstance(action, dict) else getattr(action, "op", None)
@@ -250,8 +246,9 @@ class PermissionGate(Gate):
                         reason="Downstream Scope Lock: State-mutating action prohibited from RMM quarantine subnet.",
                         confidence=0.0
                     )
+        return None
 
-        # 4. Deep Regex inspection for injections/jailbreaks
+    def _deep_regex_inspection(self, payload: Dict[str, Any], proposed_actions: List[Any], llm_output: Any, t0: float) -> Optional[GateResult]:
         if (self.injection_regex.search(str(payload)) or
             self.injection_regex.search(str(proposed_actions)) or
             self.injection_regex.search(str(llm_output))):
@@ -264,6 +261,34 @@ class PermissionGate(Gate):
                 confidence=0.0,
                 vectors_revoked=1
             )
+        return None
+
+    def evaluate(self, payload: Dict[str, Any], context: Dict[str, Any]) -> GateResult:
+        t0 = time.perf_counter()
+
+        scope = payload.get("scope", {}) or context.get("scope", {})
+        proposed_actions = context.get("proposed_actions", []) or payload.get("proposed_actions", [])
+        llm_output = context.get("llm_output") or payload.get("llm_output")
+
+        # 1. Enforce Pydantic Contract Model validation on LLM output if provided
+        contract_result = self._enforce_contract_model(llm_output, t0)
+        if contract_result:
+            return contract_result
+
+        # 2. Validate explicit scope boundaries if specified
+        scope_result = self._validate_scope_boundaries(scope, proposed_actions, t0)
+        if scope_result:
+            return scope_result
+
+        # 3. Check RMM quarantine rules
+        rmm_result = self._check_rmm_quarantine(scope, proposed_actions, t0)
+        if rmm_result:
+            return rmm_result
+
+        # 4. Deep Regex inspection for injections/jailbreaks
+        regex_result = self._deep_regex_inspection(payload, proposed_actions, llm_output, t0)
+        if regex_result:
+            return regex_result
 
         return GateResult(
             action=GateAction.ALLOW,

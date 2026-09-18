@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field, model_validator
 # MEMORY PROFILING UTILITIES
 # ==========================================
 
+SCALAR_TYPES = frozenset({str, int, float, bool, type(None)})
 SCALAR_TYPES = (int, float, str, bytes, bytearray, bool, type(None))
 
 
@@ -46,12 +47,14 @@ def _estimate_payload_size(obj: Any, seen: Optional[Set[int]] = None) -> int:
             k_id = id(k)
             if k_id not in seen:
                 size += sys.getsizeof(k) if type(k) in SCALAR_TYPES else _estimate_payload_size(k, seen)
+                seen.add(k_id)
                 if type(k) not in SCALAR_TYPES:
                     seen.add(k_id)
 
             v_id = id(v)
             if v_id not in seen:
                 size += sys.getsizeof(v) if type(v) in SCALAR_TYPES else _estimate_payload_size(v, seen)
+                seen.add(v_id)
                 if type(v) not in SCALAR_TYPES:
                     seen.add(v_id)
     elif isinstance(obj, (list, tuple, set, frozenset)):
@@ -59,6 +62,8 @@ def _estimate_payload_size(obj: Any, seen: Optional[Set[int]] = None) -> int:
             item_id = id(item)
             if item_id not in seen:
                 size += sys.getsizeof(item) if type(item) in SCALAR_TYPES else _estimate_payload_size(item, seen)
+                seen.add(item_id)
+    
                 if type(item) not in SCALAR_TYPES:
                     seen.add(item_id)
 

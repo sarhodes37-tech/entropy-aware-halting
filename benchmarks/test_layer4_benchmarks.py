@@ -3,7 +3,6 @@ Layer 4 Benchmark Suite: Adversarial Prompt Injection, Coercion, and Jailbreak D
 Tests Defense-in-Depth against high-entropy prompt confusion and low-entropy schema violations.
 """
 
-import pytest
 from pydantic import BaseModel, Field
 from epistemicos.core import EpistemicOrchestrator
 from epistemicos.gates import EntropyGate, PermissionGate
