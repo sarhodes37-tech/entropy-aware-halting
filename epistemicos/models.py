@@ -19,6 +19,9 @@ from pydantic import BaseModel, Field, model_validator
 # MEMORY PROFILING UTILITIES
 # ==========================================
 
+SCALAR_TYPES = (int, float, str, bytes, bytearray, bool, type(None))
+
+
 def _estimate_payload_size(obj: Any, seen: Optional[Set[int]] = None) -> int:
     """
     Recursively estimates memory footprint of nested structures 
@@ -26,18 +29,39 @@ def _estimate_payload_size(obj: Any, seen: Optional[Set[int]] = None) -> int:
     """
     if seen is None:
         seen = set()
-    
+
+    # Scalars are counted by size directly without ID tracking
+    # to avoid collapsing shared small-int or interned singletons.
+    if type(obj) in SCALAR_TYPES:
+        return sys.getsizeof(obj)
+
     obj_id = id(obj)
     if obj_id in seen:
         return 0
     seen.add(obj_id)
-    
+
     size = sys.getsizeof(obj)
     if isinstance(obj, dict):
-        size += sum(_estimate_payload_size(k, seen) + _estimate_payload_size(v, seen) for k, v in obj.items())
+        for k, v in obj.items():
+            k_id = id(k)
+            if k_id not in seen:
+                size += sys.getsizeof(k) if type(k) in SCALAR_TYPES else _estimate_payload_size(k, seen)
+                if type(k) not in SCALAR_TYPES:
+                    seen.add(k_id)
+
+            v_id = id(v)
+            if v_id not in seen:
+                size += sys.getsizeof(v) if type(v) in SCALAR_TYPES else _estimate_payload_size(v, seen)
+                if type(v) not in SCALAR_TYPES:
+                    seen.add(v_id)
     elif isinstance(obj, (list, tuple, set, frozenset)):
-        size += sum(_estimate_payload_size(item, seen) for item in obj)
-    
+        for item in obj:
+            item_id = id(item)
+            if item_id not in seen:
+                size += sys.getsizeof(item) if type(item) in SCALAR_TYPES else _estimate_payload_size(item, seen)
+                if type(item) not in SCALAR_TYPES:
+                    seen.add(item_id)
+
     return size
 
 
@@ -238,15 +262,15 @@ class PermissionScope(BaseModel):
         # Replaced inefficient string serialization with recursive size estimation
         if _estimate_payload_size(response_payload) > self.max_payload_bytes: 
             return False
-            
+
         def count_max_records(data: Any) -> int:
             if isinstance(data, list): return max(len(data), max((count_max_records(item) for item in data), default=0))
             elif isinstance(data, dict): return max(len(data.keys()), max((count_max_records(val) for val in data.values()), default=0))
             return 0
-            
+
         if count_max_records(response_payload) > self.max_row_count: 
             return False
-            
+
         return True
 
 
