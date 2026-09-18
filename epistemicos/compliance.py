@@ -118,12 +118,18 @@ class TransactionalComplianceBroker:
             if not is_safe:
                 raise ValueError(f"Path traversal detected: '{file_path}' resolves outside allowed base directory.")
 
-            if os.path.exists(target_path):
-                with open(target_path, "r") as f:
-                    lines = f.readlines()
-
-                with open(target_path, "w") as f:
-                    for line in lines:
-                        f.write(line.replace(transaction_id, "[REDACTED]"))
+            try:
+                fd = os.open(target_path, os.O_RDWR | os.O_NOFOLLOW)
+                try:
+                    with open(fd, "r+", closefd=False) as f:
+                        lines = f.readlines()
+                        f.seek(0)
+                        f.truncate(0)
+                        for line in lines:
+                            f.write(line.replace(transaction_id, "[REDACTED]"))
+                finally:
+                    os.close(fd)
+            except OSError:
+                pass
 
         return deleted_from_store, anchored_hash
