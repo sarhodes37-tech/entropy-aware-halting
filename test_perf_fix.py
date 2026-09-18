@@ -36,28 +36,27 @@ def benchmark():
         with open(log_path, "rb") as f:
             f.seek(0, os.SEEK_END)
             pointer = f.tell()
-            buffer_size = 1024
+            buffer_size = 65536
 
             # Efficient backwards file read for last non-empty line
             accumulated = []
-            last_line = b""
+            newline_count = 0
 
-            lines = []
-            while pointer > 0 and len(lines) < 2:
+            while pointer > 0 and newline_count < 2:
                 read_size = min(buffer_size, pointer)
                 pointer -= read_size
                 f.seek(pointer)
                 chunk = f.read(read_size)
-                if accumulated:
-                    accumulated.insert(0, chunk)
-                else:
-                    accumulated = [chunk]
-                lines = b"".join(accumulated).split(b"\n")
+                accumulated.append(chunk)
+                newline_count += chunk.count(b"\n")
 
-            for line in reversed(lines):
-                if line.strip():
-                    last_line = line
-                    break
+            last_line = b""
+            if accumulated:
+                lines = b"".join(reversed(accumulated)).split(b"\n")
+                for line in reversed(lines):
+                    if line.strip():
+                        last_line = line
+                        break
 
     end = time.time()
     print(f"Time taken (fixed skeleton): {end - start:.4f}s")
