@@ -19,8 +19,7 @@ from pydantic import BaseModel, Field, model_validator
 # MEMORY PROFILING UTILITIES
 # ==========================================
 
-SCALAR_TYPES = frozenset({str, int, float, bool, type(None)})
-SCALAR_TYPES = (int, float, str, bytes, bytearray, bool, type(None))
+SCALAR_TYPES = frozenset({str, int, float, bool, type(None), bytes, bytearray})
 
 
 def _estimate_payload_size(obj: Any, seen: Optional[Set[int]] = None) -> int:
@@ -46,25 +45,27 @@ def _estimate_payload_size(obj: Any, seen: Optional[Set[int]] = None) -> int:
         for k, v in obj.items():
             k_id = id(k)
             if k_id not in seen:
-                size += sys.getsizeof(k) if type(k) in SCALAR_TYPES else _estimate_payload_size(k, seen)
-                seen.add(k_id)
-                if type(k) not in SCALAR_TYPES:
+                if type(k) in SCALAR_TYPES:
+                    size += sys.getsizeof(k)
+                else:
+                    size += _estimate_payload_size(k, seen)
                     seen.add(k_id)
 
             v_id = id(v)
             if v_id not in seen:
-                size += sys.getsizeof(v) if type(v) in SCALAR_TYPES else _estimate_payload_size(v, seen)
-                seen.add(v_id)
-                if type(v) not in SCALAR_TYPES:
+                if type(v) in SCALAR_TYPES:
+                    size += sys.getsizeof(v)
+                else:
+                    size += _estimate_payload_size(v, seen)
                     seen.add(v_id)
     elif isinstance(obj, (list, tuple, set, frozenset)):
         for item in obj:
             item_id = id(item)
             if item_id not in seen:
-                size += sys.getsizeof(item) if type(item) in SCALAR_TYPES else _estimate_payload_size(item, seen)
-                seen.add(item_id)
-    
-                if type(item) not in SCALAR_TYPES:
+                if type(item) in SCALAR_TYPES:
+                    size += sys.getsizeof(item)
+                else:
+                    size += _estimate_payload_size(item, seen)
                     seen.add(item_id)
 
     return size
