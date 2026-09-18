@@ -19,6 +19,8 @@ from pydantic import BaseModel, Field, model_validator
 # MEMORY PROFILING UTILITIES
 # ==========================================
 
+SCALAR_TYPES = frozenset({str, int, float, bool, type(None)})
+
 def _estimate_payload_size(obj: Any, seen: Optional[Set[int]] = None) -> int:
     """
     Recursively estimates memory footprint of nested structures 
@@ -35,11 +37,21 @@ def _estimate_payload_size(obj: Any, seen: Optional[Set[int]] = None) -> int:
     size = sys.getsizeof(obj)
     if isinstance(obj, dict):
         for k, v in obj.items():
-            size += _estimate_payload_size(k, seen)
-            size += _estimate_payload_size(v, seen)
+            k_id = id(k)
+            if k_id not in seen:
+                size += sys.getsizeof(k) if type(k) in SCALAR_TYPES else _estimate_payload_size(k, seen)
+                seen.add(k_id)
+
+            v_id = id(v)
+            if v_id not in seen:
+                size += sys.getsizeof(v) if type(v) in SCALAR_TYPES else _estimate_payload_size(v, seen)
+                seen.add(v_id)
     elif isinstance(obj, (list, tuple, set, frozenset)):
         for item in obj:
-            size += _estimate_payload_size(item, seen)
+            item_id = id(item)
+            if item_id not in seen:
+                size += sys.getsizeof(item) if type(item) in SCALAR_TYPES else _estimate_payload_size(item, seen)
+                seen.add(item_id)
     
     return size
 
