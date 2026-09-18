@@ -34,12 +34,9 @@ def _estimate_payload_size(obj: Any, seen: Optional[Set[int]] = None) -> int:
     
     size = sys.getsizeof(obj)
     if isinstance(obj, dict):
-        for k, v in obj.items():
-            size += _estimate_payload_size(k, seen)
-            size += _estimate_payload_size(v, seen)
+        size += sum(_estimate_payload_size(k, seen) + _estimate_payload_size(v, seen) for k, v in obj.items())
     elif isinstance(obj, (list, tuple, set, frozenset)):
-        for item in obj:
-            size += _estimate_payload_size(item, seen)
+        size += sum(_estimate_payload_size(item, seen) for item in obj)
     
     return size
 
