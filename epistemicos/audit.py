@@ -84,6 +84,9 @@ class TamperEvidentAuditTrail:
                 newline_count = 0
 
                 while pointer > 0 and newline_count < 2:
+                accumulated = []
+
+                while pointer > 0:
                     read_size = min(buffer_size, pointer)
                     pointer -= read_size
                     f.seek(pointer)
@@ -95,6 +98,14 @@ class TamperEvidentAuditTrail:
                     chunks.reverse()
                     data = b"".join(chunks)
                     lines = data.split(b"\n")
+                    accumulated.append(chunk)
+
+                    if chunk.count(b'\n') >= 2:
+                        break
+
+                if accumulated:
+                    combined = b"".join(reversed(accumulated))
+                    lines = combined.split(b"\n")
 
                     for line in reversed(lines):
                         line_str = line.strip().decode("utf-8")
@@ -102,6 +113,12 @@ class TamperEvidentAuditTrail:
                             last_entry = json.loads(line_str)
                             self.last_hash = last_entry.get("entry_hash", self.genesis_hash)
                             return self.last_hash
+                            try:
+                                last_entry = json.loads(line_str)
+                                self.last_hash = last_entry.get("entry_hash", self.genesis_hash)
+                                return self.last_hash
+                            except json.JSONDecodeError:
+                                continue
         except Exception:
             pass
 
