@@ -79,22 +79,32 @@ class TamperEvidentAuditTrail:
             with open(self.log_path, "rb") as f:
                 f.seek(0, os.SEEK_END)
                 pointer = f.tell()
-                buffer_size = 1024
-                lines = []
+                buffer_size = 65536
+                accumulated = []
 
-                while pointer > 0 and len(lines) < 2:
+                while pointer > 0:
                     read_size = min(buffer_size, pointer)
                     pointer -= read_size
                     f.seek(pointer)
                     chunk = f.read(read_size)
-                    lines = chunk.split(b"\n")
+                    accumulated.append(chunk)
 
-                for line in reversed(lines):
-                    line_str = line.strip().decode("utf-8")
-                    if line_str:
-                        last_entry = json.loads(line_str)
-                        self.last_hash = last_entry.get("entry_hash", self.genesis_hash)
-                        return self.last_hash
+                    if chunk.count(b'\n') >= 2:
+                        break
+
+                if accumulated:
+                    combined = b"".join(reversed(accumulated))
+                    lines = combined.split(b"\n")
+
+                    for line in reversed(lines):
+                        line_str = line.strip().decode("utf-8")
+                        if line_str:
+                            try:
+                                last_entry = json.loads(line_str)
+                                self.last_hash = last_entry.get("entry_hash", self.genesis_hash)
+                                return self.last_hash
+                            except json.JSONDecodeError:
+                                continue
         except Exception:
             pass
 
