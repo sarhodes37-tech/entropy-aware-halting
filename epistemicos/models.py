@@ -43,28 +43,28 @@ def _estimate_payload_size(obj: Any, seen: Optional[Set[int]] = None) -> int:
     size = sys.getsizeof(obj)
     if isinstance(obj, dict):
         for k, v in obj.items():
-            k_id = id(k)
-            if k_id not in seen:
-                if type(k) in SCALAR_TYPES:
-                    size += sys.getsizeof(k)
-                else:
+            if type(k) in SCALAR_TYPES:
+                size += sys.getsizeof(k)
+            else:
+                k_id = id(k)
+                if k_id not in seen:
                     size += _estimate_payload_size(k, seen)
                     seen.add(k_id)
 
-            v_id = id(v)
-            if v_id not in seen:
-                if type(v) in SCALAR_TYPES:
-                    size += sys.getsizeof(v)
-                else:
+            if type(v) in SCALAR_TYPES:
+                size += sys.getsizeof(v)
+            else:
+                v_id = id(v)
+                if v_id not in seen:
                     size += _estimate_payload_size(v, seen)
                     seen.add(v_id)
     elif isinstance(obj, (list, tuple, set, frozenset)):
         for item in obj:
-            item_id = id(item)
-            if item_id not in seen:
-                if type(item) in SCALAR_TYPES:
-                    size += sys.getsizeof(item)
-                else:
+            if type(item) in SCALAR_TYPES:
+                size += sys.getsizeof(item)
+            else:
+                item_id = id(item)
+                if item_id not in seen:
                     size += _estimate_payload_size(item, seen)
                     seen.add(item_id)
 
