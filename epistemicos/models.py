@@ -30,9 +30,11 @@ def _estimate_payload_size(obj: Any, seen: Optional[Set[int]] = None) -> int:
     if seen is None:
         seen = set()
 
+    obj_type = type(obj)
+
     # Scalars are counted by size directly without ID tracking
     # to avoid collapsing shared small-int or interned singletons.
-    if type(obj) in SCALAR_TYPES:
+    if obj_type in SCALAR_TYPES:
         return sys.getsizeof(obj)
 
     obj_id = id(obj)
@@ -41,18 +43,21 @@ def _estimate_payload_size(obj: Any, seen: Optional[Set[int]] = None) -> int:
     seen.add(obj_id)
 
     size = sys.getsizeof(obj)
+    getsizeof = sys.getsizeof
+    scalar_types = SCALAR_TYPES
+
     if isinstance(obj, dict):
         for k, v in obj.items():
-            if type(k) in SCALAR_TYPES:
-                size += sys.getsizeof(k)
+            if type(k) in scalar_types:
+                size += getsizeof(k)
             else:
                 k_id = id(k)
                 if k_id not in seen:
                     size += _estimate_payload_size(k, seen)
                     seen.add(k_id)
 
-            if type(v) in SCALAR_TYPES:
-                size += sys.getsizeof(v)
+            if type(v) in scalar_types:
+                size += getsizeof(v)
             else:
                 v_id = id(v)
                 if v_id not in seen:
@@ -60,8 +65,8 @@ def _estimate_payload_size(obj: Any, seen: Optional[Set[int]] = None) -> int:
                     seen.add(v_id)
     elif isinstance(obj, (list, tuple, set, frozenset)):
         for item in obj:
-            if type(item) in SCALAR_TYPES:
-                size += sys.getsizeof(item)
+            if type(item) in scalar_types:
+                size += getsizeof(item)
             else:
                 item_id = id(item)
                 if item_id not in seen:
