@@ -7,7 +7,7 @@ defense-in-depth pipeline.
 """
 import json
 import uuid
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Tuple
 
 from epistemicos.models import CanonicalProblemRepresentation
 from epistemicos.telemetry import ResourceProfiler
@@ -76,24 +76,11 @@ class EpistemicOrchestrator:
         return decision
 
       
-    def process_submission(
-        self, 
-        raw_payload: Dict[str, Any], 
-        context: Dict[str, Any],
-        trajectory_id: Optional[str] = None,
-        **kwargs  # Absorb legacy kwargs like 'likelihoods' from older tests
-    ) -> Dict[str, Any]:
-        """
-        Ingests a raw payload, evaluates it across governance gates, 
-        and immutably logs the outcome. Automatically handles vector rollbacks 
-        if a trajectory is halted.
-        """
-        # Assign a trajectory ID for vector tracking if one isn't provided
-        traj_id = trajectory_id or str(uuid.uuid4())
-
+    def _validate_and_normalize(self, raw_payload: Dict[str, Any]) -> Tuple[Optional[CanonicalProblemRepresentation], Optional[Dict[str, Any]]]:
         # 1. Normalize into the Domain Model
         try:
             cpr = CanonicalProblemRepresentation(**raw_payload)
+            return cpr, None
         except Exception as e:
             # Mask sensitive fields to prevent raw data exposure in the audit log
             if isinstance(raw_payload, dict):
@@ -118,11 +105,11 @@ class EpistemicOrchestrator:
                 model_id=self.model_id,
                 payload_snippet=json.dumps(masked_payload)
             ))
-            return {"status": "HALTED", "reason": "Schema validation failed"}
+            return None, {"status": "HALTED", "reason": "Schema validation failed"}
 
+    def _execute_pipeline(self, cpr: CanonicalProblemRepresentation, raw_payload: Dict[str, Any], context: Dict[str, Any], traj_id: str) -> Dict[str, Any]:
         # 2. Execute Defense-in-Depth Pipeline under Telemetry
         with ResourceProfiler(device="cuda", token_count=context.get("token_count", 1)) as profiler:
-
             # Wrap execution in the vector hygiene scope to catch runtime crashes
             with self.vector_manager.trajectory_scope(traj_id):
                 payload_dump = cpr.model_dump()
@@ -133,10 +120,8 @@ class EpistemicOrchestrator:
                     if result.action == GateAction.HALT:
                         # 3a. Pipeline Halt: Veto triggers audit log AND vector revocation
                         telemetry = profiler.get_telemetry()
-
                         # Explicitly revoke vectors before returning
                         revoked_ids = self.vector_manager.revoke_trajectory(traj_id)
-                        
                         # Fallback to the gate's revocation count if the vector manager is mocked/empty
                         actual_revoked_count = max(len(revoked_ids), getattr(result, "vectors_revoked", 0))
 
@@ -174,3 +159,25 @@ class EpistemicOrchestrator:
                 "telemetry": telemetry.__dict__,
                 "trajectory_id": traj_id
             }
+
+    def process_submission(
+        self,
+        raw_payload: Dict[str, Any],
+        context: Dict[str, Any],
+        trajectory_id: Optional[str] = None,
+        **kwargs  # Absorb legacy kwargs like 'likelihoods' from older tests
+    ) -> Dict[str, Any]:
+        """
+        Ingests a raw payload, evaluates it across governance gates,
+        and immutably logs the outcome. Automatically handles vector rollbacks
+        if a trajectory is halted.
+        """
+        # Assign a trajectory ID for vector tracking if one isn't provided
+        traj_id = trajectory_id or str(uuid.uuid4())
+
+        cpr, error_response = self._validate_and_normalize(raw_payload)
+        if error_response:
+            return error_response
+
+        # cpr cannot be None at this point
+        return self._execute_pipeline(cpr, raw_payload, context, traj_id)  # type: ignore[arg-type]
