@@ -275,9 +275,22 @@ class PermissionScope(BaseModel):
             return False
 
         def count_max_records(data: Any) -> int:
-            if isinstance(data, list): return max(len(data), max((count_max_records(item) for item in data), default=0))
-            elif isinstance(data, dict): return max(len(data.keys()), max((count_max_records(val) for val in data.values()), default=0))
-            return 0
+            # Replaced recursive generator expressions with an iterative stack-based DFS
+            # algorithm. This prevents RecursionError on deeply nested payloads and
+            # reduces iteration overhead for improved execution speed.
+            max_records = 0
+            stack = [data]
+            while stack:
+                current = stack.pop()
+                if isinstance(current, list):
+                    if len(current) > max_records:
+                        max_records = len(current)
+                    stack.extend(current)
+                elif isinstance(current, dict):
+                    if len(current) > max_records:
+                        max_records = len(current)
+                    stack.extend(current.values())
+            return max_records
 
         if count_max_records(response_payload) > self.max_row_count: 
             return False
