@@ -77,8 +77,6 @@ class ContainmentGuard:
         ]),
         re.IGNORECASE,
     )
-        ]), re.IGNORECASE)
-    ]
 
     # Pre-compile System Delimiter Regex (Fix for String Substitution)
     SYSTEM_DELIMITERS_REGEX = re.compile(r"<\|im_start\|>|<\|im_end\|>")
@@ -94,8 +92,6 @@ class ContainmentGuard:
         ]),
         re.IGNORECASE,
     )
-        ]), re.IGNORECASE)
-    ]
 
     def __init__(
         self,
@@ -109,12 +105,10 @@ class ContainmentGuard:
         self.forbidden_commands_compiled = list(self.DEFAULT_FORBIDDEN_COMMANDS_COMPILED)
 
 
-        self.forbidden_commands_compiled = list(self.DEFAULT_FORBIDDEN_COMMANDS_COMPILED)
         if custom_forbidden_commands:
             self.forbidden_commands_compiled = [
                 *self.DEFAULT_FORBIDDEN_COMMANDS_COMPILED,
                 re.compile("|".join(custom_forbidden_commands), re.IGNORECASE)
-            )
             ]
         else:
             self.forbidden_commands_compiled = list(self.DEFAULT_FORBIDDEN_COMMANDS_COMPILED)
@@ -173,14 +167,6 @@ class ContainmentGuard:
                 violation_type=ContainmentViolationType.PROMPT_INJECTION_DETECTED,
                 reason=f"Detected restricted prompt manipulation pattern: '{match.group(0)}'",
             )
-        for pattern in self.INJECTION_PATTERNS_COMPILED:
-            match = pattern.search(cleaned_prompt)
-            if match:
-                return ContainmentReceipt(
-                    passed=False,
-                    violation_type=ContainmentViolationType.PROMPT_INJECTION_DETECTED,
-                    reason=f"Detected restricted prompt manipulation pattern: '{match.group(0)}'",
-                )
 
         # Sanitize raw system delimiters if injected into user prompt
         sanitized = self.SYSTEM_DELIMITERS_REGEX.sub("", cleaned_prompt)
@@ -293,8 +279,6 @@ class ContainmentGuard:
     def inspect_tool_command(self, code_or_command: str) -> ContainmentReceipt:
         """Inspects generated code or shell execution commands for OS-level escape attempts."""
         for pattern in self.forbidden_commands_compiled:
-            match = pattern.search(code_or_command)
-            if match:
             if match := pattern.search(code_or_command):
                 return ContainmentReceipt(
                     passed=False,
