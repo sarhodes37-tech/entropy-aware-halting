@@ -19,9 +19,6 @@ from pydantic import BaseModel, Field, model_validator
 # MEMORY PROFILING UTILITIES
 # ==========================================
 
-SCALAR_TYPES = frozenset({str, int, float, bool, type(None), bytes, bytearray})
-
-
 def _estimate_payload_size(obj: Any, seen: Optional[Set[int]] = None) -> int:
     """
     Recursively estimates memory footprint of nested structures 
@@ -30,48 +27,16 @@ def _estimate_payload_size(obj: Any, seen: Optional[Set[int]] = None) -> int:
     if seen is None:
         seen = set()
 
-    obj_type = type(obj)
-
-    # Scalars are counted by size directly without ID tracking
-    # to avoid collapsing shared small-int or interned singletons.
-    if obj_type in SCALAR_TYPES:
-        return sys.getsizeof(obj)
-
     obj_id = id(obj)
     if obj_id in seen:
         return 0
     seen.add(obj_id)
 
     size = sys.getsizeof(obj)
-    getsizeof = sys.getsizeof
-    scalar_types = SCALAR_TYPES
-
     if isinstance(obj, dict):
-        for k, v in obj.items():
-            if type(k) in scalar_types:
-                size += getsizeof(k)
-            else:
-                k_id = id(k)
-                if k_id not in seen:
-                    size += _estimate_payload_size(k, seen)
-                    seen.add(k_id)
-
-            if type(v) in scalar_types:
-                size += getsizeof(v)
-            else:
-                v_id = id(v)
-                if v_id not in seen:
-                    size += _estimate_payload_size(v, seen)
-                    seen.add(v_id)
+        size += sum(_estimate_payload_size(k, seen) + _estimate_payload_size(v, seen) for k, v in obj.items())
     elif isinstance(obj, (list, tuple, set, frozenset)):
-        for item in obj:
-            if type(item) in scalar_types:
-                size += getsizeof(item)
-            else:
-                item_id = id(item)
-                if item_id not in seen:
-                    size += _estimate_payload_size(item, seen)
-                    seen.add(item_id)
+        size += sum(_estimate_payload_size(item, seen) for item in obj)
 
     return size
 
@@ -275,22 +240,9 @@ class PermissionScope(BaseModel):
             return False
 
         def count_max_records(data: Any) -> int:
-            # Replaced recursive generator expressions with an iterative stack-based DFS
-            # algorithm. This prevents RecursionError on deeply nested payloads and
-            # reduces iteration overhead for improved execution speed.
-            max_records = 0
-            stack = [data]
-            while stack:
-                current = stack.pop()
-                if isinstance(current, list):
-                    if len(current) > max_records:
-                        max_records = len(current)
-                    stack.extend(current)
-                elif isinstance(current, dict):
-                    if len(current) > max_records:
-                        max_records = len(current)
-                    stack.extend(current.values())
-            return max_records
+            if isinstance(data, list): return max(len(data), max((count_max_records(item) for item in data), default=0))
+            elif isinstance(data, dict): return max(len(data.keys()), max((count_max_records(val) for val in data.values()), default=0))
+            return 0
 
         if count_max_records(response_payload) > self.max_row_count: 
             return False
