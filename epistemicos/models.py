@@ -124,7 +124,7 @@ class TokenSurprisalSensor:
         return z_scores
 
     def evaluate(self, logprobs: List[float]) -> Dict[str, Any]:
-        """Evaluates token surprisal z-scores and flags anomalies."""
+        """Evaluates token surprisal z-scores."""
         z_scores = self.compute_z_scores(logprobs)
         flagged_count = sum(1 for z in z_scores if z > self.z_threshold)
         max_z = float(max(z_scores)) if z_scores else 0.0
