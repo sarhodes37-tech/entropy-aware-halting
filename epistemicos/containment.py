@@ -69,7 +69,7 @@ class ContainmentGuard:
     ]
 
     DEFAULT_FORBIDDEN_COMMANDS_COMPILED = [
-        re.compile(p, re.IGNORECASE) for p in DEFAULT_FORBIDDEN_COMMANDS
+        re.compile("|".join(DEFAULT_FORBIDDEN_COMMANDS), re.IGNORECASE)
     ]
 
     # Pre-compile Injection Patterns
@@ -269,7 +269,7 @@ class ContainmentGuard:
                 return ContainmentReceipt(
                     passed=False,
                     violation_type=ContainmentViolationType.FORBIDDEN_COMMAND_EXECUTION,
-                    reason=f"Command execution blocked: Contains restricted OS-level directive matching '{pattern.pattern}'.",
+                    reason=f"Command execution blocked: Contains restricted OS-level directive matching '{match.group(0)}'.",
                 )
 
         return ContainmentReceipt(passed=True)
