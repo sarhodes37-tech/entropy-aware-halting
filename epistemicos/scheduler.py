@@ -152,8 +152,7 @@ class EntropyAwareScheduler:
         elif (step_index >= self.minimum_steps_before_convergence and H < self.confidence_threshold and utility_gain < self.utility_epsilon):
             directive = "OPTIMAL_CONVERGENCE"
         elif len(self.history) >= self.stagnation_window:
-            recent = [abs(x.delta_h) for x in self.history[-self.stagnation_window:]]
-            if all(x < self.entropy_delta_threshold for x in recent):
+            if all(abs(x.delta_h) < self.entropy_delta_threshold for x in self.history[-self.stagnation_window:]):
                 directive = "IRREDUCIBLE_UNCERTAINTY"
 
         loss_avoided = 0
