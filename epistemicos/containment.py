@@ -198,8 +198,7 @@ class ContainmentGuard:
             if '#' in decoded_netloc:
                 return ""
 
-            for ws in string.whitespace:
-                decoded_netloc = decoded_netloc.replace(ws, '')
+            decoded_netloc = ''.join(decoded_netloc.split())
 
             if '@' in decoded_netloc:
                 host_port = decoded_netloc.rsplit('@', 1)[-1]
