@@ -130,7 +130,7 @@ class EpistemicOrchestrator:
                             gate_name=result.gate_name,
                             reason=f"{result.reason} | Vectors Revoked: {actual_revoked_count}",
                             model_id=self.model_id,
-                            payload_snippet=json.dumps(raw_payload),
+                            payload_snippet=json.dumps(cpr.mask_egress_payload()),
                             cpr_snapshot=cpr,
                             telemetry=telemetry
                         ))
@@ -148,7 +148,7 @@ class EpistemicOrchestrator:
                 gate_name="Pipeline_Complete",
                 reason="All governance gates passed",
                 model_id=self.model_id,
-                payload_snippet=json.dumps(raw_payload),
+                payload_snippet=json.dumps(cpr.mask_egress_payload()),
                 cpr_snapshot=cpr,
                 telemetry=telemetry
             ))

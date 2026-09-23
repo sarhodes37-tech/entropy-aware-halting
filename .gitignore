@@ -17,3 +17,4 @@ env/
 audit_ledger.json
 results/
 *.log
+logs/audit.jsonl
