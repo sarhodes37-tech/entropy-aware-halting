@@ -22,6 +22,46 @@ from pydantic import BaseModel, Field, model_validator
 SCALAR_TYPES = frozenset({str, int, float, bool, type(None), bytes, bytearray})
 
 
+def _estimate_dict_size(obj: dict, seen: Set[int]) -> int:
+    size = 0
+    getsizeof = sys.getsizeof
+    scalar_types = SCALAR_TYPES
+    add_seen = seen.add
+
+    for k, v in obj.items():
+        if type(k) in scalar_types:
+            size += getsizeof(k)
+        else:
+            k_id = id(k)
+            if k_id not in seen:
+                size += _estimate_payload_size(k, seen)
+                add_seen(k_id)
+
+        if type(v) in scalar_types:
+            size += getsizeof(v)
+        else:
+            v_id = id(v)
+            if v_id not in seen:
+                size += _estimate_payload_size(v, seen)
+                add_seen(v_id)
+    return size
+
+def _estimate_iterable_size(obj: Any, seen: Set[int]) -> int:
+    size = 0
+    getsizeof = sys.getsizeof
+    scalar_types = SCALAR_TYPES
+    add_seen = seen.add
+
+    for item in obj:
+        if type(item) in scalar_types:
+            size += getsizeof(item)
+        else:
+            item_id = id(item)
+            if item_id not in seen:
+                size += _estimate_payload_size(item, seen)
+                add_seen(item_id)
+    return size
+
 def _estimate_payload_size(obj: Any, seen: Optional[Set[int]] = None) -> int:
     """
     Recursively estimates memory footprint of nested structures 
@@ -43,35 +83,11 @@ def _estimate_payload_size(obj: Any, seen: Optional[Set[int]] = None) -> int:
     seen.add(obj_id)
 
     size = sys.getsizeof(obj)
-    getsizeof = sys.getsizeof
-    scalar_types = SCALAR_TYPES
 
     if isinstance(obj, dict):
-        for k, v in obj.items():
-            if type(k) in scalar_types:
-                size += getsizeof(k)
-            else:
-                k_id = id(k)
-                if k_id not in seen:
-                    size += _estimate_payload_size(k, seen)
-                    seen.add(k_id)
-
-            if type(v) in scalar_types:
-                size += getsizeof(v)
-            else:
-                v_id = id(v)
-                if v_id not in seen:
-                    size += _estimate_payload_size(v, seen)
-                    seen.add(v_id)
+        size += _estimate_dict_size(obj, seen)
     elif isinstance(obj, (list, tuple, set, frozenset)):
-        for item in obj:
-            if type(item) in scalar_types:
-                size += getsizeof(item)
-            else:
-                item_id = id(item)
-                if item_id not in seen:
-                    size += _estimate_payload_size(item, seen)
-                    seen.add(item_id)
+        size += _estimate_iterable_size(obj, seen)
 
     return size
 
