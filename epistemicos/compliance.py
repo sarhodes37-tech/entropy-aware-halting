@@ -121,16 +121,12 @@ class TransactionalComplianceBroker:
             try:
                 fd = os.open(target_path, os.O_RDWR | os.O_NOFOLLOW)
                 try:
-                    import shutil
-                    with tempfile.TemporaryFile(mode="w+") as temp_f:
-                        with open(fd, "r+", closefd=False) as f:
-                            for line in f:
-                                temp_f.write(line.replace(transaction_id, "[REDACTED]"))
-
-                            f.seek(0)
-                            f.truncate(0)
-                            temp_f.seek(0)
-                            shutil.copyfileobj(temp_f, f)
+                    with open(fd, "r+", closefd=False) as f:
+                        lines = f.readlines()
+                        f.seek(0)
+                        f.truncate(0)
+                        for line in lines:
+                            f.write(line.replace(transaction_id, "[REDACTED]"))
                 finally:
                     os.close(fd)
             except OSError:

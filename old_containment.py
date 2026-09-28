@@ -90,16 +90,15 @@ class ContainmentGuard:
     SYSTEM_DELIMITERS_REGEX = re.compile(r"<\|im_start\|>|<\|im_end\|>")
 
     # Pre-compile Goal Mutation Cheat Keywords (Fix for Goal Integrity Validation)
-    CHEAT_KEYWORDS_COMPILED = re.compile(
-        "|".join([
+    CHEAT_KEYWORDS_COMPILED = [
+        re.compile(kw, re.IGNORECASE) for kw in [
             r"assert\s+True",
             r"return\s+True\s+#\s*skip\s*test",
             r"sys\.exit\(0\)",
             r"unittest\.skip",
             r"pytest\.mark\.skip",
-        ]),
-        re.IGNORECASE,
-    )
+        ]
+    ]
 
     def __init__(
         self,
@@ -284,12 +283,13 @@ class ContainmentGuard:
         self, original_goal: str, proposed_action: str
     ) -> ContainmentReceipt:
         """Detects whether an agent is attempting to alter its primary objective or cheat on evaluation tests."""
-        if match := self.CHEAT_KEYWORDS_COMPILED.search(proposed_action):
-            return ContainmentReceipt(
-                passed=False,
-                violation_type=ContainmentViolationType.GOAL_MUTATION_REWARD_CHEATING,
-                reason=f"Reward-cheating attempt detected: Proposed action overrides test verification via '{match.group(0)}'.",
-            )
+        for pattern in self.CHEAT_KEYWORDS_COMPILED:
+            if pattern.search(proposed_action):
+                return ContainmentReceipt(
+                    passed=False,
+                    violation_type=ContainmentViolationType.GOAL_MUTATION_REWARD_CHEATING,
+                    reason=f"Reward-cheating attempt detected: Proposed action overrides test verification via '{pattern.pattern}'.",
+                )
 
         return ContainmentReceipt(passed=True)
 

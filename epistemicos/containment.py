@@ -69,7 +69,7 @@ class ContainmentGuard:
     ]
 
     DEFAULT_FORBIDDEN_COMMANDS_COMPILED = [
-        re.compile("|".join(DEFAULT_FORBIDDEN_COMMANDS), re.IGNORECASE)
+        re.compile(p, re.IGNORECASE) for p in DEFAULT_FORBIDDEN_COMMANDS
     ]
 
     # Pre-compile Injection Patterns
@@ -198,7 +198,8 @@ class ContainmentGuard:
             if '#' in decoded_netloc:
                 return ""
 
-            decoded_netloc = ''.join(decoded_netloc.split())
+            for ws in string.whitespace:
+                decoded_netloc = decoded_netloc.replace(ws, '')
 
             if '@' in decoded_netloc:
                 host_port = decoded_netloc.rsplit('@', 1)[-1]
@@ -268,7 +269,7 @@ class ContainmentGuard:
                 return ContainmentReceipt(
                     passed=False,
                     violation_type=ContainmentViolationType.FORBIDDEN_COMMAND_EXECUTION,
-                    reason=f"Command execution blocked: Contains restricted OS-level directive matching '{match.group(0)}'.",
+                    reason=f"Command execution blocked: Contains restricted OS-level directive matching '{pattern.pattern}'.",
                 )
 
         return ContainmentReceipt(passed=True)

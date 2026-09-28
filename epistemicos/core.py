@@ -114,11 +114,6 @@ class EpistemicOrchestrator:
             with self.vector_manager.trajectory_scope(traj_id):
                 payload_dump = cpr.model_dump()
 
-                masked_payload = {
-                    k: v for k, v in raw_payload.items()
-                    if k not in cpr.SENSITIVE_FIELDS
-                }
-
                 for gate in self.gates:
                     result = gate.evaluate(payload=payload_dump, context=context)
 
@@ -136,7 +131,6 @@ class EpistemicOrchestrator:
                             reason=f"{result.reason} | Vectors Revoked: {actual_revoked_count}",
                             model_id=self.model_id,
                             payload_snippet=json.dumps(cpr.mask_egress_payload()),
-                            payload_snippet=json.dumps(masked_payload),
                             cpr_snapshot=cpr,
                             telemetry=telemetry
                         ))
@@ -155,7 +149,6 @@ class EpistemicOrchestrator:
                 reason="All governance gates passed",
                 model_id=self.model_id,
                 payload_snippet=json.dumps(cpr.mask_egress_payload()),
-                payload_snippet=json.dumps(masked_payload),
                 cpr_snapshot=cpr,
                 telemetry=telemetry
             ))
