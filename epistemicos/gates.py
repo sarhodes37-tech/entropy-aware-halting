@@ -192,14 +192,19 @@ class PermissionGate(Gate):
                 )
         return None
 
-    def _validate_scope_boundaries(self, scope: Dict[str, Any], proposed_actions: List[Any], t0: float) -> Optional[GateResult]:
+    def _validate_actions(self, scope: Dict[str, Any], proposed_actions: List[Any], t0: float) -> Optional[GateResult]:
         allowed_ops = scope.get("allowed_operations")
         allowed_res = scope.get("allowed_resources")
+        is_rmm_origin = scope.get("is_rmm_origin", False)
 
-        if allowed_ops is not None or allowed_res is not None or self.allowed_actions:
+        if allowed_ops is not None or allowed_res is not None or self.allowed_actions or is_rmm_origin:
             for action in proposed_actions:
-                op = action.get("op") if isinstance(action, dict) else getattr(action, "op", None)
-                node = (action.get("node") or action.get("endpoint")) if isinstance(action, dict) else (getattr(action, "node", None) or getattr(action, "endpoint", None))
+                if isinstance(action, dict):
+                    op = action.get("op")
+                    node = action.get("node") or action.get("endpoint")
+                else:
+                    op = getattr(action, "op", None)
+                    node = getattr(action, "node", None) or getattr(action, "endpoint", None)
 
                 if allowed_ops is not None and op not in allowed_ops:
                     return GateResult(
@@ -230,13 +235,8 @@ class PermissionGate(Gate):
                         reason=f"Operation '{op}' not in gate allowed_actions",
                         confidence=0.0
                     )
-        return None
 
-    def _check_rmm_quarantine(self, scope: Dict[str, Any], proposed_actions: List[Any], t0: float) -> Optional[GateResult]:
-        if scope.get("is_rmm_origin", False):
-            for action in proposed_actions:
-                op = action.get("op") if isinstance(action, dict) else getattr(action, "op", None)
-                if op in {"update_db", "issue_binder", "api_call", "web_search"}:
+                if is_rmm_origin and op in {"update_db", "issue_binder", "api_call", "web_search"}:
                     return GateResult(
                         action=GateAction.HALT,
                         status="HALTED",
@@ -274,15 +274,10 @@ class PermissionGate(Gate):
         if contract_result:
             return contract_result
 
-        # 2. Validate explicit scope boundaries if specified
-        scope_result = self._validate_scope_boundaries(scope, proposed_actions, t0)
-        if scope_result:
-            return scope_result
-
-        # 3. Check RMM quarantine rules
-        rmm_result = self._check_rmm_quarantine(scope, proposed_actions, t0)
-        if rmm_result:
-            return rmm_result
+        # 2 & 3. Validate explicit scope boundaries and RMM quarantine rules in a single pass
+        actions_result = self._validate_actions(scope, proposed_actions, t0)
+        if actions_result:
+            return actions_result
 
         # 4. Deep Regex inspection for injections/jailbreaks
         regex_result = self._deep_regex_inspection(payload, proposed_actions, llm_output, t0)

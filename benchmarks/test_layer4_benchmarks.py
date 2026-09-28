@@ -76,7 +76,6 @@ def test_confident_jailbreak_permission_catch():
         PermissionGate(contract_model=CommercialAutoBindSchema)
     ]
 
-    # FIXED: Flattened proposed_actions to match Domain Model expectations
     proposed_actions = [
         {"op": "api_call", "endpoint": "/bind_policy", "data": "POL-2026-JB2"}
     ]
