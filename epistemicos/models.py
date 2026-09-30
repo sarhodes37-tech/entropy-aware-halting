@@ -122,20 +122,32 @@ class TokenSurprisalSensor:
         surprisals = [-lp for lp in logprobs]
         z_scores = []
 
+        sum_x = 0.0
+        sum_sq = 0.0
+
         for i, h in enumerate(surprisals):
             if i < 2:
                 z_scores.append(0.0)
+                sum_x += h
+                sum_sq += h * h
                 continue
 
-            start_idx = max(0, i - self.window_size)
-            baseline = surprisals[start_idx:i]
+            n = min(i, self.window_size)
+            mean_h = sum_x / n
+            variance = (sum_sq / n) - (mean_h * mean_h)
+            if variance < 0.0:
+                variance = 0.0
 
-            # Standard Library Mean and Variance calculation
-            mean_h = sum(baseline) / len(baseline)
-            variance = sum((x - mean_h) ** 2 for x in baseline) / len(baseline)
             std_h = max(math.sqrt(variance), self.std_floor)
-
             z_scores.append(float((h - mean_h) / std_h))
+
+            sum_x += h
+            sum_sq += h * h
+
+            if i >= self.window_size:
+                old_val = surprisals[i - self.window_size]
+                sum_x -= old_val
+                sum_sq -= old_val * old_val
 
         return z_scores
 
