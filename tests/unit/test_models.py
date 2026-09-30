@@ -242,7 +242,8 @@ def test_permission_scope_quarantine_subnet_mutating_action():
     """Validates subnet prefix matching blocks mutating operations."""
     scope = PermissionScope(
         allowed_operations=["read", "issue_binder"],
-        origin_subnet="10.240.5.15"
+        origin_subnet="10.240.5.15",
+        quarantine_subnets=["10.240."]
     )
     assert scope.is_quarantined_channel() is True
     assert scope.validate_action({"op": "issue_binder"}) is False

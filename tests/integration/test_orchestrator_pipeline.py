@@ -121,6 +121,7 @@ def test_rmm_quarantine_subnet_mutating_action_blocked():
     scope = PermissionScope(
         origin_subnet="10.240.1.100",
         is_rmm_origin=True,
+        quarantine_subnets=["10.240."],
         allowed_resources=["logistics_db"],
         allowed_operations=["read", "query", "update_db"]
     )
@@ -154,6 +155,7 @@ def test_rmm_quarantine_subnet_read_only_permitted():
     scope = PermissionScope(
         origin_subnet="10.240.1.100",
         is_rmm_origin=True,
+        quarantine_subnets=["10.240."],
         allowed_resources=["logistics_db"],
         allowed_operations=["read", "query", "update_db"]
     )

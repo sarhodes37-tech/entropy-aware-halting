@@ -7,12 +7,22 @@ contracts, and Token Surprisal kernels into a single source of truth.
 """
 
 import math
+import os
 import sys
 import time
 from enum import Enum
 from datetime import datetime, timezone
 from typing import Dict, Any, List, Optional, Set
 from pydantic import BaseModel, Field, model_validator
+
+
+# ==========================================
+# CONFIGURATION & CONSTANTS
+# ==========================================
+
+_DEFAULT_QUARANTINE_SUBNETS = [
+    s.strip() for s in os.getenv("EPISTEMICOS_QUARANTINE_SUBNETS", "").split(",") if s.strip()
+]
 
 
 # ==========================================
@@ -279,7 +289,7 @@ class PermissionScope(BaseModel):
     origin_subnet: Optional[str] = None
     is_rmm_origin: bool = False
     quarantine_subnets: List[str] = Field(
-        default_factory=lambda: ["10.240.", "172.16.rmm", "msp_bridge", "vendor_portal"]
+        default_factory=lambda: list(_DEFAULT_QUARANTINE_SUBNETS)
     )
 
     def is_quarantined_channel(self) -> bool:
