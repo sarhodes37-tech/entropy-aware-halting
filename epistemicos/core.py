@@ -107,6 +107,25 @@ class EpistemicOrchestrator:
             ))
             return None, {"status": "HALTED", "reason": "Schema validation failed"}
 
+    def _log_pipeline_event(self, event_type: AuditLogLevel, gate_name: str, reason: str,
+                            masked_payload: Dict[str, Any], cpr: CanonicalProblemRepresentation, telemetry: Any) -> None:
+        self.audit_logger.record_event(AuditEvent(
+            event_type=event_type,
+            gate_name=gate_name,
+            reason=reason,
+            model_id=self.model_id,
+            payload_snippet=json.dumps(masked_payload),
+            cpr_snapshot=cpr,
+            telemetry=telemetry
+        ))
+
+    def _evaluate_gates(self, payload_dump: Dict[str, Any], context: Dict[str, Any]) -> Optional[Any]:
+        for gate in self.gates:
+            result = gate.evaluate(payload=payload_dump, context=context)
+            if result.action == GateAction.HALT:
+                return result
+        return None
+
     def _execute_pipeline(self, cpr: CanonicalProblemRepresentation, raw_payload: Dict[str, Any], context: Dict[str, Any], traj_id: str) -> Dict[str, Any]:
         # 2. Execute Defense-in-Depth Pipeline under Telemetry
         with ResourceProfiler(device="cuda", token_count=context.get("token_count", 1)) as profiler:
@@ -119,44 +138,41 @@ class EpistemicOrchestrator:
                     if k not in cpr.SENSITIVE_FIELDS
                 }
 
-                for gate in self.gates:
-                    result = gate.evaluate(payload=payload_dump, context=context)
+                result = self._evaluate_gates(payload_dump, context)
 
-                    if result.action == GateAction.HALT:
-                        # 3a. Pipeline Halt: Veto triggers audit log AND vector revocation
-                        telemetry = profiler.get_telemetry()
-                        # Explicitly revoke vectors before returning
-                        revoked_ids = self.vector_manager.revoke_trajectory(traj_id)
-                        # Fallback to the gate's revocation count if the vector manager is mocked/empty
-                        actual_revoked_count = max(len(revoked_ids), getattr(result, "vectors_revoked", 0))
+                if result:
+                    # 3a. Pipeline Halt: Veto triggers audit log AND vector revocation
+                    telemetry = profiler.get_telemetry()
+                    # Explicitly revoke vectors before returning
+                    revoked_ids = self.vector_manager.revoke_trajectory(traj_id)
+                    # Fallback to the gate's revocation count if the vector manager is mocked/empty
+                    actual_revoked_count = max(len(revoked_ids), getattr(result, "vectors_revoked", 0))
 
-                        self.audit_logger.record_event(AuditEvent(
-                            event_type=AuditLogLevel.HALT,
-                            gate_name=result.gate_name,
-                            reason=f"{result.reason} | Vectors Revoked: {actual_revoked_count}",
-                            model_id=self.model_id,
-                            payload_snippet=json.dumps(masked_payload),
-                            cpr_snapshot=cpr,
-                            telemetry=telemetry
-                        ))
-                        return {
-                            "status": "HALTED", 
-                            "gate": result.gate_name, 
-                            "reason": result.reason,
-                            "vectors_revoked": actual_revoked_count
-                        }
+                    self._log_pipeline_event(
+                        event_type=AuditLogLevel.HALT,
+                        gate_name=result.gate_name,
+                        reason=f"{result.reason} | Vectors Revoked: {actual_revoked_count}",
+                        masked_payload=masked_payload,
+                        cpr=cpr,
+                        telemetry=telemetry
+                    )
+                    return {
+                        "status": "HALTED",
+                        "gate": result.gate_name,
+                        "reason": result.reason,
+                        "vectors_revoked": actual_revoked_count
+                    }
 
             # 3b. Pipeline Success: Vectors are automatically committed by the context manager
             telemetry = profiler.get_telemetry()
-            self.audit_logger.record_event(AuditEvent(
+            self._log_pipeline_event(
                 event_type=AuditLogLevel.INFO,
                 gate_name="Pipeline_Complete",
                 reason="All governance gates passed",
-                model_id=self.model_id,
-                payload_snippet=json.dumps(masked_payload),
-                cpr_snapshot=cpr,
+                masked_payload=masked_payload,
+                cpr=cpr,
                 telemetry=telemetry
-            ))
+            )
 
             return {
                 "status": "ALLOWED",
