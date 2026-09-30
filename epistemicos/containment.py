@@ -68,9 +68,9 @@ class ContainmentGuard:
         r"os\.system",
     ]
 
-    DEFAULT_FORBIDDEN_COMMANDS_COMPILED = [
-        re.compile("|".join(DEFAULT_FORBIDDEN_COMMANDS), re.IGNORECASE)
-    ]
+    DEFAULT_FORBIDDEN_COMMANDS_COMPILED = re.compile(
+        "|".join(DEFAULT_FORBIDDEN_COMMANDS), re.IGNORECASE
+    )
 
     # Pre-compile Injection Patterns
     INJECTION_PATTERNS_COMPILED = re.compile(
@@ -109,13 +109,13 @@ class ContainmentGuard:
     ):
         self.allowed_domains = set(allowed_egress_domains or [])
         self.blocked_hosts = blocked_hosts or self.DEFAULT_BLOCKED_HOSTS
-        self.forbidden_commands_compiled = list(self.DEFAULT_FORBIDDEN_COMMANDS_COMPILED)
+        self.forbidden_commands_compiled = self.DEFAULT_FORBIDDEN_COMMANDS_COMPILED
 
         if custom_forbidden_commands:
-            self.forbidden_commands_compiled = [
-                *self.DEFAULT_FORBIDDEN_COMMANDS_COMPILED,
-                re.compile("|".join(custom_forbidden_commands), re.IGNORECASE)
-            ]
+            self.forbidden_commands_compiled = re.compile(
+                self.DEFAULT_FORBIDDEN_COMMANDS_COMPILED.pattern + "|" + "|".join(custom_forbidden_commands),
+                re.IGNORECASE
+            )
 
         self.strict_mode = strict_mode
 
@@ -263,13 +263,12 @@ class ContainmentGuard:
 
     def inspect_tool_command(self, code_or_command: str) -> ContainmentReceipt:
         """Inspects generated code or shell execution commands for OS-level escape attempts."""
-        for pattern in self.forbidden_commands_compiled:
-            if match := pattern.search(code_or_command):
-                return ContainmentReceipt(
-                    passed=False,
-                    violation_type=ContainmentViolationType.FORBIDDEN_COMMAND_EXECUTION,
-                    reason=f"Command execution blocked: Contains restricted OS-level directive matching '{match.group(0)}'.",
-                )
+        if match := self.forbidden_commands_compiled.search(code_or_command):
+            return ContainmentReceipt(
+                passed=False,
+                violation_type=ContainmentViolationType.FORBIDDEN_COMMAND_EXECUTION,
+                reason=f"Command execution blocked: Contains restricted OS-level directive matching '{match.group(0)}'.",
+            )
 
         return ContainmentReceipt(passed=True)
 
