@@ -138,8 +138,14 @@ class ContainmentGuard:
 
         try:
             addr_info = _resolve_dns_cached(hostname)
+            seen = set()
             for res in addr_info:
-                resolved_ip = ipaddress.ip_address(res[4][0])
+                ip_str = res[4][0]
+                if ip_str in seen:
+                    continue
+                seen.add(ip_str)
+
+                resolved_ip = ipaddress.ip_address(ip_str)
                 if (
                     resolved_ip.is_loopback
                     or resolved_ip.is_private
