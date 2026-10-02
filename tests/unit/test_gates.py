@@ -187,7 +187,7 @@ def test_triangulation_gate_missing_and_malformed():
 # ==========================================
 
 def test_crypto_attestation_gate():
-    gate = CryptoAttestationGate(required_algorithm="ML-DSA")
+    gate = CryptoAttestationGate(required_algorithm="ML-DSA", revoked_keys=frozenset({"KEY-000-COMPROMISED", "KEY-999-STOLEN", "KEY-2026-COMPROMISED"}))
 
     # Valid PQC attestation
     valid_crypto = {"cryptography": {"algorithm": "ML-DSA", "key_id": "KEY-VALID-01"}}

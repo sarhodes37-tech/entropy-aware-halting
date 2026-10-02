@@ -14,6 +14,7 @@ Components:
 """
 
 from abc import ABC, abstractmethod
+import os
 import re
 import time
 from typing import Dict, Any, List, Optional
@@ -358,14 +359,14 @@ class CryptoAttestationGate(Gate):
     and Quantum Trust Epochs to prevent signed payloads from compromised 
     keys entering the system.
     """
-    REVOKED_KEYS = frozenset({"KEY-000-COMPROMISED", "KEY-999-STOLEN", "KEY-2026-COMPROMISED"})
 
-    def __init__(self, required_algorithm: str = "ML-DSA", expiry_year: int = 2030):
+    def __init__(self, required_algorithm: str = "ML-DSA", expiry_year: int = 2030, revoked_keys: Optional[frozenset] = None):
         self.required_algorithm = required_algorithm
         self.expiry_year = expiry_year
+        self.revoked_keys = revoked_keys if revoked_keys is not None else frozenset(k.strip() for k in os.getenv("EPISTEMICOS_REVOKED_KEYS", "").split(",")) if os.getenv("EPISTEMICOS_REVOKED_KEYS") else frozenset()
 
     def _check_ocsp_revocation(self, key_id: str) -> bool:
-        return key_id in self.REVOKED_KEYS
+        return key_id in self.revoked_keys
 
     def evaluate(self, payload: Dict[str, Any], context: Dict[str, Any]) -> GateResult:
         t0 = time.perf_counter()
