@@ -39,7 +39,7 @@ def _estimate_dict_size(obj: dict, seen: Set[int]) -> int:
     add_seen = seen.add
 
     for k, v in obj.items():
-        if type(k) in scalar_types:
+        if k.__class__ in scalar_types:
             size += getsizeof(k)
         else:
             k_id = id(k)
@@ -47,7 +47,7 @@ def _estimate_dict_size(obj: dict, seen: Set[int]) -> int:
                 size += _estimate_payload_size(k, seen)
                 add_seen(k_id)
 
-        if type(v) in scalar_types:
+        if v.__class__ in scalar_types:
             size += getsizeof(v)
         else:
             v_id = id(v)
@@ -63,7 +63,7 @@ def _estimate_iterable_size(obj: Any, seen: Set[int]) -> int:
     add_seen = seen.add
 
     for item in obj:
-        if type(item) in scalar_types:
+        if item.__class__ in scalar_types:
             size += getsizeof(item)
         else:
             item_id = id(item)
