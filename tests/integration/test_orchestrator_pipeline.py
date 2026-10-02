@@ -469,7 +469,7 @@ def test_crypto_attestation_gate_pqc_verification():
     attestation signatures or using expired algorithms are halted at the perimeter.
     """
     orchestrator = EpistemicOrchestrator()
-    orchestrator.register_gate(CryptoAttestationGate(required_algorithm="ML-DSA", expiry_year=2030))
+    orchestrator.register_gate(CryptoAttestationGate(required_algorithm="ML-DSA", expiry_year=2030, revoked_keys=frozenset({"KEY-000-COMPROMISED", "KEY-999-STOLEN", "KEY-2026-COMPROMISED"})))
 
     payload = {"policy_id": "POL-PQC-2026", "action": "issue_binder"}
     context = {"token_count": 5, "token_logprobs": [-0.01] * 5}
@@ -507,7 +507,7 @@ def test_governance_os_stateful_key_revocation():
 
     orchestrator.register_gate(EntropyGate(z_threshold=2.85))
     orchestrator.register_gate(PermissionGate(contract_model=CanonicalProblemRepresentation))
-    orchestrator.register_gate(CryptoAttestationGate(required_algorithm="ML-DSA", expiry_year=2030))
+    orchestrator.register_gate(CryptoAttestationGate(required_algorithm="ML-DSA", expiry_year=2030, revoked_keys=frozenset({"KEY-000-COMPROMISED", "KEY-999-STOLEN", "KEY-2026-COMPROMISED"})))
 
     mock_payload = {
         "policy_id": "POL-2026-QUANTUM",
