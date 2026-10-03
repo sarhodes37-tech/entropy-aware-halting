@@ -38,22 +38,44 @@ def _estimate_dict_size(obj: dict, seen: Set[int]) -> int:
     scalar_types = SCALAR_TYPES
     add_seen = seen.add
 
-    for k, v in obj.items():
-        if k.__class__ in scalar_types:
-            size += getsizeof(k)
-        else:
-            k_id = id(k)
-            if k_id not in seen:
-                size += _estimate_payload_size(k, seen)
-                add_seen(k_id)
+    stack = [obj]
 
-        if v.__class__ in scalar_types:
-            size += getsizeof(v)
-        else:
-            v_id = id(v)
-            if v_id not in seen:
-                size += _estimate_payload_size(v, seen)
-                add_seen(v_id)
+    while stack:
+        current = stack.pop()
+        for k, v in current.items():
+            if k.__class__ in scalar_types:
+                size += getsizeof(k)
+            else:
+                k_id = id(k)
+                if k_id not in seen:
+                    if isinstance(k, dict):
+                        add_seen(k_id)
+                        size += getsizeof(k)
+                        stack.append(k)
+                    elif isinstance(k, (list, tuple, set, frozenset)):
+                        add_seen(k_id)
+                        size += getsizeof(k)
+                        size += _estimate_iterable_size(k, seen)
+                    else:
+                        size += _estimate_payload_size(k, seen)
+                        add_seen(k_id)
+
+            if v.__class__ in scalar_types:
+                size += getsizeof(v)
+            else:
+                v_id = id(v)
+                if v_id not in seen:
+                    if isinstance(v, dict):
+                        add_seen(v_id)
+                        size += getsizeof(v)
+                        stack.append(v)
+                    elif isinstance(v, (list, tuple, set, frozenset)):
+                        add_seen(v_id)
+                        size += getsizeof(v)
+                        size += _estimate_iterable_size(v, seen)
+                    else:
+                        size += _estimate_payload_size(v, seen)
+                        add_seen(v_id)
     return size
 
 def _estimate_iterable_size(obj: Any, seen: Set[int]) -> int:
@@ -62,14 +84,27 @@ def _estimate_iterable_size(obj: Any, seen: Set[int]) -> int:
     scalar_types = SCALAR_TYPES
     add_seen = seen.add
 
-    for item in obj:
-        if item.__class__ in scalar_types:
-            size += getsizeof(item)
-        else:
-            item_id = id(item)
-            if item_id not in seen:
-                size += _estimate_payload_size(item, seen)
-                add_seen(item_id)
+    stack = [obj]
+
+    while stack:
+        current = stack.pop()
+        for item in current:
+            if item.__class__ in scalar_types:
+                size += getsizeof(item)
+            else:
+                item_id = id(item)
+                if item_id not in seen:
+                    if isinstance(item, (list, tuple, set, frozenset)):
+                        add_seen(item_id)
+                        size += getsizeof(item)
+                        stack.append(item)
+                    elif isinstance(item, dict):
+                        add_seen(item_id)
+                        size += getsizeof(item)
+                        size += _estimate_dict_size(item, seen)
+                    else:
+                        size += _estimate_payload_size(item, seen)
+                        add_seen(item_id)
     return size
 
 def _estimate_payload_size(obj: Any, seen: Optional[Set[int]] = None) -> int:
