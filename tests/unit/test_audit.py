@@ -94,6 +94,20 @@ def test_verify_chain_integrity_tampered_entry(temp_audit_file):
 # RECEIPT GENERATION & TRANSACTION ROLLBACKS
 # =====================================================================
 
+def test_receipt_generator_log_event():
+    """Validates direct logging of events in the ReceiptGenerator."""
+    rg = ReceiptGenerator()
+    rg.log_event("CustomEvent", {"key": "value"})
+
+    assert len(rg.events) == 1
+    event = rg.events[0]
+    assert "idx" in event
+    assert event["idx"] == 0
+    assert event["type"] == "CustomEvent"
+    assert event["details"] == {"key": "value"}
+    assert rg._seq_idx == 1
+
+
 def test_receipt_generator_lifecycle():
     """Validates atomic transaction logging, minting, and stack-based rollbacks (Lines 196-242)."""
     rg = ReceiptGenerator()

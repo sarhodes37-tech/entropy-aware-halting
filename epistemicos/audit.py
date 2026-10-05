@@ -232,17 +232,20 @@ class TamperEvidentAuditTrail:
 
 class ReceiptGenerator:
     def __init__(self):
-        self._events = []
+        self.events = []
         self._rollbacks = []
+        self._seq_idx = 0
 
     def log_event(self, event_type: str, details: Dict[str, Any]):
-        """Records an immutable event in the transaction lifecycle."""
-        event = {
-            "timestamp": time.time(),
+        """
+        Add an event to the volatile receipt sequence.
+        """
+        self.events.append({
+            "idx": self._seq_idx,
             "type": event_type,
             "details": details
-        }
-        self._events.append(event)
+        })
+        self._seq_idx += 1
 
     def push_action(self, action: Dict[str, Any], rollback_patch: Dict[str, Any]):
         self.log_event("ActionProposed", {"action": action})
@@ -253,7 +256,7 @@ class ReceiptGenerator:
             "transaction_id": transaction_id,
             "status": "COMMITTED" if success else "ROLLED_BACK",
             "confidence_matrix": confidence_matrix,
-            "event_log": self._events
+            "event_log": self.events
         }
         receipt_string = json.dumps(receipt, sort_keys=True).encode()
         receipt["signature"] = hashlib.sha256(receipt_string).hexdigest()
