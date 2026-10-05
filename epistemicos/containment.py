@@ -10,11 +10,38 @@ Provides active ingress, egress, and tool-execution guardrails to prevent:
 import ipaddress
 import re
 import socket
+import contextlib
+import contextvars
 import urllib.parse
 from functools import lru_cache
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
+
+
+_enforce_safe_dns = contextvars.ContextVar("enforce_safe_dns", default=False)
+_original_getaddrinfo = socket.getaddrinfo
+
+def _patched_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
+    results = _original_getaddrinfo(host, port, family, type, proto, flags)
+    if _enforce_safe_dns.get():
+        for res in results:
+            ip_str = res[4][0]
+            try:
+                ip = ipaddress.ip_address(ip_str)
+                if (
+                    ip.is_loopback
+                    or ip.is_private
+                    or ip.is_link_local
+                    or ip.is_reserved
+                    or ip.is_unspecified
+                ):
+                    raise socket.error(f"Egress blocked: DNS resolution for '{host}' returned restricted IP '{ip_str}'.")
+            except ValueError:
+                pass
+    return results
+
+socket.getaddrinfo = _patched_getaddrinfo
 
 
 class ContainmentViolationType(Enum):
@@ -277,6 +304,15 @@ class ContainmentGuard:
 
         return ContainmentReceipt(passed=True)
 
+    @contextlib.contextmanager
+    def _safe_dns_resolution(self):
+        """Context manager to enforce DNS rebinding protection thread-safely."""
+        token = _enforce_safe_dns.set(True)
+        try:
+            yield
+        finally:
+            _enforce_safe_dns.reset(token)
+
     # =========================================================================
     # 3. AGENTIC INTEGRITY & GOAL MUTATION FILTERING
     # =========================================================================
@@ -325,7 +361,8 @@ class ContainmentGuard:
                 return False, None, egress_receipt
 
         try:
-            result = tool_func(**kwargs)
+            with self._safe_dns_resolution():
+                result = tool_func(**kwargs)
             return True, result, ContainmentReceipt(passed=True)
         except Exception as e:
             return (
