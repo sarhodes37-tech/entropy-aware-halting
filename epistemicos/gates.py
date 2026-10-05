@@ -198,54 +198,56 @@ class PermissionGate(Gate):
         allowed_res = scope.get("allowed_resources")
         is_rmm_origin = scope.get("is_rmm_origin", False)
 
-        if allowed_ops is not None or allowed_res is not None or self.allowed_actions or is_rmm_origin:
-            for action in proposed_actions:
-                if isinstance(action, dict):
-                    op = action.get("op")
-                    node = action.get("node") or action.get("endpoint")
-                else:
-                    op = getattr(action, "op", None)
-                    node = getattr(action, "node", None) or getattr(action, "endpoint", None)
+        if allowed_ops is None and allowed_res is None and not self.allowed_actions and not is_rmm_origin:
+            return None
 
-                if allowed_ops is not None and op not in allowed_ops:
-                    return GateResult(
-                        action=GateAction.HALT,
-                        status="HALTED",
-                        latency_ms=(time.perf_counter() - t0) * 1000,
-                        gate_name="PermissionGate",
-                        reason=f"Operation '{op}' outside allowed scope operations: {allowed_ops}",
-                        confidence=0.0
-                    )
+        for action in proposed_actions:
+            if isinstance(action, dict):
+                op = action.get("op")
+                node = action.get("node") or action.get("endpoint")
+            else:
+                op = getattr(action, "op", None)
+                node = getattr(action, "node", None) or getattr(action, "endpoint", None)
 
-                if allowed_res is not None and node is not None and node not in allowed_res:
-                    return GateResult(
-                        action=GateAction.HALT,
-                        status="HALTED",
-                        latency_ms=(time.perf_counter() - t0) * 1000,
-                        gate_name="PermissionGate",
-                        reason=f"Resource node '{node}' outside allowed scope resources: {allowed_res}",
-                        confidence=0.0
-                    )
+            if allowed_ops is not None and op not in allowed_ops:
+                return GateResult(
+                    action=GateAction.HALT,
+                    status="HALTED",
+                    latency_ms=(time.perf_counter() - t0) * 1000,
+                    gate_name="PermissionGate",
+                    reason=f"Operation '{op}' outside allowed scope operations: {allowed_ops}",
+                    confidence=0.0
+                )
 
-                if self.allowed_actions and op not in self.allowed_actions:
-                    return GateResult(
-                        action=GateAction.HALT,
-                        status="HALTED",
-                        latency_ms=(time.perf_counter() - t0) * 1000,
-                        gate_name="PermissionGate",
-                        reason=f"Operation '{op}' not in gate allowed_actions",
-                        confidence=0.0
-                    )
+            if allowed_res is not None and node is not None and node not in allowed_res:
+                return GateResult(
+                    action=GateAction.HALT,
+                    status="HALTED",
+                    latency_ms=(time.perf_counter() - t0) * 1000,
+                    gate_name="PermissionGate",
+                    reason=f"Resource node '{node}' outside allowed scope resources: {allowed_res}",
+                    confidence=0.0
+                )
 
-                if is_rmm_origin and op in {"update_db", "issue_binder", "api_call", "web_search"}:
-                    return GateResult(
-                        action=GateAction.HALT,
-                        status="HALTED",
-                        latency_ms=(time.perf_counter() - t0) * 1000,
-                        gate_name="PermissionGate",
-                        reason="Downstream Scope Lock: State-mutating action prohibited from RMM quarantine subnet.",
-                        confidence=0.0
-                    )
+            if self.allowed_actions and op not in self.allowed_actions:
+                return GateResult(
+                    action=GateAction.HALT,
+                    status="HALTED",
+                    latency_ms=(time.perf_counter() - t0) * 1000,
+                    gate_name="PermissionGate",
+                    reason=f"Operation '{op}' not in gate allowed_actions",
+                    confidence=0.0
+                )
+
+            if is_rmm_origin and op in {"update_db", "issue_binder", "api_call", "web_search"}:
+                return GateResult(
+                    action=GateAction.HALT,
+                    status="HALTED",
+                    latency_ms=(time.perf_counter() - t0) * 1000,
+                    gate_name="PermissionGate",
+                    reason="Downstream Scope Lock: State-mutating action prohibited from RMM quarantine subnet.",
+                    confidence=0.0
+                )
         return None
 
     def _deep_regex_inspection(self, payload: Dict[str, Any], proposed_actions: List[Any], llm_output: Any, t0: float) -> Optional[GateResult]:
