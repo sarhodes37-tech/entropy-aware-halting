@@ -108,6 +108,26 @@ class EntropyAwareScheduler:
             if self.initial_entropy > 0 and cost > 0:
                 eta = (delta_h / self.initial_entropy) * self.V / cost
 
+        utility, utility_gain = self._update_utility(H, state, step_index)
+
+        metric = StepMetrics(step_index, H, delta_h, eta, utility, utility_gain, state)
+        self.history.append(metric)
+
+        directive, loss_avoided = self._evaluate_convergence(step_index, H, utility, utility_gain)
+
+        return DecisionResult(
+            halt=directive != "CONTINUE",
+            directive=directive,
+            best_state=self.best_state,
+            best_step=self.best_step,
+            best_utility=self.best_utility,
+            utility_loss_avoided=loss_avoided,
+            termination_step=step_index,
+            current_utility=utility,
+            peak_utility=self.best_utility
+        )
+
+    def _update_utility(self, H, state, step_index):
         utility = self.V * (self.initial_entropy - H) - self.total_cost
 
         utility_gain = 0
@@ -121,9 +141,9 @@ class EntropyAwareScheduler:
             self.best_state = state
             self.best_step = step_index
 
-        metric = StepMetrics(step_index, H, delta_h, eta, utility, utility_gain, state)
-        self.history.append(metric)
+        return utility, utility_gain
 
+    def _evaluate_convergence(self, step_index, H, utility, utility_gain):
         directive = "CONTINUE"
         negative_yield_detected = False
         if len(self.history) >= self.negative_yield_window:
@@ -141,14 +161,4 @@ class EntropyAwareScheduler:
         if directive == "NEGATIVE_YIELD":
             loss_avoided = self.best_utility - utility
 
-        return DecisionResult(
-            halt=directive != "CONTINUE",
-            directive=directive,
-            best_state=self.best_state,
-            best_step=self.best_step,
-            best_utility=self.best_utility,
-            utility_loss_avoided=loss_avoided,
-            termination_step=step_index,
-            current_utility=utility,
-            peak_utility=self.best_utility
-        )
+        return directive, loss_avoided
