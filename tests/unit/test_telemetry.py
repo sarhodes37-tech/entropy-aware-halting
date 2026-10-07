@@ -156,7 +156,12 @@ def test_ast_analyzer_compute_aggregate_ast_risk():
 
     # Assign node has weight 1.0, and 4 default nodes have weight 1.0 -> total 5.0
     assert analyzer.compute_aggregate_ast_risk("x = 1") == 5.0
-    # Invalid syntax
+
+def test_ast_analyzer_compute_aggregate_ast_risk_invalid_syntax():
+    """Validates compute_aggregate_ast_risk returns default 0.0 on invalid syntax."""
+    analyzer = ASTAnalyzer()
+
+    # Invalid syntax triggers SyntaxError and returns default 0.0 risk
     assert analyzer.compute_aggregate_ast_risk("if True") == 0.0
 
 def test_ast_analyzer_get_node_weight_custom():
