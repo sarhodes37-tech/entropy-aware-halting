@@ -156,8 +156,13 @@ class ASTAnalyzer:
 
     def get_node_weight(self, node_type_str: str) -> float:
         """Retrieves empirical risk weight (Omega) for a given AST node type."""
-        clean_key = node_type_str.split(".")[-1]
-        return self.omega_map.get(node_type_str, self.omega_map.get(clean_key, 1.0))
+        res = self.omega_map.get(node_type_str)
+        if res is not None:
+            return res
+        clean_key = node_type_str.rpartition('.')[-1]
+        weight = self.omega_map.get(clean_key, 1.0)
+        self.omega_map[node_type_str] = weight
+        return weight
 
     def compute_aggregate_ast_risk(self, code_str: str) -> float:
         """Computes total summed Omega weight across all AST nodes in snippet."""
