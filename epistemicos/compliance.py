@@ -5,6 +5,7 @@ anchoring, and compensating rollback mechanisms.
 
 import json
 import hashlib
+import secrets
 from typing import Dict, Tuple, Any, Optional
 from threading import RLock
 from datetime import datetime, timezone
@@ -38,13 +39,15 @@ class ImmutableLedgerAdapter:
         self._blocks: Dict[str, Dict[str, Any]] = {}
         self._lock = RLock()
 
-    def commit_block(self, transaction_id: str, payload_hash: str, receipt: Dict[str, Any]) -> Dict[str, Any]:
+    def commit_block(self, transaction_id: str, payload_hash: str, receipt: Dict[str, Any], salt: Optional[str] = None) -> Dict[str, Any]:
         block = {
             "ledger_timestamp": datetime.now(timezone.utc).isoformat(),
             "transaction_id": transaction_id,
             "payload_hash": payload_hash,
             "receipt": receipt
         }
+        if salt is not None:
+            block["salt"] = salt
         with self._lock:
             self._blocks[transaction_id] = block
         return block
@@ -59,31 +62,29 @@ class TransactionalComplianceBroker:
     Coordinates atomic receipt logging across off-chain mutable stores 
     and immutable permissioned ledgers.
     """
-    DEFAULT_SALT = b"epistemicos_canonical_hash_v1_salt"
-
     def __init__(self, offchain_store: Optional[OffChainStoreAdapter] = None, ledger: Optional[ImmutableLedgerAdapter] = None):
         self.offchain_store = offchain_store or OffChainStoreAdapter()
         self.ledger = ledger or ImmutableLedgerAdapter()
 
     @staticmethod
-    def compute_canonical_hash(payload: Dict[str, Any], salt: Optional[bytes] = None) -> str:
+    def compute_canonical_hash(payload: Dict[str, Any], salt: bytes) -> str:
         """Computes deterministic salted SHA-256 hash over canonical (sorted-key) JSON bytes."""
-        effective_salt = salt if salt is not None else TransactionalComplianceBroker.DEFAULT_SALT
         canonical_bytes = json.dumps(payload, sort_keys=True).encode("utf-8")
-        return hashlib.sha256(effective_salt + canonical_bytes).hexdigest()
+        return hashlib.sha256(salt + canonical_bytes).hexdigest()
 
     def record_transaction(self, transaction_id: str, raw_payload: Dict[str, Any], receipt: Dict[str, Any]) -> Dict[str, Any]:
         """
         Atomically anchors transaction in ledger while persisting raw PII off-chain.
         """
-        payload_hash = self.compute_canonical_hash(raw_payload)
+        salt = secrets.token_hex(16)
+        payload_hash = self.compute_canonical_hash(raw_payload, salt.encode('utf-8'))
         
         # 1. Save mutable payload off-chain
         self.offchain_store.save(transaction_id, raw_payload)
         
         # 2. Commit immutable receipt block to ledger
         try:
-            block = self.ledger.commit_block(transaction_id, payload_hash, receipt)
+            block = self.ledger.commit_block(transaction_id, payload_hash, receipt, salt=salt)
             return block
         except Exception as e:
             # Compensating Rollback: Purge staged off-chain data if ledger commit fails

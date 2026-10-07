@@ -386,7 +386,7 @@ def test_atomic_transaction_record_and_hash_verification(compliance_broker):
     block = compliance_broker.record_transaction(tx_id, payload, receipt)
 
     # 1. Verify ledger hash matches independently computed hash
-    expected_hash = compliance_broker.compute_canonical_hash(payload)
+    expected_hash = compliance_broker.compute_canonical_hash(payload, block["salt"].encode('utf-8'))
     assert block["payload_hash"] == expected_hash
     assert block["transaction_id"] == tx_id
 
