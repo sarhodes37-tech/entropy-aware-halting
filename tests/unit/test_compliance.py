@@ -17,8 +17,9 @@ def test_compute_canonical_hash_same_data_different_order():
     payload_1 = {"a": 1, "b": 2, "c": 3}
     payload_2 = {"c": 3, "a": 1, "b": 2}
 
-    hash_1 = TransactionalComplianceBroker.compute_canonical_hash(payload_1)
-    hash_2 = TransactionalComplianceBroker.compute_canonical_hash(payload_2)
+    salt = b"test_salt"
+    hash_1 = TransactionalComplianceBroker.compute_canonical_hash(payload_1, salt)
+    hash_2 = TransactionalComplianceBroker.compute_canonical_hash(payload_2, salt)
 
     assert hash_1 == hash_2
 
@@ -32,8 +33,8 @@ def test_compute_canonical_hash_salting():
     canonical_bytes = json.dumps(payload, sort_keys=True).encode("utf-8")
     unsalted_hash = hashlib.sha256(canonical_bytes).hexdigest()
 
-    default_salted_hash = TransactionalComplianceBroker.compute_canonical_hash(payload)
-    custom_salted_hash = TransactionalComplianceBroker.compute_canonical_hash(payload, salt=b"custom_salt_999")
+    default_salted_hash = TransactionalComplianceBroker.compute_canonical_hash(payload, b"salt1")
+    custom_salted_hash = TransactionalComplianceBroker.compute_canonical_hash(payload, b"custom_salt_999")
 
     # Salted hash should not equal unsalted hash
     assert default_salted_hash != unsalted_hash
@@ -46,8 +47,9 @@ def test_compute_canonical_hash_different_data():
     payload_1 = {"a": 1, "b": 2}
     payload_2 = {"a": 1, "b": 3}
 
-    hash_1 = TransactionalComplianceBroker.compute_canonical_hash(payload_1)
-    hash_2 = TransactionalComplianceBroker.compute_canonical_hash(payload_2)
+    salt = b"test_salt"
+    hash_1 = TransactionalComplianceBroker.compute_canonical_hash(payload_1, salt)
+    hash_2 = TransactionalComplianceBroker.compute_canonical_hash(payload_2, salt)
 
     assert hash_1 != hash_2
 
@@ -57,8 +59,9 @@ def test_compute_canonical_hash_nested_dicts():
     payload_1 = {"a": 1, "b": {"c": 3, "d": 4}}
     payload_2 = {"b": {"d": 4, "c": 3}, "a": 1}
 
-    hash_1 = TransactionalComplianceBroker.compute_canonical_hash(payload_1)
-    hash_2 = TransactionalComplianceBroker.compute_canonical_hash(payload_2)
+    salt = b"test_salt"
+    hash_1 = TransactionalComplianceBroker.compute_canonical_hash(payload_1, salt)
+    hash_2 = TransactionalComplianceBroker.compute_canonical_hash(payload_2, salt)
 
     assert hash_1 == hash_2
 
@@ -123,7 +126,7 @@ def test_execute_right_to_be_forgotten_not_in_store():
     """Validates behavior when data is already missing off-chain but present on ledger."""
     broker = TransactionalComplianceBroker()
     # Populate ledger only
-    payload_hash = broker.compute_canonical_hash({"pii": "data"})
+    payload_hash = broker.compute_canonical_hash({"pii": "data"}, b"test_salt")
     broker.ledger.commit_block("tx_456", payload_hash, {"status": "ok"})
 
     deleted, anchored_hash = broker.execute_right_to_be_forgotten("tx_456")
