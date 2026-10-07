@@ -251,9 +251,48 @@ class PermissionGate(Gate):
         return None
 
     def _deep_regex_inspection(self, payload: Dict[str, Any], proposed_actions: List[Any], llm_output: Any, t0: float) -> Optional[GateResult]:
-        if (self.injection_regex.search(str(payload)) or
-            self.injection_regex.search(str(proposed_actions)) or
-            self.injection_regex.search(str(llm_output))):
+        def _check_stack(obj: Any) -> bool:
+            stack = [obj]
+            seen = set()
+            search = self.injection_regex.search
+            add_seen = seen.add
+            pop = stack.pop
+            append = stack.append
+            scalar_types = frozenset({int, float, bool, bytes, bytearray, type(None)})
+
+            while stack:
+                curr = pop()
+                cls = curr.__class__
+
+                if cls is str:
+                    if search(curr):
+                        return True
+                    continue
+
+                if cls in scalar_types:
+                    continue
+
+                curr_id = id(curr)
+                if curr_id in seen:
+                    continue
+                add_seen(curr_id)
+
+                if isinstance(curr, dict):
+                    for k, v in curr.items():
+                        if isinstance(k, str) and search(k):
+                            return True
+                        elif not isinstance(k, str):
+                            append(k)
+                        append(v)
+                elif cls in (list, tuple, set) or isinstance(curr, (list, tuple, set)):
+                    for item in curr:
+                        append(item)
+                elif hasattr(curr, "__dict__"):
+                    append(curr.__dict__)
+
+            return False
+
+        if _check_stack(payload) or _check_stack(proposed_actions) or _check_stack(llm_output):
             return GateResult(
                 action=GateAction.HALT,
                 status="HALTED",
