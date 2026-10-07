@@ -378,6 +378,7 @@ class PermissionScope(BaseModel):
 
 class CanonicalProblemRepresentation(BaseModel):
     policy_id: str
+    raw_payload: Dict[str, Any] = Field(default_factory=dict)
     fleet_data: Optional[Dict[str, Any]] = None
     risk_details: Optional[Dict[str, Any]] = None
     primary_metric: Optional[float] = None
@@ -396,8 +397,11 @@ class CanonicalProblemRepresentation(BaseModel):
             )
 
     def mask_egress_payload(self, custom_redactions: Optional[Set[str]] = None) -> Dict[str, Any]:
-        redact_keys = self.SENSITIVE_FIELDS.union(custom_redactions or set()).union({"scope"})
-        return self.model_dump(exclude=redact_keys)
+        """
+        Redact sensitive information from the raw payload before egress.
+        """
+        to_redact = custom_redactions or {"api_key", "token", "password", "secret"}
+        return {k: v for k, v in self.raw_payload.items() if k.lower() not in to_redact}
 
     def serialize_for_belief_kernel(self) -> List[float]:
         if self.fleet_data:
