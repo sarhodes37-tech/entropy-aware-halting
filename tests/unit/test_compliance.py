@@ -66,6 +66,21 @@ def test_compute_canonical_hash_nested_dicts():
     assert hash_1 == hash_2
 
 
+def test_execute_right_to_be_forgotten_idor_protection():
+    """Validates IDOR protections during Right to be Forgotten deletion."""
+    broker = TransactionalComplianceBroker()
+    broker.record_transaction("tx_idor_1", {"owner_id": "alice", "pii": "data"}, {"status": "ok"})
+
+    # Authorized deletion
+    deleted, _ = broker.execute_right_to_be_forgotten("tx_idor_1", requestor_id="alice")
+    assert deleted is True
+
+    # Unauthorized deletion
+    broker.record_transaction("tx_idor_2", {"owner_id": "bob", "pii": "data"}, {"status": "ok"})
+    with pytest.raises(PermissionError, match="Unauthorized to delete this PII data"):
+        broker.execute_right_to_be_forgotten("tx_idor_2", requestor_id="eve")
+
+
 def test_offchain_store_delete_pii_not_found():
     """Validates deletion returns False for non-existent transactions."""
     store = OffChainStoreAdapter()

@@ -24,10 +24,14 @@ class OffChainStoreAdapter:
         with self._lock:
             return self._store.get(transaction_id)
 
-    def delete_pii(self, transaction_id: str) -> bool:
+    def delete_pii(self, transaction_id: str, requestor_id: Optional[str] = None) -> bool:
         """Executes Right to be Forgotten (GDPR Art. 17) deletion of raw PII payload."""
         with self._lock:
             if transaction_id in self._store:
+                if requestor_id is not None:
+                    payload = self._store[transaction_id]
+                    if payload.get("owner_id") != requestor_id:
+                        raise PermissionError("Unauthorized to delete this PII data")
                 del self._store[transaction_id]
                 return True
             return False
@@ -91,13 +95,13 @@ class TransactionalComplianceBroker:
             self.offchain_store.delete_pii(transaction_id)
             raise RuntimeError(f"Ledger commitment failed. Off-chain rollback executed: {e}") from e
 
-    def execute_right_to_be_forgotten(self, transaction_id: str, file_path: Optional[str] = None) -> Tuple[bool, Optional[str]]:
+    def execute_right_to_be_forgotten(self, transaction_id: str, file_path: Optional[str] = None, requestor_id: Optional[str] = None) -> Tuple[bool, Optional[str]]:
         """
         Purges raw PII from off-chain store while preserving cryptographic proof on ledger.
         If file_path is provided, reads lines from the file, replaces entity references
         (transaction_id) with [REDACTED], and writes back to file.
         """
-        deleted_from_store = self.offchain_store.delete_pii(transaction_id)
+        deleted_from_store = self.offchain_store.delete_pii(transaction_id, requestor_id=requestor_id)
         ledger_block = self.ledger.get_block(transaction_id)
         anchored_hash = ledger_block["payload_hash"] if ledger_block else None
 
