@@ -12,7 +12,7 @@ import re
 import socket
 import contextlib
 import contextvars
-import urllib.parse
+from urllib.parse import urlsplit, unquote
 from functools import lru_cache
 from dataclasses import dataclass, field
 from enum import Enum
@@ -224,8 +224,8 @@ class ContainmentGuard:
                 if "#" in authority or "%23" in authority.lower():
                     return ""
 
-            parsed = urllib.parse.urlsplit(url_norm)
-            decoded_netloc = urllib.parse.unquote(parsed.netloc)
+            parsed = urlsplit(url_norm)
+            decoded_netloc = unquote(parsed.netloc)
 
             if '#' in decoded_netloc:
                 return ""
