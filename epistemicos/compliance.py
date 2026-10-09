@@ -125,7 +125,34 @@ class TransactionalComplianceBroker:
 
             try:
                 fd = os.open(target_path, os.O_RDWR | os.O_NOFOLLOW)
+            except OSError:
+                pass
+            else:
                 try:
+                    # Re-verify after opening to prevent TOCTOU on parent directories
+                    current_target_path = os.path.realpath(os.path.abspath(file_path))
+
+                    is_still_safe = False
+                    for allowed_dir in allowed_dirs:
+                        try:
+                            if os.path.commonpath([allowed_dir, current_target_path]) == allowed_dir:
+                                is_still_safe = True
+                                break
+                        except ValueError:
+                            continue
+
+                    if not is_still_safe:
+                        raise ValueError(f"Path traversal detected: '{file_path}' resolves outside allowed base directory.")
+
+                    fd_stat = os.fstat(fd)
+                    try:
+                        path_stat = os.stat(current_target_path)
+                    except FileNotFoundError:
+                        raise ValueError(f"TOCTOU detected: '{file_path}' was deleted during validation.")
+
+                    if fd_stat.st_ino != path_stat.st_ino or fd_stat.st_dev != path_stat.st_dev:
+                        raise ValueError(f"TOCTOU detected: '{file_path}' changed during validation.")
+
                     import shutil
                     with tempfile.TemporaryFile(mode="w+") as temp_f:
                         with open(fd, "r+", closefd=False) as f:
@@ -138,7 +165,5 @@ class TransactionalComplianceBroker:
                             shutil.copyfileobj(temp_f, f)
                 finally:
                     os.close(fd)
-            except OSError:
-                pass
 
         return deleted_from_store, anchored_hash
