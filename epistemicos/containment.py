@@ -63,11 +63,6 @@ class ContainmentReceipt:
     metadata: Dict[str, Any] = field(default_factory=dict)
 
 
-@lru_cache(maxsize=128)
-def _resolve_dns_cached(hostname: str):
-    """Cached DNS resolution to improve performance during containment checks."""
-    return socket.getaddrinfo(hostname, None)
-
 
 class ContainmentGuard:
     """Active LLM Context & Tool Execution Guardrail Engine."""
@@ -166,7 +161,7 @@ class ContainmentGuard:
             pass
 
         try:
-            addr_info = _resolve_dns_cached(hostname)
+            addr_info = socket.getaddrinfo(hostname, None)
             seen = set()
             for res in addr_info:
                 ip_str = res[4][0]
