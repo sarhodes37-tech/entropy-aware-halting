@@ -34,6 +34,7 @@ def test_gate_result_dictionary_access():
     # Test .get() safe fallback
     assert res.get("status") == "ALLOWED"
     assert res.get("non_existent_key", "fallback_value") == "fallback_value"
+    assert res.get("another_missing_key") is None
     
     # Test vectors_revoked inheritance on HALT
     res_halt = GateResult(action=GateAction.HALT, flagged_tokens=7)
