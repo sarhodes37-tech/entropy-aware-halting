@@ -112,6 +112,18 @@ def test_purge_vectors_exception_handling():
     assert manager.adapter.purge_vectors(["vec_1"]) is False
 
 
+def test_purge_vectors_empty_list():
+    """Validates early exit when purging an empty array."""
+    manager = VectorHygieneManager(db_client=MagicMock())
+    assert manager.adapter.purge_vectors([]) is True
+
+
+def test_purge_vectors_no_db_client():
+    """Validates early exit when no db_client is provided."""
+    manager = VectorHygieneManager(db_client=None)
+    assert manager.adapter.purge_vectors(["vec_1"]) is True
+
+
 def test_stage_vectors_empty_list():
     """Validates early exit when staging an empty array."""
     manager = VectorHygieneManager()
