@@ -97,21 +97,28 @@ def test_calculate_entropy_differential():
     assert calculate_entropy_differential(current_entropy=5.0, prev_entropy=5.0) == 0.0
 
 
-def test_calculate_rolling_entropy():
-    """Validates the calculation of smoothed rolling mean entropy."""
-    # Empty history
+def test_calculate_rolling_entropy_empty_list():
+    """Validates rolling entropy calculation on an empty list."""
     assert calculate_rolling_entropy([]) == 0.0
 
-    # History smaller than window size (default 5)
+
+def test_calculate_rolling_entropy_small_list():
+    """Validates rolling entropy calculation on a small list."""
     assert calculate_rolling_entropy([1.0, 2.0, 3.0]) == 2.0
 
-    # History equal to window size (default 5)
+
+def test_calculate_rolling_entropy_exact_window():
+    """Validates rolling entropy calculation when list matches window size."""
     assert calculate_rolling_entropy([1.0, 2.0, 3.0, 4.0, 5.0]) == 3.0
 
-    # History larger than window size (default 5)
+
+def test_calculate_rolling_entropy_large_list():
+    """Validates rolling entropy calculation on a large list."""
     assert calculate_rolling_entropy([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]) == 5.0
 
-    # Custom window size
+
+def test_calculate_rolling_entropy_custom_window():
+    """Validates rolling entropy calculation with a custom window size."""
     assert calculate_rolling_entropy([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0], window_size=3) == 6.0
 
 def test_ast_analyzer_get_node_weight():
