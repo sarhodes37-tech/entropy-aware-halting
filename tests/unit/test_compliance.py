@@ -218,3 +218,18 @@ def test_execute_right_to_be_forgotten_path_traversal_blocked(tmp_path):
 
     with pytest.raises(ValueError, match="Path traversal detected"):
         broker.execute_right_to_be_forgotten(tx_id, file_path="/etc/passwd")
+
+
+def test_execute_right_to_be_forgotten_oserror_permission_denied(tmp_path, monkeypatch):
+    """Validates that a file lacking read permissions triggers the OSError block and is handled gracefully."""
+    broker = TransactionalComplianceBroker()
+    tx_id = "tx_no_perms"
+    no_perm_file = tmp_path / "no_perms.log"
+    no_perm_file.write_text("sensitive data")
+    no_perm_file.chmod(0o000)
+    monkeypatch.chdir(tmp_path)
+
+    deleted, anchored_hash = broker.execute_right_to_be_forgotten(tx_id, file_path=str(no_perm_file))
+
+    assert deleted is False
+    assert anchored_hash is None
