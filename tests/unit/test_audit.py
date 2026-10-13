@@ -168,6 +168,187 @@ def test_record_event_payload_too_large(temp_audit_file):
         audit.record_event(event)
 
 
+# =====================================================================
+# ADVANCED AUDIT SECURITY & TAMPER TESTS
+# =====================================================================
+
+def test_audit_duplicate_event_id_detection(temp_audit_file):
+    """Validates that replayed or duplicate event IDs are detected."""
+    audit = TamperEvidentAuditTrail(temp_audit_file)
+    e1 = audit.record_event(AuditEvent(AuditLogLevel.INFO, "gate1", "reason1", "model1", "snippet1"))
+    e2 = audit.record_event(AuditEvent(AuditLogLevel.INFO, "gate2", "reason2", "model2", "snippet2"))
+
+    # Read and duplicate entry 2 with duplicate event_id
+    with open(temp_audit_file, "r") as f:
+        lines = f.readlines()
+
+    dup_entry = json.loads(lines[1])
+    lines.append(json.dumps(dup_entry) + "\n")
+
+    with open(temp_audit_file, "w") as f:
+        f.writelines(lines)
+
+    is_valid, count, msg = audit.verify_chain_integrity()
+    assert is_valid is False
+    assert "Duplicate event_id" in msg
+
+
+def test_audit_reordering_detection(temp_audit_file):
+    """Validates that swapping event sequence order breaks chain integrity."""
+    audit = TamperEvidentAuditTrail(temp_audit_file)
+    audit.record_event(AuditEvent(AuditLogLevel.INFO, "gate1", "reason1", "model1", "snippet1"))
+    audit.record_event(AuditEvent(AuditLogLevel.INFO, "gate2", "reason2", "model2", "snippet2"))
+
+    with open(temp_audit_file, "r") as f:
+        lines = f.readlines()
+
+    # Reorder lines
+    swapped = [lines[1], lines[0]]
+    with open(temp_audit_file, "w") as f:
+        f.writelines(swapped)
+
+    is_valid, count, msg = audit.verify_chain_integrity()
+    assert is_valid is False
+    assert "Broken chain link" in msg
+
+
+def test_audit_truncation_detection(temp_audit_file):
+    """Validates head, middle, and tail truncation behaviors."""
+    audit = TamperEvidentAuditTrail(temp_audit_file)
+    audit.record_event(AuditEvent(AuditLogLevel.INFO, "gate1", "r1", "m1", "s1"))
+    audit.record_event(AuditEvent(AuditLogLevel.INFO, "gate2", "r2", "m2", "s2"))
+    audit.record_event(AuditEvent(AuditLogLevel.INFO, "gate3", "r3", "m3", "s3"))
+
+    with open(temp_audit_file, "r") as f:
+        lines = f.readlines()
+
+    # 1. Head truncation (delete line 1)
+    with open(temp_audit_file, "w") as f:
+        f.writelines(lines[1:])
+
+    is_valid, count, msg = audit.verify_chain_integrity()
+    assert is_valid is False
+    assert "Broken chain link" in msg
+
+    # 2. Middle truncation (delete line 2)
+    with open(temp_audit_file, "w") as f:
+        f.writelines([lines[0], lines[2]])
+
+    is_valid, count, msg = audit.verify_chain_integrity()
+    assert is_valid is False
+    assert "Broken chain link" in msg
+
+    # 3. Tail truncation (delete line 3): Internal hash chain alone cannot detect tail truncation
+    with open(temp_audit_file, "w") as f:
+        f.writelines(lines[:2])
+
+    is_valid, count, msg = audit.verify_chain_integrity()
+    assert is_valid is True
+    assert count == 2
+
+
+def test_audit_partial_write_detection(temp_audit_file):
+    """Validates that partial line writes (corrupted JSON) are flagged."""
+    audit = TamperEvidentAuditTrail(temp_audit_file)
+    audit.record_event(AuditEvent(AuditLogLevel.INFO, "gate1", "r1", "m1", "s1"))
+
+    # Append corrupted JSON line representing a crash during write
+    with open(temp_audit_file, "a") as f:
+        f.write('{"event_id": "partial_write_123", "event_type": "INF')
+
+    is_valid, count, msg = audit.verify_chain_integrity()
+    assert is_valid is False
+    assert "Malformed JSON" in msg
+
+
+def test_audit_sensitive_data_redaction(temp_audit_file):
+    """Validates that sensitive credentials and PII are redacted from metadata and receipts."""
+    audit = TamperEvidentAuditTrail(temp_audit_file)
+    sensitive_metadata = {
+        "api_key": "sk-secret-12345",
+        "ssn": "000-00-0000",
+        "nested": {"password": "SuperSecretPassword123"}
+    }
+    audit.record_event(AuditEvent(
+        AuditLogLevel.INFO, "gate", "reason", "model", "snippet",
+        metadata=sensitive_metadata
+    ))
+
+    with open(temp_audit_file, "r") as f:
+        line = f.readline()
+    entry = json.loads(line)
+
+    metadata = entry["metadata"]
+    assert metadata["api_key"] == "[REDACTED]"
+    assert metadata["ssn"] == "[REDACTED]"
+    assert metadata["nested"]["password"] == "[REDACTED]"
+
+    # Test ReceiptGenerator sensitive data redaction
+    rg = ReceiptGenerator()
+    rg.log_event("ToolOutput", {"token": "bearer-token-abc", "safe_field": "public"})
+    rg.push_action(
+        {"op": "query", "secret": "shh"},
+        {"rollback": "purge", "private_key": "0x123"}
+    )
+    receipt = rg.mint_receipt("tx_sens", True, {"conf": 0.99})
+
+    assert receipt["event_log"][0]["details"]["token"] == "[REDACTED]"
+    assert receipt["event_log"][0]["details"]["safe_field"] == "public"
+    assert receipt["event_log"][1]["details"]["action"]["secret"] == "[REDACTED]"
+
+
+def test_receipt_exact_binding_and_verification():
+    """Validates receipt binding to input, config, gate_version, decision, outcome and independent verifier validation."""
+    key = b"secret_signing_key_32bytes_long!"
+    config = {"threshold": 0.95, "api_key": "should_be_masked"}
+    input_payload = {"user_prompt": "run_analysis", "password": "user_pass"}
+    decision = {"gate": "PermissionGate", "action": "ALLOW"}
+    outcome = {"vectors_revoked": 0}
+
+    rg = ReceiptGenerator(signing_key=key, gate_version="2.1.0", config=config)
+    rg.log_event("GateEvaluation", {"result": "PASSED"})
+
+    receipt = rg.mint_receipt(
+        transaction_id="tx_bound_001",
+        success=True,
+        confidence_matrix={"model": 0.98},
+        input_data=input_payload,
+        decision_details=decision,
+        execution_outcome=outcome
+    )
+
+    assert receipt["gate_version"] == "2.1.0"
+    assert receipt["config"]["api_key"] == "[REDACTED]"
+    assert "input_hash" in receipt
+    assert receipt["decision_details"] == decision
+    assert receipt["execution_outcome"] == outcome
+
+    # Verify signature independently with ReceiptGenerator.verify_receipt
+    assert ReceiptGenerator.verify_receipt(receipt, signing_key=key) is True
+
+    # Verify that altering any field invalidates signature
+    tampered_receipt = dict(receipt)
+    tampered_receipt["status"] = "ROLLED_BACK"
+    assert ReceiptGenerator.verify_receipt(tampered_receipt, signing_key=key) is False
+
+    # Verify wrong signing key fails
+    assert ReceiptGenerator.verify_receipt(receipt, signing_key=b"wrong_key") is False
+
+
+def test_audit_trail_concurrency_force_reload(temp_audit_file):
+    """Validates that two audit instances maintain chain link integrity via force_reload."""
+    audit1 = TamperEvidentAuditTrail(temp_audit_file)
+    audit2 = TamperEvidentAuditTrail(temp_audit_file)
+
+    audit1.record_event(AuditEvent(AuditLogLevel.INFO, "g1", "r1", "m1", "s1"))
+    audit2.record_event(AuditEvent(AuditLogLevel.INFO, "g2", "r2", "m2", "s2"))
+    audit1.record_event(AuditEvent(AuditLogLevel.INFO, "g3", "r3", "m3", "s3"))
+
+    is_valid, count, msg = audit1.verify_chain_integrity()
+    assert is_valid is True
+    assert count == 3
+
+
 def test_record_event_payload_too_large_multibyte(temp_audit_file):
     """Validates that payload snippets larger than 1MB in bytes (even if fewer chars) are rejected."""
     audit = TamperEvidentAuditTrail(temp_audit_file)

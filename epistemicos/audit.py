@@ -12,6 +12,7 @@ import json
 import time
 import uuid
 from pathlib import Path
+import hmac
 from typing import Tuple, Optional, Dict, Any, List
 from enum import Enum
 from dataclasses import dataclass
@@ -25,6 +26,29 @@ except ImportError:
 # Import unified models and telemetry layers
 from epistemicos.models import CanonicalProblemRepresentation, BeliefObject
 from epistemicos.telemetry import HardwareTelemetry
+
+SENSITIVE_KEYS = frozenset({
+    "api_key", "token", "password", "secret", "ssn", "banking_routing",
+    "account_number", "account_balance_usd", "proprietary_cargo",
+    "credit_card", "private_key"
+})
+
+
+def _sanitize_sensitive_data(obj: Any) -> Any:
+    """Recursively redacts sensitive keys, credentials, and PII from logs and receipts."""
+    if isinstance(obj, dict):
+        sanitized = {}
+        for k, v in obj.items():
+            if str(k).lower() in SENSITIVE_KEYS:
+                sanitized[k] = "[REDACTED]"
+            else:
+                sanitized[k] = _sanitize_sensitive_data(v)
+        return sanitized
+    elif isinstance(obj, list):
+        return [_sanitize_sensitive_data(item) for item in obj]
+    elif isinstance(obj, tuple):
+        return tuple(_sanitize_sensitive_data(item) for item in obj)
+    return obj
 
 
 class AuditLogLevel(Enum):
@@ -63,13 +87,16 @@ class TamperEvidentAuditTrail:
         self.genesis_hash = hashlib.sha256(self.GENESIS_SEED).hexdigest()
         self.last_hash = None
 
-    def _get_last_hash(self) -> str:
+    def _get_last_hash(self, force_reload: bool = False) -> str:
         """
         Efficiently retrieves the entry_hash of the final line without loading 
         the entire log file into memory (O(1) tail read).
         """
-        if getattr(self, "last_hash", None) is not None:
+        if not force_reload and getattr(self, "last_hash", None) is not None:
             return self.last_hash
+
+        if force_reload:
+            self.last_hash = None
 
         if not self.log_path.exists() or self.log_path.stat().st_size == 0:
             self.last_hash = self.genesis_hash
@@ -153,7 +180,7 @@ class TamperEvidentAuditTrail:
                 fcntl.flock(f, fcntl.LOCK_EX)
 
             try:
-                last_hash = self._get_last_hash()
+                last_hash = self._get_last_hash(force_reload=True)
 
                 entry_data = {
                     "event_id": event_id,
@@ -164,8 +191,8 @@ class TamperEvidentAuditTrail:
                     "model_id": event.model_id,
                     "latency_ms": final_latency,
                     "payload_hash": payload_hash,
-                    "payload_snippet": event.payload_snippet[:200],
-                    "metadata": event_metadata,
+                    "payload_snippet": _sanitize_sensitive_data(event.payload_snippet[:200]),
+                    "metadata": _sanitize_sensitive_data(event_metadata),
                     "prev_hash": last_hash
                 }
 
@@ -185,6 +212,7 @@ class TamperEvidentAuditTrail:
     def verify_chain_integrity(self) -> Tuple[bool, int, Optional[str]]:
         """
         Validates the entire audit file from Genesis to present.
+        Detects missing links, reordering, payload tampering, duplicate event IDs, and partial writes.
         Returns: (is_valid, total_records_verified, error_message)
         """
         if not self.log_path.exists():
@@ -192,6 +220,7 @@ class TamperEvidentAuditTrail:
 
         expected_prev_hash = self.genesis_hash
         count = 0
+        seen_event_ids = set()
 
         with open(self.log_path, "r", encoding="utf-8") as f:
             for line_idx, line in enumerate(f, 1):
@@ -203,6 +232,12 @@ class TamperEvidentAuditTrail:
                     entry = json.loads(line_str)
                 except json.JSONDecodeError:
                     return False, count, f"Malformed JSON on line {line_idx}"
+
+                recorded_id = entry.get("event_id")
+                if recorded_id:
+                    if recorded_id in seen_event_ids:
+                        return False, count, f"Duplicate event_id detected at line {line_idx}: {recorded_id}"
+                    seen_event_ids.add(recorded_id)
 
                 recorded_hash = entry.get("entry_hash")
                 recorded_prev_hash = entry.get("prev_hash")
@@ -226,41 +261,105 @@ class TamperEvidentAuditTrail:
 
                 expected_prev_hash = recorded_hash
                 count += 1
-                
+
         return True, count, None
 
 
 class ReceiptGenerator:
-    def __init__(self):
+    def __init__(
+        self,
+        signing_key: Optional[bytes] = None,
+        gate_version: str = "1.0.0",
+        config: Optional[Dict[str, Any]] = None
+    ):
         self.events = []
         self._rollbacks = []
         self._seq_idx = 0
+        self.signing_key = signing_key
+        self.gate_version = gate_version
+        self.config = config or {}
 
     def log_event(self, event_type: str, details: Dict[str, Any]):
         """
-        Add an event to the volatile receipt sequence.
+        Add an event to the volatile receipt sequence with PII/credential sanitization.
         """
         self.events.append({
             "idx": self._seq_idx,
+            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "type": event_type,
-            "details": details
+            "details": _sanitize_sensitive_data(details)
         })
         self._seq_idx += 1
 
     def push_action(self, action: Dict[str, Any], rollback_patch: Dict[str, Any]):
-        self.log_event("ActionProposed", {"action": action})
-        self._rollbacks.append(rollback_patch)
+        sanitized_action = _sanitize_sensitive_data(action)
+        sanitized_rollback = _sanitize_sensitive_data(rollback_patch)
+        self.log_event("ActionProposed", {"action": sanitized_action})
+        self._rollbacks.append(sanitized_rollback)
 
-    def mint_receipt(self, transaction_id: str, success: bool, confidence_matrix: Dict[str, float]) -> Dict[str, Any]:
-        receipt = {
+    def mint_receipt(
+        self,
+        transaction_id: str,
+        success: bool,
+        confidence_matrix: Dict[str, float],
+        input_data: Optional[Any] = None,
+        decision_details: Optional[Dict[str, Any]] = None,
+        execution_outcome: Optional[Dict[str, Any]] = None,
+        signing_key: Optional[bytes] = None
+    ) -> Dict[str, Any]:
+        """
+        Binds exact input hash, configuration, gate version, decision, outcome, and events
+        into a canonical receipt, signed via SHA-256 or HMAC-SHA256.
+        """
+        key = signing_key or self.signing_key
+
+        receipt: Dict[str, Any] = {
             "transaction_id": transaction_id,
             "status": "COMMITTED" if success else "ROLLED_BACK",
+            "gate_version": self.gate_version,
+            "config": _sanitize_sensitive_data(self.config),
             "confidence_matrix": confidence_matrix,
-            "event_log": self.events
+            "event_log": _sanitize_sensitive_data(self.events)
         }
-        receipt_string = json.dumps(receipt, sort_keys=True).encode()
-        receipt["signature"] = hashlib.sha256(receipt_string).hexdigest()
+
+        if input_data is not None:
+            sanitized_input = _sanitize_sensitive_data(input_data)
+            input_bytes = json.dumps(sanitized_input, sort_keys=True).encode("utf-8")
+            receipt["input_hash"] = hashlib.sha256(input_bytes).hexdigest()
+
+        if decision_details is not None:
+            receipt["decision_details"] = _sanitize_sensitive_data(decision_details)
+
+        if execution_outcome is not None:
+            receipt["execution_outcome"] = _sanitize_sensitive_data(execution_outcome)
+
+        receipt_string = json.dumps(receipt, sort_keys=True).encode("utf-8")
+
+        if key:
+            receipt["signature"] = hmac.new(key, receipt_string, hashlib.sha256).hexdigest()
+        else:
+            receipt["signature"] = hashlib.sha256(receipt_string).hexdigest()
+
         return receipt
+
+    @staticmethod
+    def verify_receipt(receipt: Dict[str, Any], signing_key: Optional[bytes] = None) -> bool:
+        """
+        Independently validates a receipt signature without trusting orchestrator state.
+        """
+        if not isinstance(receipt, dict) or "signature" not in receipt:
+            return False
+
+        recorded_signature = receipt["signature"]
+        check_receipt = {k: v for k, v in receipt.items() if k != "signature"}
+        receipt_bytes = json.dumps(check_receipt, sort_keys=True).encode("utf-8")
+
+        if signing_key:
+            computed_signature = hmac.new(signing_key, receipt_bytes, hashlib.sha256).hexdigest()
+        else:
+            computed_signature = hashlib.sha256(receipt_bytes).hexdigest()
+
+        return hmac.compare_digest(recorded_signature, computed_signature)
 
     def rollback(self) -> List[Dict[str, Any]]:
         self.log_event("RollbackIssued", {"count": len(self._rollbacks)})
