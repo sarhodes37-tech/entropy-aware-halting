@@ -12,8 +12,10 @@ Phase 5 Synthetic & Adversarial Test Suite covering:
 8. Resolver ambiguity & unresolved comparisons
 9. Decision-sensitive disagreement
 10. Duplicate candidate multiplicity & probability aggregation semantics
-11. Adapter cost, v_decision, and state safety validation
-12. Report verification test for benchmarks/run_semantic_evaluation.py
+11. Controlled Paraphrase Multiplicity vs Evidence Accumulation Test
+12. Interleaved Trajectories Isolation Test
+13. Adapter cost, v_decision, and state safety validation
+14. Report verification test for benchmarks/run_semantic_evaluation.py
 """
 
 import json
@@ -212,22 +214,82 @@ def test_scenario_9_decision_sensitive_disagreement():
     assert res.decision_sensitive_disagreement == 1.0
 
 
-# Duplicate candidate multiplicity & probability aggregation semantics
-def test_duplicate_candidate_probability_aggregation():
-    """Repeated candidates aggregate their sample probabilities into the single semantic cluster."""
+# Controlled Paraphrase Multiplicity vs Evidence Accumulation Test
+def test_controlled_paraphrase_multiplicity_vs_evidence():
+    """
+    Directly verifies whether the estimator distinguishes paraphrase multiplicity
+    (adding more phrasings of hypothesis A) from evidence accumulation (increasing A's probability).
+    """
     estimator = SemanticUncertaintyEstimator()
-    candidates = [
-        {"text": "Result A", "probability": 0.3},
-        {"text": "Result A", "probability": 0.3},
-        {"text": "Result B", "probability": 0.4}
+
+    # 1. Equal Baseline Support: Hypothesis A (p=0.5) vs Hypothesis B (p=0.5)
+    base_candidates = [
+        {"text": "Diagnosis is Influenza Type A", "probability": 0.5},
+        {"text": "Diagnosis is Acute Bacterial Pneumonia", "probability": 0.5}
     ]
-    res = estimator.estimate(candidates)
-    assert res.status == SemanticUncertaintyStatus.VALID
-    assert res.num_clusters == 2
-    # Cluster 0 ("Result A") should have aggregated mass 0.3 + 0.3 = 0.6
-    # Cluster 1 ("Result B") should have mass 0.4
-    cluster_a = [c for c in res.cluster_distribution if "Result A" in c.representative_text][0]
-    assert pytest.approx(cluster_a.probability, 1e-4) == 0.6
+    res_base = estimator.estimate(base_candidates)
+    assert res_base.num_clusters == 2
+    assert res_base.semantic_entropy_bits == 1.0
+    cluster_a_prob_base = res_base.cluster_distribution[0].probability
+    assert pytest.approx(cluster_a_prob_base, 1e-4) == 0.5
+
+    # 2. Paraphrase Multiplicity: Splitting Hypothesis A's 0.5 mass across 2 paraphrases
+    paraphrased_candidates = [
+        {"text": "Diagnosis is Influenza Type A", "probability": 0.25},
+        {"text": "Diagnosis is Type A Influenza", "probability": 0.25},
+        {"text": "Diagnosis is Acute Bacterial Pneumonia", "probability": 0.50}
+    ]
+    res_para = estimator.estimate(paraphrased_candidates)
+    assert res_para.num_clusters == 2
+    # Cluster A's aggregated mass remains 0.25 + 0.25 = 0.50, and semantic entropy remains exactly 1.0 bit!
+    assert pytest.approx(res_para.semantic_entropy_bits, 1e-4) == 1.0
+    cluster_a_prob_para = [c.probability for c in res_para.cluster_distribution if "Influenza" in c.representative_text][0]
+    assert pytest.approx(cluster_a_prob_para, 1e-4) == 0.50
+
+    # 3. Genuine Evidence Accumulation: Evidence for Hypothesis A increases (p=0.8), Hypothesis B drops (p=0.2)
+    evidence_candidates = [
+        {"text": "Diagnosis is Influenza Type A", "probability": 0.80},
+        {"text": "Diagnosis is Acute Bacterial Pneumonia", "probability": 0.20}
+    ]
+    res_evid = estimator.estimate(evidence_candidates)
+    assert res_evid.num_clusters == 2
+    # Semantic entropy decreases from 1.0 bit to ~0.72 bits as evidence accumulates for A!
+    assert res_evid.semantic_entropy_bits < 0.80
+    expected_entropy = -0.8 * math.log2(0.8) - 0.2 * math.log2(0.2)
+    assert pytest.approx(res_evid.semantic_entropy_bits, 1e-4) == expected_entropy
+
+
+# Interleaved Trajectories Isolation Test
+def test_interleaved_trajectories_isolation():
+    """Verifies that SemanticSchedulerAdapter maintains isolated states for interleaved trajectory IDs."""
+    adapter = SemanticSchedulerAdapter(v_decision=100.0)
+
+    # Step 1 on Trajectory 1
+    cand_t1_s1 = ["Approve transaction $10", "Deny transaction $10"]
+    _, sem_t1_s1, metric_t1_s1 = adapter.step([0.5, 0.5], cand_t1_s1, cost=10.0, state="s1", trajectory_id="traj_1")
+    assert sem_t1_s1.semantic_entropy_bits == 1.0
+    assert metric_t1_s1.delta_h_sem == 0.0
+
+    # Interleaved Step 1 on Trajectory 2
+    cand_t2_s1 = ["Approve transaction $100", "Approve transaction $100"]
+    _, sem_t2_s1, metric_t2_s1 = adapter.step([1.0, 0.0], cand_t2_s1, cost=10.0, state="s1", trajectory_id="traj_2")
+    assert sem_t2_s1.semantic_entropy_bits == 0.0
+    assert metric_t2_s1.delta_h_sem == 0.0
+
+    # Step 2 on Trajectory 1 (delta_h_sem must be computed relative to Trajectory 1 Step 1, NOT Trajectory 2!)
+    cand_t1_s2 = ["Approve transaction $10", "Approve transaction $10"]
+    _, sem_t1_s2, metric_t1_s2 = adapter.step([1.0, 0.0], cand_t1_s2, cost=5.0, state="s2", trajectory_id="traj_1")
+    assert sem_t1_s2.semantic_entropy_bits == 0.0
+    # delta_h_sem = 1.0 (from traj_1 s1) - 0.0 = 1.0
+    assert metric_t1_s2.delta_h_sem == 1.0
+    assert pytest.approx(metric_t1_s2.eta_sem, 1e-4) == 20.0
+
+    # Step 2 on Trajectory 2
+    cand_t2_s2 = ["Approve transaction $100", "Deny transaction $100"]
+    _, sem_t2_s2, metric_t2_s2 = adapter.step([0.5, 0.5], cand_t2_s2, cost=5.0, state="s2", trajectory_id="traj_2")
+    assert sem_t2_s2.semantic_entropy_bits == 1.0
+    # delta_h_sem = 0.0 (from traj_2 s1) - 1.0 = -1.0
+    assert metric_t2_s2.delta_h_sem == -1.0
 
 
 # Adapter cost & v_decision validation & invalid state safety
@@ -257,7 +319,7 @@ def test_evaluation_harness_report_structure():
     report = run_evaluation()
     assert report["harness_type"] == "SYNTHETIC_CONCEPTUAL_DEMONSTRATION"
     assert len(report["eval_scenarios"]) == 5
-    assert len(report["measured_empirical_findings"]) == 4
+    assert len(report["measured_empirical_findings"]) == 5
 
     # Check scenario 1 measured findings
     scen1 = report["eval_scenarios"][0]

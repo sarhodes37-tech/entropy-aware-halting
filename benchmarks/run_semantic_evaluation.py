@@ -4,7 +4,7 @@ Synthetic Demonstration Harness for Semantic Uncertainty vs. Token-Level Signals
 Phase 5 Deliverable & PR Feedback Refinements:
 - Demonstrates semantic uncertainty calculation across controlled synthetic test scenarios.
 - Explicitly labeled as a Synthetic Conceptual Demonstration, NOT a benchmark of general predictive performance on model logs.
-- Dynamically derives findings directly from measured outputs.
+- Dynamically derives findings directly from measured output values without scenario name string matching.
 - Clearly distinguishes synthetic next-token entropy inputs from actual model-derived token entropy distributions.
 
 Generates report: results/semantic_evaluation_results.json
@@ -114,25 +114,22 @@ def run_evaluation() -> Dict[str, Any]:
         }
         results.append(record)
 
-        # Dynamically build empirical findings from measured values
-        if scen_id == "scenario_1_paraphrase_invariance":
+        # Derive findings strictly from measured numerical properties
+        if tok_h > 1.0 and sem_h == 0.0 and sem_res.num_clusters == 1:
             measured_findings.append(
-                f"Measured Scenario 1: Synthetic token entropy was {tok_h:.2f} bits, "
-                f"while measured semantic entropy was {sem_h:.2f} bits across {sem_res.num_clusters} cluster(s)."
+                f"Measured gap: Token entropy was high ({tok_h:.2f} bits) while semantic entropy was zero ({sem_h:.2f} bits) across {sem_res.num_clusters} cluster."
             )
-        elif scen_id == "scenario_2_negation_reversal":
+        elif sem_res.decision_sensitive_disagreement > 0.0:
             measured_findings.append(
-                f"Measured Scenario 2: High decision-sensitive disagreement ({sem_res.decision_sensitive_disagreement:.2f}) "
-                f"was detected despite low lexical difference."
+                f"Measured decision sensitivity: High decision disagreement ({sem_res.decision_sensitive_disagreement:.2f}) detected across candidates."
             )
-        elif scen_id == "scenario_3_confident_shared_error":
+        elif sem_h == 0.0 and sem_res.candidates_analyzed > 1 and sem_res.factual_correctness is None:
             measured_findings.append(
-                f"Measured Scenario 3: Measured semantic entropy was {sem_h:.2f} bits, "
-                f"while factual_correctness remained explicitly {sem_res.factual_correctness} (unassumed)."
+                f"Measured consensus: Low semantic entropy ({sem_h:.2f} bits) observed with factual_correctness explicitly {sem_res.factual_correctness}."
             )
-        elif scen_id == "scenario_5_single_candidate":
+        elif sem_res.status == SemanticUncertaintyStatus.INSUFFICIENT_EVIDENCE:
             measured_findings.append(
-                f"Measured Scenario 5: Single candidate input returned status '{sem_res.status.value}'."
+                f"Measured single-candidate limitation: Returned status '{sem_res.status.value}' for 1 candidate."
             )
 
     report = {
