@@ -30,10 +30,12 @@ class ContextMinimizationBroker:
         self,
         max_context_tokens: int = 2048,
         min_relevance_threshold: float = 0.3,
+        max_sensitivity_threshold: float = 0.8,
         max_history_messages: int = 10
     ):
         self.max_context_tokens = max_context_tokens
         self.min_relevance_threshold = min_relevance_threshold
+        self.max_sensitivity_threshold = max_sensitivity_threshold
         self.max_history_messages = max_history_messages
 
     def filter_context_chunks(
@@ -41,16 +43,24 @@ class ContextMinimizationBroker:
         chunks: List[ContextChunk]
     ) -> List[ContextChunk]:
         """
-        Selects minimal necessary chunks based on relevance and token budgets.
+        Selects minimal necessary chunks based on relevance, sensitivity, and token budgets.
+        Excludes chunks with sensitivity exceeding max_sensitivity_threshold unless
+        relevance is extremely high (> 0.9).
         """
         if not chunks:
             return []
 
-        # Filter out low-relevance chunks
-        relevant = [c for c in chunks if c.relevance_score >= self.min_relevance_threshold]
+        # Filter out low-relevance or overly sensitive chunks
+        relevant = []
+        for c in chunks:
+            if c.relevance_score < self.min_relevance_threshold:
+                continue
+            if c.sensitivity_score > self.max_sensitivity_threshold and c.relevance_score <= 0.9:
+                continue
+            relevant.append(c)
 
-        # Sort by relevance descending
-        relevant.sort(key=lambda c: c.relevance_score, reverse=True)
+        # Sort by relevance descending, then by sensitivity ascending
+        relevant.sort(key=lambda c: (c.relevance_score, -c.sensitivity_score), reverse=True)
 
         selected: List[ContextChunk] = []
         accumulated_chars = 0

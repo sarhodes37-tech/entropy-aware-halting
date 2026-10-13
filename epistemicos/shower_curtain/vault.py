@@ -12,6 +12,7 @@ import json
 import hmac
 import hashlib
 import secrets
+import threading
 from pathlib import Path
 from typing import Dict, Any, Optional, Set, Tuple
 from epistemicos.shower_curtain.detector import SensitivityCategory, DetectionResult
@@ -37,6 +38,7 @@ class LocalMappingVault:
         if self.persistence_dir:
             self.persistence_dir.mkdir(parents=True, exist_ok=True)
 
+        self._lock = threading.Lock()
         # Structure: session_id -> { raw_value: placeholder }
         self._forward_vault: Dict[str, Dict[str, str]] = {}
         # Structure: session_id -> { placeholder: raw_value }
@@ -82,22 +84,23 @@ class LocalMappingVault:
         if detection.category in (SensitivityCategory.CREDENTIAL, SensitivityCategory.FINANCIAL, SensitivityCategory.GOV_ID):
             raise ValueError(f"Category {detection.category.value} cannot be stored in reversible pseudonym vault.")
 
-        if session_id not in self._forward_vault:
-            self._forward_vault[session_id] = {}
-            self._reverse_vault[session_id] = {}
+        with self._lock:
+            if session_id not in self._forward_vault:
+                self._forward_vault[session_id] = {}
+                self._reverse_vault[session_id] = {}
 
-        raw_val = detection.value
-        # Check if already mapped in session
-        for existing_raw, placeholder in self._forward_vault[session_id].items():
-            if existing_raw.lower() == raw_val.lower():
-                return placeholder
+            raw_val = detection.value
+            # Check if already mapped in session
+            for existing_raw, placeholder in self._forward_vault[session_id].items():
+                if existing_raw.lower() == raw_val.lower():
+                    return placeholder
 
-        # Generate new placeholder
-        placeholder = self._generate_placeholder(session_id, detection.category)
-        self._forward_vault[session_id][raw_val] = placeholder
-        self._reverse_vault[session_id][placeholder] = raw_val
+            # Generate new placeholder
+            placeholder = self._generate_placeholder(session_id, detection.category)
+            self._forward_vault[session_id][raw_val] = placeholder
+            self._reverse_vault[session_id][placeholder] = raw_val
 
-        return placeholder
+            return placeholder
 
     def rehydrate(
         self,
@@ -109,10 +112,12 @@ class LocalMappingVault:
         Safely restores authorized local placeholders in text.
         Rejects unmapped or fabricated placeholders.
         """
-        if not text or session_id not in self._reverse_vault:
-            return text
+        with self._lock:
+            if not text or session_id not in self._reverse_vault:
+                return text
 
-        reverse_map = self._reverse_vault[session_id]
+            reverse_map = dict(self._reverse_vault[session_id])
+
         if not reverse_map:
             return text
 
@@ -133,6 +138,7 @@ class LocalMappingVault:
 
     def clear_session(self, session_id: str) -> None:
         """Wipes all mapping data for a given session."""
-        self._forward_vault.pop(session_id, None)
-        self._reverse_vault.pop(session_id, None)
-        self._category_counters.pop(session_id, None)
+        with self._lock:
+            self._forward_vault.pop(session_id, None)
+            self._reverse_vault.pop(session_id, None)
+            self._category_counters.pop(session_id, None)
