@@ -7,6 +7,7 @@ for regulatory compliance and enterprise security audits.
 """
 
 import os
+import re
 import hashlib
 import json
 import time
@@ -27,11 +28,20 @@ except ImportError:
 from epistemicos.models import CanonicalProblemRepresentation, BeliefObject
 from epistemicos.telemetry import HardwareTelemetry
 
-SENSITIVE_KEYS = frozenset({
-    "api_key", "token", "password", "secret", "ssn", "banking_routing",
-    "account_number", "account_balance_usd", "proprietary_cargo",
-    "credit_card", "private_key"
-})
+SENSITIVE_KEY_PATTERNS = ("api_key", "token", "password", "secret", "ssn", "banking_routing",
+                          "account_number", "account_balance_usd", "proprietary_cargo",
+                          "credit_card", "private_key", "bearer", "auth", "credential", "x-api-key")
+
+REGEX_BEARER = re.compile(r"Bearer\s+[a-zA-Z0-9\._\-]+", re.IGNORECASE)
+REGEX_SK = re.compile(r"sk-[a-zA-Z0-9_\-]{20,}")
+REGEX_CRED_ASSIGN = re.compile(r"(password|api_key|secret|token)\s*=\s*[^\s;&]+", re.IGNORECASE)
+
+
+def _sanitize_string_value(val: str) -> str:
+    val = REGEX_BEARER.sub("Bearer [REDACTED]", val)
+    val = REGEX_SK.sub("sk-[REDACTED]", val)
+    val = REGEX_CRED_ASSIGN.sub(r"\1=[REDACTED]", val)
+    return val
 
 
 def _sanitize_sensitive_data(obj: Any) -> Any:
@@ -39,7 +49,8 @@ def _sanitize_sensitive_data(obj: Any) -> Any:
     if isinstance(obj, dict):
         sanitized = {}
         for k, v in obj.items():
-            if str(k).lower() in SENSITIVE_KEYS:
+            k_str = str(k).lower()
+            if any(p in k_str for p in SENSITIVE_KEY_PATTERNS):
                 sanitized[k] = "[REDACTED]"
             else:
                 sanitized[k] = _sanitize_sensitive_data(v)
@@ -48,6 +59,10 @@ def _sanitize_sensitive_data(obj: Any) -> Any:
         return [_sanitize_sensitive_data(item) for item in obj]
     elif isinstance(obj, tuple):
         return tuple(_sanitize_sensitive_data(item) for item in obj)
+    elif isinstance(obj, (set, frozenset)):
+        return type(obj)(_sanitize_sensitive_data(item) for item in obj)
+    elif isinstance(obj, str):
+        return _sanitize_string_value(obj)
     return obj
 
 
@@ -108,15 +123,15 @@ class TamperEvidentAuditTrail:
                 pointer = f.tell()
                 buffer_size = 65536
                 chunks = []
-                newline_count = 0
 
-                while pointer > 0 and newline_count < 2:
+                while pointer > 0:
                     read_size = min(buffer_size, pointer)
                     pointer -= read_size
                     f.seek(pointer)
                     chunk = f.read(read_size)
                     chunks.append(chunk)
-                    newline_count += chunk.count(b"\n")
+                    if b"\n" in chunk and len(chunks) > 1:
+                        break
 
                 if chunks:
                     chunks.reverse()
@@ -126,9 +141,15 @@ class TamperEvidentAuditTrail:
                     for line in reversed(lines):
                         line_str = line.strip().decode("utf-8")
                         if line_str:
-                            last_entry = json.loads(line_str)
-                            self.last_hash = last_entry.get("entry_hash", self.genesis_hash)
-                            return self.last_hash
+                            try:
+                                last_entry = json.loads(line_str)
+                                entry_hash = last_entry.get("entry_hash")
+                                if entry_hash:
+                                    self.last_hash = entry_hash
+                                    return self.last_hash
+                            except json.JSONDecodeError:
+                                # Ignore corrupted/partial trailing line and continue scanning backwards
+                                continue
         except Exception:
             pass
 
@@ -202,6 +223,10 @@ class TamperEvidentAuditTrail:
 
                 f.write(json.dumps(entry_data) + "\n")
                 f.flush()
+                try:
+                    os.fsync(f.fileno())
+                except OSError:
+                    pass
 
                 return entry_data
 
@@ -312,6 +337,7 @@ class ReceiptGenerator:
         into a canonical receipt, signed via SHA-256 or HMAC-SHA256.
         """
         key = signing_key or self.signing_key
+        algo = "HMAC-SHA256" if key else "SHA256"
 
         receipt: Dict[str, Any] = {
             "transaction_id": transaction_id,
@@ -319,7 +345,8 @@ class ReceiptGenerator:
             "gate_version": self.gate_version,
             "config": _sanitize_sensitive_data(self.config),
             "confidence_matrix": confidence_matrix,
-            "event_log": _sanitize_sensitive_data(self.events)
+            "event_log": _sanitize_sensitive_data(self.events),
+            "signature_algorithm": algo
         }
 
         if input_data is not None:
@@ -346,11 +373,22 @@ class ReceiptGenerator:
     def verify_receipt(receipt: Dict[str, Any], signing_key: Optional[bytes] = None) -> bool:
         """
         Independently validates a receipt signature without trusting orchestrator state.
+        Enforces strict signature algorithm matching to prevent algorithm downgrade attacks.
         """
         if not isinstance(receipt, dict) or "signature" not in receipt:
             return False
 
         recorded_signature = receipt["signature"]
+        recorded_algo = receipt.get("signature_algorithm")
+
+        # Algorithm downgrade & mismatch protection
+        if signing_key is not None:
+            if recorded_algo != "HMAC-SHA256":
+                return False
+        else:
+            if recorded_algo != "SHA256":
+                return False
+
         check_receipt = {k: v for k, v in receipt.items() if k != "signature"}
         receipt_bytes = json.dumps(check_receipt, sort_keys=True).encode("utf-8")
 

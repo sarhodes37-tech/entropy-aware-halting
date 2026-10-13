@@ -349,6 +349,155 @@ def test_audit_trail_concurrency_force_reload(temp_audit_file):
     assert count == 3
 
 
+def _multiprocess_writer_worker(file_path: str, worker_id: int, count: int):
+    """Helper target for multiprocessing concurrency tests."""
+    audit = TamperEvidentAuditTrail(file_path)
+    for i in range(count):
+        audit.record_event(AuditEvent(
+            AuditLogLevel.INFO,
+            f"worker_{worker_id}",
+            f"step_{i}",
+            "model_mp",
+            f"snippet_worker_{worker_id}_{i}"
+        ))
+
+
+def test_audit_multiprocess_concurrency(temp_audit_file):
+    """Validates concurrent log appends from independent OS processes maintain chain integrity."""
+    import multiprocessing
+
+    processes = []
+    num_workers = 4
+    events_per_worker = 5
+
+    for w_id in range(num_workers):
+        p = multiprocessing.Process(
+            target=_multiprocess_writer_worker,
+            args=(temp_audit_file, w_id, events_per_worker)
+        )
+        processes.append(p)
+        p.start()
+
+    for p in processes:
+        p.join(timeout=10)
+
+    audit_verifier = TamperEvidentAuditTrail(temp_audit_file)
+    is_valid, count, msg = audit_verifier.verify_chain_integrity()
+    assert is_valid is True
+    assert count == num_workers * events_per_worker
+
+
+def test_audit_crash_recovery_last_hash(temp_audit_file):
+    """Validates that a process crash leaving a partial line tail does not reset last_hash to genesis."""
+    audit = TamperEvidentAuditTrail(temp_audit_file)
+    e1 = audit.record_event(AuditEvent(AuditLogLevel.INFO, "g1", "r1", "m1", "s1"))
+    e2 = audit.record_event(AuditEvent(AuditLogLevel.INFO, "g2", "r2", "m2", "s2"))
+    e3 = audit.record_event(AuditEvent(AuditLogLevel.INFO, "g3", "r3", "m3", "s3"))
+
+    # Simulate crash mid-write by writing partial trailing JSON fragment
+    with open(temp_audit_file, "a") as f:
+        f.write('{"event_id": "crashed_mid_write_123", "event_type": "INF')
+
+    # Re-initialize audit trail after crash
+    audit_after_crash = TamperEvidentAuditTrail(temp_audit_file)
+    last_h = audit_after_crash._get_last_hash(force_reload=True)
+
+    # Must recover the entry_hash of e3, NOT reset to genesis_hash
+    assert last_h == e3["entry_hash"]
+    assert last_h != audit_after_crash.genesis_hash
+
+    # Record e4 and ensure its prev_hash links to e3
+    e4 = audit_after_crash.record_event(AuditEvent(AuditLogLevel.INFO, "g4", "r4", "m4", "s4"))
+    assert e4["prev_hash"] == e3["entry_hash"]
+
+
+def test_receipt_field_by_field_tampering():
+    """Validates that altering any individual field in a receipt invalidates its signature."""
+    key = b"signing_secret_key_123"
+    rg = ReceiptGenerator(signing_key=key, gate_version="1.0.0", config={"setting": 1})
+    rg.log_event("EventA", {"detail": "ok"})
+
+    receipt = rg.mint_receipt(
+        transaction_id="tx_test_tamper",
+        success=True,
+        confidence_matrix={"gate": 0.9},
+        input_data={"prompt": "test"},
+        decision_details={"action": "ALLOW"},
+        execution_outcome={"revoked": 0}
+    )
+
+    assert ReceiptGenerator.verify_receipt(receipt, signing_key=key) is True
+
+    # Test independent field modifications
+    tamper_scenarios = [
+        ("transaction_id", "tx_test_tamper_MODIFIED"),
+        ("status", "ROLLED_BACK"),
+        ("gate_version", "1.0.1"),
+        ("config", {"setting": 2}),
+        ("confidence_matrix", {"gate": 0.5}),
+        ("event_log", []),
+        ("input_hash", "0000000000000000000000000000000000000000000000000000000000000000"),
+        ("decision_details", {"action": "HALT"}),
+        ("execution_outcome", {"revoked": 1}),
+        ("signature_algorithm", "SHA256")
+    ]
+
+    for key_to_tamper, tampered_val in tamper_scenarios:
+        t_receipt = dict(receipt)
+        t_receipt[key_to_tamper] = tampered_val
+        assert ReceiptGenerator.verify_receipt(t_receipt, signing_key=key) is False, f"Failed to reject tampered key: {key_to_tamper}"
+
+
+def test_receipt_algorithm_downgrade_prevention():
+    """Validates protection against algorithm downgrade and key mismatch attacks."""
+    key = b"secret_key"
+    rg_hmac = ReceiptGenerator(signing_key=key)
+    receipt_hmac = rg_hmac.mint_receipt("tx_hmac", True, {"m": 1.0})
+
+    # HMAC receipt verified with key must pass
+    assert ReceiptGenerator.verify_receipt(receipt_hmac, signing_key=key) is True
+
+    # Verifying HMAC receipt without passing signing key must fail
+    assert ReceiptGenerator.verify_receipt(receipt_hmac, signing_key=None) is False
+
+    # Forging receipt: setting algorithm to SHA256 while keeping HMAC signature must fail
+    forged_downgrade = dict(receipt_hmac)
+    forged_downgrade["signature_algorithm"] = "SHA256"
+    assert ReceiptGenerator.verify_receipt(forged_downgrade, signing_key=None) is False
+    assert ReceiptGenerator.verify_receipt(forged_downgrade, signing_key=key) is False
+
+    # Plain SHA256 receipt
+    rg_sha = ReceiptGenerator(signing_key=None)
+    receipt_sha = rg_sha.mint_receipt("tx_sha", True, {"m": 1.0})
+    assert ReceiptGenerator.verify_receipt(receipt_sha, signing_key=None) is True
+
+    # Verifying plain SHA256 receipt when expecting HMAC (key provided) must fail
+    assert ReceiptGenerator.verify_receipt(receipt_sha, signing_key=key) is False
+
+
+def test_sanitize_sensitive_data_deep_structures_and_text():
+    """Validates redaction across sets, frozensets, unusual keys, and free-text token patterns."""
+    from epistemicos.audit import _sanitize_sensitive_data
+
+    raw_data = {
+        "x-api-key": "sk-123456789012345678901234",
+        "headers": {
+            "Authorization": "Bearer my_secret_bearer_token_123",
+            "Credential_Token": "secret_pass_123"
+        },
+        "tags_set": {"normal_tag", "password=my_raw_password"},
+        "config_tuple": ("clean_val", "api_key=sk-999999999999999999999999")
+    }
+
+    sanitized = _sanitize_sensitive_data(raw_data)
+
+    assert sanitized["x-api-key"] == "[REDACTED]"
+    assert sanitized["headers"]["Authorization"] == "[REDACTED]"
+    assert sanitized["headers"]["Credential_Token"] == "[REDACTED]"
+    assert "password=[REDACTED]" in sanitized["tags_set"]
+    assert "api_key=[REDACTED]" in sanitized["config_tuple"][1]
+
+
 def test_record_event_payload_too_large_multibyte(temp_audit_file):
     """Validates that payload snippets larger than 1MB in bytes (even if fewer chars) are rejected."""
     audit = TamperEvidentAuditTrail(temp_audit_file)
