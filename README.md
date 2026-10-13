@@ -3,7 +3,14 @@ EpistemicOS is a low-latency security middleware designed to enforce determinist
 Think of standard LLM safety filters like a bouncer checking every single patron's ID one by one—a high-latency bottleneck. EpistemicOS operates more like a thermodynamic sensor. It detects the sudden statistical pressure drop of an anomalous token stream in O(1) time and drops the blast doors instantly, only applying heavier regex and AST parsing to stable, baseline traffic.
 ## 📊 Empirical Validation & Benchmarks
 
-**Under revision**
+### Benchmark Reproduction
+To run and reproduce the full empirical benchmark suite, 6-baseline comparison, threshold ablations, and generate machine-readable results (`results/ablation_table.json`, `results/per_case_results.json`, and `results/ablation_summary.md`):
+
+```bash
+python3 -m benchmarks.run_full_benchmark
+```
+
+For detailed experimental methodology and limitations, see [docs/LIMITATIONS.md](docs/LIMITATIONS.md).
 
 ## 🏗 Core Architecture
 EpistemicOS routes the token stream through sequential hard gates to guarantee deterministic containment.

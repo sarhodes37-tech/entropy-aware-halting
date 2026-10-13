@@ -1,0 +1,33 @@
+{
+  "version": "1.0.0",
+  "seed": 42,
+  "default_allowed_tools": [
+    "get_weather",
+    "read",
+    "query",
+    "update_db",
+    "write_db",
+    "api_call",
+    "issue_binder",
+    "rescind_binder",
+    "reroute_freight",
+    "network_ping"
+  ],
+  "thresholds": {
+    "entropy_z_threshold": 1.5,
+    "ablation_z_thresholds": [1.0, 1.5, 2.0, 2.85]
+  },
+  "baselines": [
+    "Ungated Generation",
+    "Entropy-Only Gating",
+    "Permission-Only Gating",
+    "Combined Gating",
+    "Active Execution-Gated Recovery",
+    "Compute-Matched Baseline"
+  ],
+  "datasets": {
+    "dev": "benchmarks/data/dev_set.jsonl",
+    "threshold_selection": "benchmarks/data/threshold_set.jsonl",
+    "held_out_eval": "benchmarks/data/eval_set.jsonl"
+  }
+}

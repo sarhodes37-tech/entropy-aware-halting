@@ -210,8 +210,9 @@ class PermissionGate(Gate):
 
         for action in proposed_actions:
             if isinstance(action, dict):
-                op = action.get("op")
-                node = action.get("node") or action.get("endpoint")
+                inner_act = action.get("action") if isinstance(action.get("action"), dict) else action
+                op = inner_act.get("op")
+                node = inner_act.get("node") or inner_act.get("endpoint")
             else:
                 op = getattr(action, "op", None)
                 node = getattr(action, "node", None) or getattr(action, "endpoint", None)
