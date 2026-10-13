@@ -50,7 +50,7 @@ def _sanitize_sensitive_data(obj: Any) -> Any:
         sanitized = {}
         for k, v in obj.items():
             k_str = str(k).lower()
-            if any(p in k_str for p in SENSITIVE_KEY_PATTERNS):
+            if any(p in k_str for p in SENSITIVE_KEY_PATTERNS) and not k_str.endswith(("_id", "_hash", "_digest", "_uuid")):
                 sanitized[k] = "[REDACTED]"
             else:
                 sanitized[k] = _sanitize_sensitive_data(v)

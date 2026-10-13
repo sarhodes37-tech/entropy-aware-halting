@@ -69,11 +69,31 @@ from epistemicos.shower_curtain import (
     LocalMappingVault
 )
 
+# Expose Execution Provenance subsystem
+from epistemicos.provenance import (
+    ProvenanceEvent,
+    ProvenanceEventType,
+    ProvenanceSource,
+    ProvenanceStore,
+    LocalProvenanceStore,
+    TrustedExecutionBoundary,
+    ProvenanceReconciler,
+    ReconciliationReport
+)
+
 __all__.extend([
     "ShowerCurtainEngine",
     "ShowerCurtainGate",
     "ShowerCurtainOpenAIAdapter",
     "SensitiveDataDetector",
     "PrivacyPolicy",
-    "LocalMappingVault"
+    "LocalMappingVault",
+    "ProvenanceEvent",
+    "ProvenanceEventType",
+    "ProvenanceSource",
+    "ProvenanceStore",
+    "LocalProvenanceStore",
+    "TrustedExecutionBoundary",
+    "ProvenanceReconciler",
+    "ReconciliationReport"
 ])
