@@ -407,13 +407,16 @@ class ProvenanceReconciler:
         exec_interrupted = [e for e in events if e.event_type == ProvenanceEventType.EXECUTION_INTERRUPTED.value]
         egress_blocked = [e for e in events if e.event_type == ProvenanceEventType.EGRESS_BLOCKED.value]
 
-        # Map authorizations by token_id and request_id
-        auth_by_token: Dict[str, ProvenanceEvent] = {
-            g.authorization_token_id: g for g in auth_granted if g.authorization_token_id
-        }
-        auth_by_req: Dict[str, ProvenanceEvent] = {
-            g.request_id: g for g in auth_granted if g.request_id
-        }
+        # Map authorizations by token_id and request_id (unredacted fields if available)
+        auth_by_token: Dict[str, ProvenanceEvent] = {}
+        auth_by_req: Dict[str, ProvenanceEvent] = {}
+        for g in auth_granted:
+            tok = g.authorization_token_id
+            if tok and tok != "[REDACTED]":
+                auth_by_token[tok] = g
+            req = g.request_id
+            if req and req != "[REDACTED]":
+                auth_by_req[req] = g
 
         # Rule 1: Execution without matching authorization
         if exec_started and not auth_granted:
@@ -425,7 +428,15 @@ class ProvenanceReconciler:
 
         # Rule 3 & Rule 4: Match execution events against specific authorization decision by token_id / request_id
         for s in exec_started:
-            g = auth_by_token.get(s.authorization_token_id) or auth_by_req.get(s.request_id)
+            tok = s.authorization_token_id
+            req = s.request_id
+            g = (auth_by_token.get(tok) if tok and tok != "[REDACTED]" else None) or \
+                (auth_by_req.get(req) if req and req != "[REDACTED]" else None)
+
+            # Fallback for single auth_granted record if redacted
+            if not g and len(auth_granted) == 1:
+                g = auth_granted[0]
+
             if g:
                 if s.target != g.target or s.action_name != g.action_name:
                     violations.append(f"Execution target or action name mismatch for token {s.authorization_token_id}: granted ({g.action_name}:{g.target}), executed ({s.action_name}:{s.target})")

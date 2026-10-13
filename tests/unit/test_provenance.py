@@ -255,6 +255,152 @@ def test_executor_exception_recording(tmp_path):
     assert "division by zero" in fail_event.outcome["error"]
 
 
+def test_keyboard_interrupt_propagation_and_recording(tmp_path):
+    log_file = str(tmp_path / "prov.jsonl")
+    store = LocalProvenanceStore(log_path=log_file)
+    boundary = TrustedExecutionBoundary(provenance_store=store)
+
+    payload = {"op": "LONG_TASK"}
+    digest = boundary.compute_canonical_digest(payload)
+    corr_id = str(uuid.uuid4())
+
+    def interrupting_executor():
+        raise KeyboardInterrupt("task interrupted by SIGINT")
+
+    with pytest.raises(KeyboardInterrupt):
+        boundary.execute_protected_action(
+            action_name="COMPUTE",
+            target="cpu-worker",
+            request_payload=payload,
+            correlation_id=corr_id,
+            request_id="req-int",
+            authorization_token_id="tok-int",
+            authorized_digest=digest,
+            authorization_granted=True,
+            executor_func=interrupting_executor
+        )
+
+    events = store.get_events_for_correlation(corr_id)
+    types = [e.event_type for e in events]
+    assert ProvenanceEventType.EXECUTION_STARTED.value in types
+    assert ProvenanceEventType.EXECUTION_INTERRUPTED.value in types
+
+    int_event = [e for e in events if e.event_type == ProvenanceEventType.EXECUTION_INTERRUPTED.value][0]
+    assert int_event.outcome["status"] == "INTERRUPTED"
+
+
+def test_multi_request_interleaved_reconciliation(tmp_path):
+    log_file = str(tmp_path / "prov.jsonl")
+    store = LocalProvenanceStore(log_path=log_file)
+    reconciler = ProvenanceReconciler()
+    corr_id = str(uuid.uuid4())
+
+    # Request 1 (Authorized and Succeeded)
+    auth1 = ProvenanceEvent(
+        schema_version="1.0.0",
+        event_id=str(uuid.uuid4()),
+        event_type=ProvenanceEventType.AUTHORIZATION_GRANTED.value,
+        provenance_source=ProvenanceSource.GOVERNANCE_GATE.value,
+        correlation_id=corr_id,
+        request_id="req-1",
+        action_name="READ",
+        target="doc-1",
+        canonical_request_digest="digest-1",
+        timestamp="2025-01-01T00:00:00Z",
+        authorization_token_id="tok-1"
+    )
+    store.record_event(auth1)
+
+    # Request 2 (Authorized and Succeeded)
+    auth2 = ProvenanceEvent(
+        schema_version="1.0.0",
+        event_id=str(uuid.uuid4()),
+        event_type=ProvenanceEventType.AUTHORIZATION_GRANTED.value,
+        provenance_source=ProvenanceSource.GOVERNANCE_GATE.value,
+        correlation_id=corr_id,
+        request_id="req-2",
+        action_name="WRITE",
+        target="doc-2",
+        canonical_request_digest="digest-2",
+        timestamp="2025-01-01T00:00:01Z",
+        authorization_token_id="tok-2"
+    )
+    store.record_event(auth2)
+
+    # Interleaved execution for Request 2
+    exec2_start = ProvenanceEvent(
+        schema_version="1.0.0",
+        event_id=str(uuid.uuid4()),
+        event_type=ProvenanceEventType.EXECUTION_STARTED.value,
+        provenance_source=ProvenanceSource.EXECUTOR.value,
+        correlation_id=corr_id,
+        request_id="req-2",
+        action_name="WRITE",
+        target="doc-2",
+        canonical_request_digest="digest-2",
+        timestamp="2025-01-01T00:00:02Z",
+        authorization_token_id="tok-2",
+        execution_attempt_id="att-2"
+    )
+    store.record_event(exec2_start)
+
+    exec2_succ = ProvenanceEvent(
+        schema_version="1.0.0",
+        event_id=str(uuid.uuid4()),
+        event_type=ProvenanceEventType.EXECUTION_SUCCEEDED.value,
+        provenance_source=ProvenanceSource.EXECUTOR.value,
+        correlation_id=corr_id,
+        request_id="req-2",
+        action_name="WRITE",
+        target="doc-2",
+        canonical_request_digest="digest-2",
+        timestamp="2025-01-01T00:00:03Z",
+        authorization_token_id="tok-2",
+        execution_attempt_id="att-2"
+    )
+    store.record_event(exec2_succ)
+
+    # Interleaved execution for Request 1
+    exec1_start = ProvenanceEvent(
+        schema_version="1.0.0",
+        event_id=str(uuid.uuid4()),
+        event_type=ProvenanceEventType.EXECUTION_STARTED.value,
+        provenance_source=ProvenanceSource.EXECUTOR.value,
+        correlation_id=corr_id,
+        request_id="req-1",
+        action_name="READ",
+        target="doc-1",
+        canonical_request_digest="digest-1",
+        timestamp="2025-01-01T00:00:04Z",
+        authorization_token_id="tok-1",
+        execution_attempt_id="att-1"
+    )
+    store.record_event(exec1_start)
+
+    exec1_succ = ProvenanceEvent(
+        schema_version="1.0.0",
+        event_id=str(uuid.uuid4()),
+        event_type=ProvenanceEventType.EXECUTION_SUCCEEDED.value,
+        provenance_source=ProvenanceSource.EXECUTOR.value,
+        correlation_id=corr_id,
+        request_id="req-1",
+        action_name="READ",
+        target="doc-1",
+        canonical_request_digest="digest-1",
+        timestamp="2025-01-01T00:00:05Z",
+        authorization_token_id="tok-1",
+        execution_attempt_id="att-1"
+    )
+    store.record_event(exec1_succ)
+
+    events = store.get_events_for_correlation(corr_id)
+    report = reconciler.reconcile_correlation(corr_id, events, agent_claimed_success=True)
+
+    assert report.valid
+    assert report.status == "RECONCILED"
+    assert len(report.violations) == 0
+
+
 def test_privacy_and_sensitive_payload_redaction(tmp_path):
     log_file = str(tmp_path / "prov.jsonl")
     store = LocalProvenanceStore(log_path=log_file)
