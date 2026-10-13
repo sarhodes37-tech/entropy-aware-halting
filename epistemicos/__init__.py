@@ -52,3 +52,22 @@ __all__ = [
     "get_optimal_device",
     "get_model_and_tokenizer",
 ]
+
+# Expose Shower Curtain subsystem
+from epistemicos.shower_curtain import (
+    ShowerCurtainEngine,
+    ShowerCurtainGate,
+    ShowerCurtainOpenAIAdapter,
+    SensitiveDataDetector,
+    PrivacyPolicy,
+    LocalMappingVault
+)
+
+__all__.extend([
+    "ShowerCurtainEngine",
+    "ShowerCurtainGate",
+    "ShowerCurtainOpenAIAdapter",
+    "SensitiveDataDetector",
+    "PrivacyPolicy",
+    "LocalMappingVault"
+])

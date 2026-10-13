@@ -21,6 +21,8 @@ from epistemicos.gates import (
     CryptoAttestationGate,
     GateAction
 )
+from epistemicos.shower_curtain.gate import ShowerCurtainGate
+from epistemicos.shower_curtain.engine import ShowerCurtainEngine
 
 class EpistemicOrchestrator:
     def register_gate(self, gate, *args, **kwargs):
@@ -65,6 +67,7 @@ class EpistemicOrchestrator:
         self.vector_manager = VectorHygieneManager(db_client=db_client)
 
         # Initialize Governance Gates in priority order
+        self.shower_curtain = ShowerCurtainEngine(audit_log_path=self.audit_log_path)
         self.gates = [
             PermissionGate(),
             EntropyGate(z_threshold=1.5, window_size=10),
