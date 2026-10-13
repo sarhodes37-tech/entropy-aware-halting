@@ -18,7 +18,7 @@ import os
 import re
 import time
 from typing import Dict, Any, List, Optional
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from epistemicos.models import TokenSurprisalSensor
 
@@ -27,6 +27,88 @@ class GateAction(Enum):
     ALLOW = "ALLOW"
     HALT = "DETERMINISTIC_HALT"
     ROLLBACK = "ACTION_ROLLBACK"
+
+
+class GateDecision(Enum):
+    ALLOW = "ALLOW"
+    DENY = "DENY"
+    HALT = "HALT"
+    INDETERMINATE = "INDETERMINATE"
+
+
+@dataclass
+class GateInput:
+    payload: Dict[str, Any]
+    context: Dict[str, Any]
+    operation_id: Optional[str] = None
+    requestor_id: Optional[str] = None
+    attempt_number: int = 1
+
+
+@dataclass
+class GateConfig:
+    version: str = "1.0.0"
+    is_critical: bool = True
+    max_execution_cost_ms: float = 100.0
+    enabled: bool = True
+    custom_params: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class GateOutcome:
+    decision: GateDecision
+    reason_code: str
+    gate_name: str
+    gate_version: str = "1.0.0"
+    evidence: Dict[str, Any] = field(default_factory=dict)
+    latency_ms: float = 0.0
+    cost_estimate_ms: float = 0.0
+
+    @property
+    def passed(self) -> bool:
+        return self.decision == GateDecision.ALLOW
+
+    @property
+    def action(self) -> GateAction:
+        return GateAction.ALLOW if self.decision == GateDecision.ALLOW else GateAction.HALT
+
+    @property
+    def status(self) -> str:
+        return "ALLOWED" if self.decision == GateDecision.ALLOW else "HALTED"
+
+    @property
+    def reason(self) -> str:
+        return self.reason_code
+
+    def to_audit_event(self) -> Dict[str, Any]:
+        return {
+            "gate_name": self.gate_name,
+            "gate_version": self.gate_version,
+            "decision": self.decision.value,
+            "reason_code": self.reason_code,
+            "evidence": self.evidence,
+            "latency_ms": self.latency_ms,
+            "cost_estimate_ms": self.cost_estimate_ms,
+            "timestamp": time.time()
+        }
+
+    def to_gate_result(self) -> "GateResult":
+        if self.decision == GateDecision.ALLOW:
+            action = GateAction.ALLOW
+            status = "ALLOWED"
+        else:
+            action = GateAction.HALT
+            status = "HALTED"
+
+        kwargs = dict(self.evidence)
+        kwargs.setdefault("status", status)
+        kwargs.setdefault("action", action)
+        kwargs.setdefault("gate_name", self.gate_name)
+        kwargs.setdefault("reason", self.reason_code)
+        kwargs.setdefault("latency_ms", self.latency_ms)
+        kwargs.setdefault("confidence", 1.0 if self.decision == GateDecision.ALLOW else 0.0)
+
+        return GateResult(**kwargs)
 
 
 @dataclass
@@ -107,81 +189,130 @@ class Gate(ABC):
         pass
 
 
-class EntropyGate(Gate):
+class ControlPlaneGate(Gate):
+    """Refined abstract base class for independent control-plane gates with typed input/outcome contract."""
+
+    def __init__(self, config: Optional[GateConfig] = None):
+        self.config = config or GateConfig()
+        self.gate_name = self.__class__.__name__
+
+    @abstractmethod
+    def evaluate_contract(self, gate_input: GateInput) -> GateOutcome:
+        """Typed input/outcome evaluation method."""
+        pass
+
+    def evaluate_safe(self, gate_input: GateInput) -> GateOutcome:
+        """Evaluates contract with fail-closed exception handling."""
+        t0 = time.perf_counter()
+        try:
+            return self.evaluate_contract(gate_input)
+        except Exception as e:
+            latency = (time.perf_counter() - t0) * 1000.0
+            if self.config.is_critical:
+                return GateOutcome(
+                    decision=GateDecision.HALT,
+                    reason_code="GATE_EXECUTION_ERROR",
+                    gate_name=self.gate_name,
+                    gate_version=self.config.version,
+                    evidence={"error": str(e), "exception_type": type(e).__name__},
+                    latency_ms=latency
+                )
+            else:
+                return GateOutcome(
+                    decision=GateDecision.INDETERMINATE,
+                    reason_code="GATE_EXECUTION_ERROR_NON_CRITICAL",
+                    gate_name=self.gate_name,
+                    gate_version=self.config.version,
+                    evidence={"error": str(e)},
+                    latency_ms=latency
+                )
+
+    def evaluate(self, payload: Dict[str, Any], context: Dict[str, Any]) -> GateResult:
+        """Legacy adapter for evaluate(payload, context)."""
+        gi = GateInput(
+            payload=payload,
+            context=context,
+            operation_id=context.get("requested_operation_id") or context.get("operation_name"),
+            requestor_id=context.get("requestor_id"),
+            attempt_number=context.get("attempt_number", 1)
+        )
+        outcome = self.evaluate_safe(gi)
+        return outcome.to_gate_result()
+
+
+class EntropyGate(ControlPlaneGate):
     """
     Monitors autoregressive token logprobs for anomaly detection using a 
     granular, token-by-token surprisal sensor.
-    
-    Trips when individual token Z-scores exceed the dynamic envelope 
-    z_threshold, indicating a likely prompt injection or model hallucination event 
-    buried within the payload.
     """
 
-    def __init__(self, z_threshold: float = 2.85, window_size: int = 10):
-        # Delegate statistical analysis to the consolidated domain model
+    def __init__(self, z_threshold: float = 2.85, window_size: int = 10, config: Optional[GateConfig] = None):
+        super().__init__(config=config or GateConfig(version="1.0.0", is_critical=True))
         self.sensor = TokenSurprisalSensor(z_threshold=z_threshold, window_size=window_size)
 
-    def evaluate(self, payload: Dict[str, Any], context: Dict[str, Any]) -> GateResult:
+    def evaluate_contract(self, gate_input: GateInput) -> GateOutcome:
         t0 = time.perf_counter()
-        logprobs = context.get("token_logprobs", [])
+        logprobs = gate_input.context.get("token_logprobs", [])
 
         if not logprobs:
-            return GateResult(
-                action=GateAction.ALLOW, 
-                latency_ms=(time.perf_counter() - t0) * 1000, 
-                gate_name="EntropyGate", 
-                reason="NO_LOGPROBS_PROVIDED"
+            return GateOutcome(
+                decision=GateDecision.ALLOW,
+                reason_code="NO_LOGPROBS_PROVIDED",
+                gate_name=self.gate_name,
+                gate_version=self.config.version,
+                latency_ms=(time.perf_counter() - t0) * 1000
             )
 
-        # Evaluate sequence using the token-by-token kernel
         sensor_result = self.sensor.evaluate(logprobs)
 
         if not sensor_result["passed"]:
             flagged_count = sensor_result.get('flagged_tokens', 1)
             reason_msg = sensor_result.get("error") if sensor_result.get("reason") == "MALFORMED_NON_FINITE_LOGPROBS" else f"Anomalous Token Surprisal Detected (Max Z: {sensor_result['max_z_score']:.2f}, Flagged: {flagged_count})"
-            return GateResult(
-                action=GateAction.HALT,
-                latency_ms=(time.perf_counter() - t0) * 1000,
-                gate_name="EntropyGate",
-                reason=reason_msg,
-                confidence=0.0,
-                flagged_tokens=flagged_count,
-                vectors_revoked=max(1, flagged_count)
+            return GateOutcome(
+                decision=GateDecision.HALT,
+                reason_code=reason_msg,
+                gate_name=self.gate_name,
+                gate_version=self.config.version,
+                evidence={
+                    "flagged_tokens": flagged_count,
+                    "vectors_revoked": max(1, flagged_count),
+                    "confidence": 0.0
+                },
+                latency_ms=(time.perf_counter() - t0) * 1000
             )
 
-        return GateResult(
-            action=GateAction.ALLOW, 
-            latency_ms=(time.perf_counter() - t0) * 1000, 
-            gate_name="EntropyGate"
+        return GateOutcome(
+            decision=GateDecision.ALLOW,
+            reason_code="SURPRISAL_WITHIN_BOUNDS",
+            gate_name=self.gate_name,
+            gate_version=self.config.version,
+            latency_ms=(time.perf_counter() - t0) * 1000
         )
 
 
-class PermissionGate(Gate):
+class PermissionGate(ControlPlaneGate):
     """
     Pre-compiled JIT Schema Gate enforcing strict contract boundaries.
-    
-    Intercepts unauthorized tool calls, sandbox escape attempts, and 
-    system override prompt injections embedded deep within commercial 
-    underwriting text fields.
     """
 
     def __init__(
         self,
         contract_model: Any = None,
         allowed_actions: Optional[List[str]] = None,
-        trusted_operations: Optional[Dict[str, Any]] = None
+        trusted_operations: Optional[Dict[str, Any]] = None,
+        config: Optional[GateConfig] = None
     ):
+        super().__init__(config=config or GateConfig(version="1.0.0", is_critical=True))
         self.contract_model = contract_model
         self.allowed_actions = set(allowed_actions or [])
         self.trusted_operations = trusted_operations or {}
 
-        # Regex to catch command injections, jailbreaks, and unauthorized privilege elevations
         self.injection_regex = re.compile(
             r"(\b(sudo|rm|curl|wget|bash|sh|exec|nc|netcat|nmap|ping)\b|[;|`]|&&|\$\(|\[SYSTEM OVERRIDE\]|import\s+os|ignore previous instructions|system prompt|jailbreak|exfiltrate|web_search)", 
             re.IGNORECASE
         )
 
-    def _enforce_contract_model(self, llm_output: Any, t0: float) -> Optional[GateResult]:
+    def _enforce_contract_model(self, llm_output: Any, t0: float) -> Optional[GateOutcome]:
         if self.contract_model is not None and llm_output is not None:
             try:
                 if isinstance(llm_output, dict):
@@ -189,18 +320,17 @@ class PermissionGate(Gate):
                 elif hasattr(self.contract_model, "model_validate"):
                     self.contract_model.model_validate(llm_output)
             except Exception as e:
-                return GateResult(
-                    action=GateAction.HALT,
-                    status="HALTED",
-                    latency_ms=(time.perf_counter() - t0) * 1000,
-                    gate_name="PermissionGate",
-                    reason=f"Contract Schema Violation: {str(e)}",
-                    confidence=0.0,
-                    vectors_revoked=1
+                return GateOutcome(
+                    decision=GateDecision.HALT,
+                    reason_code=f"Contract Schema Violation: {str(e)}",
+                    gate_name=self.gate_name,
+                    gate_version=self.config.version,
+                    evidence={"status": "HALTED", "confidence": 0.0, "vectors_revoked": 1},
+                    latency_ms=(time.perf_counter() - t0) * 1000
                 )
         return None
 
-    def _validate_actions(self, scope: Dict[str, Any], proposed_actions: List[Any], t0: float) -> Optional[GateResult]:
+    def _validate_actions(self, scope: Dict[str, Any], proposed_actions: List[Any], t0: float) -> Optional[GateOutcome]:
         allowed_ops = scope.get("allowed_operations")
         allowed_res = scope.get("allowed_resources")
         is_rmm_origin = scope.get("is_rmm_origin", False)
@@ -218,47 +348,47 @@ class PermissionGate(Gate):
                 node = getattr(action, "node", None) or getattr(action, "endpoint", None)
 
             if allowed_ops is not None and op not in allowed_ops:
-                return GateResult(
-                    action=GateAction.HALT,
-                    status="HALTED",
-                    latency_ms=(time.perf_counter() - t0) * 1000,
-                    gate_name="PermissionGate",
-                    reason=f"Operation '{op}' outside allowed scope operations: {allowed_ops}",
-                    confidence=0.0
+                return GateOutcome(
+                    decision=GateDecision.HALT,
+                    reason_code=f"Operation '{op}' outside allowed scope operations: {allowed_ops}",
+                    gate_name=self.gate_name,
+                    gate_version=self.config.version,
+                    evidence={"status": "HALTED", "confidence": 0.0},
+                    latency_ms=(time.perf_counter() - t0) * 1000
                 )
 
             if allowed_res is not None and node is not None and node not in allowed_res:
-                return GateResult(
-                    action=GateAction.HALT,
-                    status="HALTED",
-                    latency_ms=(time.perf_counter() - t0) * 1000,
-                    gate_name="PermissionGate",
-                    reason=f"Resource node '{node}' outside allowed scope resources: {allowed_res}",
-                    confidence=0.0
+                return GateOutcome(
+                    decision=GateDecision.HALT,
+                    reason_code=f"Resource node '{node}' outside allowed scope resources: {allowed_res}",
+                    gate_name=self.gate_name,
+                    gate_version=self.config.version,
+                    evidence={"status": "HALTED", "confidence": 0.0},
+                    latency_ms=(time.perf_counter() - t0) * 1000
                 )
 
             if self.allowed_actions and op not in self.allowed_actions:
-                return GateResult(
-                    action=GateAction.HALT,
-                    status="HALTED",
-                    latency_ms=(time.perf_counter() - t0) * 1000,
-                    gate_name="PermissionGate",
-                    reason=f"Operation '{op}' not in gate allowed_actions",
-                    confidence=0.0
+                return GateOutcome(
+                    decision=GateDecision.HALT,
+                    reason_code=f"Operation '{op}' not in gate allowed_actions",
+                    gate_name=self.gate_name,
+                    gate_version=self.config.version,
+                    evidence={"status": "HALTED", "confidence": 0.0},
+                    latency_ms=(time.perf_counter() - t0) * 1000
                 )
 
             if is_rmm_origin and op in {"update_db", "issue_binder", "api_call", "web_search"}:
-                return GateResult(
-                    action=GateAction.HALT,
-                    status="HALTED",
-                    latency_ms=(time.perf_counter() - t0) * 1000,
-                    gate_name="PermissionGate",
-                    reason="Downstream Scope Lock: State-mutating action prohibited from RMM quarantine subnet.",
-                    confidence=0.0
+                return GateOutcome(
+                    decision=GateDecision.HALT,
+                    reason_code="Downstream Scope Lock: State-mutating action prohibited from RMM quarantine subnet.",
+                    gate_name=self.gate_name,
+                    gate_version=self.config.version,
+                    evidence={"status": "HALTED", "confidence": 0.0},
+                    latency_ms=(time.perf_counter() - t0) * 1000
                 )
         return None
 
-    def _deep_regex_inspection(self, payload: Dict[str, Any], proposed_actions: List[Any], llm_output: Any, t0: float) -> Optional[GateResult]:
+    def _deep_regex_inspection(self, payload: Dict[str, Any], proposed_actions: List[Any], llm_output: Any, t0: float) -> Optional[GateOutcome]:
         def _check_stack(obj: Any) -> bool:
             if not obj:
                 return False
@@ -304,110 +434,108 @@ class PermissionGate(Gate):
             return False
 
         if _check_stack(payload) or _check_stack(proposed_actions) or _check_stack(llm_output):
-            return GateResult(
-                action=GateAction.HALT,
-                status="HALTED",
-                latency_ms=(time.perf_counter() - t0) * 1000,
-                gate_name="PermissionGate",
-                reason="Unsafe Command Injection, Jailbreak, or System Override Intercepted",
-                confidence=0.0,
-                vectors_revoked=1
+            return GateOutcome(
+                decision=GateDecision.HALT,
+                reason_code="Unsafe Command Injection, Jailbreak, or System Override Intercepted",
+                gate_name=self.gate_name,
+                gate_version=self.config.version,
+                evidence={"status": "HALTED", "confidence": 0.0, "vectors_revoked": 1},
+                latency_ms=(time.perf_counter() - t0) * 1000
             )
         return None
 
-    def evaluate(self, payload: Dict[str, Any], context: Dict[str, Any]) -> GateResult:
+    def evaluate_contract(self, gate_input: GateInput) -> GateOutcome:
         t0 = time.perf_counter()
+        payload = gate_input.payload
+        context = gate_input.context
 
-        # 0. Bind authorization to the resolved executable operation via trusted operation registry or identity matching
         actual_exec = context.get("actual_executable") or context.get("executable_operation")
-        requested_op = context.get("requested_operation_id") or context.get("operation_name")
+        requested_op = gate_input.operation_id or context.get("requested_operation_id") or context.get("operation_name")
 
         if actual_exec:
-            # If trusted_operations registry is defined, require an exact match against the registered executable object
             if self.trusted_operations:
                 if not requested_op or requested_op not in self.trusted_operations:
-                    return GateResult(
-                        action=GateAction.HALT,
-                        status="HALTED",
-                        latency_ms=(time.perf_counter() - t0) * 1000,
-                        gate_name="PermissionGate",
-                        reason=f"Operation '{requested_op}' is not registered in trusted operations registry.",
-                        confidence=0.0
+                    return GateOutcome(
+                        decision=GateDecision.HALT,
+                        reason_code=f"Operation '{requested_op}' is not registered in trusted operations registry.",
+                        gate_name=self.gate_name,
+                        gate_version=self.config.version,
+                        evidence={"status": "HALTED", "confidence": 0.0},
+                        latency_ms=(time.perf_counter() - t0) * 1000
                     )
                 registered_func = self.trusted_operations[requested_op]
                 if actual_exec is not registered_func:
-                    return GateResult(
-                        action=GateAction.HALT,
-                        status="HALTED",
-                        latency_ms=(time.perf_counter() - t0) * 1000,
-                        gate_name="PermissionGate",
-                        reason=f"Executable identity mismatch for operation '{requested_op}': substituted executable detected.",
-                        confidence=0.0
+                    return GateOutcome(
+                        decision=GateDecision.HALT,
+                        reason_code=f"Executable identity mismatch for operation '{requested_op}': substituted executable detected.",
+                        gate_name=self.gate_name,
+                        gate_version=self.config.version,
+                        evidence={"status": "HALTED", "confidence": 0.0},
+                        latency_ms=(time.perf_counter() - t0) * 1000
                     )
 
             if self.allowed_actions:
                 exec_name = getattr(actual_exec, "__name__", str(actual_exec))
                 if exec_name not in self.allowed_actions and requested_op not in self.allowed_actions:
-                    return GateResult(
-                        action=GateAction.HALT,
-                        status="HALTED",
-                        latency_ms=(time.perf_counter() - t0) * 1000,
-                        gate_name="PermissionGate",
-                        reason=f"Resolved executable '{exec_name}' or operation '{requested_op}' not in gate allowed_actions: {self.allowed_actions}",
-                        confidence=0.0
+                    return GateOutcome(
+                        decision=GateDecision.HALT,
+                        reason_code=f"Resolved executable '{exec_name}' or operation '{requested_op}' not in gate allowed_actions: {self.allowed_actions}",
+                        gate_name=self.gate_name,
+                        gate_version=self.config.version,
+                        evidence={"status": "HALTED", "confidence": 0.0},
+                        latency_ms=(time.perf_counter() - t0) * 1000
                     )
 
         scope = payload.get("scope", {}) or context.get("scope", {})
         proposed_actions = context.get("proposed_actions", []) or payload.get("proposed_actions", [])
         llm_output = context.get("llm_output") or payload.get("llm_output")
 
-        # 1. Enforce Pydantic Contract Model validation on LLM output if provided
         contract_result = self._enforce_contract_model(llm_output, t0)
         if contract_result:
             return contract_result
 
-        # 2 & 3. Validate explicit scope boundaries and RMM quarantine rules in a single pass
         actions_result = self._validate_actions(scope, proposed_actions, t0)
         if actions_result:
             return actions_result
 
-        # 4. Deep Regex inspection for injections/jailbreaks
         regex_result = self._deep_regex_inspection(payload, proposed_actions, llm_output, t0)
         if regex_result:
             return regex_result
 
-        return GateResult(
-            action=GateAction.ALLOW,
-            status="ALLOWED",
-            latency_ms=(time.perf_counter() - t0) * 1000, 
-            gate_name="PermissionGate"
+        return GateOutcome(
+            decision=GateDecision.ALLOW,
+            reason_code="PERMISSION_SCOPE_VALIDATED",
+            gate_name=self.gate_name,
+            gate_version=self.config.version,
+            evidence={"status": "ALLOWED"},
+            latency_ms=(time.perf_counter() - t0) * 1000
         )
 
 
-
-class TriangulationGate(Gate):
+class TriangulationGate(ControlPlaneGate):
     """
     Input Integrity and Telemetry Cross-Check Module.
-    
-    Detects adversarial data washing by cross-referencing primary 
-    metrics (like TIV or fleet radius) against isolated background 
-    telemetry vectors to ensure the provided risk profile hasn't been spoofed.
     """
 
-    def __init__(self, max_divergence_threshold: float = 0.15):
+    def __init__(self, max_divergence_threshold: float = 0.15, config: Optional[GateConfig] = None):
+        super().__init__(config=config or GateConfig(version="1.0.0", is_critical=True))
         self.max_divergence_threshold = max_divergence_threshold
 
-    def evaluate(self, payload: Dict[str, Any], context: Dict[str, Any]) -> GateResult:
+    def evaluate_contract(self, gate_input: GateInput) -> GateOutcome:
         t0 = time.perf_counter()
+        payload = gate_input.payload
+        context = gate_input.context
 
         primary = payload.get("primary_metric")
         telemetry = context.get("heterogeneous_telemetry", payload.get("heterogeneous_telemetry", []))
 
         if primary is None or not telemetry:
-            return GateResult(
-                action=GateAction.ALLOW, 
-                latency_ms=(time.perf_counter() - t0) * 1000, 
-                gate_name="TriangulationGate"
+            return GateOutcome(
+                decision=GateDecision.ALLOW,
+                reason_code="TELEMETRY_NOT_PROVIDED",
+                gate_name=self.gate_name,
+                gate_version=self.config.version,
+                latency_ms=(time.perf_counter() - t0) * 1000
             )
 
         try:
@@ -418,40 +546,48 @@ class TriangulationGate(Gate):
             divergence = 0.0 if baseline_mean == 0 else abs(primary - baseline_mean) / abs(baseline_mean)
 
             if divergence > self.max_divergence_threshold:
-                return GateResult(
-                    action=GateAction.HALT,
-                    latency_ms=(time.perf_counter() - t0) * 1000,
-                    gate_name="TriangulationGate",
-                    reason=f"Data Washing Detected: Metric diverged {divergence:.1%} from baseline.",
-                    confidence=0.0,
-                    divergence=divergence
+                return GateOutcome(
+                    decision=GateDecision.HALT,
+                    reason_code=f"Data Washing Detected: Metric diverged {divergence:.1%} from baseline.",
+                    gate_name=self.gate_name,
+                    gate_version=self.config.version,
+                    evidence={"divergence": divergence, "confidence": 0.0},
+                    latency_ms=(time.perf_counter() - t0) * 1000
                 )
         except (ValueError, TypeError):
-            return GateResult(
-                action=GateAction.HALT,
-                latency_ms=(time.perf_counter() - t0) * 1000,
-                gate_name="TriangulationGate",
-                reason="Malformed telemetry data type.",
-                confidence=0.0,
-                divergence=1.0
+            return GateOutcome(
+                decision=GateDecision.HALT,
+                reason_code="Malformed telemetry data type.",
+                gate_name=self.gate_name,
+                gate_version=self.config.version,
+                evidence={"divergence": 1.0, "confidence": 0.0},
+                latency_ms=(time.perf_counter() - t0) * 1000
             )
 
-        return GateResult(
-            action=GateAction.ALLOW, 
-            latency_ms=(time.perf_counter() - t0) * 1000, 
-            gate_name="TriangulationGate",
-            divergence=divergence
+        return GateOutcome(
+            decision=GateDecision.ALLOW,
+            reason_code="TELEMETRY_TRIANGULATED",
+            gate_name=self.gate_name,
+            gate_version=self.config.version,
+            evidence={"divergence": divergence},
+            latency_ms=(time.perf_counter() - t0) * 1000
         )
 
 
-class CryptoAttestationGate(Gate):
+class CryptoAttestationGate(ControlPlaneGate):
     """
     Evaluates cryptographic health, OCSP Key Revocation State, 
-    and Quantum Trust Epochs to prevent signed payloads from compromised 
-    keys entering the system.
+    and Quantum Trust Epochs.
     """
 
-    def __init__(self, required_algorithm: str = "ML-DSA", expiry_year: int = 2030, revoked_keys: Optional[frozenset] = None):
+    def __init__(
+        self,
+        required_algorithm: str = "ML-DSA",
+        expiry_year: int = 2030,
+        revoked_keys: Optional[frozenset] = None,
+        config: Optional[GateConfig] = None
+    ):
+        super().__init__(config=config or GateConfig(version="1.0.0", is_critical=True))
         self.required_algorithm = required_algorithm
         self.expiry_year = expiry_year
         self.revoked_keys = revoked_keys if revoked_keys is not None else frozenset(k.strip() for k in os.getenv("EPISTEMICOS_REVOKED_KEYS", "").split(",")) if os.getenv("EPISTEMICOS_REVOKED_KEYS") else frozenset()
@@ -459,32 +595,39 @@ class CryptoAttestationGate(Gate):
     def _check_ocsp_revocation(self, key_id: str) -> bool:
         return key_id in self.revoked_keys
 
-    def evaluate(self, payload: Dict[str, Any], context: Dict[str, Any]) -> GateResult:
+    def evaluate_contract(self, gate_input: GateInput) -> GateOutcome:
         t0 = time.perf_counter()
+        payload = gate_input.payload
+        context = gate_input.context
+
         crypto_meta = context.get("cryptography") or payload.get("raw_payload", {}).get("cryptography", {})
         algo = crypto_meta.get("algorithm", "RSA-2048")
         key_id = crypto_meta.get("key_id", "UNKNOWN_KEY")
 
         if self._check_ocsp_revocation(key_id):
-            return GateResult(
-                action=GateAction.HALT, 
-                latency_ms=(time.perf_counter() - t0) * 1000, 
-                gate_name="CryptoAttestationGate", 
-                reason=f"CRITICAL: Key {key_id} is flagged as REVOKED by OCSP.",
-                confidence=0.0
+            return GateOutcome(
+                decision=GateDecision.HALT,
+                reason_code=f"CRITICAL: Key {key_id} is flagged as REVOKED by OCSP.",
+                gate_name=self.gate_name,
+                gate_version=self.config.version,
+                evidence={"confidence": 0.0},
+                latency_ms=(time.perf_counter() - t0) * 1000
             )
 
         if algo != self.required_algorithm:
-            return GateResult(
-                action=GateAction.HALT, 
-                latency_ms=(time.perf_counter() - t0) * 1000, 
-                gate_name="CryptoAttestationGate", 
-                reason=f"Deprecated algorithm {algo}. Requires quantum-resistant {self.required_algorithm}",
-                confidence=0.15
+            return GateOutcome(
+                decision=GateDecision.HALT,
+                reason_code=f"Deprecated algorithm {algo}. Requires quantum-resistant {self.required_algorithm}",
+                gate_name=self.gate_name,
+                gate_version=self.config.version,
+                evidence={"confidence": 0.15},
+                latency_ms=(time.perf_counter() - t0) * 1000
             )
 
-        return GateResult(
-            action=GateAction.ALLOW, 
-            latency_ms=(time.perf_counter() - t0) * 1000, 
-            gate_name="CryptoAttestationGate"
+        return GateOutcome(
+            decision=GateDecision.ALLOW,
+            reason_code="CRYPTO_ATTESTATION_VALIDATED",
+            gate_name=self.gate_name,
+            gate_version=self.config.version,
+            latency_ms=(time.perf_counter() - t0) * 1000
         )

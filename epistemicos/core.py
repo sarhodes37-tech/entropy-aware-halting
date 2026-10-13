@@ -139,8 +139,20 @@ class EpistemicOrchestrator:
 
     def _evaluate_gates(self, payload_dump: Dict[str, Any], context: Dict[str, Any]) -> Optional[Any]:
         for gate in self.gates:
-            result = gate.evaluate(payload=payload_dump, context=context)
-            if result.action != GateAction.ALLOW:
+            try:
+                result = gate.evaluate(payload=payload_dump, context=context)
+            except Exception as e:
+                # Security-critical gates fail closed on unhandled errors
+                gate_name = getattr(gate, "gate_name", gate.__class__.__name__)
+                return GateResult(
+                    action=GateAction.HALT,
+                    status="HALTED",
+                    gate_name=gate_name,
+                    reason=f"Gate Execution Failure ({gate_name}): {str(e)}",
+                    vectors_revoked=1
+                )
+
+            if not getattr(result, "passed", False) or getattr(result, "action", None) != GateAction.ALLOW:
                 return result
         return None
 
