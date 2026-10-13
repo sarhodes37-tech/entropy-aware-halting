@@ -56,8 +56,10 @@ def test_ingress_prompt_sanitization(default_guard):
 # 2. EGRESS FILTERING TESTS
 # =========================================================================
 
-def test_network_egress_clean(default_guard):
-    """Verifies standard outbound web requests are allowed."""
+@patch('socket.getaddrinfo')
+def test_network_egress_clean(mock_getaddrinfo, default_guard):
+    """Verifies standard outbound web requests are allowed using deterministic DNS mock."""
+    mock_getaddrinfo.return_value = [(socket.AF_INET, socket.SOCK_STREAM, 6, '', ('93.184.216.34', 80))]
     receipt = default_guard.inspect_network_egress("https://www.python.org/downloads/")
     assert receipt.passed is True
 
@@ -81,8 +83,11 @@ def test_network_egress_blocked_hosts(default_guard, blocked_url):
     assert receipt.violation_type == ContainmentViolationType.UNAUTHORIZED_EGRESS_ATTEMPT
 
 
-def test_network_egress_domain_whitelist(strict_domain_guard):
-    """Verifies that a whitelist strictly denies unlisted domains."""
+@patch('socket.getaddrinfo')
+def test_network_egress_domain_whitelist(mock_getaddrinfo, strict_domain_guard):
+    """Verifies that a whitelist strictly denies unlisted domains with mocked DNS."""
+    mock_getaddrinfo.return_value = [(socket.AF_INET, socket.SOCK_STREAM, 6, '', ('140.82.121.4', 443))]
+
     # Allowed
     receipt_pass = strict_domain_guard.inspect_network_egress("https://api.github.com/users")
     assert receipt_pass.passed is True
@@ -100,6 +105,16 @@ def test_network_egress_dns_resolution_trap(mock_getaddrinfo, default_guard):
     mock_getaddrinfo.return_value = [(socket.AF_INET, socket.SOCK_STREAM, 6, '', ('127.0.0.1', 0))]
 
     receipt = default_guard.inspect_network_egress("http://totally-safe-external-domain.com")
+    assert receipt.passed is False
+    assert receipt.violation_type == ContainmentViolationType.UNAUTHORIZED_EGRESS_ATTEMPT
+
+
+@patch('socket.getaddrinfo')
+def test_network_egress_dns_failure_handling(mock_getaddrinfo, default_guard):
+    """Verifies safe fail-closed behavior when DNS resolution fails."""
+    mock_getaddrinfo.side_effect = socket.gaierror("Name or service not known")
+
+    receipt = default_guard.inspect_network_egress("http://nonexistent-domain-12345.unresolved")
     assert receipt.passed is False
     assert receipt.violation_type == ContainmentViolationType.UNAUTHORIZED_EGRESS_ATTEMPT
 
@@ -175,8 +190,10 @@ def dummy_network_tool(url: str, command: str) -> str:
     return f"Executed {command} at {url}"
 
 
-def test_wrapper_pipeline_success(default_guard):
-    """Verifies the wrapper allows safe tool execution."""
+@patch('socket.getaddrinfo')
+def test_wrapper_pipeline_success(mock_getaddrinfo, default_guard):
+    """Verifies the wrapper allows safe tool execution with mocked DNS."""
+    mock_getaddrinfo.return_value = [(socket.AF_INET, socket.SOCK_STREAM, 6, '', ('93.184.216.34', 80))]
     kwargs = {"url": "https://www.python.org", "command": "echo 'hello'"}
 
     success, result, receipt = default_guard.wrap_tool_execution(

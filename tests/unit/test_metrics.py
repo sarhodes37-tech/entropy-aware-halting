@@ -1,7 +1,7 @@
 """
-Unit test suite for epistemicos.metrics module.
+Unit test suite for epistemicos.metrics module & benchmark calculations.
 Validates AST analysis, positive entropy differentials, trigram repetition ratios,
-AST persistence streaks, and Structural Risk Index calculations.
+AST persistence streaks, Structural Risk Index, and Wilson score CI / benchmark metric edge cases.
 """
 
 import pytest
@@ -13,6 +13,7 @@ from epistemicos.telemetry import (
     calculate_ast_persistence,
     calculate_structural_risk_index,
 )
+from benchmarks.run_full_benchmark import compute_wilson_ci
 
 
 def test_ast_analyzer_valid_and_invalid():
@@ -87,3 +88,22 @@ def test_structural_risk_index():
     # dH_pos = 1.5, omega = 6.17, dA = 4 -> 1.5 * 6.17 * 4 = 37.02
     sri = calculate_structural_risk_index(dH_pos=1.5, omega=6.17, dA=4)
     assert sri == 37.02
+
+
+def test_wilson_ci_edge_cases_and_zero_denominators():
+    # Zero sample size must return (0.0, 0.0) without division by zero
+    assert compute_wilson_ci(0, 0) == (0.0, 0.0)
+
+    # Perfect success (k == n)
+    lower, upper = compute_wilson_ci(10, 10)
+    assert 0.70 < lower < 0.80
+    assert upper == 1.0
+
+    # Complete failure (k == 0)
+    lower_zero, upper_zero = compute_wilson_ci(0, 10)
+    assert lower_zero == 0.0
+    assert 0.20 < upper_zero < 0.31
+
+    # Standard binomial case
+    lower_half, upper_half = compute_wilson_ci(5, 10)
+    assert lower_half < 0.5 < upper_half

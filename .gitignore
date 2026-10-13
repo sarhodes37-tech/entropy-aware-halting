@@ -13,7 +13,8 @@ env/
 .pytest_cache/
 .mypy_cache/
 
-# Runtime telemetry & local audit logs
+# Runtime telemetry, local audit logs, and generated benchmarks
 audit_ledger.json
+logs/*.jsonl
 results/
 *.log

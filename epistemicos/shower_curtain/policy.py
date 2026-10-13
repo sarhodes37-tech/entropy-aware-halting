@@ -7,7 +7,7 @@ models for governing how detected sensitive items are handled.
 
 from enum import Enum
 from dataclasses import dataclass, field
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Callable
 from epistemicos.shower_curtain.detector import SensitivityCategory, DetectionResult
 
 
@@ -30,7 +30,8 @@ class PolicyDecision:
 
     def to_dict(self) -> Dict[str, Any]:
         return {
-            "detection": self.detection.to_dict(),
+            "category": self.detection.category.value,
+            "detector_type": self.detection.detector_type,
             "treatment": self.treatment.value,
             "rule_id": self.rule_id,
             "reason": self.reason,
@@ -63,7 +64,8 @@ class PrivacyPolicy:
         category_treatments: Optional[Dict[SensitivityCategory, PrivacyTreatment]] = None,
         default_treatment: PrivacyTreatment = PrivacyTreatment.REDACT,
         allow_credentials_pass: bool = False,
-        destination_rules: Optional[Dict[str, PrivacyTreatment]] = None
+        destination_rules: Optional[Dict[str, PrivacyTreatment]] = None,
+        transformers: Optional[Dict[SensitivityCategory, Callable[[str], str]]] = None
     ):
         self.category_treatments = dict(self.DEFAULT_CATEGORY_MAPPINGS)
         if category_treatments:
@@ -71,6 +73,7 @@ class PrivacyPolicy:
         self.default_treatment = default_treatment
         self.allow_credentials_pass = allow_credentials_pass
         self.destination_rules = destination_rules or {}
+        self.transformers = transformers or {}
 
     def evaluate(
         self,

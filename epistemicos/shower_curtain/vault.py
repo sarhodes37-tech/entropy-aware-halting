@@ -102,6 +102,13 @@ class LocalMappingVault:
 
             return placeholder
 
+    def get_session_placeholders(self, session_id: str) -> Set[str]:
+        """Returns the set of registered placeholders for a session."""
+        with self._lock:
+            if session_id in self._reverse_vault:
+                return set(self._reverse_vault[session_id].keys())
+            return set()
+
     def rehydrate(
         self,
         session_id: str,

@@ -44,29 +44,29 @@ class ContextMinimizationBroker:
     ) -> List[ContextChunk]:
         """
         Selects minimal necessary chunks based on relevance, sensitivity, and token budgets.
-        Excludes chunks with sensitivity exceeding max_sensitivity_threshold unless
-        relevance is extremely high (> 0.9).
+        Strictly excludes chunks exceeding max_sensitivity_threshold regardless of relevance.
+        First enforces hard eligibility checks, then ranks permitted chunks by relevance and utility.
         """
         if not chunks:
             return []
 
-        # Filter out low-relevance or overly sensitive chunks
-        relevant = []
+        # 1. Enforce hard eligibility checks: relevance must meet threshold and sensitivity must NOT exceed threshold
+        permitted = []
         for c in chunks:
+            if c.sensitivity_score > self.max_sensitivity_threshold:
+                continue
             if c.relevance_score < self.min_relevance_threshold:
                 continue
-            if c.sensitivity_score > self.max_sensitivity_threshold and c.relevance_score <= 0.9:
-                continue
-            relevant.append(c)
+            permitted.append(c)
 
-        # Sort by relevance descending, then by sensitivity ascending
-        relevant.sort(key=lambda c: (c.relevance_score, -c.sensitivity_score), reverse=True)
+        # 2. Rank permitted chunks by relevance descending, then sensitivity ascending
+        permitted.sort(key=lambda c: (c.relevance_score, -c.sensitivity_score), reverse=True)
 
         selected: List[ContextChunk] = []
         accumulated_chars = 0
         max_chars = self.max_context_tokens * 4  # Approx 4 chars per token
 
-        for chunk in relevant:
+        for chunk in permitted:
             chunk_len = len(chunk.content)
             if accumulated_chars + chunk_len <= max_chars:
                 chunk.disclosed_remotely = True
@@ -82,15 +82,20 @@ class ContextMinimizationBroker:
         """
         Trims long conversation message histories while preserving
         developer/system context and recent user context.
+        Note: Developer and system context remain subject to policy evaluation and sanitization.
         """
         if not messages or len(messages) <= self.max_history_messages:
             return messages
 
-        # Separate system messages from conversational history
-        system_msgs = [m for m in messages if m.get("role") == "system"]
-        other_msgs = [m for m in messages if m.get("role") != "system"]
+        # Separate system/developer messages from conversational history
+        system_or_dev_msgs = [
+            m for m in messages if m.get("role") in ("system", "developer")
+        ]
+        other_msgs = [
+            m for m in messages if m.get("role") not in ("system", "developer")
+        ]
 
-        # Keep recent history
+        # Keep recent history up to max_history_messages
         recent_other = other_msgs[-self.max_history_messages:]
 
-        return system_msgs + recent_other
+        return system_or_dev_msgs + recent_other

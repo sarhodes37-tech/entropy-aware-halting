@@ -38,11 +38,12 @@ class ShowerCurtainOpenAIAdapter:
                 f"Shower Curtain Egress Gate Denied Request: {transform_res.gate_result.reason}"
             )
 
-        # 3. Handle Dry Run
+        # 3. Handle Dry Run - NEVER invoke completion_func or external provider
         if dry_run:
             return {
                 "dry_run": True,
                 "sanitized_payload": transform_res.sanitized_payload,
+                "preview_payload": transform_res.preview_payload,
                 "transformation_report": transform_res.to_dict()
             }
 
