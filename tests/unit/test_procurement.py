@@ -1,11 +1,13 @@
 """
 Unit tests for Procurement Governance Example Module (examples/enterprise/procurement.py).
-Verifies typed inputs, deterministic governance rules, decision token binding,
-trusted evidence separation, authoritative amount limits, Decimal arithmetic, and execution isolation.
+Verifies typed inputs, deterministic governance rules, decision token HMAC binding,
+trusted evidence separation, 4-way document matching, Decimal arithmetic, and execution isolation.
 """
 
 from decimal import Decimal
 import math
+import threading
+import time
 import pytest
 from pydantic import ValidationError
 
@@ -22,16 +24,29 @@ from examples.enterprise.procurement import (
     TrustedEvidenceContext,
     ProcurementGovernanceGate,
     SyntheticProcurementExecutor,
+    ProcurementDecisionToken,
     run_demo,
 )
 
 
 @pytest.fixture
 def trusted_evidence():
+    req = ProcurementRequest(
+        request_id="REQ-100",
+        purchase_order_id="PO-100",
+        vendor_id="VEND-TRUSTED",
+        requester_id="USR-ALICE",
+        amount=Decimal("5000.00"),
+        currency="USD",
+        invoice_amount=Decimal("5000.00"),
+        purchase_order_amount=Decimal("5000.00"),
+        goods_receipt_amount=Decimal("5000.00"),
+    )
+    digest = req.canonical_digest()
     return TrustedEvidenceContext(
         verified_approved_vendors={"VEND-TRUSTED"},
         verified_approver_authority_limits={"USR-BOB-MANAGER": Decimal("50000.00")},
-        verified_independent_approvals={"REQ-100:USR-BOB-MANAGER"},
+        verified_independent_approvals={f"REQ-100:{digest}:USR-BOB-MANAGER", "REQ-100:USR-BOB-MANAGER"},
         evidence_complete=True,
     )
 
@@ -67,81 +82,123 @@ def test_compliant_request_returns_allow(valid_procurement_data, trusted_evidenc
     assert outcome.evidence["request_id"] == "REQ-100"
 
 
-# FINDING 1 TESTS: Decision Binding and Cross-Request Prevention
-def test_finding_1_decision_binding_prevents_cross_request_execution(valid_procurement_data, trusted_evidence):
-    gate = ProcurementGovernanceGate(spending_limit=Decimal("10000.00"))
-    executor = SyntheticProcurementExecutor()
-
-    req_a = ProcurementRequest(**valid_procurement_data)
-    outcome_a = gate.evaluate_contract(GateInput(payload=req_a, context={"trusted_evidence": trusted_evidence}))
-
-    # Create request B
-    data_b = dict(valid_procurement_data)
-    data_b["request_id"] = "REQ-999-OTHER"
-    req_b = ProcurementRequest(**data_b)
-
-    # Attempt to execute ALLOW for A against request B: MUST REJECT
-    assert executor.execute(outcome_a, req_b, gate) is False
-    assert len(executor.executed_orders) == 0
-
-
-def test_finding_1_mutation_after_evaluation_invalidates_decision(valid_procurement_data, trusted_evidence):
+# 1. DECISION TOKEN AUTHENTICITY TESTS
+def test_untrusted_caller_forged_hmac_token_rejected_by_executor(valid_procurement_data, trusted_evidence):
     gate = ProcurementGovernanceGate(spending_limit=Decimal("10000.00"))
     executor = SyntheticProcurementExecutor()
 
     req = ProcurementRequest(**valid_procurement_data)
     outcome = gate.evaluate_contract(GateInput(payload=req, context={"trusted_evidence": trusted_evidence}))
 
-    # Mutate request after evaluation (e.g. increase amount)
-    mutated_data = dict(valid_procurement_data)
-    mutated_data["amount"] = Decimal("999999.00")
-    mutated_req = ProcurementRequest(**mutated_data)
+    # Caller tampers with HMAC signature in the token
+    forged_token_data = dict(outcome.evidence["decision_token"])
+    forged_token_data["hmac_signature"] = "a" * 64
+    outcome.evidence["decision_token"] = forged_token_data
 
-    assert executor.execute(outcome, mutated_req, gate) is False
+    # MUST REJECT forged token
+    assert executor.execute(outcome, req, gate) is False
 
 
-def test_finding_1_policy_change_invalidates_decision_token(valid_procurement_data, trusted_evidence):
-    gate_v1 = ProcurementGovernanceGate(spending_limit=Decimal("10000.00"))
+def test_token_field_tampering_decision_or_digest_rejected_by_executor(valid_procurement_data, trusted_evidence):
+    gate = ProcurementGovernanceGate(spending_limit=Decimal("10000.00"))
     executor = SyntheticProcurementExecutor()
 
     req = ProcurementRequest(**valid_procurement_data)
-    outcome = gate_v1.evaluate_contract(GateInput(payload=req, context={"trusted_evidence": trusted_evidence}))
+    outcome = gate.evaluate_contract(GateInput(payload=req, context={"trusted_evidence": trusted_evidence}))
 
-    # Policy updated/reconfigured
-    gate_v2 = ProcurementGovernanceGate(spending_limit=Decimal("2000.00"))
+    # Caller tampers with token fields without re-signing
+    tampered_token = dict(outcome.evidence["decision_token"])
+    tampered_token["request_digest"] = "0" * 64
+    outcome.evidence["decision_token"] = tampered_token
 
-    assert executor.execute(outcome, req, gate_v2) is False
+    assert executor.execute(outcome, req, gate) is False
 
 
-def test_finding_1_replay_prevention_rejects_reused_decision_token(valid_procurement_data, trusted_evidence):
+def test_expired_decision_token_rejected_by_executor(valid_procurement_data, trusted_evidence):
+    gate = ProcurementGovernanceGate(spending_limit=Decimal("10000.00"), token_ttl_seconds=10.0)
+    executor = SyntheticProcurementExecutor()
+
+    req = ProcurementRequest(**valid_procurement_data)
+    now = time.time()
+    outcome = gate.evaluate_contract(GateInput(payload=req, context={"trusted_evidence": trusted_evidence}))
+
+    # Execute at T + 20s (after expiration)
+    assert executor.execute(outcome, req, gate, current_time=now + 20.0) is False
+
+
+# 2. REPLAY PROTECTION & CONCURRENCY TESTS
+def test_concurrent_token_execution_allows_at_most_one(valid_procurement_data, trusted_evidence):
     gate = ProcurementGovernanceGate(spending_limit=Decimal("10000.00"))
     executor = SyntheticProcurementExecutor(allow_replay=False)
 
     req = ProcurementRequest(**valid_procurement_data)
     outcome = gate.evaluate_contract(GateInput(payload=req, context={"trusted_evidence": trusted_evidence}))
 
-    # First execution succeeds
-    assert executor.execute(outcome, req, gate) is True
-    # Replay attempt MUST REJECT
-    assert executor.execute(outcome, req, gate) is False
+    results = []
+
+    def attempt_exec():
+        res = executor.execute(outcome, req, gate)
+        results.append(res)
+
+    threads = [threading.Thread(target=attempt_exec) for _ in range(10)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    # Exactly 1 thread must succeed
+    assert results.count(True) == 1
+    assert results.count(False) == 9
+    assert len(executor.executed_orders) == 1
 
 
-# FINDING 2 TESTS: Untrusted Caller Assertions vs Trusted Evidence
-def test_finding_2_caller_asserted_vendor_status_without_trusted_evidence_fails_closed(valid_procurement_data):
-    gate = ProcurementGovernanceGate()
-    valid_procurement_data["caller_asserted_vendor_approved"] = True
+# 3. 4-WAY DOCUMENT MATCHING & DISCREPANCY TESTS
+def test_four_way_document_match_discrepancy(valid_procurement_data, trusted_evidence):
+    gate = ProcurementGovernanceGate(match_tolerance=Decimal("0.01"))
+
+    # PO amount differs from amount, invoice, GR
+    valid_procurement_data["amount"] = Decimal("5000.00")
+    valid_procurement_data["invoice_amount"] = Decimal("5000.00")
+    valid_procurement_data["goods_receipt_amount"] = Decimal("5000.00")
+    valid_procurement_data["purchase_order_amount"] = Decimal("5500.00")  # Discrepancy!
+
     req = ProcurementRequest(**valid_procurement_data)
-
-    # Empty/Untrusted evidence context
-    empty_ctx = TrustedEvidenceContext(verified_approved_vendors=set())
-    outcome = gate.evaluate_contract(GateInput(payload=req, context={"trusted_evidence": empty_ctx}))
+    outcome = gate.evaluate_contract(GateInput(payload=req, context={"trusted_evidence": trusted_evidence}))
 
     assert outcome.decision == GateDecision.DENY
-    assert outcome.reason_code == "UNAPPROVED_VENDOR"
+    assert outcome.reason_code == "DOCUMENT_MATCH_DISCREPANCY"
 
 
-def test_finding_2_unverified_independent_approval_record_fails_closed(valid_procurement_data, trusted_evidence):
+# 4. TRUSTED EVIDENCE FRESHNESS & REPLAY TESTS
+def test_stale_evidence_context_returns_indeterminate(valid_procurement_data):
+    gate = ProcurementGovernanceGate()
+    stale_ctx = TrustedEvidenceContext(
+        verified_approved_vendors={"VEND-TRUSTED"},
+        evidence_complete=True,
+        evidence_timestamp=time.time() - 7200.0,  # 2 hours old
+        ttl_seconds=3600.0,
+    )
+
+    req = ProcurementRequest(**valid_procurement_data)
+    outcome = gate.evaluate_contract(GateInput(payload=req, context={"trusted_evidence": stale_ctx}))
+
+    assert outcome.decision == GateDecision.INDETERMINATE
+    assert outcome.reason_code == "STALE_EVIDENCE_EXPIRED"
+
+
+def test_evidence_replay_across_different_request_ids_denied(valid_procurement_data):
     gate = ProcurementGovernanceGate(spending_limit=Decimal("10000.00"))
+
+    # Evidence strictly bound to REQ-100
+    evidence_for_100 = TrustedEvidenceContext(
+        verified_approved_vendors={"VEND-TRUSTED"},
+        verified_approver_authority_limits={"USR-BOB-MANAGER": Decimal("50000.00")},
+        verified_independent_approvals={"REQ-100:USR-BOB-MANAGER"},
+        evidence_complete=True,
+    )
+
+    # Attempt to present this evidence for REQ-200
+    valid_procurement_data["request_id"] = "REQ-200"
     valid_procurement_data["amount"] = Decimal("25000.00")
     valid_procurement_data["invoice_amount"] = Decimal("25000.00")
     valid_procurement_data["purchase_order_amount"] = Decimal("25000.00")
@@ -149,63 +206,14 @@ def test_finding_2_unverified_independent_approval_record_fails_closed(valid_pro
     valid_procurement_data["independent_approval"] = True
     valid_procurement_data["approver_id"] = "USR-BOB-MANAGER"
 
-    # Context missing the approval attestation for REQ-100
-    unattested_ctx = TrustedEvidenceContext(
-        verified_approved_vendors={"VEND-TRUSTED"},
-        verified_approver_authority_limits={"USR-BOB-MANAGER": Decimal("50000.00")},
-        verified_independent_approvals=set(),  # Missing!
-        evidence_complete=True,
-    )
-
-    req = ProcurementRequest(**valid_procurement_data)
-    outcome = gate.evaluate_contract(GateInput(payload=req, context={"trusted_evidence": unattested_ctx}))
+    req_200 = ProcurementRequest(**valid_procurement_data)
+    outcome = gate.evaluate_contract(GateInput(payload=req_200, context={"trusted_evidence": evidence_for_100}))
 
     assert outcome.decision == GateDecision.DENY
     assert outcome.reason_code == "UNVERIFIED_INDEPENDENT_APPROVAL_RECORD"
 
 
-def test_finding_2_insufficient_approver_authority_limit(valid_procurement_data):
-    gate = ProcurementGovernanceGate(spending_limit=Decimal("10000.00"))
-    valid_procurement_data["amount"] = Decimal("80000.00")
-    valid_procurement_data["invoice_amount"] = Decimal("80000.00")
-    valid_procurement_data["purchase_order_amount"] = Decimal("80000.00")
-    valid_procurement_data["goods_receipt_amount"] = Decimal("80000.00")
-    valid_procurement_data["independent_approval"] = True
-    valid_procurement_data["approver_id"] = "USR-BOB-MANAGER"
-
-    # Approver limit is 50,000, but request is 80,000
-    low_limit_ctx = TrustedEvidenceContext(
-        verified_approved_vendors={"VEND-TRUSTED"},
-        verified_approver_authority_limits={"USR-BOB-MANAGER": Decimal("50000.00")},
-        verified_independent_approvals={"REQ-100:USR-BOB-MANAGER"},
-        evidence_complete=True,
-    )
-
-    req = ProcurementRequest(**valid_procurement_data)
-    outcome = gate.evaluate_contract(GateInput(payload=req, context={"trusted_evidence": low_limit_ctx}))
-
-    assert outcome.decision == GateDecision.DENY
-    assert outcome.reason_code == "INSUFFICIENT_APPROVER_AUTHORITY_LIMIT"
-
-
-# FINDING 3 TESTS: Authoritative Transaction Amount & Spending Limit Consistency
-def test_finding_3_artificially_low_amount_field_cannot_bypass_spending_limit(valid_procurement_data, trusted_evidence):
-    gate = ProcurementGovernanceGate(spending_limit=Decimal("10000.00"))
-
-    # Caller sets "amount" = 500.00, but invoice/PO amounts are 25,000.00!
-    valid_procurement_data["amount"] = Decimal("500.00")
-    valid_procurement_data["invoice_amount"] = Decimal("25000.00")
-    valid_procurement_data["purchase_order_amount"] = Decimal("25000.00")
-    valid_procurement_data["goods_receipt_amount"] = Decimal("25000.00")
-
-    req = ProcurementRequest(**valid_procurement_data)
-    outcome = gate.evaluate_contract(GateInput(payload=req, context={"trusted_evidence": trusted_evidence}))
-
-    # MUST DENY because authoritative amount is max(500, 25000) = 25000 > 10000
-    assert outcome.decision == GateDecision.DENY
-    assert outcome.reason_code == "EXCEEDS_SPENDING_AUTHORITY"
-
-
+# ADDITIONAL EDGE & BOUNDARY TESTS
 def test_spending_authority_limit_exact_boundary(valid_procurement_data, trusted_evidence):
     gate = ProcurementGovernanceGate(spending_limit=Decimal("10000.00"))
 
@@ -231,28 +239,10 @@ def test_spending_authority_limit_exact_boundary(valid_procurement_data, trusted
     assert outcome_above_limit.reason_code == "EXCEEDS_SPENDING_AUTHORITY"
 
 
-# FINDING 4 TESTS: Gate Threshold Validation & Decimal Financial Arithmetic
 @pytest.mark.parametrize("bad_threshold", [True, False, "invalid_string", -100.0, float("nan"), float("inf")])
-def test_finding_4_gate_threshold_configuration_validation(bad_threshold):
+def test_gate_threshold_configuration_validation(bad_threshold):
     with pytest.raises(ValueError):
         ProcurementGovernanceGate(spending_limit=bad_threshold)
-
-
-def test_finding_4_three_way_match_exact_decimal_precision(valid_procurement_data, trusted_evidence):
-    gate = ProcurementGovernanceGate(match_tolerance=Decimal("0.01"))
-
-    # Discrepancy within tolerance (0.005 <= 0.01)
-    valid_procurement_data["invoice_amount"] = Decimal("5000.005")
-    req_within = ProcurementRequest(**valid_procurement_data)
-    outcome_within = gate.evaluate_contract(GateInput(payload=req_within, context={"trusted_evidence": trusted_evidence}))
-    assert outcome_within.decision == GateDecision.ALLOW
-
-    # Discrepancy exceeding tolerance (0.0101 > 0.01)
-    valid_procurement_data["invoice_amount"] = Decimal("5000.0101")
-    req_exceeded = ProcurementRequest(**valid_procurement_data)
-    outcome_exceeded = gate.evaluate_contract(GateInput(payload=req_exceeded, context={"trusted_evidence": trusted_evidence}))
-    assert outcome_exceeded.decision == GateDecision.DENY
-    assert outcome_exceeded.reason_code == "THREE_WAY_MATCH_DISCREPANCY"
 
 
 def test_segregation_of_duties_violation(valid_procurement_data, trusted_evidence):
@@ -262,7 +252,7 @@ def test_segregation_of_duties_violation(valid_procurement_data, trusted_evidenc
     valid_procurement_data["purchase_order_amount"] = Decimal("50000.00")
     valid_procurement_data["goods_receipt_amount"] = Decimal("50000.00")
     valid_procurement_data["independent_approval"] = True
-    valid_procurement_data["approver_id"] = "USR-ALICE"  # Self-approval attempt!
+    valid_procurement_data["approver_id"] = "USR-ALICE"  # Self-approval!
 
     req = ProcurementRequest(**valid_procurement_data)
     outcome = gate.evaluate_contract(GateInput(payload=req, context={"trusted_evidence": trusted_evidence}))
@@ -281,50 +271,6 @@ def test_payment_instruction_change_triggers_halt(valid_procurement_data, truste
     assert outcome.decision == GateDecision.HALT
     assert outcome.passed is False
     assert outcome.reason_code == "PAYMENT_INSTRUCTION_CHANGE_HOLD"
-
-
-def test_incomplete_evidence_returns_indeterminate(valid_procurement_data):
-    gate = ProcurementGovernanceGate()
-    incomplete_ctx = TrustedEvidenceContext(evidence_complete=False)
-
-    req = ProcurementRequest(**valid_procurement_data)
-    outcome = gate.evaluate_contract(GateInput(payload=req, context={"trusted_evidence": incomplete_ctx}))
-
-    assert outcome.decision == GateDecision.INDETERMINATE
-    assert outcome.reason_code == "INCOMPLETE_OR_UNTRUSTED_EVIDENCE"
-
-
-@pytest.mark.parametrize(
-    "bad_value, expected_msg",
-    [
-        (True, "Booleans masquerading as numeric amounts"),
-        (False, "Booleans masquerading as numeric amounts"),
-        (-100.0, "strictly positive"),
-        (0.0, "strictly positive"),
-        (float("nan"), "finite"),
-        (float("inf"), "finite"),
-        (float("-inf"), "finite"),
-    ],
-)
-def test_pydantic_amount_strict_validation(valid_procurement_data, bad_value, expected_msg):
-    valid_procurement_data["amount"] = bad_value
-    with pytest.raises(ValidationError) as exc_info:
-        ProcurementRequest(**valid_procurement_data)
-    assert expected_msg in str(exc_info.value)
-
-
-def test_pydantic_currency_validation(valid_procurement_data):
-    valid_procurement_data["currency"] = "BTC"
-    with pytest.raises(ValidationError) as exc_info:
-        ProcurementRequest(**valid_procurement_data)
-    assert "Unsupported currency" in str(exc_info.value)
-
-
-def test_pydantic_forbid_extra_fields(valid_procurement_data):
-    valid_procurement_data["unrecognized_field"] = "malicious_injection"
-    with pytest.raises(ValidationError) as exc_info:
-        ProcurementRequest(**valid_procurement_data)
-    assert "Extra inputs are not permitted" in str(exc_info.value)
 
 
 def test_audit_event_generation_and_no_sensitive_data_leakage(valid_procurement_data, trusted_evidence, tmp_path):

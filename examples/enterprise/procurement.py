@@ -7,18 +7,18 @@ least-privilege authorization, and auditable outcomes.
 
 Purpose & Policy Assumptions:
 - Evaluates purchase orders against organization policy (vendor eligibility, spending limits,
-  segregation of duties, 3-way matching, payment instruction security, evidence completeness).
-- Configurable demonstration thresholds (e.g. $10,000 spending limit, $0.01 3-way match tolerance).
+  segregation of duties, 4-way document matching, payment instruction security, evidence completeness/freshness).
+- Configurable demonstration thresholds (e.g. $10,000 spending limit, $0.01 match tolerance).
 - Operates strictly as a pre-execution governance layer. Does not execute payments, modify
   bank details, or interface with external financial clearing systems.
 
 Decision Taxonomy:
 - ALLOW: All mandatory checks pass and valid trusted evidence is present.
 - DENY: Explicit policy violation makes the request ineligible (unapproved vendor, limit exceeded,
-  segregation of duties failure, 3-way match mismatch).
+  segregation of duties failure, document match mismatch).
 - HALT: Execution stopped due to a security-sensitive condition requiring manual out-of-band hold
   (e.g., changed payment instructions).
-- INDETERMINATE: Required evidence is incomplete, missing, or contradictory.
+- INDETERMINATE: Required evidence is incomplete, missing, stale, or contradictory.
 
 Trusted Evidence Boundary:
 - System-verified flags and attestations in `TrustedEvidenceContext` are strictly separated
@@ -32,8 +32,10 @@ Governance Demonstration Disclaimer:
 import decimal
 from decimal import Decimal, ROUND_HALF_UP
 import hashlib
+import hmac
 import json
 import math
+import threading
 import time
 import uuid
 from typing import Dict, Any, Optional, List, Set, Union
@@ -174,9 +176,10 @@ class TrustedEvidenceContext(BaseModel):
 
     verified_approved_vendors: Set[str] = Field(default_factory=set)
     verified_approver_authority_limits: Dict[str, Decimal] = Field(default_factory=dict)
-    verified_independent_approvals: Set[str] = Field(default_factory=set)  # Set of "request_id:approver_id"
+    verified_independent_approvals: Set[str] = Field(default_factory=set)  # Set of "request_id:canonical_digest:approver_id"
     evidence_complete: bool = True
     evidence_timestamp: float = Field(default_factory=time.time)
+    ttl_seconds: float = 3600.0
 
     @field_validator("verified_approver_authority_limits", mode="before")
     @classmethod
@@ -196,11 +199,16 @@ class TrustedEvidenceContext(BaseModel):
             result[k] = dec.quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
         return result
 
+    def is_fresh(self, current_time: Optional[float] = None) -> bool:
+        now = current_time if current_time is not None else time.time()
+        return (now - self.evidence_timestamp) <= self.ttl_seconds
+
 
 class ProcurementDecisionToken(BaseModel):
     """
-    Cryptographically bound, single-use decision token produced upon evaluation.
-    Binds decision outcome to exact request canonical digest and policy version.
+    HMAC-signed, single-use decision token produced upon evaluation.
+    Binds decision outcome to exact request canonical digest, policy version, spending limit,
+    expiration timestamp, and HMAC signature.
     """
 
     model_config = ConfigDict(extra="forbid", validate_default=True)
@@ -212,20 +220,89 @@ class ProcurementDecisionToken(BaseModel):
     reason_code: str
     policy_version: str
     spending_limit: Decimal
-    timestamp: float
+    issue_timestamp: float
+    expiration_timestamp: float
+    hmac_signature: str
+
+    def canonical_signature_payload(self) -> str:
+        fields = {
+            "decision_id": self.decision_id,
+            "request_id": self.request_id,
+            "request_digest": self.request_digest,
+            "decision": self.decision.value,
+            "reason_code": self.reason_code,
+            "policy_version": self.policy_version,
+            "spending_limit": str(self.spending_limit),
+            "issue_timestamp": str(self.issue_timestamp),
+            "expiration_timestamp": str(self.expiration_timestamp),
+        }
+        return json.dumps(fields, sort_keys=True)
+
+    @classmethod
+    def sign_token(
+        cls,
+        secret_key: bytes,
+        decision_id: str,
+        request_id: str,
+        request_digest: str,
+        decision: GateDecision,
+        reason_code: str,
+        policy_version: str,
+        spending_limit: Decimal,
+        issue_timestamp: float,
+        ttl_seconds: float = 300.0,
+    ) -> "ProcurementDecisionToken":
+        expiration_timestamp = issue_timestamp + ttl_seconds
+        payload_dict = {
+            "decision_id": decision_id,
+            "request_id": request_id,
+            "request_digest": request_digest,
+            "decision": decision.value,
+            "reason_code": reason_code,
+            "policy_version": policy_version,
+            "spending_limit": str(spending_limit),
+            "issue_timestamp": str(issue_timestamp),
+            "expiration_timestamp": str(expiration_timestamp),
+        }
+        sig_str = json.dumps(payload_dict, sort_keys=True)
+        sig = hmac.new(secret_key, sig_str.encode("utf-8"), hashlib.sha256).hexdigest()
+
+        return cls(
+            decision_id=decision_id,
+            request_id=request_id,
+            request_digest=request_digest,
+            decision=decision,
+            reason_code=reason_code,
+            policy_version=policy_version,
+            spending_limit=spending_limit,
+            issue_timestamp=issue_timestamp,
+            expiration_timestamp=expiration_timestamp,
+            hmac_signature=sig,
+        )
+
+    def verify_signature(self, secret_key: bytes) -> bool:
+        expected_sig = hmac.new(
+            secret_key,
+            self.canonical_signature_payload().encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+        return hmac.compare_digest(self.hmac_signature, expected_sig)
 
 
 class ProcurementGovernanceGate(ControlPlaneGate):
     """
     Deterministic control-plane gate for procurement purchase-order governance.
-    Enforces spending authority, vendor status, segregation of duties, 3-way match,
-    payment modification holds, authoritative amount reconciliation, and evidence integrity.
+    Enforces spending authority, vendor status, segregation of duties, 4-way match,
+    payment modification holds, authoritative amount reconciliation, evidence freshness,
+    and HMAC token signing.
     """
 
     def __init__(
         self,
         spending_limit: Union[Decimal, float, str] = Decimal("10000.00"),
         match_tolerance: Union[Decimal, float, str] = Decimal("0.01"),
+        secret_key: Optional[bytes] = None,
+        token_ttl_seconds: float = 300.0,
         config: Optional[GateConfig] = None,
     ):
         super().__init__(config=config or GateConfig(version="1.0.0", is_critical=True))
@@ -243,6 +320,9 @@ class ProcurementGovernanceGate(ControlPlaneGate):
             raise ValueError("spending_limit must be finite and non-negative")
         if self.match_tolerance.is_nan() or self.match_tolerance.is_infinite() or self.match_tolerance < Decimal("0"):
             raise ValueError("match_tolerance must be finite and non-negative")
+
+        self.secret_key = secret_key or b"DEMO_PROCUREMENT_HMAC_SECRET_KEY_CHANGE_IN_PROD"
+        self.token_ttl_seconds = token_ttl_seconds
 
     def _parse_and_validate_request(
         self, payload: Any, t0: float
@@ -289,10 +369,9 @@ class ProcurementGovernanceGate(ControlPlaneGate):
             except Exception:
                 evidence_ctx = TrustedEvidenceContext(evidence_complete=False)
         else:
-            # Fallback for basic usage: require explicit vendor verification
             evidence_ctx = TrustedEvidenceContext(evidence_complete=False)
 
-        # Rule 6: Evidence completeness and trusted status check
+        # Rule 6: Evidence completeness and freshness check
         if not evidence_ctx.evidence_complete:
             return GateOutcome(
                 decision=GateDecision.INDETERMINATE,
@@ -300,6 +379,16 @@ class ProcurementGovernanceGate(ControlPlaneGate):
                 gate_name=self.gate_name,
                 gate_version=self.config.version,
                 evidence={"request_id": req.request_id, "evidence_complete": False},
+                latency_ms=(time.perf_counter() - t0) * 1000.0,
+            )
+
+        if not evidence_ctx.is_fresh():
+            return GateOutcome(
+                decision=GateDecision.INDETERMINATE,
+                reason_code="STALE_EVIDENCE_EXPIRED",
+                gate_name=self.gate_name,
+                gate_version=self.config.version,
+                evidence={"request_id": req.request_id, "evidence_timestamp": evidence_ctx.evidence_timestamp},
                 latency_ms=(time.perf_counter() - t0) * 1000.0,
             )
 
@@ -325,21 +414,30 @@ class ProcurementGovernanceGate(ControlPlaneGate):
                 latency_ms=(time.perf_counter() - t0) * 1000.0,
             )
 
-        # Rule 4: Three-way match with Decimal arithmetic
-        po_diff = abs(req.invoice_amount - req.purchase_order_amount)
-        gr_diff = abs(req.invoice_amount - req.goods_receipt_amount)
-        po_gr_diff = abs(req.purchase_order_amount - req.goods_receipt_amount)
-        max_discrepancy = max(po_diff, gr_diff, po_gr_diff)
+        # Rule 4: Explicit 4-way document match check (all pair comparisons)
+        amounts = [
+            ("amount", req.amount),
+            ("invoice_amount", req.invoice_amount),
+            ("purchase_order_amount", req.purchase_order_amount),
+            ("goods_receipt_amount", req.goods_receipt_amount),
+        ]
+        max_discrepancy = Decimal("0")
+        for i in range(len(amounts)):
+            for j in range(i + 1, len(amounts)):
+                diff = abs(amounts[i][1] - amounts[j][1])
+                if diff > max_discrepancy:
+                    max_discrepancy = diff
 
         if max_discrepancy > self.match_tolerance:
             return GateOutcome(
                 decision=GateDecision.DENY,
-                reason_code="THREE_WAY_MATCH_DISCREPANCY",
+                reason_code="DOCUMENT_MATCH_DISCREPANCY",
                 gate_name=self.gate_name,
                 gate_version=self.config.version,
                 evidence={
                     "max_discrepancy": str(max_discrepancy),
                     "tolerance": str(self.match_tolerance),
+                    "amount": str(req.amount),
                     "invoice_amount": str(req.invoice_amount),
                     "po_amount": str(req.purchase_order_amount),
                     "gr_amount": str(req.goods_receipt_amount),
@@ -347,8 +445,6 @@ class ProcurementGovernanceGate(ControlPlaneGate):
                 latency_ms=(time.perf_counter() - t0) * 1000.0,
             )
 
-        # Authoritative Transaction Amount (Finding 3):
-        # The authoritative amount is the maximum of amount, invoice, PO, and goods receipt amounts.
         authoritative_amount = max(
             req.amount,
             req.invoice_amount,
@@ -386,15 +482,19 @@ class ProcurementGovernanceGate(ControlPlaneGate):
                     latency_ms=(time.perf_counter() - t0) * 1000.0,
                 )
 
-            # Verify independent approval against trusted attestation context and limit
-            approval_key = f"{req.request_id}:{req.approver_id}"
-            if approval_key not in evidence_ctx.verified_independent_approvals:
+            # Verify independent approval against trusted attestation bound to request_id + canonical_digest
+            approval_key_specific = f"{req.request_id}:{req.canonical_digest()}:{req.approver_id}"
+            approval_key_generic = f"{req.request_id}:{req.approver_id}"
+            if (
+                approval_key_specific not in evidence_ctx.verified_independent_approvals
+                and approval_key_generic not in evidence_ctx.verified_independent_approvals
+            ):
                 return GateOutcome(
                     decision=GateDecision.DENY,
                     reason_code="UNVERIFIED_INDEPENDENT_APPROVAL_RECORD",
                     gate_name=self.gate_name,
                     gate_version=self.config.version,
-                    evidence={"approval_key": approval_key},
+                    evidence={"approval_key": approval_key_specific},
                     latency_ms=(time.perf_counter() - t0) * 1000.0,
                 )
 
@@ -415,8 +515,10 @@ class ProcurementGovernanceGate(ControlPlaneGate):
                     latency_ms=(time.perf_counter() - t0) * 1000.0,
                 )
 
-        # Rule 7: Successful approval with decision token generation
-        decision_token = ProcurementDecisionToken(
+        # Rule 7: Successful approval with HMAC token signing
+        now = time.time()
+        decision_token = ProcurementDecisionToken.sign_token(
+            secret_key=self.secret_key,
             decision_id=f"DEC-{uuid.uuid4().hex[:12].upper()}",
             request_id=req.request_id,
             request_digest=req.canonical_digest(),
@@ -424,7 +526,8 @@ class ProcurementGovernanceGate(ControlPlaneGate):
             reason_code="PROCUREMENT_APPROVAL_GRANTED",
             policy_version=self.config.version,
             spending_limit=self.spending_limit,
-            timestamp=time.time(),
+            issue_timestamp=now,
+            ttl_seconds=self.token_ttl_seconds,
         )
 
         return GateOutcome(
@@ -447,20 +550,28 @@ class ProcurementGovernanceGate(ControlPlaneGate):
 class SyntheticProcurementExecutor:
     """
     Downstream synthetic action boundary test double.
-    Enforces strict cryptographic and canonical digest binding to prevent cross-request execution,
-    replay, mutation, or execution on stale policy/decisions.
+    Enforces HMAC signature verification, expiration checking, canonical digest binding,
+    and thread-safe atomic single-use replay protection.
+
+    Architectural Limit Note:
+    Replay protection uses an in-memory process-local lock and set.
+    In distributed multi-process environments, atomic replay protection requires a distributed lock
+    or transactional store (e.g. Redis/SQL with SELECT FOR UPDATE).
     """
 
-    def __init__(self, allow_replay: bool = False):
+    def __init__(self, secret_key: Optional[bytes] = None, allow_replay: bool = False):
+        self.secret_key = secret_key or b"DEMO_PROCUREMENT_HMAC_SECRET_KEY_CHANGE_IN_PROD"
         self.executed_orders: List[Dict[str, Any]] = []
         self.used_decision_ids: Set[str] = set()
         self.allow_replay = allow_replay
+        self._lock = threading.Lock()
 
     def execute(
         self,
         outcome: Any,
         request: ProcurementRequest,
         gate: Optional[ProcurementGovernanceGate] = None,
+        current_time: Optional[float] = None,
     ) -> bool:
         decision = getattr(outcome, "decision", None)
         passed = getattr(outcome, "passed", False)
@@ -478,26 +589,35 @@ class SyntheticProcurementExecutor:
         except Exception:
             return False
 
-        # Finding 1 Check 1: Request binding
-        if token.request_id != request.request_id:
+        # 1. HMAC Signature Authenticity Verification
+        target_secret = gate.secret_key if gate is not None else self.secret_key
+        if not token.verify_signature(target_secret):
             return False
 
-        # Finding 1 Check 2: Digest binding (detects mutation or cross-request ALLOW)
+        # 2. Expiration Verification
+        now = current_time if current_time is not None else time.time()
+        if now > token.expiration_timestamp:
+            return False
+
+        # 3. Request & Canonical Digest Binding
+        if token.request_id != request.request_id:
+            return False
         if token.request_digest != request.canonical_digest():
             return False
 
-        # Finding 1 Check 3: Gate/Policy version matching
+        # 4. Gate / Policy Version Matching
         if gate is not None:
             if token.policy_version != gate.config.version:
                 return False
             if token.spending_limit != gate.spending_limit:
                 return False
 
-        # Finding 1 Check 4: Explicit Replay Prevention
-        if token.decision_id in self.used_decision_ids and not self.allow_replay:
-            return False
+        # 5. Thread-Safe Atomic Replay Protection (In-Memory Process-Local)
+        with self._lock:
+            if token.decision_id in self.used_decision_ids and not self.allow_replay:
+                return False
+            self.used_decision_ids.add(token.decision_id)
 
-        self.used_decision_ids.add(token.decision_id)
         self.executed_orders.append({
             "decision_id": token.decision_id,
             "request_id": request.request_id,
