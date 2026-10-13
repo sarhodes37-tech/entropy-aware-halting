@@ -4,12 +4,17 @@ Semantic Uncertainty Module for EpistemicOS.
 Prototype implementing meaning-level conclusion clustering, semantic entropy calculation,
 and decision-sensitive disagreement metrics alongside formal status indicators.
 
-Phase 2 & Phase 3 Architecture:
+Phase 2 & Phase 3 Architecture & Operational Semantics:
 - Explicit separation between Semantic Uncertainty, Evidence Sufficiency, Factual Correctness,
   Decision Sensitivity, and Resolution Opportunity.
 - Pluggable SemanticResolver interface allowing deterministic baselines or model judges.
 - Mathematical rigor: Shannon entropy in bits computed from cluster probabilities,
   normalized entropy bounded in [0, 1].
+- Probability Semantics: Explicit candidate probabilities must be finite, non-negative, and sum to > 0.
+  When probabilities are absent, uniform operational weights (1/N) are assigned as a baseline convention;
+  these are conventional operational weights, NOT calibrated epistemic probabilities.
+- Duplicate Candidate Handling: Repeated candidate outputs represent sample frequency from candidate generators.
+  Identical candidates are aggregated into the same semantic cluster, summing their sample weight P(S_k) = sum_{c_i in S_k} p_tilde(c_i).
 """
 
 import math
@@ -55,35 +60,73 @@ class SemanticResolver:
 class ExactAndNormalizedResolver(SemanticResolver):
     """
     Deterministic baseline semantic resolver.
-    Normalizes text (case, whitespace, punctuation), detects negation reversals,
-    quantity/entity discrepancies, and decision action mismatches.
+    Normalizes text (case, whitespace, punctuation, double negations), detects negation reversals,
+    quantity/unit discrepancies, conditionals, temporal preconditions, actor swaps,
+    and decision action mismatches.
     """
 
     NEGATION_WORDS = {"not", "no", "never", "cannot", "none", "neither", "nor", "deny", "rejected", "false"}
+    CONDITIONAL_WORDS = {"if", "unless", "provided", "assuming", "except", "conditional", "subject"}
+    TEMPORAL_WORDS = {"before", "after", "during", "until", "since", "prior"}
+    DOUBLE_NEGATION_PATTERNS = [
+        (r"\bnot\s+unauthorized\b", "authorized"),
+        (r"\bnot\s+invalid\b", "valid"),
+        (r"\bnot\s+false\b", "true"),
+        (r"\bnot\s+denied\b", "approved"),
+        (r"\bnot\s+impossible\b", "possible"),
+        (r"\bnot\s+incorrect\b", "correct"),
+    ]
 
     def __init__(self, confidence_threshold: float = 0.85):
         self.confidence_threshold = confidence_threshold
 
     def _normalize(self, text: str) -> str:
-        clean = re.sub(r"[^\w\s]", "", text.strip().lower())
+        clean = text.strip().lower()
+        # Simplify double negations
+        for pattern, replacement in self.DOUBLE_NEGATION_PATTERNS:
+            clean = re.sub(pattern, replacement, clean)
+        clean = re.sub(r"[^\w\s\$\€\£\¥]", "", clean)
         return " ".join(clean.split())
 
     def _extract_tokens(self, text: str) -> List[str]:
         return self._normalize(text).split()
 
-    def _extract_numbers(self, text: str) -> List[str]:
-        return re.findall(r"\b\d+(?:\.\d+)?\b", text)
+    def _extract_quantities_with_units(self, text: str) -> List[str]:
+        """Extract numbers along with adjacent currency symbols or unit tokens."""
+        # Find currency + number, or number + unit word
+        matches = re.findall(r"[\$\€\£\¥]?\b\d+(?:\.\d+)?\b(?:\s*(?:usd|eur|gbp|jpy|kg|lbs|dollars|euros|percent|%))?", text.lower())
+        return [m.strip() for m in matches if m.strip()]
 
     def _has_negation_flip(self, tokens_a: List[str], tokens_b: List[str]) -> bool:
         negs_a = set(tokens_a) & self.NEGATION_WORDS
         negs_b = set(tokens_b) & self.NEGATION_WORDS
         return len(negs_a) != len(negs_b)
 
+    def _has_conditional_discrepancy(self, tokens_a: List[str], tokens_b: List[str]) -> bool:
+        cond_a = set(tokens_a) & self.CONDITIONAL_WORDS
+        cond_b = set(tokens_b) & self.CONDITIONAL_WORDS
+        return cond_a != cond_b
+
+    def _has_temporal_discrepancy(self, tokens_a: List[str], tokens_b: List[str]) -> bool:
+        temp_a = set(tokens_a) & self.TEMPORAL_WORDS
+        temp_b = set(tokens_b) & self.TEMPORAL_WORDS
+        return temp_a != temp_b
+
+    DIRECTIONAL_KEYWORDS = {"to", "from", "transferred", "paid", "sent", "billed", "received", "gave"}
+
+    def _has_actor_swap(self, tokens_a: List[str], tokens_b: List[str]) -> bool:
+        """Detects subject/object role swaps around directional verbs/prepositions (e.g. 'alice transferred to bob' vs 'bob transferred to alice')."""
+        directional_a = set(tokens_a) & self.DIRECTIONAL_KEYWORDS
+        directional_b = set(tokens_b) & self.DIRECTIONAL_KEYWORDS
+        if directional_a and directional_b and set(tokens_a) == set(tokens_b) and tokens_a != tokens_b:
+            return True
+        return False
+
     def resolve(self, candidate_a: Candidate, candidate_b: Candidate) -> SemanticComparisonResult:
         norm_a = self._normalize(candidate_a.text)
         norm_b = self._normalize(candidate_b.text)
 
-        # Exact match after normalization
+        # Exact match after normalization and double negation simplification
         if norm_a == norm_b:
             action_diff = (candidate_a.action is not None and candidate_b.action is not None and candidate_a.action != candidate_b.action)
             return SemanticComparisonResult(
@@ -96,14 +139,21 @@ class ExactAndNormalizedResolver(SemanticResolver):
 
         tokens_a = self._extract_tokens(candidate_a.text)
         tokens_b = self._extract_tokens(candidate_b.text)
-        nums_a = self._extract_numbers(candidate_a.text)
-        nums_b = self._extract_numbers(candidate_b.text)
+        units_a = self._extract_quantities_with_units(candidate_a.text)
+        units_b = self._extract_quantities_with_units(candidate_b.text)
 
         # Check for negation flip
         neg_flip = self._has_negation_flip(tokens_a, tokens_b)
 
-        # Check for quantity/number mismatch
-        number_mismatch = (nums_a != nums_b) and (len(nums_a) > 0 or len(nums_b) > 0)
+        # Check for quantity/unit mismatch
+        unit_mismatch = (units_a != units_b) and (len(units_a) > 0 or len(units_b) > 0)
+
+        # Check conditional & temporal discrepancies
+        conditional_diff = self._has_conditional_discrepancy(tokens_a, tokens_b)
+        temporal_diff = self._has_temporal_discrepancy(tokens_a, tokens_b)
+
+        # Check actor/order swap
+        actor_swap = self._has_actor_swap(tokens_a, tokens_b)
 
         # Check action difference
         affects_decision = False
@@ -116,12 +166,13 @@ class ExactAndNormalizedResolver(SemanticResolver):
         union = set_a | set_b
         jaccard = len(intersection) / len(union) if union else 1.0
 
-        if neg_flip or number_mismatch or affects_decision:
+        if neg_flip or unit_mismatch or affects_decision or conditional_diff or temporal_diff or actor_swap:
             is_equivalent = False
-            is_contradiction = neg_flip or affects_decision
-            resolver_confidence = 0.95
+            is_contradiction = neg_flip or affects_decision or unit_mismatch or actor_swap
+            # Lower confidence when complex conditionals/temporal discrepancies are present; high confidence for negations, units, actor swaps, decision differences
+            resolver_confidence = 0.50 if (conditional_diff or temporal_diff) else 0.95
         else:
-            # High token similarity without negation/quantity flip -> treat as equivalent paraphrase
+            # High token similarity without negation/unit/conditional flip -> treat as equivalent paraphrase
             is_equivalent = (jaccard >= 0.7)
             is_contradiction = False
             resolver_confidence = 0.90 if is_equivalent else 0.80
@@ -291,7 +342,7 @@ class SemanticUncertaintyEstimator:
         has_probs = all(p is not None for p in raw_probs)
 
         if has_probs:
-            # Check non-negative & non-NaN
+            # Check non-negative & non-NaN & finite
             valid_probs = []
             for p in raw_probs:
                 if not isinstance(p, (int, float)) or math.isnan(p) or math.isinf(p) or p < 0.0:
@@ -325,7 +376,7 @@ class SemanticUncertaintyEstimator:
                 )
             normalized_candidate_probs = [p / prob_sum for p in valid_probs]
         else:
-            # Assign uniform mass across candidates when explicit probabilities are omitted
+            # Assign uniform mass across candidates as conventional operational baseline (1/N)
             normalized_candidate_probs = [1.0 / n_candidates] * n_candidates
 
         # Perform clustering using the resolver
