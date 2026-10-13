@@ -19,10 +19,16 @@ def get_model_and_tokenizer(
     model_name: str = "Qwen/Qwen2.5-Coder-1.5B-Instruct",
     device: Optional[str] = None,
     torch_dtype: Optional[Any] = None,
-    trust_remote_code: bool = True,
+    trust_remote_code: bool = False,
     revision: Optional[str] = "main",
 ) -> Tuple[Any, Any, str]:
-    """Lazily import and delegate to epistemicos.utils.get_model_and_tokenizer."""
+    """
+    Lazily import and delegate to epistemicos.utils.get_model_and_tokenizer.
+
+    Defaults to trust_remote_code=False for security. Explicit opt-in is required
+    for custom remote code models. For security-sensitive deployments, revision pinning
+    using immutable commit SHAs (e.g. revision="a1b2c3d4...") is strongly recommended.
+    """
     return import_module("epistemicos.utils").get_model_and_tokenizer(
         model_name=model_name,
         device=device,

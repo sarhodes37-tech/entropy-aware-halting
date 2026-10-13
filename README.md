@@ -21,6 +21,14 @@ It utilizes a streaming Z-score calculation to detect massive spikes in epistemi
 > 
 ### 2. Optimized Permission Gate (Contract Bounding)
 A Just-In-Time (JIT) pre-compiled regex and AST evaluation gate. It restricts LLM actions to a predefined array of allowed tool calls and intercepts unsafe system command injections (e.g., sudo, rm -rf, exec).
+
+## 🔒 Security Hardening & Trust Boundaries
+
+### Fail-Safe Model Loading Defaults
+EpistemicOS enforces `trust_remote_code=False` by default across both `epistemicos.utils.get_model_and_tokenizer` and the public API wrapper `epistemicos.get_model_and_tokenizer`. Custom remote code execution requires explicit opt-in (`trust_remote_code=True`). For production and security-sensitive deployments, pinning model artifacts with immutable commit SHAs (e.g. `revision="4a2b9f..."`) is strongly encouraged to prevent supply-chain tampering.
+
+### Trusted Authorization Scope Boundary
+`PermissionGate` strictly isolates authorization scope resolution. Request-supplied or agent-controlled `scope` parameters in unauthenticated payloads are never treated as authoritative permissions. Authoritative scope must be injected via trusted gate configuration or authenticated context (`trusted_scope`). If trusted scope is missing, malformed, or ambiguous, protected actions fail closed.
 ### 3. Tamper-Evident Audit Trail
 All intercepted violations are logged cryptographically. The orchestrator records the trigger condition, the gate that threw the flag, and the execution latency, ensuring transparent and immutable security audits.
 ## 🚀 Quickstart & Installation
