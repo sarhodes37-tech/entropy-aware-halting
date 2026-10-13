@@ -48,10 +48,14 @@ class EpistemicOrchestrator:
 
         # Core Subsystems
         if scheduler:
+            self._base_scheduler = scheduler
             self.scheduler = scheduler
         else:
             # Initialize without passing **kwargs to prevent TypeError
-            self.scheduler = EntropyAwareScheduler()
+            self._base_scheduler = EntropyAwareScheduler()
+            self.scheduler = self._base_scheduler
+
+        self._schedulers = {}
 
 
         # Plug the dead wire back in so logs actually route to Google Drive
@@ -69,25 +73,25 @@ class EpistemicOrchestrator:
 
     def process_step(self, probabilities, cost, state, trajectory_id: Optional[str] = None) -> DecisionResult:
         """Handles the low-level entropy scheduling loop."""
-        traj_key = trajectory_id or (state if isinstance(state, str) else str(uuid.uuid4()))
-        if not hasattr(self, "_schedulers"):
-            self._schedulers = {}
+        traj_key = trajectory_id or (state if isinstance(state, str) else None)
+        if not traj_key:
+            traj_key = str(uuid.uuid4())
 
         if traj_key not in self._schedulers:
-            # Instantiate an isolated scheduler with the same config
+            # Instantiate an isolated scheduler with the same config from _base_scheduler without mutating shared state
             self._schedulers[traj_key] = EntropyAwareScheduler(
-                value_of_information=self.scheduler.V,
-                divergence_threshold=self.scheduler.divergence_threshold,
-                negative_yield_window=self.scheduler.negative_yield_window,
-                entropy_delta_threshold=self.scheduler.entropy_delta_threshold,
-                stagnation_window=self.scheduler.stagnation_window,
-                confidence_threshold=self.scheduler.confidence_threshold,
-                utility_epsilon=self.scheduler.utility_epsilon,
-                minimum_steps_before_convergence=self.scheduler.minimum_steps_before_convergence
+                value_of_information=self._base_scheduler.V,
+                divergence_threshold=self._base_scheduler.divergence_threshold,
+                negative_yield_window=self._base_scheduler.negative_yield_window,
+                entropy_delta_threshold=self._base_scheduler.entropy_delta_threshold,
+                stagnation_window=self._base_scheduler.stagnation_window,
+                confidence_threshold=self._base_scheduler.confidence_threshold,
+                utility_epsilon=self._base_scheduler.utility_epsilon,
+                minimum_steps_before_convergence=self._base_scheduler.minimum_steps_before_convergence
             )
 
-        scheduler = self._schedulers[traj_key]
-        decision = scheduler.step(probabilities, cost, state)
+        target_scheduler = self._schedulers[traj_key]
+        decision = target_scheduler.step(probabilities, cost, state)
         if decision.halt:
             # You can link this directly to your audit logger if needed
             pass

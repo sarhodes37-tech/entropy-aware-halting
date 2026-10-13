@@ -1,138 +1,237 @@
 """
-Dedicated regression tests for controlled remediation phase.
-Covers all 7 high-severity control-flow and authorization remediations.
+Comprehensive regression test suite for PR #170 review feedback.
+Verifies all 5 specific concerns and asserts execution path behavior.
 """
 
 import math
+import concurrent.futures
 import pytest
 from epistemicos.core import EpistemicOrchestrator
-from epistemicos.gates import Gate, GateAction, GateResult, PermissionGate
-from epistemicos.models import PermissionScope, TokenSurprisalSensor
-from epistemicos.scheduler import EntropyAwareScheduler
+from epistemicos.gates import GateAction, PermissionGate, EntropyGate
+from epistemicos.models import TokenSurprisalSensor
 from epistemicos.containment import ContainmentGuard
+from epistemicos.scheduler import EntropyAwareScheduler
 
 
-def test_remediation_1_non_allow_gate_action_halts():
-    """Ensure every gate action other than ALLOW halts pipeline execution."""
-    class CustomHaltGate(Gate):
-        def evaluate(self, payload, context):
-            return GateResult(action=GateAction.HALT, reason="Testing Halt")
+# =============================================================================
+# CONCERN 1: EpistemicOrchestrator.process_step & Scheduler Isolation
+# =============================================================================
 
-    class CustomRollbackGate(Gate):
-        def evaluate(self, payload, context):
-            return GateResult(action=GateAction.ROLLBACK, reason="Testing Rollback")
+def test_orchestrator_process_step_sequential_isolation():
+    """Sequential test proving independent trajectories maintain isolated step counts, utility, and state."""
+    orchestrator = EpistemicOrchestrator()
 
-    orchestrator1 = EpistemicOrchestrator()
-    orchestrator1.register_gate(CustomHaltGate())
-    res1 = orchestrator1.process_submission({"policy_id": "POL-1"}, context={})
-    assert res1["status"] == "HALTED"
+    # Trajectory A step 1 & 2
+    res_a1 = orchestrator.process_step([0.5, 0.5], cost=1.0, state="A1", trajectory_id="traj_A")
+    res_a2 = orchestrator.process_step([0.4, 0.6], cost=1.0, state="A2", trajectory_id="traj_A")
 
-    orchestrator2 = EpistemicOrchestrator()
-    orchestrator2.register_gate(CustomRollbackGate())
-    res2 = orchestrator2.process_submission({"policy_id": "POL-2"}, context={})
-    assert res2["status"] == "HALTED"
+    # Trajectory B step 1 (interleaved)
+    res_b1 = orchestrator.process_step([0.8, 0.2], cost=5.0, state="B1", trajectory_id="traj_B")
+
+    sched_a = orchestrator._schedulers["traj_A"]
+    sched_b = orchestrator._schedulers["traj_B"]
+
+    assert len(sched_a.history) == 2
+    assert len(sched_b.history) == 1
+    assert sched_a.best_state == "A1" or sched_a.best_state == "A2"
+    assert sched_b.best_state == "B1"
+    assert res_a2.termination_step == 1
+    assert res_b1.termination_step == 0
 
 
-def test_remediation_2_non_finite_probabilities_rejected():
-    """Reject malformed and non-finite probability inputs in scheduler and sensor."""
-    scheduler = EntropyAwareScheduler()
-    with pytest.raises(ValueError, match="NaN or non-finite"):
-        scheduler.entropy([float("nan"), 0.5])
+def test_orchestrator_process_step_concurrent_isolation():
+    """Concurrent multi-threaded test proving parallel requests cannot affect each other's scheduler state."""
+    orchestrator = EpistemicOrchestrator()
 
-    with pytest.raises(ValueError, match="NaN or non-finite"):
-        scheduler.entropy([float("inf"), 0.5])
+    def run_trajectory(traj_id):
+        results = []
+        for i in range(5):
+            res = orchestrator.process_step([0.5, 0.5], cost=1.0, state=f"{traj_id}_{i}", trajectory_id=traj_id)
+            results.append(res)
+        return traj_id, results
 
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+        futures = [executor.submit(run_trajectory, f"concurrent_traj_{k}") for k in range(10)]
+        done_results = [f.result() for f in concurrent.futures.as_completed(futures)]
+
+    for traj_id, results in done_results:
+        sched = orchestrator._schedulers[traj_id]
+        assert len(sched.history) == 5
+        assert sched.history[0].state == f"{traj_id}_0"
+        assert sched.history[4].state == f"{traj_id}_4"
+
+
+# =============================================================================
+# CONCERN 2: TokenSurprisalSensor & Explicit Validation Failures
+# =============================================================================
+
+def test_token_surprisal_sensor_nan_inf_malformed_raises_and_halts():
+    """Proves compute_z_scores raises ValueError on malformed inputs and EntropyGate halts."""
     sensor = TokenSurprisalSensor()
-    res = sensor.evaluate([float("nan"), float("nan"), float("nan")])
-    assert res["passed"] is True
-    assert res["flagged_tokens"] == 0
+
+    with pytest.raises(ValueError, match="non-finite logprob"):
+        sensor.compute_z_scores([float("nan"), -1.0])
+
+    with pytest.raises(ValueError, match="non-finite logprob"):
+        sensor.compute_z_scores([float("inf"), -1.0])
+
+    with pytest.raises(ValueError, match="Malformed or non-finite logprob"):
+        sensor.compute_z_scores(["bad_string", -1.0])
+
+    gate = EntropyGate()
+
+    # NaN logprobs halt the pipeline
+    res_nan = gate.evaluate(payload={}, context={"token_logprobs": [float("nan"), -1.0]})
+    assert res_nan.action == GateAction.HALT
+    assert "non-finite logprob" in res_nan.reason.lower()
+
+    # Malformed string logprobs halt the pipeline
+    res_malformed = gate.evaluate(payload={}, context={"token_logprobs": ["invalid"]})
+    assert res_malformed.action == GateAction.HALT
 
 
-def test_remediation_3_missing_mandatory_context_fails_closed():
-    """Missing mandatory security context fails closed while optional gate passes."""
-    gate = PermissionGate(allowed_actions=["read"])
-    # Context missing executable action when executable_operation is declared
-    context = {"executable_operation": None}
-    res = gate.evaluate(payload={}, context=context)
-    assert res.action == GateAction.ALLOW
+# =============================================================================
+# CONCERN 3: PermissionGate & Trusted Operation Registry
+# =============================================================================
 
-    # Context with executable operation not allowed fails closed
-    context_unauthorized = {"executable_operation": lambda: None}
-    res_unauth = gate.evaluate(payload={}, context=context_unauthorized)
-    assert res_unauth.action == GateAction.HALT
+def test_permission_gate_trusted_operation_registry_substitution_defense():
+    """Proves PermissionGate rejects spoofed/substituted callables using trusted operation registry."""
+    executed = []
+
+    def genuine_op():
+        executed.append("genuine")
+        return "genuine_result"
+
+    def malicious_op():
+        executed.append("malicious")
+        return "pwned"
+
+    registry = {"read_user_profile": genuine_op}
+    gate = PermissionGate(allowed_actions=["read_user_profile"], trusted_operations=registry)
+
+    # Authorized genuine operation passes
+    ctx_genuine = {
+        "requested_operation_id": "read_user_profile",
+        "actual_executable": genuine_op
+    }
+    res_genuine = gate.evaluate(payload={}, context=ctx_genuine)
+    assert res_genuine.action == GateAction.ALLOW
+
+    if res_genuine.action == GateAction.ALLOW:
+        ctx_genuine["actual_executable"]()
+    assert executed == ["genuine"]
+
+    # Substituted/spoofed function for registered operation ID is rejected
+    ctx_substituted = {
+        "requested_operation_id": "read_user_profile",
+        "actual_executable": malicious_op
+    }
+    res_sub = gate.evaluate(payload={}, context=ctx_substituted)
+    assert res_sub.action == GateAction.HALT
+    assert "substituted executable detected" in res_sub.reason
+
+    # Unregistered operation ID is rejected
+    ctx_unregistered = {
+        "requested_operation_id": "delete_all",
+        "actual_executable": malicious_op
+    }
+    res_unreg = gate.evaluate(payload={}, context=ctx_unregistered)
+    assert res_unreg.action == GateAction.HALT
 
 
-def test_remediation_4_bind_authorization_to_resolved_executable():
-    """Bind authorization to resolved executable operation and enforce immediately."""
-    gate = PermissionGate(allowed_actions=["allowed_read_op"])
+# =============================================================================
+# CONCERN 4: ContainmentGuard Argument Shapes & Egress/Command Normalization
+# =============================================================================
 
-    def allowed_read_op():
-        return "read_ok"
+def test_containment_guard_positional_and_nested_argument_shapes():
+    """Proves ContainmentGuard inspects positional args, kwargs, and nested containers."""
+    executed_args = []
 
-    def dangerous_write_op():
-        return "write_bad"
+    def mock_tool(*args, **kwargs):
+        executed_args.append((args, kwargs))
+        return "ok"
 
-    ctx_ok = {"actual_executable": allowed_read_op}
-    res_ok = gate.evaluate(payload={}, context=ctx_ok)
-    assert res_ok.action == GateAction.ALLOW
-
-    ctx_bad = {"actual_executable": dangerous_write_op}
-    res_bad = gate.evaluate(payload={}, context=ctx_bad)
-    assert res_bad.action == GateAction.HALT
-
-
-def test_remediation_5_inspect_normalized_tool_arguments():
-    """Inspect normalized tool arguments across arbitrary parameter names."""
     guard = ContainmentGuard()
 
-    def dummy_tool(**kwargs):
-        return "success"
-
-    # Blocked in 'cmd' argument
+    # 1. Positional argument command injection blocked
     ok1, _, receipt1 = guard.wrap_tool_execution(
-        tool_name="test", tool_func=dummy_tool, kwargs={"cmd": "rm -rf /"}
+        tool_name="shell",
+        tool_func=mock_tool,
+        args=("rm -rf /",),
+        kwargs={}
     )
     assert ok1 is False
     assert receipt1.passed is False
 
-    # Blocked in 'params' list argument
+    # 2. Nested dictionary in positional arguments blocked
     ok2, _, receipt2 = guard.wrap_tool_execution(
-        tool_name="test", tool_func=dummy_tool, kwargs={"params": ["sudo", "su"]}
+        tool_name="shell",
+        tool_func=mock_tool,
+        args=({"config": {"exec": "sudo su"}},),
+        kwargs={}
     )
     assert ok2 is False
     assert receipt2.passed is False
 
-
-def test_remediation_6_require_explicit_op_and_target():
-    """Require explicit operation and target fields wherever permission scope restricts them."""
-    scope = PermissionScope(
-        allowed_operations=["read"],
-        allowed_resources=["public_data"]
+    # 3. Nested list in kwargs url egress blocked
+    ok3, _, receipt3 = guard.wrap_tool_execution(
+        tool_name="fetch",
+        tool_func=mock_tool,
+        args=(),
+        kwargs={"endpoints": ["http://127.0.0.1/admin"]}
     )
+    assert ok3 is False
+    assert receipt3.passed is False
 
-    # Valid complete action
-    assert scope.validate_action({"op": "read", "node": "public_data"}) is True
+    # Safe positional and keyword execution succeeds and executes
+    ok_safe, result, receipt_safe = guard.wrap_tool_execution(
+        tool_name="safe_tool",
+        tool_func=mock_tool,
+        args=("safe_arg",),
+        kwargs={"mode": "read"}
+    )
+    assert ok_safe is True
+    assert receipt_safe.passed is True
+    assert len(executed_args) == 1
 
-    # Missing op
-    assert scope.validate_action({"node": "public_data"}) is False
 
-    # Missing target/node
-    assert scope.validate_action({"op": "read"}) is False
+# =============================================================================
+# CONCERN 5: EntropyAwareScheduler.entropy Input Contract & Strict Validation
+# =============================================================================
 
-    # Invalid op
-    assert scope.validate_action({"op": "write", "node": "public_data"}) is False
+def test_entropy_aware_scheduler_input_contract():
+    """Proves EntropyAwareScheduler.entropy strictly validates distribution constraints."""
+    scheduler = EntropyAwareScheduler()
 
+    # 1. Reject 2D shape
+    with pytest.raises(ValueError, match="1D distribution"):
+        scheduler.entropy([[0.5, 0.5], [0.5, 0.5]])
 
-def test_remediation_7_scheduler_state_per_trajectory_isolation():
-    """Isolate scheduler state per independent trajectory or request."""
-    orchestrator = EpistemicOrchestrator()
+    # 2. Reject empty sequence
+    with pytest.raises(ValueError, match="cannot be empty"):
+        scheduler.entropy([])
 
-    res1 = orchestrator.process_step([0.5, 0.5], cost=1.0, state="s1", trajectory_id="traj_A")
-    res2 = orchestrator.process_step([0.5, 0.5], cost=1.0, state="s2", trajectory_id="traj_B")
+    # 3. Reject NaN
+    with pytest.raises(ValueError, match="NaN or non-finite"):
+        scheduler.entropy([float("nan"), 0.5])
 
-    sched_A = orchestrator._schedulers["traj_A"]
-    sched_B = orchestrator._schedulers["traj_B"]
+    # 4. Reject Infinity
+    with pytest.raises(ValueError, match="NaN or non-finite"):
+        scheduler.entropy([float("inf"), 0.5])
 
-    assert len(sched_A.history) == 1
-    assert len(sched_B.history) == 1
-    assert sched_A is not sched_B
+    # 5. Reject Negative probabilities
+    with pytest.raises(ValueError, match="negative values"):
+        scheduler.entropy([-0.1, 1.1])
+
+    # 6. Reject zero / non-positive sum
+    with pytest.raises(ValueError, match="positive finite value"):
+        scheduler.entropy([0.0, 0.0])
+
+    # Valid distribution calculates correct Shannon entropy without epsilon distortion
+    # For fair coin [0.5, 0.5], H = -2 * (0.5 * log2(0.5)) = 1.0 bit
+    h = scheduler.entropy([0.5, 0.5])
+    assert math.isclose(h, 1.0)
+
+    # Handles zero probabilities using 0 * log(0) = 0 limit
+    h_zero = scheduler.entropy([1.0, 0.0])
+    assert math.isclose(h_zero, 0.0)

@@ -53,11 +53,12 @@ def test_defect_2_surprisal_warmup_bypass():
 
 
 def test_defect_3_nan_logprob_bypass():
-    """Verifies Remediation 2: NaN logprobs are safely handled without throwing or bypassing."""
+    """Verifies Remediation 2: NaN logprobs are safely handled with explicit failure result."""
     sensor = TokenSurprisalSensor(z_threshold=1.5)
     logprobs = [float('nan'), float('nan'), float('nan')]
     result = sensor.evaluate(logprobs)
-    assert result["passed"] is True
+    assert result["passed"] is False
+    assert result["reason"] == "MALFORMED_NON_FINITE_LOGPROBS"
 
 
 def test_defect_4_missing_logprobs_silent_permit():

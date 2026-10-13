@@ -119,17 +119,15 @@ class TokenSurprisalSensor:
         if not logprobs:
             return []
 
-        # Sanitize logprobs to reject non-finite inputs (NaN, +inf, -inf)
         sanitized_logprobs = []
-        for lp in logprobs:
+        for i, lp in enumerate(logprobs):
             try:
                 val = float(lp)
                 if math.isnan(val) or math.isinf(val):
-                    sanitized_logprobs.append(0.0)
-                else:
-                    sanitized_logprobs.append(val)
-            except (TypeError, ValueError):
-                sanitized_logprobs.append(0.0)
+                    raise ValueError(f"Non-finite logprob encountered at index {i}: {val}")
+                sanitized_logprobs.append(val)
+            except (TypeError, ValueError) as e:
+                raise ValueError(f"Malformed or non-finite logprob encountered at index {i}: {lp}") from e
 
         surprisals = [-lp for lp in sanitized_logprobs]
         z_scores = []
@@ -165,7 +163,18 @@ class TokenSurprisalSensor:
 
     def evaluate(self, logprobs: List[float]) -> Dict[str, Any]:
         """Evaluates token surprisal z-scores and flags anomalies."""
-        z_scores = self.compute_z_scores(logprobs)
+        try:
+            z_scores = self.compute_z_scores(logprobs)
+        except ValueError as e:
+            return {
+                "passed": False,
+                "reason": "MALFORMED_NON_FINITE_LOGPROBS",
+                "error": str(e),
+                "max_z_score": 0.0,
+                "flagged_tokens": len(logprobs) if logprobs else 1,
+                "token_z_scores": []
+            }
+
         flagged_count = sum(1 for z in z_scores if z > self.z_threshold)
         max_z = float(max(z_scores)) if z_scores else 0.0
 
