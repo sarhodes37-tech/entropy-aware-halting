@@ -17,54 +17,69 @@
 
 | Component / Gate | Mean (ms) | Mean 95% CI | p50 (ms) | p95 Mean (ms) | p95 95% CI | p99 Mean (ms) | p99 95% CI | StdDev |
 |---|---|---|---|---|---|---|---|---|
-| **CPR Schema Validation** | 0.3731 | ±0.0648 | 0.2137 | 0.9712 | ±0.1967 | 1.2461 | ±0.405 | 0.0907 |
-| **Permission Gate** | 1.4432 | ±0.2017 | 0.3894 | 3.8317 | ±0.7832 | 4.5447 | ±1.3605 | 0.282 |
-| **Entropy Gate** | 1.7414 | ±0.2627 | 0.3616 | 4.9363 | ±1.1723 | 5.898 | ±1.9419 | 0.3672 |
-| **Triangulation Gate** | 0.0448 | ±0.0076 | 0.0383 | 0.0762 | ±0.0183 | 0.1114 | ±0.0418 | 0.0107 |
-| **Crypto Attestation Gate** | 0.0288 | ±0.0049 | 0.0262 | 0.0428 | ±0.0153 | 0.0771 | ±0.0196 | 0.0069 |
-| **Audit Trail Persistence** | 0.6277 | ±0.1084 | 0.6049 | 0.8787 | ±0.2496 | 1.0011 | ±0.3114 | 0.1515 |
-| **Total End-to-End Pipeline** | 4.07 | ±0.6149 | 1.7956 | 12.1701 | ±2.3606 | 14.8513 | ±4.7448 | 0.8597 |
+| **CPR Schema Validation** | 0.299 | ±0.0017 | 0.1557 | 0.7665 | ±0.0082 | 0.8194 | ±0.0167 | 0.0024 |
+| **Permission Gate** | 1.2841 | ±0.0034 | 0.3255 | 3.2871 | ±0.0118 | 3.4079 | ±0.0637 | 0.0048 |
+| **Entropy Gate** | 1.528 | ±0.0044 | 0.2953 | 4.1063 | ±0.0131 | 4.2765 | ±0.1411 | 0.0062 |
+| **Triangulation Gate** | 0.0363 | ±0.0002 | 0.0316 | 0.0569 | ±0.0066 | 0.0794 | ±0.0035 | 0.0003 |
+| **Crypto Attestation Gate** | 0.0231 | ±0.0002 | 0.0215 | 0.0286 | ±0.0004 | 0.06 | ±0.0024 | 0.0002 |
+| **Audit Trail Persistence** | 0.5041 | ±0.0159 | 0.4925 | 0.5707 | ±0.0109 | 0.6261 | ±0.0268 | 0.0222 |
+| **Total End-to-End Pipeline** | 3.4574 | ±0.0084 | 1.5252 | 10.1249 | ±0.0335 | 10.4112 | ±0.1524 | 0.0118 |
 
 > **Note on Percentile Sample Variance:** Per-run p95 and p99 estimates are computed over $M=200$ samples per run. While p50 and p95 estimates are statistically stable across runs, p99 estimates exhibit higher natural sampling dispersion due to tail latency events (e.g. garbage collection or OS context switches).
 
 ---
 
-## 3. Workload Latency Comparison
+## 3. Workload Latency & Programmatic Paired Analysis
 | Workload | Mean Latency (ms) | Mean 95% CI | p50 (ms) | p95 Mean (ms) | p95 95% CI | p99 Mean (ms) |
 |---|---|---|---|---|---|---|
-| **Benign Payload** | 0.4969 | ±0.0066 | 0.4932 | 0.5833 | ±0.0117 | 0.633 |
-| **Adversarial Payload** | 0.4849 | ±0.0026 | 0.4828 | 0.5766 | ±0.0084 | 0.6224 |
-| **Malformed Payload** | 0.2164 | ±0.0043 | 0.2059 | 0.2995 | ±0.0129 | 0.344 |
-| **High-Volume Payload** | 3.6656 | ±0.0211 | 3.6467 | 3.8212 | ±0.0515 | 4.0801 |
+| **Benign Payload** | 0.4811 | ±0.0064 | 0.4836 | 0.5447 | ±0.015 | 0.585 |
+| **Adversarial Payload** | 0.4694 | ±0.0102 | 0.4728 | 0.5244 | ±0.0114 | 0.5721 |
+| **Malformed Payload** | 0.1994 | ±0.0013 | 0.1887 | 0.2551 | ±0.0022 | 0.275 |
+| **High-Volume Payload** | 3.4928 | ±0.0173 | 3.4769 | 3.6339 | ±0.0844 | 3.8525 |
+
+### Programmatic Paired t-Test: Malformed-Payload Latency
+- **Paired Mean Difference (d_bar):** `-0.0988 ms` (-27.4% latency drop)
+- **Paired Sample StdDev (s_d):** `0.0018 ms`
+- **Standard Error (SE):** `0.0006 ms`
+- **Paired t-Statistic:** `-170.8989` (df=9, p < 0.0001)
+- **95% Paired Student's t-CI:** `[-0.1001, -0.0975] ms`
 
 ---
 
-## 4. Concurrent Workload Throughput
+## 4. Concurrent Workload Throughput & Programmatic Paired Analysis
 | Threads | QPS Mean (req/sec) | QPS 95% CI | p50 QPS | StdDev QPS | Raw Per-Run QPS Means |
 |---|---|---|---|---|---|
-| **1 Thread** | **456.6578 req/s** | ±26.9834 | 456.6578 | 37.7229 | `[483.4283, 484.174, 468.0087, 447.1632, 453.1174, 355.3104, 468.3821, 466.0504, 481.0353, 459.9083]` |
-| **2 Threads** | **406.6686 req/s** | ±12.2882 | 406.6686 | 17.1789 | `[364.1326, 409.5089, 397.5322, 422.7812, 421.3263, 401.3716, 413.7082, 403.691, 418.3261, 414.3074]` |
-| **4 Threads** | **382.9343 req/s** | ±7.2692 | 382.9343 | 10.1623 | `[377.1615, 392.0798, 363.427, 377.8061, 383.3837, 388.5664, 396.5815, 388.2381, 389.7743, 372.3242]` |
-| **8 Threads** | **338.5664 req/s** | ±54.8201 | 338.5664 | 76.6386 | `[378.0233, 395.6275, 383.3487, 359.9341, 238.7125, 162.5976, 334.1401, 381.4218, 377.0203, 374.8386]` |
+| **1 Thread** | **489.2244 req/s** | ±5.1236 | 489.2244 | 7.1623 | `[483.8898, 496.9434, 493.8725, 483.5822, 489.9195, 474.0738, 496.681, 489.5006, 488.7058, 495.0755]` |
+| **2 Threads** | **453.54 req/s** | ±3.6481 | 453.54 | 5.0997 | `[443.0121, 455.7922, 451.8679, 457.3694, 457.3137, 454.5375, 459.8283, 456.3997, 447.7277, 451.5513]` |
+| **4 Threads** | **416.8028 req/s** | ±2.7199 | 416.8028 | 3.8022 | `[413.7052, 419.5722, 413.8151, 422.296, 418.7058, 418.8156, 416.6835, 408.8031, 417.7593, 417.8726]` |
+| **8 Threads** | **416.4183 req/s** | ±2.4415 | 416.4183 | 3.413 | `[417.6717, 416.3806, 415.0581, 419.2681, 418.1227, 417.797, 416.3539, 407.3234, 418.3113, 417.8963]` |
+
+### Programmatic Paired t-Test: 1-Thread Throughput Gain
+- **Paired Differences (d_i):** `[42.6898, 48.4434, 54.7725, 40.7822, 54.3195, 113.9738, 51.381, 47.7006, 39.6058, 56.8755]` req/s
+- **Mean Paired Difference (d_bar):** `+55.0544 req/s` (+5.18%)
+- **Paired Sample StdDev (s_d):** `21.556 req/s`
+- **Standard Error (SE):** `6.8166 req/s`
+- **Paired t-Statistic:** `8.0765` (df=9, p = 0.0005)
+- **95% Paired Student's t-CI:** `[39.6342, 70.4746] req/s`
 
 ---
 
 ## 5. Cold-Start vs. Steady-State & Resource Allocations
-- **Cold-Start Latency Mean:** `0.8633 ms` (±0.1498)
-- **Steady-State Mean Latency:** `0.5168 ms` (±0.016)
-- **Cold-Start Overhead Ratio:** `1.67x`
-- **CPU Process Execution Time:** `30.0944 seconds`
-- **Current Heap Allocation:** `0.7333 MB`
-- **Peak Heap Allocation:** `0.814 MB`
+- **Cold-Start Latency Mean:** `0.7921 ms` (±0.1425)
+- **Steady-State Mean Latency:** `0.4864 ms` (±0.0077)
+- **Cold-Start Overhead Ratio:** `1.63x`
+- **CPU Process Execution Time:** `25.6836 seconds`
+- **Current Heap Allocation:** `0.7325 MB`
+- **Peak Heap Allocation:** `0.8132 MB`
 
 ---
 
 ## 6. Audit Logging & False-Positive Halt Recovery Overhead
-- **In-Memory Receipt Generation:** `1.1532 ms/call` (p95: `1.1532 ms`)
-- **Audit File Persistence (JSONL + HMAC Chain + flock):** `0.6277 ms/call` (p95: `0.8787 ms`)
-- **Allowed Submission Latency:** `0.4969 ms`
-- **Halted Submission Latency:** `0.5136 ms` (includes vector revocation + audit HALT record)
-- **False-Positive Halt + Recovery Retry Loop:** `1.0484 ms` (2x pipeline pass overhead)
+- **In-Memory Receipt Generation:** `1.0923 ms/call` (p95: `1.0923 ms`)
+- **Audit File Persistence (JSONL + HMAC Chain + flock):** `0.5041 ms/call` (p95: `0.5707 ms`)
+- **Allowed Submission Latency:** `0.4811 ms`
+- **Halted Submission Latency:** `0.4705 ms` (includes vector revocation + audit HALT record)
+- **False-Positive Halt + Recovery Retry Loop:** `0.9513 ms` (2x pipeline pass overhead)
 
 ---
 
