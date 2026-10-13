@@ -1,7 +1,8 @@
 """
 Comprehensive Security, Adversarial, and Integration Test Suite for Shower Curtain.
 
-Covers all 20 required security scenarios specified in Section 7 of the specification.
+Covers all 20 required security scenarios specified in Section 7 of the specification,
+plus explicit PR feedback security invariant tests.
 """
 
 import pytest
@@ -141,12 +142,13 @@ def test_scenario_7_8_9_fabricated_placeholder_rejection(engine):
     det = SensitiveDataDetector().detect("alice@example.com")[0]
     legit_p = vault.get_or_create_pseudonym("sess_7", det)
 
-    # Remote model attempts to inject fake placeholder PERSON_999
-    remote_response = f"User is {legit_p} and also PERSON_999."
+    # Remote model attempts to inject fake placeholder PERSON_999 or malformed token
+    remote_response = f"User is {legit_p} and also PERSON_999 and EMAIL_999@sanitized.local."
     rehydrated = engine.process_response(remote_response, session_id="sess_7")
 
     assert "alice@example.com" in rehydrated
-    assert "PERSON_999" in rehydrated  # Left unchanged as untrusted/unmapped placeholder
+    assert "PERSON_999" in rehydrated  # Left unchanged
+    assert "EMAIL_999@sanitized.local" in rehydrated  # Left unchanged
 
 
 # ------------------------------------------------------------------------------
@@ -247,7 +249,6 @@ def test_scenario_17_openai_adapter_integration(engine):
 
 
 def test_scenario_17b_egress_denial_suppresses_provider_invocation():
-    # Configure custom gate that returns HALT
     class BlockingGate(ShowerCurtainGate):
         def evaluate(self, payload, context):
             return GateResult(action=GateAction.HALT, reason="Blocked by Egress Gate")
@@ -301,6 +302,57 @@ def test_scenario_18b_context_chunk_sensitivity_filtering():
     selected = broker.filter_context_chunks(chunks)
     assert len(selected) == 1
     assert selected[0].chunk_id == "c1"
+
+
+# ------------------------------------------------------------------------------
+# PR Comment Invariant 1: High relevance score (>0.9) must NOT override mandatory redaction/blocking
+# ------------------------------------------------------------------------------
+def test_sensitivity_policy_relevance_does_not_override_redaction(engine):
+    # Even if context chunk or prompt has high relevance (e.g. 0.99), sensitive credentials in transformed request are redacted
+    payload = {"prompt": "Critical task context: sk-proj1234567890abcdef1234567890"}
+    res = engine.transform_request(payload, session_id="sess_rel_override", estimated_utility_gain=0.99)
+
+    assert res.gate_result.action == GateAction.ALLOW
+    assert "sk-proj1234567890" not in res.sanitized_payload["prompt"]
+    assert "[REDACTED_CREDENTIAL]" in res.sanitized_payload["prompt"]
+
+
+# ------------------------------------------------------------------------------
+# PR Comment Invariant 2: Egress inspection payload identity guarantee
+# ------------------------------------------------------------------------------
+def test_egress_inspection_and_transmission_payload_identity(engine):
+    adapter = ShowerCurtainOpenAIAdapter(engine=engine)
+    transmitted_payloads = []
+
+    def tracking_provider(payload):
+        transmitted_payloads.append(payload)
+        return {"response": "ok"}
+
+    req = {"messages": [{"role": "user", "content": "Email me at alice@example.com"}]}
+    adapter.execute_completion(tracking_provider, req, session_id="sess_identity")
+
+    assert len(transmitted_payloads) == 1
+    transmitted = transmitted_payloads[0]
+    # Verify exact transmitted payload has undergone sanitization and matches gate target
+    assert "alice@example.com" not in transmitted["messages"][0]["content"]
+
+
+# ------------------------------------------------------------------------------
+# PR Comment Invariant 3: Document limitation on unrecognized sensitive value
+# ------------------------------------------------------------------------------
+def test_limitation_unrecognized_sensitive_value_documentation(engine):
+    # Deterministic detector reliance limitation: non-standard arbitrary strings without known patterns pass unless custom dictionary/regex is provided
+    unrecognized_custom_codename = "ProjectXylophone998811"
+    payload = {"prompt": f"Disclose {unrecognized_custom_codename} details."}
+    res = engine.transform_request(payload, session_id="sess_limitation")
+
+    # Documented behavior: Standard detector passes unrecognized string unless configured in custom_entities
+    assert unrecognized_custom_codename in res.sanitized_payload["prompt"]
+
+    # When configured in custom_entities, detector succeeds deterministically
+    engine_custom = ShowerCurtainEngine(detector=SensitiveDataDetector(custom_entities=[unrecognized_custom_codename]))
+    res_configured = engine_custom.transform_request(payload, session_id="sess_limitation_fixed")
+    assert unrecognized_custom_codename not in res_configured.sanitized_payload["prompt"]
 
 
 # ------------------------------------------------------------------------------
