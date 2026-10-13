@@ -32,109 +32,64 @@ _DEFAULT_QUARANTINE_SUBNETS = [
 SCALAR_TYPES = frozenset({str, int, float, bool, type(None), bytes, bytearray})
 
 
-def _estimate_dict_size(obj: dict, seen: Set[int]) -> int:
-    size = 0
-    getsizeof = sys.getsizeof
-    scalar_types = SCALAR_TYPES
-    add_seen = seen.add
-
-    stack = [obj]
-
-    while stack:
-        current = stack.pop()
-        for k, v in current.items():
-            if k.__class__ in scalar_types:
-                size += getsizeof(k)
-            else:
-                k_id = id(k)
-                if k_id not in seen:
-                    if isinstance(k, dict):
-                        add_seen(k_id)
-                        size += getsizeof(k)
-                        stack.append(k)
-                    elif isinstance(k, (list, tuple, set, frozenset)):
-                        add_seen(k_id)
-                        size += getsizeof(k)
-                        size += _estimate_iterable_size(k, seen)
-                    else:
-                        size += _estimate_payload_size(k, seen)
-                        add_seen(k_id)
-
-            if v.__class__ in scalar_types:
-                size += getsizeof(v)
-            else:
-                v_id = id(v)
-                if v_id not in seen:
-                    if isinstance(v, dict):
-                        add_seen(v_id)
-                        size += getsizeof(v)
-                        stack.append(v)
-                    elif isinstance(v, (list, tuple, set, frozenset)):
-                        add_seen(v_id)
-                        size += getsizeof(v)
-                        size += _estimate_iterable_size(v, seen)
-                    else:
-                        size += _estimate_payload_size(v, seen)
-                        add_seen(v_id)
-    return size
-
-def _estimate_iterable_size(obj: Any, seen: Set[int]) -> int:
-    size = 0
-    getsizeof = sys.getsizeof
-    scalar_types = SCALAR_TYPES
-    add_seen = seen.add
-
-    stack = [obj]
-
-    while stack:
-        current = stack.pop()
-        for item in current:
-            if item.__class__ in scalar_types:
-                size += getsizeof(item)
-            else:
-                item_id = id(item)
-                if item_id not in seen:
-                    if isinstance(item, (list, tuple, set, frozenset)):
-                        add_seen(item_id)
-                        size += getsizeof(item)
-                        stack.append(item)
-                    elif isinstance(item, dict):
-                        add_seen(item_id)
-                        size += getsizeof(item)
-                        size += _estimate_dict_size(item, seen)
-                    else:
-                        size += _estimate_payload_size(item, seen)
-                        add_seen(item_id)
-    return size
-
 def _estimate_payload_size(obj: Any, seen: Optional[Set[int]] = None) -> int:
     """
-    Recursively estimates memory footprint of nested structures 
-    without triggering expensive string allocation overhead.
+    Estimates memory footprint of nested structures without triggering
+    expensive string allocation overhead using a unified iterative DFS stack.
+    Bypasses recursive call overhead for dictionaries and iterables.
     """
     if seen is None:
         seen = set()
 
-    obj_type = type(obj)
-
-    # Scalars are counted by size directly without ID tracking
-    # to avoid collapsing shared small-int or interned singletons.
-    if obj_type in SCALAR_TYPES:
+    # Fast path for root scalar objects
+    if type(obj) in SCALAR_TYPES:
         return sys.getsizeof(obj)
 
-    obj_id = id(obj)
-    if obj_id in seen:
-        return 0
-    seen.add(obj_id)
+    # Micro-optimization: localize lookup attributes
+    getsizeof = sys.getsizeof
+    scalar_types = SCALAR_TYPES
+    add_seen = seen.add
 
-    size = sys.getsizeof(obj)
+    total_size = 0
+    stack = [obj]
+    pop = stack.pop
+    append = stack.append
 
-    if isinstance(obj, dict):
-        size += _estimate_dict_size(obj, seen)
-    elif isinstance(obj, (list, tuple, set, frozenset)):
-        size += _estimate_iterable_size(obj, seen)
+    while stack:
+        curr = pop()
+        curr_type = type(curr)
 
-    return size
+        # Scalars are counted directly without ID tracking to avoid collapsing interned singletons
+        if curr_type in scalar_types:
+            total_size += getsizeof(curr)
+            continue
+
+        curr_id = id(curr)
+        if curr_id in seen:
+            continue
+        add_seen(curr_id)
+
+        total_size += getsizeof(curr)
+
+        if issubclass(curr_type, dict):
+            for k, v in curr.items():
+                if type(k) in scalar_types:
+                    total_size += getsizeof(k)
+                else:
+                    append(k)
+
+                if type(v) in scalar_types:
+                    total_size += getsizeof(v)
+                else:
+                    append(v)
+        elif issubclass(curr_type, (list, tuple, set, frozenset)):
+            for item in curr:
+                if type(item) in scalar_types:
+                    total_size += getsizeof(item)
+                else:
+                    append(item)
+
+    return total_size
 
 
 # ==========================================
