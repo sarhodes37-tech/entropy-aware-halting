@@ -81,6 +81,17 @@ from epistemicos.provenance import (
     ReconciliationReport
 )
 
+# Expose Semantic Uncertainty subsystem
+from epistemicos.semantic_uncertainty import (
+    SemanticUncertaintyEstimator,
+    SemanticUncertaintyResult,
+    SemanticUncertaintyStatus,
+    SemanticResolver,
+    ExactAndNormalizedResolver,
+    Candidate,
+    ClusterInfo
+)
+
 __all__.extend([
     "ShowerCurtainEngine",
     "ShowerCurtainGate",
@@ -95,5 +106,12 @@ __all__.extend([
     "LocalProvenanceStore",
     "TrustedExecutionBoundary",
     "ProvenanceReconciler",
-    "ReconciliationReport"
+    "ReconciliationReport",
+    "SemanticUncertaintyEstimator",
+    "SemanticUncertaintyResult",
+    "SemanticUncertaintyStatus",
+    "SemanticResolver",
+    "ExactAndNormalizedResolver",
+    "Candidate",
+    "ClusterInfo"
 ])
