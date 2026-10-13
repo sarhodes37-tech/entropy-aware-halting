@@ -388,7 +388,7 @@ def test_audit_multiprocess_concurrency(temp_audit_file):
 
 
 def test_audit_crash_recovery_last_hash(temp_audit_file):
-    """Validates that a process crash leaving a partial line tail does not reset last_hash to genesis."""
+    """Validates crash recovery, explicit corruption reporting, and repair workflow."""
     audit = TamperEvidentAuditTrail(temp_audit_file)
     e1 = audit.record_event(AuditEvent(AuditLogLevel.INFO, "g1", "r1", "m1", "s1"))
     e2 = audit.record_event(AuditEvent(AuditLogLevel.INFO, "g2", "r2", "m2", "s2"))
@@ -398,17 +398,125 @@ def test_audit_crash_recovery_last_hash(temp_audit_file):
     with open(temp_audit_file, "a") as f:
         f.write('{"event_id": "crashed_mid_write_123", "event_type": "INF')
 
-    # Re-initialize audit trail after crash
     audit_after_crash = TamperEvidentAuditTrail(temp_audit_file)
-    last_h = audit_after_crash._get_last_hash(force_reload=True)
+    is_healthy, last_valid_h, err = audit_after_crash.inspect_log_health()
 
-    # Must recover the entry_hash of e3, NOT reset to genesis_hash
-    assert last_h == e3["entry_hash"]
-    assert last_h != audit_after_crash.genesis_hash
+    # 1. Inspecting health flags corruption and identifies last valid hash
+    assert is_healthy is False
+    assert last_valid_h == e3["entry_hash"]
+    assert "Malformed JSON" in err
 
-    # Record e4 and ensure its prev_hash links to e3
-    e4 = audit_after_crash.record_event(AuditEvent(AuditLogLevel.INFO, "g4", "r4", "m4", "s4"))
+    # 2. Attempting to record_event on a corrupted log MUST raise RuntimeError
+    with pytest.raises(RuntimeError, match="Log corruption detected"):
+        audit_after_crash.record_event(AuditEvent(AuditLogLevel.INFO, "g4", "r4", "m4", "s4"))
+
+    # 3. Explicit repair policy: truncate unparseable trailing bytes
+    with open(temp_audit_file, "r") as f:
+        lines = f.readlines()
+    clean_lines = [l for l in lines if not l.startswith('{"event_id": "crashed_mid_write_123"')]
+    with open(temp_audit_file, "w") as f:
+        f.writelines(clean_lines)
+
+    # 4. After repair, health is restored and new event appends properly
+    audit_repaired = TamperEvidentAuditTrail(temp_audit_file)
+    is_healthy_now, _, _ = audit_repaired.inspect_log_health()
+    assert is_healthy_now is True
+
+    e4 = audit_repaired.record_event(AuditEvent(AuditLogLevel.INFO, "g4", "r4", "m4", "s4"))
     assert e4["prev_hash"] == e3["entry_hash"]
+
+    is_valid, count, msg = audit_repaired.verify_chain_integrity()
+    assert is_valid is True
+    assert count == 4
+
+
+def test_audit_unlinked_record_rejection(temp_audit_file):
+    """Validates that appending after a complete but unlinked record is rejected."""
+    audit = TamperEvidentAuditTrail(temp_audit_file)
+    e1 = audit.record_event(AuditEvent(AuditLogLevel.INFO, "g1", "r1", "m1", "s1"))
+
+    # Append an unlinked record with invalid prev_hash
+    unlinked_entry = {
+        "event_id": "unlinked_999",
+        "timestamp": "2026-08-02T00:00:00Z",
+        "event_type": "INFO",
+        "gate_name": "g_bad",
+        "reason": "bad_link",
+        "model_id": "m1",
+        "latency_ms": 0.0,
+        "payload_hash": "hash",
+        "payload_snippet": "s",
+        "metadata": {},
+        "prev_hash": "INVALID_PREV_HASH"
+    }
+    unlinked_entry["entry_hash"] = audit._compute_hash("INVALID_PREV_HASH", unlinked_entry)
+
+    with open(temp_audit_file, "a") as f:
+        f.write(json.dumps(unlinked_entry) + "\n")
+
+    is_healthy, last_h, err = audit.inspect_log_health()
+    assert is_healthy is False
+    assert "Broken chain link" in err
+
+    with pytest.raises(RuntimeError, match="Log corruption detected"):
+        audit.record_event(AuditEvent(AuditLogLevel.INFO, "g2", "r2", "m2", "s2"))
+
+
+def test_receipt_schema_enforcement_and_fail_closed():
+    """Validates strict schema enforcement, missing required fields, insertion of unknown fields, nulls, and malformed sigs."""
+    key = b"signing_key_12345"
+    rg = ReceiptGenerator(signing_key=key)
+    valid_receipt = rg.mint_receipt("tx_schema_001", True, {"g": 1.0})
+
+    assert ReceiptGenerator.verify_receipt(valid_receipt, signing_key=key) is True
+
+    # 1. Missing required field
+    for req_field in ["transaction_id", "status", "gate_version", "config", "confidence_matrix", "event_log", "signature_algorithm"]:
+        incomplete = dict(valid_receipt)
+        del incomplete[req_field]
+        assert ReceiptGenerator.verify_receipt(incomplete, signing_key=key) is False, f"Failed to reject missing field: {req_field}"
+
+    # 2. Unknown extra field
+    unknown_field_receipt = dict(valid_receipt)
+    unknown_field_receipt["unauthorized_key"] = "malicious_injection"
+    assert ReceiptGenerator.verify_receipt(unknown_field_receipt, signing_key=key) is False
+
+    # 3. Null substitution for required fields
+    for req_field in ["transaction_id", "status", "gate_version", "config", "confidence_matrix", "event_log"]:
+        null_receipt = dict(valid_receipt)
+        null_receipt[req_field] = None
+        assert ReceiptGenerator.verify_receipt(null_receipt, signing_key=key) is False
+
+    # 4. Invalid field types
+    invalid_type_receipt = dict(valid_receipt)
+    invalid_type_receipt["transaction_id"] = 12345
+    assert ReceiptGenerator.verify_receipt(invalid_type_receipt, signing_key=key) is False
+
+    invalid_status_receipt = dict(valid_receipt)
+    invalid_status_receipt["status"] = "PENDING"
+    assert ReceiptGenerator.verify_receipt(invalid_status_receipt, signing_key=key) is False
+
+    # 5. Malformed signature
+    malformed_sig_receipt = dict(valid_receipt)
+    malformed_sig_receipt["signature"] = "not_a_valid_64_char_hex_string"
+    assert ReceiptGenerator.verify_receipt(malformed_sig_receipt, signing_key=key) is False
+
+    # 6. Unknown signature algorithm
+    unknown_algo_receipt = dict(valid_receipt)
+    unknown_algo_receipt["signature_algorithm"] = "MD5"
+    assert ReceiptGenerator.verify_receipt(unknown_algo_receipt, signing_key=key) is False
+
+
+def test_receipt_set_canonicalization_determinism():
+    """Validates that sets and frozensets are deterministically canonicalized into sorted lists."""
+    rg = ReceiptGenerator()
+    rg.log_event("SetEvent", {"tags": {"tag_z", "tag_a", "tag_m"}})
+    receipt = rg.mint_receipt("tx_set_001", True, {"g": 1.0})
+
+    tags = receipt["event_log"][0]["details"]["tags"]
+    assert isinstance(tags, list)
+    assert tags == ["tag_a", "tag_m", "tag_z"]
+    assert ReceiptGenerator.verify_receipt(receipt) is True
 
 
 def test_receipt_field_by_field_tampering():

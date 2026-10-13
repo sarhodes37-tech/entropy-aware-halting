@@ -60,7 +60,11 @@ def _sanitize_sensitive_data(obj: Any) -> Any:
     elif isinstance(obj, tuple):
         return tuple(_sanitize_sensitive_data(item) for item in obj)
     elif isinstance(obj, (set, frozenset)):
-        return type(obj)(_sanitize_sensitive_data(item) for item in obj)
+        sanitized_items = [_sanitize_sensitive_data(item) for item in obj]
+        try:
+            return sorted(sanitized_items)
+        except TypeError:
+            return sorted(sanitized_items, key=lambda x: str(x))
     elif isinstance(obj, str):
         return _sanitize_string_value(obj)
     return obj
@@ -102,58 +106,70 @@ class TamperEvidentAuditTrail:
         self.genesis_hash = hashlib.sha256(self.GENESIS_SEED).hexdigest()
         self.last_hash = None
 
+    def inspect_log_health(self) -> Tuple[bool, Optional[str], Optional[str]]:
+        """
+        Inspects the audit log health from Genesis to tail.
+        Separates health/integrity status from recovering the last valid entry hash.
+        Returns: (is_healthy, last_valid_entry_hash, error_message)
+        """
+        if not self.log_path.exists() or self.log_path.stat().st_size == 0:
+            return True, self.genesis_hash, None
+
+        expected_prev_hash = self.genesis_hash
+        last_valid_hash = self.genesis_hash
+        seen_event_ids = set()
+
+        with open(self.log_path, "r", encoding="utf-8") as f:
+            for line_idx, line in enumerate(f, 1):
+                line_str = line.strip()
+                if not line_str:
+                    continue
+
+                try:
+                    entry = json.loads(line_str)
+                except json.JSONDecodeError:
+                    return False, last_valid_hash, f"Malformed JSON or corrupted tail at line {line_idx}"
+
+                recorded_id = entry.get("event_id")
+                if recorded_id:
+                    if recorded_id in seen_event_ids:
+                        return False, last_valid_hash, f"Duplicate event_id detected at line {line_idx}: {recorded_id}"
+                    seen_event_ids.add(recorded_id)
+
+                recorded_hash = entry.get("entry_hash")
+                recorded_prev_hash = entry.get("prev_hash")
+
+                if recorded_prev_hash != expected_prev_hash:
+                    return (
+                        False,
+                        last_valid_hash,
+                        f"Broken chain link at line {line_idx}. Expected prev_hash {expected_prev_hash}, got {recorded_prev_hash}"
+                    )
+
+                check_data = {k: v for k, v in entry.items() if k != "entry_hash"}
+                computed_hash = self._compute_hash(recorded_prev_hash, check_data)
+
+                if computed_hash != recorded_hash:
+                    return (
+                        False,
+                        last_valid_hash,
+                        f"Tampered entry detected at line {line_idx}. Computed {computed_hash}, got {recorded_hash}"
+                    )
+
+                expected_prev_hash = recorded_hash
+                last_valid_hash = recorded_hash
+
+        return True, last_valid_hash, None
+
     def _get_last_hash(self, force_reload: bool = False) -> str:
         """
-        Efficiently retrieves the entry_hash of the final line without loading 
-        the entire log file into memory (O(1) tail read).
+        Retrieves entry_hash of final entry.
         """
         if not force_reload and getattr(self, "last_hash", None) is not None:
             return self.last_hash
 
-        if force_reload:
-            self.last_hash = None
-
-        if not self.log_path.exists() or self.log_path.stat().st_size == 0:
-            self.last_hash = self.genesis_hash
-            return self.last_hash
-
-        try:
-            with open(self.log_path, "rb") as f:
-                f.seek(0, os.SEEK_END)
-                pointer = f.tell()
-                buffer_size = 65536
-                chunks = []
-
-                while pointer > 0:
-                    read_size = min(buffer_size, pointer)
-                    pointer -= read_size
-                    f.seek(pointer)
-                    chunk = f.read(read_size)
-                    chunks.append(chunk)
-                    if b"\n" in chunk and len(chunks) > 1:
-                        break
-
-                if chunks:
-                    chunks.reverse()
-                    data = b"".join(chunks)
-                    lines = data.split(b"\n")
-
-                    for line in reversed(lines):
-                        line_str = line.strip().decode("utf-8")
-                        if line_str:
-                            try:
-                                last_entry = json.loads(line_str)
-                                entry_hash = last_entry.get("entry_hash")
-                                if entry_hash:
-                                    self.last_hash = entry_hash
-                                    return self.last_hash
-                            except json.JSONDecodeError:
-                                # Ignore corrupted/partial trailing line and continue scanning backwards
-                                continue
-        except Exception:
-            pass
-
-        self.last_hash = self.genesis_hash
+        is_healthy, last_h, _ = self.inspect_log_health()
+        self.last_hash = last_h
         return self.last_hash
 
     def _compute_hash(self, prev_hash: str, payload_data: Dict[str, Any]) -> str:
@@ -201,7 +217,9 @@ class TamperEvidentAuditTrail:
                 fcntl.flock(f, fcntl.LOCK_EX)
 
             try:
-                last_hash = self._get_last_hash(force_reload=True)
+                is_healthy, last_hash, err = self.inspect_log_health()
+                if not is_healthy:
+                    raise RuntimeError(f"Cannot write to audit trail: Log corruption detected: {err}")
 
                 entry_data = {
                     "event_id": event_id,
@@ -369,19 +387,76 @@ class ReceiptGenerator:
 
         return receipt
 
+    REQUIRED_FIELDS = frozenset({
+        "transaction_id", "status", "gate_version", "config",
+        "confidence_matrix", "event_log", "signature_algorithm", "signature"
+    })
+    OPTIONAL_FIELDS = frozenset({
+        "input_hash", "decision_details", "execution_outcome"
+    })
+    ALLOWED_FIELDS = REQUIRED_FIELDS | OPTIONAL_FIELDS
+
     @staticmethod
     def verify_receipt(receipt: Dict[str, Any], signing_key: Optional[bytes] = None) -> bool:
         """
         Independently validates a receipt signature without trusting orchestrator state.
-        Enforces strict signature algorithm matching to prevent algorithm downgrade attacks.
+        Enforces strict schema validation, type checking, signature format validation,
+        and signature algorithm matching to fail closed on any violation.
         """
-        if not isinstance(receipt, dict) or "signature" not in receipt:
+        if not isinstance(receipt, dict):
             return False
 
-        recorded_signature = receipt["signature"]
-        recorded_algo = receipt.get("signature_algorithm")
+        keys = set(receipt.keys())
 
-        # Algorithm downgrade & mismatch protection
+        # 1. Schema enforcement: required fields must be present, unknown fields rejected
+        if not ReceiptGenerator.REQUIRED_FIELDS.issubset(keys):
+            return False
+        if not keys.issubset(ReceiptGenerator.ALLOWED_FIELDS):
+            return False
+
+        # 2. Strict field type checks
+        if not isinstance(receipt["transaction_id"], str) or not receipt["transaction_id"]:
+            return False
+        if receipt["status"] not in ("COMMITTED", "ROLLED_BACK"):
+            return False
+        if not isinstance(receipt["gate_version"], str):
+            return False
+        if not isinstance(receipt["config"], dict):
+            return False
+        if not isinstance(receipt["confidence_matrix"], dict):
+            return False
+        if not isinstance(receipt["event_log"], list):
+            return False
+        if not isinstance(receipt["signature_algorithm"], str):
+            return False
+
+        sig = receipt["signature"]
+        if not isinstance(sig, str) or len(sig) != 64:
+            return False
+        try:
+            int(sig, 16)
+        except ValueError:
+            return False
+
+        # 3. Optional field type checks
+        if "input_hash" in receipt:
+            ih = receipt["input_hash"]
+            if not isinstance(ih, str) or len(ih) != 64:
+                return False
+            try:
+                int(ih, 16)
+            except ValueError:
+                return False
+
+        if "decision_details" in receipt and not isinstance(receipt["decision_details"], dict):
+            return False
+
+        if "execution_outcome" in receipt and not isinstance(receipt["execution_outcome"], dict):
+            return False
+
+        recorded_algo = receipt["signature_algorithm"]
+
+        # 4. Algorithm downgrade & key mismatch protection
         if signing_key is not None:
             if recorded_algo != "HMAC-SHA256":
                 return False
@@ -389,6 +464,7 @@ class ReceiptGenerator:
             if recorded_algo != "SHA256":
                 return False
 
+        # 5. Signature verification over canonical bytes
         check_receipt = {k: v for k, v in receipt.items() if k != "signature"}
         receipt_bytes = json.dumps(check_receipt, sort_keys=True).encode("utf-8")
 
@@ -397,7 +473,7 @@ class ReceiptGenerator:
         else:
             computed_signature = hashlib.sha256(receipt_bytes).hexdigest()
 
-        return hmac.compare_digest(recorded_signature, computed_signature)
+        return hmac.compare_digest(sig.lower(), computed_signature.lower())
 
     def rollback(self) -> List[Dict[str, Any]]:
         self.log_event("RollbackIssued", {"count": len(self._rollbacks)})
