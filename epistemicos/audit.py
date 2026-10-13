@@ -61,10 +61,7 @@ def _sanitize_sensitive_data(obj: Any) -> Any:
         return tuple(_sanitize_sensitive_data(item) for item in obj)
     elif isinstance(obj, (set, frozenset)):
         sanitized_items = [_sanitize_sensitive_data(item) for item in obj]
-        try:
-            return sorted(sanitized_items)
-        except TypeError:
-            return sorted(sanitized_items, key=lambda x: str(x))
+        return sorted(sanitized_items, key=lambda x: json.dumps(x, sort_keys=True))
     elif isinstance(obj, str):
         return _sanitize_string_value(obj)
     return obj

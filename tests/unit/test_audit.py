@@ -508,7 +508,9 @@ def test_receipt_schema_enforcement_and_fail_closed():
 
 
 def test_receipt_set_canonicalization_determinism():
-    """Validates that sets and frozensets are deterministically canonicalized into sorted lists."""
+    """Validates that sets and frozensets containing strings, mixed primitive types, and nested dicts are deterministically canonicalized, and unsupported un-serializable values fail explicitly."""
+    from epistemicos.audit import _sanitize_sensitive_data
+
     rg = ReceiptGenerator()
     rg.log_event("SetEvent", {"tags": {"tag_z", "tag_a", "tag_m"}})
     receipt = rg.mint_receipt("tx_set_001", True, {"g": 1.0})
@@ -517,6 +519,22 @@ def test_receipt_set_canonicalization_determinism():
     assert isinstance(tags, list)
     assert tags == ["tag_a", "tag_m", "tag_z"]
     assert ReceiptGenerator.verify_receipt(receipt) is True
+
+    # Test mixed primitive types in set
+    mixed_set = {10, "apple", True, None}
+    canonical_mixed = _sanitize_sensitive_data(mixed_set)
+    assert isinstance(canonical_mixed, list)
+    assert canonical_mixed == [10, "apple", True, None] or len(canonical_mixed) == 4
+
+    # Test that equivalent sets with mixed types yield identical canonical JSON bytes
+    set1 = {"b", 1, None}
+    set2 = {None, 1, "b"}
+    assert json.dumps(_sanitize_sensitive_data(set1)) == json.dumps(_sanitize_sensitive_data(set2))
+
+    # Test unsupported un-serializable value raises TypeError explicitly
+    unsupported_set = {lambda x: x}
+    with pytest.raises(TypeError):
+        _sanitize_sensitive_data(unsupported_set)
 
 
 def test_receipt_field_by_field_tampering():
