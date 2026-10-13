@@ -21,17 +21,22 @@ Decision Taxonomy:
 - INDETERMINATE: Required evidence is incomplete, missing, or contradictory.
 
 Trusted Evidence Boundary:
-- System-verified flags (e.g., vendor registration status from trusted ERP, verified goods receipt)
-  are distinguished from user-supplied assertions. Unvalidated dictionaries or arbitrary objects are rejected.
+- System-verified flags and attestations in `TrustedEvidenceContext` are strictly separated
+  from user-supplied assertions in `ProcurementRequest`. Unverified caller assertions fail closed.
 
 Governance Demonstration Disclaimer:
 - This module is a reference governance demonstration for EpistemicOS and does not constitute
   a production payment or procurement engine.
 """
 
+import decimal
+from decimal import Decimal, ROUND_HALF_UP
+import hashlib
+import json
 import math
 import time
-from typing import Dict, Any, Optional, List
+import uuid
+from typing import Dict, Any, Optional, List, Set, Union
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -50,6 +55,7 @@ class ProcurementRequest(BaseModel):
     """
     Synthetic purchase-order request with strict validation and explicit evidence boundary.
     Rejects malformed types, non-finite or negative amounts, and unexpected fields.
+    Uses Decimal representation for precise financial arithmetic.
     """
 
     model_config = ConfigDict(extra="forbid", validate_default=True)
@@ -59,21 +65,19 @@ class ProcurementRequest(BaseModel):
     vendor_id: str = Field(min_length=1, max_length=128)
     requester_id: str = Field(min_length=1, max_length=128)
 
-    amount: float
+    amount: Decimal
     currency: str
 
-    invoice_amount: float
-    purchase_order_amount: float
-    goods_receipt_amount: float
+    invoice_amount: Decimal
+    purchase_order_amount: Decimal
+    goods_receipt_amount: Decimal
 
     payment_instructions_changed: bool = False
 
-    approved_vendor: Optional[bool] = None  # Trusted system evidence
+    # Optional caller assertions (treated as UNTRUSTED unless matched in TrustedEvidenceContext)
+    caller_asserted_vendor_approved: Optional[bool] = None
     independent_approval: bool = False
     approver_id: Optional[str] = None
-
-    evidence_complete: bool = True
-    evidence_provenance: Dict[str, str] = Field(default_factory=dict)
 
     @field_validator(
         "amount",
@@ -83,17 +87,26 @@ class ProcurementRequest(BaseModel):
         mode="before",
     )
     @classmethod
-    def validate_numeric_amount(cls, value: Any) -> float:
+    def validate_decimal_amount(cls, value: Any) -> Decimal:
         if isinstance(value, bool):
             raise ValueError("Booleans masquerading as numeric amounts are strictly forbidden")
-        if not isinstance(value, (int, float)):
-            raise ValueError("Amount must be a numeric float or int")
-        val = float(value)
-        if not math.isfinite(val):
+        if isinstance(value, float):
+            if not math.isfinite(value):
+                raise ValueError("Amount must be finite")
+            value = str(value)
+        elif isinstance(value, int):
+            value = str(value)
+
+        try:
+            dec = Decimal(str(value))
+        except (decimal.InvalidOperation, TypeError, ValueError):
+            raise ValueError("Amount must be a valid numeric Decimal")
+
+        if dec.is_nan() or dec.is_infinite():
             raise ValueError("Amount must be finite")
-        if val <= 0:
+        if dec <= Decimal("0"):
             raise ValueError("Amount must be strictly positive")
-        return val
+        return dec.quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
 
     @field_validator("request_id", "purchase_order_id", "vendor_id", "requester_id")
     @classmethod
@@ -128,23 +141,108 @@ class ProcurementRequest(BaseModel):
             raise ValueError(f"Unsupported currency: '{value}'")
         return val
 
+    def canonical_dict(self) -> Dict[str, Any]:
+        """Returns deterministic dictionary representation for canonical hashing."""
+        return {
+            "request_id": self.request_id,
+            "purchase_order_id": self.purchase_order_id,
+            "vendor_id": self.vendor_id,
+            "requester_id": self.requester_id,
+            "amount": str(self.amount),
+            "currency": self.currency,
+            "invoice_amount": str(self.invoice_amount),
+            "purchase_order_amount": str(self.purchase_order_amount),
+            "goods_receipt_amount": str(self.goods_receipt_amount),
+            "payment_instructions_changed": self.payment_instructions_changed,
+            "independent_approval": self.independent_approval,
+            "approver_id": self.approver_id,
+        }
+
+    def canonical_digest(self) -> str:
+        """SHA-256 canonical digest of request content."""
+        dump = json.dumps(self.canonical_dict(), sort_keys=True)
+        return hashlib.sha256(dump.encode("utf-8")).hexdigest()
+
+
+class TrustedEvidenceContext(BaseModel):
+    """
+    Separately ingested, system-attested evidence context.
+    Caller assertions in ProcurementRequest are validated against this trusted context.
+    """
+
+    model_config = ConfigDict(extra="forbid", validate_default=True)
+
+    verified_approved_vendors: Set[str] = Field(default_factory=set)
+    verified_approver_authority_limits: Dict[str, Decimal] = Field(default_factory=dict)
+    verified_independent_approvals: Set[str] = Field(default_factory=set)  # Set of "request_id:approver_id"
+    evidence_complete: bool = True
+    evidence_timestamp: float = Field(default_factory=time.time)
+
+    @field_validator("verified_approver_authority_limits", mode="before")
+    @classmethod
+    def validate_limits(cls, limits: Any) -> Dict[str, Decimal]:
+        if not isinstance(limits, dict):
+            return {}
+        result = {}
+        for k, v in limits.items():
+            if isinstance(v, bool):
+                raise ValueError("Booleans masquerading as limit values are forbidden")
+            try:
+                dec = Decimal(str(v))
+            except (decimal.InvalidOperation, TypeError, ValueError):
+                raise ValueError("Limit must be numeric")
+            if dec.is_nan() or dec.is_infinite() or dec < Decimal("0"):
+                raise ValueError("Limit must be finite and non-negative")
+            result[k] = dec.quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
+        return result
+
+
+class ProcurementDecisionToken(BaseModel):
+    """
+    Cryptographically bound, single-use decision token produced upon evaluation.
+    Binds decision outcome to exact request canonical digest and policy version.
+    """
+
+    model_config = ConfigDict(extra="forbid", validate_default=True)
+
+    decision_id: str
+    request_id: str
+    request_digest: str
+    decision: GateDecision
+    reason_code: str
+    policy_version: str
+    spending_limit: Decimal
+    timestamp: float
+
 
 class ProcurementGovernanceGate(ControlPlaneGate):
     """
     Deterministic control-plane gate for procurement purchase-order governance.
     Enforces spending authority, vendor status, segregation of duties, 3-way match,
-    payment modification holds, and evidence integrity.
+    payment modification holds, authoritative amount reconciliation, and evidence integrity.
     """
 
     def __init__(
         self,
-        spending_limit: float = 10000.0,
-        match_tolerance: float = 0.01,
+        spending_limit: Union[Decimal, float, str] = Decimal("10000.00"),
+        match_tolerance: Union[Decimal, float, str] = Decimal("0.01"),
         config: Optional[GateConfig] = None,
     ):
         super().__init__(config=config or GateConfig(version="1.0.0", is_critical=True))
-        self.spending_limit = spending_limit
-        self.match_tolerance = match_tolerance
+
+        if isinstance(spending_limit, bool) or isinstance(match_tolerance, bool):
+            raise ValueError("Booleans masquerading as gate thresholds are strictly forbidden")
+
+        try:
+            self.spending_limit = Decimal(str(spending_limit))
+            self.match_tolerance = Decimal(str(match_tolerance))
+        except (decimal.InvalidOperation, TypeError, ValueError):
+            raise ValueError("Gate configuration thresholds must be valid numeric Decimals")
+
+        if self.spending_limit.is_nan() or self.spending_limit.is_infinite() or self.spending_limit < Decimal("0"):
+            raise ValueError("spending_limit must be finite and non-negative")
+        if self.match_tolerance.is_nan() or self.match_tolerance.is_infinite() or self.match_tolerance < Decimal("0"):
+            raise ValueError("match_tolerance must be finite and non-negative")
 
     def _parse_and_validate_request(
         self, payload: Any, t0: float
@@ -181,49 +279,42 @@ class ProcurementGovernanceGate(ControlPlaneGate):
             return err_outcome
         assert req is not None
 
-        # Rule 6: Incomplete or contradictory evidence
-        if not req.evidence_complete:
+        # Extract trusted evidence context if provided
+        evidence_ctx_raw = gate_input.context.get("trusted_evidence")
+        if isinstance(evidence_ctx_raw, TrustedEvidenceContext):
+            evidence_ctx = evidence_ctx_raw
+        elif isinstance(evidence_ctx_raw, dict):
+            try:
+                evidence_ctx = TrustedEvidenceContext.model_validate(evidence_ctx_raw)
+            except Exception:
+                evidence_ctx = TrustedEvidenceContext(evidence_complete=False)
+        else:
+            # Fallback for basic usage: require explicit vendor verification
+            evidence_ctx = TrustedEvidenceContext(evidence_complete=False)
+
+        # Rule 6: Evidence completeness and trusted status check
+        if not evidence_ctx.evidence_complete:
             return GateOutcome(
                 decision=GateDecision.INDETERMINATE,
-                reason_code="INCOMPLETE_EVIDENCE",
+                reason_code="INCOMPLETE_OR_UNTRUSTED_EVIDENCE",
                 gate_name=self.gate_name,
                 gate_version=self.config.version,
                 evidence={"request_id": req.request_id, "evidence_complete": False},
                 latency_ms=(time.perf_counter() - t0) * 1000.0,
             )
 
-        if req.approved_vendor is None:
-            return GateOutcome(
-                decision=GateDecision.INDETERMINATE,
-                reason_code="UNVERIFIABLE_VENDOR_STATUS",
-                gate_name=self.gate_name,
-                gate_version=self.config.version,
-                evidence={"request_id": req.request_id, "vendor_id": req.vendor_id},
-                latency_ms=(time.perf_counter() - t0) * 1000.0,
-            )
-
-        if req.independent_approval and not req.approver_id:
-            return GateOutcome(
-                decision=GateDecision.INDETERMINATE,
-                reason_code="CONTRADICTORY_APPROVAL_EVIDENCE",
-                gate_name=self.gate_name,
-                gate_version=self.config.version,
-                evidence={"independent_approval": True, "approver_id": None},
-                latency_ms=(time.perf_counter() - t0) * 1000.0,
-            )
-
-        # Rule 1: Vendor eligibility
-        if req.approved_vendor is False:
+        # Rule 1: Vendor eligibility against trusted evidence
+        if req.vendor_id not in evidence_ctx.verified_approved_vendors:
             return GateOutcome(
                 decision=GateDecision.DENY,
                 reason_code="UNAPPROVED_VENDOR",
                 gate_name=self.gate_name,
                 gate_version=self.config.version,
-                evidence={"vendor_id": req.vendor_id, "approved_vendor": False},
+                evidence={"vendor_id": req.vendor_id, "approved": False},
                 latency_ms=(time.perf_counter() - t0) * 1000.0,
             )
 
-        # Rule 5: Payment-instruction changes trigger security hold
+        # Rule 5: Payment instruction change hold
         if req.payment_instructions_changed:
             return GateOutcome(
                 decision=GateDecision.HALT,
@@ -234,7 +325,7 @@ class ProcurementGovernanceGate(ControlPlaneGate):
                 latency_ms=(time.perf_counter() - t0) * 1000.0,
             )
 
-        # Rule 4: Three-way match
+        # Rule 4: Three-way match with Decimal arithmetic
         po_diff = abs(req.invoice_amount - req.purchase_order_amount)
         gr_diff = abs(req.invoice_amount - req.goods_receipt_amount)
         po_gr_diff = abs(req.purchase_order_amount - req.goods_receipt_amount)
@@ -247,14 +338,23 @@ class ProcurementGovernanceGate(ControlPlaneGate):
                 gate_name=self.gate_name,
                 gate_version=self.config.version,
                 evidence={
-                    "max_discrepancy": round(max_discrepancy, 4),
-                    "tolerance": self.match_tolerance,
-                    "invoice_amount": req.invoice_amount,
-                    "po_amount": req.purchase_order_amount,
-                    "gr_amount": req.goods_receipt_amount,
+                    "max_discrepancy": str(max_discrepancy),
+                    "tolerance": str(self.match_tolerance),
+                    "invoice_amount": str(req.invoice_amount),
+                    "po_amount": str(req.purchase_order_amount),
+                    "gr_amount": str(req.goods_receipt_amount),
                 },
                 latency_ms=(time.perf_counter() - t0) * 1000.0,
             )
+
+        # Authoritative Transaction Amount (Finding 3):
+        # The authoritative amount is the maximum of amount, invoice, PO, and goods receipt amounts.
+        authoritative_amount = max(
+            req.amount,
+            req.invoice_amount,
+            req.purchase_order_amount,
+            req.goods_receipt_amount,
+        )
 
         # Rule 3: Segregation of duties
         if req.independent_approval and req.approver_id == req.requester_id:
@@ -270,23 +370,63 @@ class ProcurementGovernanceGate(ControlPlaneGate):
                 latency_ms=(time.perf_counter() - t0) * 1000.0,
             )
 
-        # Rule 2: Spending authority
-        if req.amount > self.spending_limit:
-            if not req.independent_approval:
+        # Rule 2: Spending authority against authoritative_amount
+        if authoritative_amount > self.spending_limit:
+            if not req.independent_approval or not req.approver_id:
                 return GateOutcome(
                     decision=GateDecision.DENY,
                     reason_code="EXCEEDS_SPENDING_AUTHORITY",
                     gate_name=self.gate_name,
                     gate_version=self.config.version,
                     evidence={
-                        "amount": req.amount,
-                        "spending_limit": self.spending_limit,
+                        "authoritative_amount": str(authoritative_amount),
+                        "spending_limit": str(self.spending_limit),
                         "currency": req.currency,
                     },
                     latency_ms=(time.perf_counter() - t0) * 1000.0,
                 )
 
-        # Rule 7: Successful approval
+            # Verify independent approval against trusted attestation context and limit
+            approval_key = f"{req.request_id}:{req.approver_id}"
+            if approval_key not in evidence_ctx.verified_independent_approvals:
+                return GateOutcome(
+                    decision=GateDecision.DENY,
+                    reason_code="UNVERIFIED_INDEPENDENT_APPROVAL_RECORD",
+                    gate_name=self.gate_name,
+                    gate_version=self.config.version,
+                    evidence={"approval_key": approval_key},
+                    latency_ms=(time.perf_counter() - t0) * 1000.0,
+                )
+
+            approver_limit = evidence_ctx.verified_approver_authority_limits.get(
+                req.approver_id, Decimal("0")
+            )
+            if authoritative_amount > approver_limit:
+                return GateOutcome(
+                    decision=GateDecision.DENY,
+                    reason_code="INSUFFICIENT_APPROVER_AUTHORITY_LIMIT",
+                    gate_name=self.gate_name,
+                    gate_version=self.config.version,
+                    evidence={
+                        "authoritative_amount": str(authoritative_amount),
+                        "approver_limit": str(approver_limit),
+                        "approver_id": req.approver_id,
+                    },
+                    latency_ms=(time.perf_counter() - t0) * 1000.0,
+                )
+
+        # Rule 7: Successful approval with decision token generation
+        decision_token = ProcurementDecisionToken(
+            decision_id=f"DEC-{uuid.uuid4().hex[:12].upper()}",
+            request_id=req.request_id,
+            request_digest=req.canonical_digest(),
+            decision=GateDecision.ALLOW,
+            reason_code="PROCUREMENT_APPROVAL_GRANTED",
+            policy_version=self.config.version,
+            spending_limit=self.spending_limit,
+            timestamp=time.time(),
+        )
+
         return GateOutcome(
             decision=GateDecision.ALLOW,
             reason_code="PROCUREMENT_APPROVAL_GRANTED",
@@ -294,7 +434,9 @@ class ProcurementGovernanceGate(ControlPlaneGate):
             gate_version=self.config.version,
             evidence={
                 "request_id": req.request_id,
-                "amount": req.amount,
+                "request_digest": req.canonical_digest(),
+                "decision_token": decision_token.model_dump(mode="json"),
+                "authoritative_amount": str(authoritative_amount),
                 "currency": req.currency,
                 "vendor_id": req.vendor_id,
             },
@@ -305,24 +447,63 @@ class ProcurementGovernanceGate(ControlPlaneGate):
 class SyntheticProcurementExecutor:
     """
     Downstream synthetic action boundary test double.
-    Records purchase order executions strictly when governed by an explicit ALLOW decision.
+    Enforces strict cryptographic and canonical digest binding to prevent cross-request execution,
+    replay, mutation, or execution on stale policy/decisions.
     """
 
-    def __init__(self):
+    def __init__(self, allow_replay: bool = False):
         self.executed_orders: List[Dict[str, Any]] = []
+        self.used_decision_ids: Set[str] = set()
+        self.allow_replay = allow_replay
 
-    def execute(self, outcome: Any, request: ProcurementRequest) -> bool:
+    def execute(
+        self,
+        outcome: Any,
+        request: ProcurementRequest,
+        gate: Optional[ProcurementGovernanceGate] = None,
+    ) -> bool:
         decision = getattr(outcome, "decision", None)
         passed = getattr(outcome, "passed", False)
 
         if decision != GateDecision.ALLOW or not passed:
             return False
 
+        evidence = getattr(outcome, "evidence", {}) or {}
+        token_data = evidence.get("decision_token")
+        if not token_data or not isinstance(token_data, dict):
+            return False
+
+        try:
+            token = ProcurementDecisionToken.model_validate(token_data)
+        except Exception:
+            return False
+
+        # Finding 1 Check 1: Request binding
+        if token.request_id != request.request_id:
+            return False
+
+        # Finding 1 Check 2: Digest binding (detects mutation or cross-request ALLOW)
+        if token.request_digest != request.canonical_digest():
+            return False
+
+        # Finding 1 Check 3: Gate/Policy version matching
+        if gate is not None:
+            if token.policy_version != gate.config.version:
+                return False
+            if token.spending_limit != gate.spending_limit:
+                return False
+
+        # Finding 1 Check 4: Explicit Replay Prevention
+        if token.decision_id in self.used_decision_ids and not self.allow_replay:
+            return False
+
+        self.used_decision_ids.add(token.decision_id)
         self.executed_orders.append({
+            "decision_id": token.decision_id,
             "request_id": request.request_id,
             "purchase_order_id": request.purchase_order_id,
             "vendor_id": request.vendor_id,
-            "amount": request.amount,
+            "amount": str(request.amount),
             "currency": request.currency,
             "timestamp": time.time(),
         })
@@ -331,8 +512,15 @@ class SyntheticProcurementExecutor:
 
 def run_demo() -> Dict[str, Any]:
     """Runs a synthetic procurement governance demonstration across 4 scenarios."""
-    gate = ProcurementGovernanceGate(spending_limit=10000.0)
+    gate = ProcurementGovernanceGate(spending_limit=Decimal("10000.00"))
     executor = SyntheticProcurementExecutor()
+
+    # Trusted evidence setup
+    trusted_ctx = TrustedEvidenceContext(
+        verified_approved_vendors={"VEND-ACME"},
+        verified_approver_authority_limits={"USR-BOB-MANAGER": Decimal("50000.00")},
+        evidence_complete=True,
+    )
 
     # Scenario 1: Compliant Request
     compliant_req = ProcurementRequest(
@@ -340,15 +528,16 @@ def run_demo() -> Dict[str, Any]:
         purchase_order_id="PO-1001",
         vendor_id="VEND-ACME",
         requester_id="USR-ALICE",
-        amount=5000.0,
+        amount=Decimal("5000.00"),
         currency="USD",
-        invoice_amount=5000.0,
-        purchase_order_amount=5000.0,
-        goods_receipt_amount=5000.0,
-        approved_vendor=True,
+        invoice_amount=Decimal("5000.00"),
+        purchase_order_amount=Decimal("5000.00"),
+        goods_receipt_amount=Decimal("5000.00"),
     )
-    outcome_1 = gate.evaluate_contract(GateInput(payload=compliant_req, context={}))
-    exec_1 = executor.execute(outcome_1, compliant_req)
+    outcome_1 = gate.evaluate_contract(
+        GateInput(payload=compliant_req, context={"trusted_evidence": trusted_ctx})
+    )
+    exec_1 = executor.execute(outcome_1, compliant_req, gate)
 
     # Scenario 2: Exceeding Spending Authority (Without valid independent approval)
     over_limit_req = ProcurementRequest(
@@ -356,15 +545,16 @@ def run_demo() -> Dict[str, Any]:
         purchase_order_id="PO-1002",
         vendor_id="VEND-ACME",
         requester_id="USR-BOB",
-        amount=25000.0,
+        amount=Decimal("25000.00"),
         currency="USD",
-        invoice_amount=25000.0,
-        purchase_order_amount=25000.0,
-        goods_receipt_amount=25000.0,
-        approved_vendor=True,
+        invoice_amount=Decimal("25000.00"),
+        purchase_order_amount=Decimal("25000.00"),
+        goods_receipt_amount=Decimal("25000.00"),
     )
-    outcome_2 = gate.evaluate_contract(GateInput(payload=over_limit_req, context={}))
-    exec_2 = executor.execute(outcome_2, over_limit_req)
+    outcome_2 = gate.evaluate_contract(
+        GateInput(payload=over_limit_req, context={"trusted_evidence": trusted_ctx})
+    )
+    exec_2 = executor.execute(outcome_2, over_limit_req, gate)
 
     # Scenario 3: Payment Instructions Changed
     changed_payment_req = ProcurementRequest(
@@ -372,16 +562,17 @@ def run_demo() -> Dict[str, Any]:
         purchase_order_id="PO-1003",
         vendor_id="VEND-ACME",
         requester_id="USR-CHARLIE",
-        amount=3000.0,
+        amount=Decimal("3000.00"),
         currency="USD",
-        invoice_amount=3000.0,
-        purchase_order_amount=3000.0,
-        goods_receipt_amount=3000.0,
-        approved_vendor=True,
+        invoice_amount=Decimal("3000.00"),
+        purchase_order_amount=Decimal("3000.00"),
+        goods_receipt_amount=Decimal("3000.00"),
         payment_instructions_changed=True,
     )
-    outcome_3 = gate.evaluate_contract(GateInput(payload=changed_payment_req, context={}))
-    exec_3 = executor.execute(outcome_3, changed_payment_req)
+    outcome_3 = gate.evaluate_contract(
+        GateInput(payload=changed_payment_req, context={"trusted_evidence": trusted_ctx})
+    )
+    exec_3 = executor.execute(outcome_3, changed_payment_req, gate)
 
     # Scenario 4: Insufficient Evidence
     incomplete_req = ProcurementRequest(
@@ -389,16 +580,19 @@ def run_demo() -> Dict[str, Any]:
         purchase_order_id="PO-1004",
         vendor_id="VEND-UNKNOWN",
         requester_id="USR-DAVE",
-        amount=1200.0,
+        amount=Decimal("1200.00"),
         currency="USD",
-        invoice_amount=1200.0,
-        purchase_order_amount=1200.0,
-        goods_receipt_amount=1200.0,
-        approved_vendor=None,  # Missing trusted vendor status
-        evidence_complete=False,
+        invoice_amount=Decimal("1200.00"),
+        purchase_order_amount=Decimal("1200.00"),
+        goods_receipt_amount=Decimal("1200.00"),
     )
-    outcome_4 = gate.evaluate_contract(GateInput(payload=incomplete_req, context={}))
-    exec_4 = executor.execute(outcome_4, incomplete_req)
+    outcome_4 = gate.evaluate_contract(
+        GateInput(
+            payload=incomplete_req,
+            context={"trusted_evidence": TrustedEvidenceContext(evidence_complete=False)},
+        )
+    )
+    exec_4 = executor.execute(outcome_4, incomplete_req, gate)
 
     results = {
         "Scenario 1 (Compliant)": {
