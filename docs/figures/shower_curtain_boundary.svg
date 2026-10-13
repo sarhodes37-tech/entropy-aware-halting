@@ -1,0 +1,102 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 500" width="100%" height="100%" style="background-color: #0d1117; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;">
+  <style>
+    .title { font-size: 18px; font-weight: bold; fill: #58a6ff; }
+    .subtitle { font-size: 12px; fill: #8b949e; }
+    .box { fill: #161b22; stroke: #30363d; stroke-width: 1.5; rx: 6px; }
+    .box-local { fill: #121d2b; stroke: #388bfd; stroke-width: 1.5; rx: 6px; }
+    .box-remote { fill: #211c1d; stroke: #d29922; stroke-width: 1.5; rx: 6px; }
+    .box-gate { fill: #1f242e; stroke: #d29922; stroke-width: 1.5; rx: 6px; }
+    .text-main { font-size: 13px; font-weight: 600; fill: #c9d1d9; }
+    .text-sub { font-size: 11px; fill: #8b949e; }
+    .text-local { font-size: 12px; font-weight: bold; fill: #58a6ff; }
+    .text-remote { font-size: 12px; font-weight: bold; fill: #d29922; }
+    .arrow { stroke: #58a6ff; stroke-width: 1.5; fill: none; marker-end: url(#arrowhead); }
+    .arrow-remote { stroke: #d29922; stroke-width: 1.5; fill: none; marker-end: url(#arrowhead-amber); }
+    .arrow-return { stroke: #3fb950; stroke-width: 1.5; fill: none; marker-end: url(#arrowhead-green); }
+    .boundary-local { fill: none; stroke: #388bfd; stroke-width: 1.5; stroke-dasharray: 6,6; rx: 8px; }
+    .boundary-remote { fill: none; stroke: #d29922; stroke-width: 1.5; stroke-dasharray: 6,6; rx: 8px; }
+    .boundary-label-local { font-size: 11px; font-weight: bold; fill: #58a6ff; }
+    .boundary-label-remote { font-size: 11px; font-weight: bold; fill: #d29922; text-anchor: end; }
+  </style>
+
+  <defs>
+    <marker id="arrowhead" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="#58a6ff" />
+    </marker>
+    <marker id="arrowhead-amber" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="#d29922" />
+    </marker>
+    <marker id="arrowhead-green" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="#3fb950" />
+    </marker>
+  </defs>
+
+  <!-- Title Section -->
+  <text x="30" y="35" class="title">Figure B — Shower Curtain Privacy Boundary</text>
+  <text x="30" y="55" class="subtitle">Local Data Sanitization, Pseudonym Mapping, Egress Gate, and Inbound Response Inspection</text>
+
+  <!-- Local Trusted Boundary -->
+  <rect x="20" y="75" width="600" height="400" class="boundary-local" />
+  <text x="35" y="95" class="boundary-label-local">LOCAL TRUSTED PRIVACY BOUNDARY (NEVER DISCLOSED)</text>
+
+  <!-- Remote Provider Boundary -->
+  <rect x="640" y="75" width="240" height="400" class="boundary-remote" />
+  <text x="865" y="95" class="boundary-label-remote">UNTRUSTED REMOTE PROVIDER</text>
+
+  <!-- Local Components -->
+  <!-- Step 1: Input -->
+  <rect x="40" y="120" width="150" height="60" class="box-local" />
+  <text x="115" y="145" class="text-local" text-anchor="middle">Raw User Request</text>
+  <text x="115" y="162" class="text-sub" text-anchor="middle">Contains PII / Secrets</text>
+
+  <!-- Step 2: Context Minimization & Detector -->
+  <rect x="230" y="120" width="160" height="60" class="box-local" />
+  <text x="310" y="145" class="text-main" text-anchor="middle">Stage A &amp; D</text>
+  <text x="310" y="162" class="text-sub" text-anchor="middle">Detector &amp; Minimization</text>
+
+  <!-- Local Vault -->
+  <rect x="230" y="215" width="160" height="60" class="box-local" />
+  <text x="310" y="240" class="text-main" text-anchor="middle">Stage C: Local Vault</text>
+  <text x="310" y="257" class="text-sub" text-anchor="middle">Session Pseudonym Mapping</text>
+
+  <!-- Policy Evaluation -->
+  <rect x="40" y="215" width="150" height="60" class="box-local" />
+  <text x="115" y="240" class="text-main" text-anchor="middle">Stage B: Policy</text>
+  <text x="115" y="257" class="text-sub" text-anchor="middle">PASS, REDACT, BLOCK</text>
+
+  <!-- Egress Gate Stage E -->
+  <rect x="430" y="120" width="170" height="155" class="box-gate" />
+  <text x="515" y="150" class="text-remote" text-anchor="middle">Stage E: Egress Gate</text>
+  <text x="515" y="175" class="text-sub" text-anchor="middle">Serialized Payload Check</text>
+  <text x="515" y="195" class="text-sub" text-anchor="middle">Halt on Unsanitized Data</text>
+  <text x="515" y="215" class="text-sub" text-anchor="middle">Verify Policy Compliance</text>
+
+  <!-- Inbound Response Inspection -->
+  <rect x="230" y="325" width="370" height="70" class="box-local" />
+  <text x="415" y="352" class="text-main" text-anchor="middle">Response Inspection &amp; Authorized Rehydration</text>
+  <text x="415" y="372" class="text-sub" text-anchor="middle">Detect Leaks, Non-restoration of Credentials, Exact Placeholder Rehydration</text>
+
+  <!-- Rehydrated Response Output -->
+  <rect x="40" y="325" width="150" height="70" class="box-local" />
+  <text x="115" y="355" class="text-local" text-anchor="middle">Rehydrated Client Output</text>
+  <text x="115" y="372" class="text-sub" text-anchor="middle">Restored Local Pseudonyms</text>
+
+  <!-- Remote LLM Provider -->
+  <rect x="660" y="180" width="200" height="150" class="box-remote" />
+  <text x="760" y="220" class="text-remote" text-anchor="middle">External LLM Provider</text>
+  <text x="760" y="245" class="text-sub" text-anchor="middle">(e.g., OpenAI / Claude API)</text>
+  <text x="760" y="275" class="text-sub" text-anchor="middle">Receives ONLY sanitized</text>
+  <text x="760" y="290" class="text-sub" text-anchor="middle">or pseudonymous payload</text>
+
+  <!-- Arrows Outbound -->
+  <path d="M 190 150 L 230 150" class="arrow" />
+  <path d="M 310 180 L 310 215" class="arrow" />
+  <path d="M 230 245 L 190 245" class="arrow" />
+  <path d="M 390 150 L 430 150" class="arrow" />
+  <path d="M 600 197 L 660 197" class="arrow-remote" />
+
+  <!-- Arrows Inbound -->
+  <path d="M 660 310 L 600 360" class="arrow-return" />
+  <path d="M 230 360 L 190 360" class="arrow-return" />
+  <path d="M 310 275 L 310 325" class="arrow" />
+</svg>

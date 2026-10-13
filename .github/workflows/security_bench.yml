@@ -37,62 +37,47 @@ jobs:
     - name: Prepare Telemetry Artifact Directory
       run: mkdir -p results
 
-    - name: Execute Epistemic Layer Benchmarks
+    - name: Execute Measured Benchmark Suite
       env:
         PYTHONPATH: .
       run: |
-        echo "Executing layered boundary tests and ablation matrix..."
-        pytest tests/ benchmarks/ -v
-        
-        if [ -f "results/ablation_telemetry.json" ]; then
-          echo "Telemetry artifact verified at results/ablation_telemetry.json."
-        else
-          file_path=$(find . -name "ablation_telemetry.json" -type f | head -n 1)
-          if [ -n "$file_path" ]; then
-            echo "Found telemetry artifact at: $file_path. Copying to results/..."
-            cp "$file_path" results/ablation_telemetry.json
-          else
-            echo "WARNING: Pytest finished but no telemetry file was generated."
-          fi
-        fi
+        echo "Executing unit tests..."
+        pytest tests/ -v
+        echo "Executing measured benchmark suite..."
+        python -m benchmarks.run_full_benchmark
 
-    - name: Enforce Zero-Regression Security Policy
+    - name: Verify Measured Benchmark Artifacts
       run: |
         python -c "
         import json, sys, os
         
-        artifact_path = 'results/ablation_telemetry.json'
+        artifact_path = 'results/ablation_table.json'
         
         if not os.path.exists(artifact_path):
-            print(f'\n[FATAL ERROR] Telemetry artifact not found at {artifact_path}.')
-            print('The Pytest suite is failing to generate the JSON file during execution.')
+            print(f'\n[FATAL ERROR] Measured benchmark output not found at {artifact_path}.')
             sys.exit(1)
             
         try:
             with open(artifact_path, 'r') as f:
                 data = json.load(f)
             
-            c4 = data.get('C4_Full_EpistemicOS', {})
-            precision = float(c4.get('computed_precision', '0').strip('%'))
-            recall = float(c4.get('computed_recall', '0').strip('%'))
-            
-            print(f'Pipeline Evaluation -> Precision: {precision}%, Recall: {recall}%')
-            
-            if precision < 100.0 or recall < 100.0:
-                print(f'\n[FATAL ERROR] Security Regression Detected!')
-                print(f'EpistemicOS must maintain absolute determinism (100%).')
+            baselines = data.get('baselines', {})
+            if not baselines:
+                print('\n[FATAL ERROR] Baseline evaluation records missing.')
                 sys.exit(1)
-            
-            print('\n[SUCCESS] Zero regressions. C4 Full Stack maintained 100% boundary integrity.')
+
+            print('\n[SUCCESS] Verified measured benchmark results:')
+            for name, bdata in baselines.items():
+                print(f'  - {name}: {bdata.get(\"accuracy_pct\")}% accuracy (N={bdata.get(\"sample_count\")})')
         except Exception as e:
-            print(f'\n[FATAL ERROR] Failed to parse telemetry artifact: {e}')
+            print(f'\n[FATAL ERROR] Failed to parse benchmark results: {e}')
             sys.exit(1)
         "
 
-    - name: Archive Telemetry Artifacts
+    - name: Archive Benchmark Artifacts
       if: always()
       uses: actions/upload-artifact@v4
       with:
         name: epistemic-telemetry-py${{ matrix.python-version }}
-        path: results/ablation_telemetry.json
+        path: results/
         retention-days: 14

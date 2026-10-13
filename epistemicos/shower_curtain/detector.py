@@ -38,14 +38,15 @@ class DetectionResult:
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
+        """Returns a safe serialized dictionary without exposing the raw sensitive value."""
+        span_length = self.span[1] - self.span[0] if self.span else 0
         return {
             "category": self.category.value,
-            "value": self.value,
-            "span": list(self.span),
+            "span_length": span_length,
             "confidence": round(self.confidence, 4),
             "detector_type": self.detector_type,
             "suggested_treatment": self.suggested_treatment,
-            "metadata": self.metadata
+            "metadata": {k: v for k, v in self.metadata.items() if k not in ("value", "raw_value", "secret")}
         }
 
 
