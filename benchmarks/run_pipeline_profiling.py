@@ -11,6 +11,7 @@ Measures across 10 benchmark repetitions (N=10 run-level observations):
 - Cost of audit receipt generation and JSONL file persistence
 - Cost of false-positive halts and recovery retries
 - Benign, adversarial, malformed, and high-volume workloads
+- Raw per-run observations and randomized workload interleaving
 
 Exports results to:
 - results/pipeline_profiling_results.json
@@ -22,6 +23,7 @@ import os
 import time
 import json
 import math
+import random
 import statistics
 import tracemalloc
 import platform
@@ -160,10 +162,9 @@ def compute_run_level_stats(run_data: List[List[float]]) -> Dict[str, Any]:
     Uses Student's t-distribution critical value (t_0.025, df=N-1) for 95% CI.
     """
     if not run_data:
-        return {"mean": 0.0, "ci95": 0.0, "p50": 0.0, "p95": 0.0, "p95_ci95": 0.0, "p99": 0.0, "p99_ci95": 0.0, "stddev": 0.0}
+        return {"mean": 0.0, "ci95": 0.0, "p50": 0.0, "p95": 0.0, "p95_ci95": 0.0, "p99": 0.0, "p99_ci95": 0.0, "stddev": 0.0, "raw_run_means": []}
 
     n_runs = len(run_data)
-    # Student's t critical values for 95% CI (two-tailed)
     t_table = {1: 12.706, 2: 4.303, 3: 3.182, 4: 2.776, 5: 2.571, 6: 2.447, 7: 2.365, 8: 2.306, 9: 2.262, 10: 2.228}
     t_crit = t_table.get(n_runs - 1, 1.96)
 
@@ -209,7 +210,8 @@ def compute_run_level_stats(run_data: List[List[float]]) -> Dict[str, Any]:
         "p95_ci95": round(ci95_p95, 4),
         "p99": round(mean_p99, 4),
         "p99_ci95": round(ci95_p99, 4),
-        "stddev": round(s_means, 4)
+        "stddev": round(s_means, 4),
+        "raw_run_means": [round(x, 4) for x in run_means]
     }
 
 def run_comprehensive_benchmark(num_repetitions: int = 10, iterations_per_rep: int = 200) -> Dict[str, Any]:
@@ -220,6 +222,7 @@ def run_comprehensive_benchmark(num_repetitions: int = 10, iterations_per_rep: i
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     env_info = get_environment_info()
     workloads = generate_sample_workloads()
+    workload_keys = list(workloads.keys())
 
     orchestrator = EpistemicOrchestrator(
         audit_log_path=audit_log_path,
@@ -255,7 +258,7 @@ def run_comprehensive_benchmark(num_repetitions: int = 10, iterations_per_rep: i
     cold_stats = compute_run_level_stats(cold_start_runs)
     steady_stats = compute_run_level_stats(steady_state_runs)
 
-    # 2. Component & Gate Latency Breakdown
+    # 2. Component & Gate Latency Breakdown (Randomized workload interleaving to avoid order bias)
     gate_run_latencies: Dict[str, List[List[float]]] = {
         "CPR_Validation": [[] for _ in range(num_repetitions)],
         "PermissionGate": [[] for _ in range(num_repetitions)],
@@ -269,42 +272,49 @@ def run_comprehensive_benchmark(num_repetitions: int = 10, iterations_per_rep: i
     tracemalloc.start()
     t_proc_start = time.process_time()
 
+    rng = random.Random(42)  # Deterministic seed for reproducible interleaving
+
     for rep in range(num_repetitions):
-        for w_name, w in workloads.items():
+        # Generate interleaved task sequence
+        task_sequence = workload_keys * (iterations_per_rep // 2)
+        rng.shuffle(task_sequence)
+
+        for w_name in task_sequence:
+            w = workloads[w_name]
             payload = w["payload"]
             ctx = w["context"]
-            for _ in range(iterations_per_rep // 2):
-                t_cpr0 = time.perf_counter_ns()
-                cpr, err = orchestrator._validate_and_normalize(payload)
-                t_cpr1 = time.perf_counter_ns()
-                gate_run_latencies["CPR_Validation"][rep].append((t_cpr1 - t_cpr0) / 1e6)
 
-                if cpr is not None:
-                    payload_dump = cpr.model_dump()
-                    for gate in orchestrator.gates:
-                        g_name = gate.__class__.__name__
-                        tg0 = time.perf_counter_ns()
-                        res = gate.evaluate(payload_dump, ctx)
-                        tg1 = time.perf_counter_ns()
-                        if g_name in gate_run_latencies:
-                            gate_run_latencies[g_name][rep].append((tg1 - tg0) / 1e6)
+            t_cpr0 = time.perf_counter_ns()
+            cpr, err = orchestrator._validate_and_normalize(payload)
+            t_cpr1 = time.perf_counter_ns()
+            gate_run_latencies["CPR_Validation"][rep].append((t_cpr1 - t_cpr0) / 1e6)
 
-                    dummy_event = AuditEvent(
-                        event_type=AuditLogLevel.INFO,
-                        gate_name="Bench",
-                        reason="Profiling",
-                        model_id="test",
-                        payload_snippet="{}"
-                    )
-                    ta0 = time.perf_counter_ns()
-                    orchestrator.audit_logger.record_event(dummy_event)
-                    ta1 = time.perf_counter_ns()
-                    gate_run_latencies["AuditTrail_Logging"][rep].append((ta1 - ta0) / 1e6)
+            if cpr is not None:
+                payload_dump = cpr.model_dump()
+                for gate in orchestrator.gates:
+                    g_name = gate.__class__.__name__
+                    tg0 = time.perf_counter_ns()
+                    res = gate.evaluate(payload_dump, ctx)
+                    tg1 = time.perf_counter_ns()
+                    if g_name in gate_run_latencies:
+                        gate_run_latencies[g_name][rep].append((tg1 - tg0) / 1e6)
 
-                t_e2e0 = time.perf_counter_ns()
-                orchestrator.process_submission(payload, ctx)
-                t_e2e1 = time.perf_counter_ns()
-                gate_run_latencies["EndToEnd_Total"][rep].append((t_e2e1 - t_e2e0) / 1e6)
+                dummy_event = AuditEvent(
+                    event_type=AuditLogLevel.INFO,
+                    gate_name="Bench",
+                    reason="Profiling",
+                    model_id="test",
+                    payload_snippet="{}"
+                )
+                ta0 = time.perf_counter_ns()
+                orchestrator.audit_logger.record_event(dummy_event)
+                ta1 = time.perf_counter_ns()
+                gate_run_latencies["AuditTrail_Logging"][rep].append((ta1 - ta0) / 1e6)
+
+            t_e2e0 = time.perf_counter_ns()
+            orchestrator.process_submission(payload, ctx)
+            t_e2e1 = time.perf_counter_ns()
+            gate_run_latencies["EndToEnd_Total"][rep].append((t_e2e1 - t_e2e0) / 1e6)
 
     t_proc_end = time.process_time()
     current_mem, peak_mem = tracemalloc.get_traced_memory()
@@ -350,7 +360,8 @@ def run_comprehensive_benchmark(num_repetitions: int = 10, iterations_per_rep: i
             "qps_mean": qps_stat["mean"],
             "qps_ci95": qps_stat["ci95"],
             "qps_p50": qps_stat["p50"],
-            "qps_stddev": qps_stat["stddev"]
+            "qps_stddev": qps_stat["stddev"],
+            "raw_qps_runs": qps_stat["raw_run_means"]
         }
 
     # 5. Audit Receipt & Persistence
@@ -400,6 +411,7 @@ def run_comprehensive_benchmark(num_repetitions: int = 10, iterations_per_rep: i
             "num_repetitions": num_repetitions,
             "iterations_per_rep": iterations_per_rep,
             "total_benchmark_requests": num_repetitions * iterations_per_rep * 4,
+            "interleaved_workload_execution": True,
             "statistical_model": "Run-level Student's t-distribution (df=9, t_0.025=2.262)",
             "exact_command": "PYTHONPATH=. python3 benchmarks/run_pipeline_profiling.py"
         },
@@ -450,6 +462,7 @@ def generate_markdown_report(res: Dict[str, Any]):
 - **Git Commit SHA:** `{env['commit_sha']}`
 - **Exact Benchmark Command:** `{prov['exact_command']}`
 - **Statistical Model:** Run-level Student's t-distribution ($N={prov['num_repetitions']}$ runs, $df=9$, $t_{{0.025}}=2.262$)
+- **Interleaved Execution:** Interleaved randomized workload sequence to eliminate order bias.
 - **Repetitions:** {prov['num_repetitions']} runs x {prov['iterations_per_rep']} iterations/run
 - **Python Runtime:** Version {env['python_version']} on {env['platform']}
 - **Hardware Profile:** {env['cpu_count']} CPUs ({env['processor']})
@@ -470,6 +483,8 @@ def generate_markdown_report(res: Dict[str, Any]):
 | **Audit Trail Persistence** | {comp['AuditTrail_Logging']['mean']} | ±{comp['AuditTrail_Logging']['ci95']} | {comp['AuditTrail_Logging']['p50']} | {comp['AuditTrail_Logging']['p95']} | ±{comp['AuditTrail_Logging']['p95_ci95']} | {comp['AuditTrail_Logging']['p99']} | ±{comp['AuditTrail_Logging']['p99_ci95']} | {comp['AuditTrail_Logging']['stddev']} |
 | **Total End-to-End Pipeline** | {comp['EndToEnd_Total']['mean']} | ±{comp['EndToEnd_Total']['ci95']} | {comp['EndToEnd_Total']['p50']} | {comp['EndToEnd_Total']['p95']} | ±{comp['EndToEnd_Total']['p95_ci95']} | {comp['EndToEnd_Total']['p99']} | ±{comp['EndToEnd_Total']['p99_ci95']} | {comp['EndToEnd_Total']['stddev']} |
 
+> **Note on Percentile Sample Variance:** Per-run p95 and p99 estimates are computed over $M=200$ samples per run. While p50 and p95 estimates are statistically stable across runs, p99 estimates exhibit higher natural sampling dispersion due to tail latency events (e.g. garbage collection or OS context switches).
+
 ---
 
 ## 3. Workload Latency Comparison
@@ -483,12 +498,12 @@ def generate_markdown_report(res: Dict[str, Any]):
 ---
 
 ## 4. Concurrent Workload Throughput
-| Threads | QPS Mean (req/sec) | QPS 95% CI | p50 QPS | StdDev QPS |
-|---|---|---|---|---|
-| **1 Thread** | **{conc['1_threads']['qps_mean']} req/s** | ±{conc['1_threads']['qps_ci95']} | {conc['1_threads']['qps_p50']} | {conc['1_threads']['qps_stddev']} |
-| **2 Threads** | **{conc['2_threads']['qps_mean']} req/s** | ±{conc['2_threads']['qps_ci95']} | {conc['2_threads']['qps_p50']} | {conc['2_threads']['qps_stddev']} |
-| **4 Threads** | **{conc['4_threads']['qps_mean']} req/s** | ±{conc['4_threads']['qps_ci95']} | {conc['4_threads']['qps_p50']} | {conc['4_threads']['qps_stddev']} |
-| **8 Threads** | **{conc['8_threads']['qps_mean']} req/s** | ±{conc['8_threads']['qps_ci95']} | {conc['8_threads']['qps_p50']} | {conc['8_threads']['qps_stddev']} |
+| Threads | QPS Mean (req/sec) | QPS 95% CI | p50 QPS | StdDev QPS | Raw Per-Run QPS Means |
+|---|---|---|---|---|---|
+| **1 Thread** | **{conc['1_threads']['qps_mean']} req/s** | ±{conc['1_threads']['qps_ci95']} | {conc['1_threads']['qps_p50']} | {conc['1_threads']['qps_stddev']} | `{conc['1_threads']['raw_qps_runs']}` |
+| **2 Threads** | **{conc['2_threads']['qps_mean']} req/s** | ±{conc['2_threads']['qps_ci95']} | {conc['2_threads']['qps_p50']} | {conc['2_threads']['qps_stddev']} | `{conc['2_threads']['raw_qps_runs']}` |
+| **4 Threads** | **{conc['4_threads']['qps_mean']} req/s** | ±{conc['4_threads']['qps_ci95']} | {conc['4_threads']['qps_p50']} | {conc['4_threads']['qps_stddev']} | `{conc['4_threads']['raw_qps_runs']}` |
+| **8 Threads** | **{conc['8_threads']['qps_mean']} req/s** | ±{conc['8_threads']['qps_ci95']} | {conc['8_threads']['qps_p50']} | {conc['8_threads']['qps_stddev']} | `{conc['8_threads']['raw_qps_runs']}` |
 
 ---
 

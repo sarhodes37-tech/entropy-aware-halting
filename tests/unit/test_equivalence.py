@@ -3,11 +3,12 @@ Equivalence & Security Side-Effects Test Suite for EpistemicOS Optimizations.
 
 Validates:
 1. Semantic decision behavior, gate outcomes, error messages, and exception types.
-2. Cryptographic audit-chain integrity (verify_chain_integrity).
+2. Cryptographic audit-chain integrity & tampering detection (verify_chain_integrity).
 3. Concurrent trajectory state isolation across threads.
 4. Deterministic action suppression and vector revocation on pipeline HALT.
 """
 
+import json
 import math
 import pytest
 import concurrent.futures
@@ -244,6 +245,36 @@ def test_audit_chain_cryptographic_integrity(tmp_path):
     assert is_valid is True
     assert count == 10
     assert error_msg is None
+
+
+def test_audit_chain_tampering_detection(tmp_path):
+    """Verifies that modifying an intermediate audit record breaks chain integrity verification."""
+    log_file = tmp_path / "tamper_test.jsonl"
+    logger = TamperEvidentAuditTrail(log_file_path=str(log_file))
+
+    for i in range(5):
+        logger.record_event(AuditEvent(
+            event_type=AuditLogLevel.INFO,
+            gate_name="TestGate",
+            reason=f"Event {i}",
+            model_id="test-model",
+            payload_snippet=f"{{\"index\": {i}}}"
+        ))
+
+    # Read records, alter intermediate entry 2
+    with open(log_file, "r", encoding="utf-8") as f:
+        lines = [json.loads(line) for line in f if line.strip()]
+
+    lines[2]["reason"] = "TAMPERED_REASON"
+
+    with open(log_file, "w", encoding="utf-8") as f:
+        for entry in lines:
+            f.write(json.dumps(entry) + "\n")
+
+    is_valid, count, error_msg = logger.verify_chain_integrity()
+    assert is_valid is False
+    assert error_msg is not None
+    assert ("Tampered entry" in error_msg or "Broken chain" in error_msg)
 
 
 def test_concurrency_state_isolation(tmp_path):
