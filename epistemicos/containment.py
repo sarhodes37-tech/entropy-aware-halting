@@ -78,6 +78,7 @@ class ContainmentGuard:
 
     # Default Forbidden Shell/System Operations for Code Agents
     DEFAULT_FORBIDDEN_COMMANDS = [
+        r"\brm\b",
         r"rm\s+-rf",
         r"chmod\s+777",
         r"wget\s+",
@@ -332,35 +333,72 @@ class ContainmentGuard:
     # WRAPPER PIPELINE EXECUTER
     # =========================================================================
 
+    def _extract_all_strings_and_urls(self, arg: Any) -> Tuple[List[str], List[str]]:
+        """Recursively extracts string representations and network URLs from arbitrary nested arguments."""
+        strings = []
+        urls = []
+        stack = [arg]
+        seen = set()
+
+        while stack:
+            curr = stack.pop()
+            curr_id = id(curr)
+            if curr_id in seen:
+                continue
+
+            if type(curr) in (int, float, bool, type(None)):
+                continue
+
+            seen.add(curr_id)
+
+            if isinstance(curr, str):
+                strings.append(curr)
+                if "://" in curr or curr.startswith("http"):
+                    urls.append(curr)
+            elif isinstance(curr, dict):
+                for k, v in curr.items():
+                    stack.append(v)
+                    if isinstance(k, str):
+                        stack.append(k)
+            elif isinstance(curr, (list, tuple, set)):
+                for item in curr:
+                    stack.append(item)
+
+        return strings, urls
+
     def wrap_tool_execution(
         self,
         tool_name: str,
         tool_func: Callable[..., Any],
-        kwargs: Dict[str, Any],
+        args: Optional[Tuple[Any, ...]] = None,
+        kwargs: Optional[Dict[str, Any]] = None,
         original_goal: Optional[str] = None,
     ) -> Tuple[bool, Any, ContainmentReceipt]:
-        """Wraps any tool call with active ingress, egress, and command containment checks."""
+        """Wraps any tool call with active ingress, egress, and command containment checks across normalized positional and keyword arguments."""
+        tool_args = args or ()
+        tool_kwargs = kwargs or {}
 
-        command_str = str(kwargs.get("command", "")) or str(kwargs.get("script", ""))
-        if command_str:
-            cmd_receipt = self.inspect_tool_command(command_str)
+        all_arg_values = list(tool_args) + list(tool_kwargs.values())
+        extracted_strings, extracted_urls = self._extract_all_strings_and_urls(all_arg_values)
+
+        for str_val in extracted_strings:
+            cmd_receipt = self.inspect_tool_command(str_val)
             if not cmd_receipt.passed:
                 return False, None, cmd_receipt
 
             if original_goal:
-                goal_receipt = self.inspect_goal_integrity(original_goal, command_str)
+                goal_receipt = self.inspect_goal_integrity(original_goal, str_val)
                 if not goal_receipt.passed:
                     return False, None, goal_receipt
 
-        url_str = str(kwargs.get("url", "")) or str(kwargs.get("endpoint", ""))
-        if url_str:
-            egress_receipt = self.inspect_network_egress(url_str)
+        for url_val in extracted_urls:
+            egress_receipt = self.inspect_network_egress(url_val)
             if not egress_receipt.passed:
                 return False, None, egress_receipt
 
         try:
             with self._safe_dns_resolution():
-                result = tool_func(**kwargs)
+                result = tool_func(*tool_args, **tool_kwargs)
             return True, result, ContainmentReceipt(passed=True)
         except Exception as e:
             return (

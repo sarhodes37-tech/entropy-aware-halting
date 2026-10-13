@@ -119,7 +119,17 @@ class TokenSurprisalSensor:
         if not logprobs:
             return []
 
-        surprisals = [-lp for lp in logprobs]
+        sanitized_logprobs = []
+        for i, lp in enumerate(logprobs):
+            try:
+                val = float(lp)
+                if math.isnan(val) or math.isinf(val):
+                    raise ValueError(f"Non-finite logprob encountered at index {i}: {val}")
+                sanitized_logprobs.append(val)
+            except (TypeError, ValueError) as e:
+                raise ValueError(f"Malformed or non-finite logprob encountered at index {i}: {lp}") from e
+
+        surprisals = [-lp for lp in sanitized_logprobs]
         z_scores = []
 
         sum_x = 0.0
@@ -153,7 +163,18 @@ class TokenSurprisalSensor:
 
     def evaluate(self, logprobs: List[float]) -> Dict[str, Any]:
         """Evaluates token surprisal z-scores and flags anomalies."""
-        z_scores = self.compute_z_scores(logprobs)
+        try:
+            z_scores = self.compute_z_scores(logprobs)
+        except ValueError as e:
+            return {
+                "passed": False,
+                "reason": "MALFORMED_NON_FINITE_LOGPROBS",
+                "error": str(e),
+                "max_z_score": 0.0,
+                "flagged_tokens": len(logprobs) if logprobs else 1,
+                "token_z_scores": []
+            }
+
         flagged_count = sum(1 for z in z_scores if z > self.z_threshold)
         max_z = float(max(z_scores)) if z_scores else 0.0
 
@@ -290,12 +311,18 @@ class PermissionScope(BaseModel):
     def validate_action(self, action: Dict[str, Any]) -> bool:
         if self.attempt_count > self.max_attempts or time.time() > self.expires_at: return False
         op = action.get("op")
+        target = action.get("node") or action.get("endpoint") or action.get("table") or action.get("policy")
+
+        # Explicit operation and target fields required when scope restricts them
+        if self.allowed_operations and (not op or op not in self.allowed_operations):
+            return False
+        if self.allowed_resources and (not target or target not in self.allowed_resources):
+            return False
+
         if self.is_quarantined_channel():
             mutating_operations = {"update_db", "write_db", "reroute_freight", "halt_payments", "issue_binder", "bind_policy", "cancel_policy", "release_buffer"}
             if op in mutating_operations: return False
-        if op and op not in self.allowed_operations: return False
-        target = action.get("node") or action.get("endpoint") or action.get("table") or action.get("policy")
-        if target and target not in self.allowed_resources: return False
+
         return True
 
     def validate_egress(self, response_payload: Any) -> bool:

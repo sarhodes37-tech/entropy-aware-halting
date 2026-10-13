@@ -138,11 +138,12 @@ class EntropyGate(Gate):
 
         if not sensor_result["passed"]:
             flagged_count = sensor_result.get('flagged_tokens', 1)
+            reason_msg = sensor_result.get("error") if sensor_result.get("reason") == "MALFORMED_NON_FINITE_LOGPROBS" else f"Anomalous Token Surprisal Detected (Max Z: {sensor_result['max_z_score']:.2f}, Flagged: {flagged_count})"
             return GateResult(
                 action=GateAction.HALT,
                 latency_ms=(time.perf_counter() - t0) * 1000,
                 gate_name="EntropyGate",
-                reason=f"Anomalous Token Surprisal Detected (Max Z: {sensor_result['max_z_score']:.2f}, Flagged: {flagged_count})",
+                reason=reason_msg,
                 confidence=0.0,
                 flagged_tokens=flagged_count,
                 vectors_revoked=max(1, flagged_count)
@@ -164,9 +165,15 @@ class PermissionGate(Gate):
     underwriting text fields.
     """
 
-    def __init__(self, contract_model: Any = None, allowed_actions: Optional[List[str]] = None):
+    def __init__(
+        self,
+        contract_model: Any = None,
+        allowed_actions: Optional[List[str]] = None,
+        trusted_operations: Optional[Dict[str, Any]] = None
+    ):
         self.contract_model = contract_model
         self.allowed_actions = set(allowed_actions or [])
+        self.trusted_operations = trusted_operations or {}
 
         # Regex to catch command injections, jailbreaks, and unauthorized privilege elevations
         self.injection_regex = re.compile(
@@ -306,6 +313,45 @@ class PermissionGate(Gate):
 
     def evaluate(self, payload: Dict[str, Any], context: Dict[str, Any]) -> GateResult:
         t0 = time.perf_counter()
+
+        # 0. Bind authorization to the resolved executable operation via trusted operation registry or identity matching
+        actual_exec = context.get("actual_executable") or context.get("executable_operation")
+        requested_op = context.get("requested_operation_id") or context.get("operation_name")
+
+        if actual_exec:
+            # If trusted_operations registry is defined, require an exact match against the registered executable object
+            if self.trusted_operations:
+                if not requested_op or requested_op not in self.trusted_operations:
+                    return GateResult(
+                        action=GateAction.HALT,
+                        status="HALTED",
+                        latency_ms=(time.perf_counter() - t0) * 1000,
+                        gate_name="PermissionGate",
+                        reason=f"Operation '{requested_op}' is not registered in trusted operations registry.",
+                        confidence=0.0
+                    )
+                registered_func = self.trusted_operations[requested_op]
+                if actual_exec is not registered_func:
+                    return GateResult(
+                        action=GateAction.HALT,
+                        status="HALTED",
+                        latency_ms=(time.perf_counter() - t0) * 1000,
+                        gate_name="PermissionGate",
+                        reason=f"Executable identity mismatch for operation '{requested_op}': substituted executable detected.",
+                        confidence=0.0
+                    )
+
+            if self.allowed_actions:
+                exec_name = getattr(actual_exec, "__name__", str(actual_exec))
+                if exec_name not in self.allowed_actions and requested_op not in self.allowed_actions:
+                    return GateResult(
+                        action=GateAction.HALT,
+                        status="HALTED",
+                        latency_ms=(time.perf_counter() - t0) * 1000,
+                        gate_name="PermissionGate",
+                        reason=f"Resolved executable '{exec_name}' or operation '{requested_op}' not in gate allowed_actions: {self.allowed_actions}",
+                        confidence=0.0
+                    )
 
         scope = payload.get("scope", {}) or context.get("scope", {})
         proposed_actions = context.get("proposed_actions", []) or payload.get("proposed_actions", [])
