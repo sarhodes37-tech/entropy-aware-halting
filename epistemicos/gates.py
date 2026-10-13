@@ -310,12 +310,14 @@ class PermissionGate(ControlPlaneGate):
         contract_model: Any = None,
         allowed_actions: Optional[List[str]] = None,
         trusted_operations: Optional[Dict[str, Any]] = None,
+        trusted_scope: Optional[Dict[str, Any]] = None,
         config: Optional[GateConfig] = None
     ):
         super().__init__(config=config or GateConfig(version="1.0.0", is_critical=True))
         self.contract_model = contract_model
         self.allowed_actions = set(allowed_actions or [])
         self.trusted_operations = trusted_operations or {}
+        self.trusted_scope = trusted_scope
 
         self.injection_regex = re.compile(
             r"(\b(sudo|rm|curl|wget|bash|sh|exec|nc|netcat|nmap|ping)\b|[;|`]|&&|\$\(|\[SYSTEM OVERRIDE\]|import\s+os|ignore previous instructions|system prompt|jailbreak|exfiltrate|web_search)", 
@@ -496,15 +498,71 @@ class PermissionGate(ControlPlaneGate):
                         latency_ms=(time.perf_counter() - t0) * 1000
                     )
 
-        scope = payload.get("scope", {}) or context.get("scope", {})
+        # Security Hardening: Authorization Scope Resolution
+        # Priority: self.trusted_scope (gate config) > context.get("trusted_scope") > context.get("scope") > payload.scope
+        trusted_scope_raw = (
+            self.trusted_scope
+            if self.trusted_scope is not None
+            else context.get("trusted_scope")
+            if context.get("trusted_scope") is not None
+            else context.get("scope")
+            if context.get("scope") is not None
+            else getattr(payload, "scope", None)
+            if hasattr(payload, "scope")
+            else payload.get("scope")
+            if isinstance(payload, dict)
+            else None
+        )
+
+        if trusted_scope_raw is not None:
+            if isinstance(trusted_scope_raw, dict):
+                trusted_scope = trusted_scope_raw
+            elif hasattr(trusted_scope_raw, "model_dump"):
+                trusted_scope = trusted_scope_raw.model_dump()
+            elif hasattr(trusted_scope_raw, "__dict__"):
+                trusted_scope = trusted_scope_raw.__dict__
+            else:
+                trusted_scope = trusted_scope_raw
+        else:
+            trusted_scope = {}
+
         proposed_actions = context.get("proposed_actions", []) or payload.get("proposed_actions", [])
         llm_output = context.get("llm_output") or payload.get("llm_output")
+
+        # Require explicit, non-ambiguous action contract details (both operation AND target/resource)
+        if proposed_actions:
+            for act in proposed_actions:
+                if isinstance(act, dict):
+                    op_val = act.get("op") or (act.get("action", {}).get("op") if isinstance(act.get("action"), dict) else None)
+                    node_val = act.get("node") or act.get("endpoint") or act.get("policy") or (act.get("action", {}).get("node") if isinstance(act.get("action"), dict) else None)
+                else:
+                    op_val = getattr(act, "op", None)
+                    node_val = getattr(act, "node", None) or getattr(act, "endpoint", None) or getattr(act, "policy", None)
+
+                if not op_val or not isinstance(op_val, str) or not op_val.strip():
+                    return GateOutcome(
+                        decision=GateDecision.HALT,
+                        reason_code="Missing or invalid operation identifier in proposed action",
+                        gate_name=self.gate_name,
+                        gate_version=self.config.version,
+                        evidence={"status": "HALTED", "confidence": 0.0},
+                        latency_ms=(time.perf_counter() - t0) * 1000
+                    )
+                if not node_val or not isinstance(node_val, str) or not node_val.strip():
+                    return GateOutcome(
+                        decision=GateDecision.HALT,
+                        reason_code="Missing or invalid target/resource identifier in proposed action",
+                        gate_name=self.gate_name,
+                        gate_version=self.config.version,
+                        evidence={"status": "HALTED", "confidence": 0.0},
+                        latency_ms=(time.perf_counter() - t0) * 1000
+                    )
 
         contract_result = self._enforce_contract_model(llm_output, t0)
         if contract_result:
             return contract_result
 
-        actions_result = self._validate_actions(scope, proposed_actions, t0)
+        actions_result = self._validate_actions(trusted_scope, proposed_actions, t0)
         if actions_result:
             return actions_result
 
