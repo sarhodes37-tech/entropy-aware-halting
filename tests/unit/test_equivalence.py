@@ -1,17 +1,22 @@
 """
-Equivalence Test Suite for EpistemicOS Pipeline Optimizations.
+Equivalence & Security Side-Effects Test Suite for EpistemicOS Optimizations.
 
-Validates semantic behavior, gate decision outcomes, error message formatting,
-exception types, and security bounds between reference semantics and optimized implementations.
+Validates:
+1. Semantic decision behavior, gate outcomes, error messages, and exception types.
+2. Cryptographic audit-chain integrity (verify_chain_integrity).
+3. Concurrent trajectory state isolation across threads.
+4. Deterministic action suppression and vector revocation on pipeline HALT.
 """
 
 import math
 import pytest
+import concurrent.futures
 from typing import Dict, Any, List
 
 from epistemicos.gates import PermissionGate, GateAction
 from epistemicos.models import TokenSurprisalSensor, CanonicalProblemRepresentation, DEFAULT_REDACTION_KEYS
 from epistemicos.core import EpistemicOrchestrator
+from epistemicos.audit import TamperEvidentAuditTrail, AuditEvent, AuditLogLevel
 
 # =====================================================================
 # REFERENCE UN-OPTIMIZED IMPLEMENTATIONS FOR COMPARISON
@@ -110,7 +115,7 @@ def reference_compute_z_scores(logprobs: List[float]) -> List[float]:
 
 
 # =====================================================================
-# EQUIVALENCE TEST CASES
+# EQUIVALENCE & SECURITY TEST CASES
 # =====================================================================
 
 def test_deep_regex_inspection_equivalence():
@@ -141,7 +146,7 @@ def test_deep_regex_inspection_equivalence():
 
 
 def test_compute_z_scores_equivalence():
-    """Validates token surprisal score and exception parity for valid and invalid logprob inputs."""
+    """Validates token surprisal score and exception parity between reference and optimized compute_z_scores."""
     sensor = TokenSurprisalSensor()
     valid_cases = [
         [],
@@ -180,7 +185,6 @@ def test_compute_z_scores_equivalence():
 
         assert ref_error is not None
         assert opt_error is not None
-        # Verify exact error message prefix match
         assert "Malformed or non-finite logprob" in ref_error
         assert "Malformed or non-finite logprob" in opt_error
 
@@ -207,9 +211,9 @@ def test_mask_egress_payload_equivalence():
 
 def test_orchestrator_schema_validation_error_masking_equivalence():
     """Validates that sensitive PII fields are identically masked when schema validation fails."""
-    orchestrator = EpistemicOrchestrator(audit_log_path="/tmp/equiv_audit.jsonl")
+    orchestrator = EpistemicOrchestrator(audit_log_path="/tmp/equiv_audit_err.jsonl")
     malformed_payload = {
-        "policy_id": 12345,  # Wrong type for policy_id
+        "policy_id": 12345,
         "banking_routing": "123456789",
         "ssn": "000-00-0000",
         "unrestricted_field": "safe_data"
@@ -219,3 +223,75 @@ def test_orchestrator_schema_validation_error_masking_equivalence():
     assert cpr is None
     assert err["status"] == "HALTED"
     assert err["reason"] == "Schema validation failed"
+
+
+def test_audit_chain_cryptographic_integrity(tmp_path):
+    """Verifies that audit logger maintains SHA-256 genesis-to-tip hash chain integrity across events."""
+    log_file = tmp_path / "chain_test.jsonl"
+    logger = TamperEvidentAuditTrail(log_file_path=str(log_file))
+
+    for i in range(10):
+        event = AuditEvent(
+            event_type=AuditLogLevel.INFO,
+            gate_name="TestGate",
+            reason=f"Event {i}",
+            model_id="test-model",
+            payload_snippet=f"{{\"index\": {i}}}"
+        )
+        logger.record_event(event)
+
+    is_valid, count, error_msg = logger.verify_chain_integrity()
+    assert is_valid is True
+    assert count == 10
+    assert error_msg is None
+
+
+def test_concurrency_state_isolation(tmp_path):
+    """Verifies thread-safety and trajectory scheduler state isolation under concurrent workloads."""
+    log_file = tmp_path / "concurrent_audit.jsonl"
+    orchestrator = EpistemicOrchestrator(audit_log_path=str(log_file))
+
+    def process_thread_request(tid: int):
+        payload = {
+            "policy_id": f"POL-THREAD-{tid}",
+            "raw_payload": {"index": tid}
+        }
+        context = {
+            "token_logprobs": [-0.1] * 10,
+            "proposed_actions": [{"op": "read", "endpoint": "logistics_db"}]
+        }
+        res = orchestrator.process_submission(payload, context, trajectory_id=f"traj_{tid}")
+        decision = orchestrator.process_step([0.25, 0.25, 0.25, 0.25], 1.0, f"state_{tid}", trajectory_id=f"traj_{tid}")
+        return res, decision
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+        futures = [executor.submit(process_thread_request, i) for i in range(50)]
+        results = [f.result() for f in futures]
+
+    assert len(results) == 50
+    assert all(r[0]["status"] == "ALLOWED" for r in results)
+    assert len(orchestrator._schedulers) == 50
+
+
+def test_rejected_action_execution_suppression(tmp_path):
+    """Verifies that halted submissions revoke vectors and suppress egress execution."""
+    log_file = tmp_path / "suppression_audit.jsonl"
+    orchestrator = EpistemicOrchestrator(audit_log_path=str(log_file))
+
+    adversarial_payload = {
+        "policy_id": "POL-MALICIOUS",
+        "raw_payload": {
+            "command": "sudo rm -rf /"
+        }
+    }
+    context = {
+        "token_logprobs": [-0.1] * 5,
+        "proposed_actions": [{"op": "api_call", "endpoint": "/bind_policy"}]
+    }
+
+    result = orchestrator.process_submission(adversarial_payload, context, trajectory_id="traj_malicious")
+
+    assert result["status"] == "HALTED"
+    assert result["gate"] == "PermissionGate"
+    assert result.get("vectors_revoked", 0) > 0
+    assert "masked_payload" not in result

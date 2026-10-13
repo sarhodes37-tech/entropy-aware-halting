@@ -2,15 +2,15 @@
 EpistemicOS Pipeline Profiling & Empirical Comparison Suite.
 
 Executes rigorous profiling across reference and optimized pipeline implementations.
-Measures across 10 benchmark repetitions:
-- Per-gate latency and total end-to-end latency (p50, p95, p99, stddev, 95% CI)
+Measures across 10 benchmark repetitions (N=10 run-level observations):
+- Run-level Student's t-distribution 95% Confidence Intervals for mean, p95, p99 latency
+- Per-gate latency and total end-to-end latency
 - Throughput under concurrent workloads (1, 2, 4, 8 threads)
 - CPU process time and tracemalloc memory allocations
 - Cold-start versus steady-state performance
 - Cost of audit receipt generation and JSONL file persistence
 - Cost of false-positive halts and recovery retries
 - Benign, adversarial, malformed, and high-volume workloads
-- Environment details, git commit SHA, and statistical dispersion
 
 Exports results to:
 - results/pipeline_profiling_results.json
@@ -154,30 +154,62 @@ def generate_sample_workloads() -> Dict[str, Dict[str, Any]]:
         "high_volume": {"payload": high_volume_payload, "context": high_volume_context},
     }
 
-def calculate_stats(data: List[float]) -> Dict[str, float]:
-    if not data:
-        return {"p50": 0.0, "p95": 0.0, "p99": 0.0, "mean": 0.0, "stddev": 0.0, "ci95_margin": 0.0, "min": 0.0, "max": 0.0}
-    sorted_data = sorted(data)
-    n = len(sorted_data)
+def compute_run_level_stats(run_data: List[List[float]]) -> Dict[str, Any]:
+    """
+    Computes statistics at the run level (N observations = len(run_data)).
+    Uses Student's t-distribution critical value (t_0.025, df=N-1) for 95% CI.
+    """
+    if not run_data:
+        return {"mean": 0.0, "ci95": 0.0, "p50": 0.0, "p95": 0.0, "p95_ci95": 0.0, "p99": 0.0, "p99_ci95": 0.0, "stddev": 0.0}
 
-    def pct(p):
-        idx = int(round((p / 100.0) * (n - 1)))
-        return sorted_data[min(idx, n - 1)]
+    n_runs = len(run_data)
+    # Student's t critical values for 95% CI (two-tailed)
+    t_table = {1: 12.706, 2: 4.303, 3: 3.182, 4: 2.776, 5: 2.571, 6: 2.447, 7: 2.365, 8: 2.306, 9: 2.262, 10: 2.228}
+    t_crit = t_table.get(n_runs - 1, 1.96)
 
-    mean_val = statistics.mean(sorted_data)
-    stddev_val = statistics.stdev(sorted_data) if n > 1 else 0.0
-    # 95% Confidence Interval margin: t_{0.025} * stddev / sqrt(N) ~ 1.96 * s / sqrt(N)
-    ci95 = 1.96 * (stddev_val / math.sqrt(n)) if n > 0 else 0.0
+    run_means = []
+    run_p50s = []
+    run_p95s = []
+    run_p99s = []
+
+    for run_samples in run_data:
+        if not run_samples:
+            continue
+        sorted_samples = sorted(run_samples)
+        m = len(sorted_samples)
+        run_means.append(statistics.mean(sorted_samples))
+
+        def pct(p):
+            idx = int(round((p / 100.0) * (m - 1)))
+            return sorted_samples[min(idx, m - 1)]
+
+        run_p50s.append(pct(50))
+        run_p95s.append(pct(95))
+        run_p99s.append(pct(99))
+
+    mean_of_means = statistics.mean(run_means) if run_means else 0.0
+    s_means = statistics.stdev(run_means) if len(run_means) > 1 else 0.0
+    ci95_means = t_crit * (s_means / math.sqrt(n_runs)) if n_runs > 0 else 0.0
+
+    mean_p50 = statistics.mean(run_p50s) if run_p50s else 0.0
+
+    mean_p95 = statistics.mean(run_p95s) if run_p95s else 0.0
+    s_p95 = statistics.stdev(run_p95s) if len(run_p95s) > 1 else 0.0
+    ci95_p95 = t_crit * (s_p95 / math.sqrt(n_runs)) if n_runs > 0 else 0.0
+
+    mean_p99 = statistics.mean(run_p99s) if run_p99s else 0.0
+    s_p99 = statistics.stdev(run_p99s) if len(run_p99s) > 1 else 0.0
+    ci95_p99 = t_crit * (s_p99 / math.sqrt(n_runs)) if n_runs > 0 else 0.0
 
     return {
-        "p50": round(pct(50), 4),
-        "p95": round(pct(95), 4),
-        "p99": round(pct(99), 4),
-        "mean": round(mean_val, 4),
-        "stddev": round(stddev_val, 4),
-        "ci95_margin": round(ci95, 4),
-        "min": round(sorted_data[0], 4),
-        "max": round(sorted_data[-1], 4),
+        "mean": round(mean_of_means, 4),
+        "ci95": round(ci95_means, 4),
+        "p50": round(mean_p50, 4),
+        "p95": round(mean_p95, 4),
+        "p95_ci95": round(ci95_p95, 4),
+        "p99": round(mean_p99, 4),
+        "p99_ci95": round(ci95_p99, 4),
+        "stddev": round(s_means, 4)
     }
 
 def run_comprehensive_benchmark(num_repetitions: int = 10, iterations_per_rep: int = 200) -> Dict[str, Any]:
@@ -196,9 +228,9 @@ def run_comprehensive_benchmark(num_repetitions: int = 10, iterations_per_rep: i
     )
     orchestrator.register_gate(CryptoAttestationGate())
 
-    # 1. Cold-Start vs Steady-State across repetitions
-    cold_start_samples = []
-    steady_state_samples = []
+    # 1. Cold-Start vs Steady-State across runs
+    cold_start_runs = []
+    steady_state_runs = []
 
     for rep in range(num_repetitions):
         cold_orch = EpistemicOrchestrator(
@@ -210,26 +242,28 @@ def run_comprehensive_benchmark(num_repetitions: int = 10, iterations_per_rep: i
         t0 = time.perf_counter_ns()
         cold_orch.process_submission(benign["payload"], benign["context"])
         t1 = time.perf_counter_ns()
-        cold_start_samples.append((t1 - t0) / 1e6)
+        cold_start_runs.append([(t1 - t0) / 1e6])
 
+        rep_steady = []
         for _ in range(iterations_per_rep):
             t0 = time.perf_counter_ns()
             cold_orch.process_submission(benign["payload"], benign["context"])
             t1 = time.perf_counter_ns()
-            steady_state_samples.append((t1 - t0) / 1e6)
+            rep_steady.append((t1 - t0) / 1e6)
+        steady_state_runs.append(rep_steady)
 
-    cold_stats = calculate_stats(cold_start_samples)
-    steady_stats = calculate_stats(steady_state_samples)
+    cold_stats = compute_run_level_stats(cold_start_runs)
+    steady_stats = compute_run_level_stats(steady_state_runs)
 
     # 2. Component & Gate Latency Breakdown
-    gate_latencies: Dict[str, List[float]] = {
-        "CPR_Validation": [],
-        "PermissionGate": [],
-        "EntropyGate": [],
-        "TriangulationGate": [],
-        "CryptoAttestationGate": [],
-        "AuditTrail_Logging": [],
-        "EndToEnd_Total": []
+    gate_run_latencies: Dict[str, List[List[float]]] = {
+        "CPR_Validation": [[] for _ in range(num_repetitions)],
+        "PermissionGate": [[] for _ in range(num_repetitions)],
+        "EntropyGate": [[] for _ in range(num_repetitions)],
+        "TriangulationGate": [[] for _ in range(num_repetitions)],
+        "CryptoAttestationGate": [[] for _ in range(num_repetitions)],
+        "AuditTrail_Logging": [[] for _ in range(num_repetitions)],
+        "EndToEnd_Total": [[] for _ in range(num_repetitions)]
     }
 
     tracemalloc.start()
@@ -243,7 +277,7 @@ def run_comprehensive_benchmark(num_repetitions: int = 10, iterations_per_rep: i
                 t_cpr0 = time.perf_counter_ns()
                 cpr, err = orchestrator._validate_and_normalize(payload)
                 t_cpr1 = time.perf_counter_ns()
-                gate_latencies["CPR_Validation"].append((t_cpr1 - t_cpr0) / 1e6)
+                gate_run_latencies["CPR_Validation"][rep].append((t_cpr1 - t_cpr0) / 1e6)
 
                 if cpr is not None:
                     payload_dump = cpr.model_dump()
@@ -252,8 +286,8 @@ def run_comprehensive_benchmark(num_repetitions: int = 10, iterations_per_rep: i
                         tg0 = time.perf_counter_ns()
                         res = gate.evaluate(payload_dump, ctx)
                         tg1 = time.perf_counter_ns()
-                        if g_name in gate_latencies:
-                            gate_latencies[g_name].append((tg1 - tg0) / 1e6)
+                        if g_name in gate_run_latencies:
+                            gate_run_latencies[g_name][rep].append((tg1 - tg0) / 1e6)
 
                     dummy_event = AuditEvent(
                         event_type=AuditLogLevel.INFO,
@@ -265,29 +299,32 @@ def run_comprehensive_benchmark(num_repetitions: int = 10, iterations_per_rep: i
                     ta0 = time.perf_counter_ns()
                     orchestrator.audit_logger.record_event(dummy_event)
                     ta1 = time.perf_counter_ns()
-                    gate_latencies["AuditTrail_Logging"].append((ta1 - ta0) / 1e6)
+                    gate_run_latencies["AuditTrail_Logging"][rep].append((ta1 - ta0) / 1e6)
 
                 t_e2e0 = time.perf_counter_ns()
                 orchestrator.process_submission(payload, ctx)
                 t_e2e1 = time.perf_counter_ns()
-                gate_latencies["EndToEnd_Total"].append((t_e2e1 - t_e2e0) / 1e6)
+                gate_run_latencies["EndToEnd_Total"][rep].append((t_e2e1 - t_e2e0) / 1e6)
 
     t_proc_end = time.process_time()
     current_mem, peak_mem = tracemalloc.get_traced_memory()
     tracemalloc.stop()
 
-    component_stats = {comp: calculate_stats(lats) for comp, lats in gate_latencies.items()}
+    component_stats = {comp: compute_run_level_stats(runs) for comp, runs in gate_run_latencies.items()}
 
     # 3. Workload Comparison
-    workload_stats = {}
+    workload_run_stats = {}
     for w_name, w in workloads.items():
-        w_samples = []
-        for _ in range(num_repetitions * iterations_per_rep):
-            t0 = time.perf_counter_ns()
-            orchestrator.process_submission(w["payload"], w["context"])
-            t1 = time.perf_counter_ns()
-            w_samples.append((t1 - t0) / 1e6)
-        workload_stats[w_name] = calculate_stats(w_samples)
+        w_runs = []
+        for rep in range(num_repetitions):
+            rep_samples = []
+            for _ in range(iterations_per_rep):
+                t0 = time.perf_counter_ns()
+                orchestrator.process_submission(w["payload"], w["context"])
+                t1 = time.perf_counter_ns()
+                rep_samples.append((t1 - t0) / 1e6)
+            w_runs.append(rep_samples)
+        workload_run_stats[w_name] = compute_run_level_stats(w_runs)
 
     # 4. Concurrency Throughput (1, 2, 4, 8 threads)
     def worker_task(idx):
@@ -296,8 +333,8 @@ def run_comprehensive_benchmark(num_repetitions: int = 10, iterations_per_rep: i
 
     concurrency_stats = {}
     for num_threads in [1, 2, 4, 8]:
-        qps_samples = []
-        for _ in range(num_repetitions):
+        qps_runs = []
+        for rep in range(num_repetitions):
             total_requests = 500
             t0 = time.perf_counter()
             with concurrent.futures.ThreadPoolExecutor(max_workers=num_threads) as executor:
@@ -305,50 +342,57 @@ def run_comprehensive_benchmark(num_repetitions: int = 10, iterations_per_rep: i
                 concurrent.futures.wait(futures)
             t1 = time.perf_counter()
             dur = t1 - t0
-            qps_samples.append(total_requests / dur)
+            qps_runs.append([total_requests / dur])
 
-        qps_stat = calculate_stats(qps_samples)
+        qps_stat = compute_run_level_stats(qps_runs)
         concurrency_stats[f"{num_threads}_threads"] = {
             "threads": num_threads,
             "qps_mean": qps_stat["mean"],
+            "qps_ci95": qps_stat["ci95"],
             "qps_p50": qps_stat["p50"],
-            "qps_stddev": qps_stat["stddev"],
-            "qps_ci95_margin": qps_stat["ci95_margin"]
+            "qps_stddev": qps_stat["stddev"]
         }
 
     # 5. Audit Receipt & Persistence
     receipt_gen = ReceiptGenerator()
-    rg_samples = []
+    rg_runs = []
     for _ in range(num_repetitions):
+        rep_samples = []
         t0 = time.perf_counter_ns()
         for i in range(100):
             receipt_gen.log_event("TestEvent", {"index": i})
             receipt_gen.mint_receipt(f"tx_{i}", True, {"confidence": 0.99})
         t1 = time.perf_counter_ns()
-        rg_samples.append(((t1 - t0) / 1e6) / 100)
+        rep_samples.append(((t1 - t0) / 1e6) / 100)
+        rg_runs.append(rep_samples)
 
-    audit_receipt_stats = calculate_stats(rg_samples)
+    audit_receipt_stats = compute_run_level_stats(rg_runs)
 
     # 6. Halt & Recovery Retry Loop Costs
     adv = workloads["adversarial"]
-    halt_samples = []
-    retry_samples = []
+    halt_runs = []
+    retry_runs = []
 
-    for _ in range(num_repetitions * (iterations_per_rep // 2)):
-        t0 = time.perf_counter_ns()
-        orchestrator.process_submission(adv["payload"], adv["context"])
-        t1 = time.perf_counter_ns()
-        halt_samples.append((t1 - t0) / 1e6)
+    for rep in range(num_repetitions):
+        rep_halt = []
+        rep_retry = []
+        for _ in range(iterations_per_rep // 2):
+            t0 = time.perf_counter_ns()
+            orchestrator.process_submission(adv["payload"], adv["context"])
+            t1 = time.perf_counter_ns()
+            rep_halt.append((t1 - t0) / 1e6)
 
-        t0 = time.perf_counter_ns()
-        res1 = orchestrator.process_submission(adv["payload"], adv["context"])
-        if res1["status"] == "HALTED":
-            res2 = orchestrator.process_submission(benign["payload"], benign["context"])
-        t1 = time.perf_counter_ns()
-        retry_samples.append((t1 - t0) / 1e6)
+            t0 = time.perf_counter_ns()
+            res1 = orchestrator.process_submission(adv["payload"], adv["context"])
+            if res1["status"] == "HALTED":
+                res2 = orchestrator.process_submission(benign["payload"], benign["context"])
+            t1 = time.perf_counter_ns()
+            rep_retry.append((t1 - t0) / 1e6)
+        halt_runs.append(rep_halt)
+        retry_runs.append(rep_retry)
 
-    halt_stats = calculate_stats(halt_samples)
-    retry_stats = calculate_stats(retry_samples)
+    halt_stats = compute_run_level_stats(halt_runs)
+    retry_stats = compute_run_level_stats(retry_runs)
 
     full_results = {
         "environment": env_info,
@@ -356,6 +400,7 @@ def run_comprehensive_benchmark(num_repetitions: int = 10, iterations_per_rep: i
             "num_repetitions": num_repetitions,
             "iterations_per_rep": iterations_per_rep,
             "total_benchmark_requests": num_repetitions * iterations_per_rep * 4,
+            "statistical_model": "Run-level Student's t-distribution (df=9, t_0.025=2.262)",
             "exact_command": "PYTHONPATH=. python3 benchmarks/run_pipeline_profiling.py"
         },
         "cold_vs_steady": {
@@ -369,14 +414,14 @@ def run_comprehensive_benchmark(num_repetitions: int = 10, iterations_per_rep: i
             "current_memory_mb": round(current_mem / 1024 / 1024, 4),
             "peak_memory_mb": round(peak_mem / 1024 / 1024, 4)
         },
-        "workload_latencies": workload_stats,
+        "workload_latencies": workload_run_stats,
         "concurrency_throughput": concurrency_stats,
         "audit_costs": {
             "in_memory_receipt_ms": audit_receipt_stats,
             "file_persistence_ms": component_stats["AuditTrail_Logging"]
         },
         "halt_retry_costs": {
-            "allowed_request": workload_stats["benign"],
+            "allowed_request": workload_run_stats["benign"],
             "halted_request": halt_stats,
             "recovery_retry_loop": retry_stats
         }
@@ -404,6 +449,7 @@ def generate_markdown_report(res: Dict[str, Any]):
 ## 1. Provenance, Reproducibility & Environment
 - **Git Commit SHA:** `{env['commit_sha']}`
 - **Exact Benchmark Command:** `{prov['exact_command']}`
+- **Statistical Model:** Run-level Student's t-distribution ($N={prov['num_repetitions']}$ runs, $df=9$, $t_{{0.025}}=2.262$)
 - **Repetitions:** {prov['num_repetitions']} runs x {prov['iterations_per_rep']} iterations/run
 - **Python Runtime:** Version {env['python_version']} on {env['platform']}
 - **Hardware Profile:** {env['cpu_count']} CPUs ({env['processor']})
@@ -412,43 +458,43 @@ def generate_markdown_report(res: Dict[str, Any]):
 ---
 
 ## 2. Per-Gate & Component Latency Breakdown
-*All measurements reported in milliseconds across {prov['num_repetitions']} repetitions (with 95% confidence intervals).*
+*All measurements reported in milliseconds calculated at the run level across $N={prov['num_repetitions']}$ independent run observations (with 95% Student's t-CI).*
 
-| Component / Gate | Mean (ms) | 95% CI Margin | p50 (ms) | p95 (ms) | p99 (ms) | StdDev |
-|---|---|---|---|---|---|---|
-| **CPR Schema Validation** | {comp['CPR_Validation']['mean']} | ±{comp['CPR_Validation']['ci95_margin']} | {comp['CPR_Validation']['p50']} | {comp['CPR_Validation']['p95']} | {comp['CPR_Validation']['p99']} | {comp['CPR_Validation']['stddev']} |
-| **Permission Gate** | {comp['PermissionGate']['mean']} | ±{comp['PermissionGate']['ci95_margin']} | {comp['PermissionGate']['p50']} | {comp['PermissionGate']['p95']} | {comp['PermissionGate']['p99']} | {comp['PermissionGate']['stddev']} |
-| **Entropy Gate** | {comp['EntropyGate']['mean']} | ±{comp['EntropyGate']['ci95_margin']} | {comp['EntropyGate']['p50']} | {comp['EntropyGate']['p95']} | {comp['EntropyGate']['p99']} | {comp['EntropyGate']['stddev']} |
-| **Triangulation Gate** | {comp['TriangulationGate']['mean']} | ±{comp['TriangulationGate']['ci95_margin']} | {comp['TriangulationGate']['p50']} | {comp['TriangulationGate']['p95']} | {comp['TriangulationGate']['p99']} | {comp['TriangulationGate']['stddev']} |
-| **Crypto Attestation Gate** | {comp['CryptoAttestationGate']['mean']} | ±{comp['CryptoAttestationGate']['ci95_margin']} | {comp['CryptoAttestationGate']['p50']} | {comp['CryptoAttestationGate']['p95']} | {comp['CryptoAttestationGate']['p99']} | {comp['CryptoAttestationGate']['stddev']} |
-| **Audit Trail Persistence** | {comp['AuditTrail_Logging']['mean']} | ±{comp['AuditTrail_Logging']['ci95_margin']} | {comp['AuditTrail_Logging']['p50']} | {comp['AuditTrail_Logging']['p95']} | {comp['AuditTrail_Logging']['p99']} | {comp['AuditTrail_Logging']['stddev']} |
-| **Total End-to-End Pipeline** | {comp['EndToEnd_Total']['mean']} | ±{comp['EndToEnd_Total']['ci95_margin']} | {comp['EndToEnd_Total']['p50']} | {comp['EndToEnd_Total']['p95']} | {comp['EndToEnd_Total']['p99']} | {comp['EndToEnd_Total']['stddev']} |
+| Component / Gate | Mean (ms) | Mean 95% CI | p50 (ms) | p95 Mean (ms) | p95 95% CI | p99 Mean (ms) | p99 95% CI | StdDev |
+|---|---|---|---|---|---|---|---|---|
+| **CPR Schema Validation** | {comp['CPR_Validation']['mean']} | ±{comp['CPR_Validation']['ci95']} | {comp['CPR_Validation']['p50']} | {comp['CPR_Validation']['p95']} | ±{comp['CPR_Validation']['p95_ci95']} | {comp['CPR_Validation']['p99']} | ±{comp['CPR_Validation']['p99_ci95']} | {comp['CPR_Validation']['stddev']} |
+| **Permission Gate** | {comp['PermissionGate']['mean']} | ±{comp['PermissionGate']['ci95']} | {comp['PermissionGate']['p50']} | {comp['PermissionGate']['p95']} | ±{comp['PermissionGate']['p95_ci95']} | {comp['PermissionGate']['p99']} | ±{comp['PermissionGate']['p99_ci95']} | {comp['PermissionGate']['stddev']} |
+| **Entropy Gate** | {comp['EntropyGate']['mean']} | ±{comp['EntropyGate']['ci95']} | {comp['EntropyGate']['p50']} | {comp['EntropyGate']['p95']} | ±{comp['EntropyGate']['p95_ci95']} | {comp['EntropyGate']['p99']} | ±{comp['EntropyGate']['p99_ci95']} | {comp['EntropyGate']['stddev']} |
+| **Triangulation Gate** | {comp['TriangulationGate']['mean']} | ±{comp['TriangulationGate']['ci95']} | {comp['TriangulationGate']['p50']} | {comp['TriangulationGate']['p95']} | ±{comp['TriangulationGate']['p95_ci95']} | {comp['TriangulationGate']['p99']} | ±{comp['TriangulationGate']['p99_ci95']} | {comp['TriangulationGate']['stddev']} |
+| **Crypto Attestation Gate** | {comp['CryptoAttestationGate']['mean']} | ±{comp['CryptoAttestationGate']['ci95']} | {comp['CryptoAttestationGate']['p50']} | {comp['CryptoAttestationGate']['p95']} | ±{comp['CryptoAttestationGate']['p95_ci95']} | {comp['CryptoAttestationGate']['p99']} | ±{comp['CryptoAttestationGate']['p99_ci95']} | {comp['CryptoAttestationGate']['stddev']} |
+| **Audit Trail Persistence** | {comp['AuditTrail_Logging']['mean']} | ±{comp['AuditTrail_Logging']['ci95']} | {comp['AuditTrail_Logging']['p50']} | {comp['AuditTrail_Logging']['p95']} | ±{comp['AuditTrail_Logging']['p95_ci95']} | {comp['AuditTrail_Logging']['p99']} | ±{comp['AuditTrail_Logging']['p99_ci95']} | {comp['AuditTrail_Logging']['stddev']} |
+| **Total End-to-End Pipeline** | {comp['EndToEnd_Total']['mean']} | ±{comp['EndToEnd_Total']['ci95']} | {comp['EndToEnd_Total']['p50']} | {comp['EndToEnd_Total']['p95']} | ±{comp['EndToEnd_Total']['p95_ci95']} | {comp['EndToEnd_Total']['p99']} | ±{comp['EndToEnd_Total']['p99_ci95']} | {comp['EndToEnd_Total']['stddev']} |
 
 ---
 
 ## 3. Workload Latency Comparison
-| Workload | Mean Latency (ms) | 95% CI Margin | p50 (ms) | p95 (ms) | p99 (ms) |
-|---|---|---|---|---|---|
-| **Benign Payload** | {wl['benign']['mean']} | ±{wl['benign']['ci95_margin']} | {wl['benign']['p50']} | {wl['benign']['p95']} | {wl['benign']['p99']} |
-| **Adversarial Payload** | {wl['adversarial']['mean']} | ±{wl['adversarial']['ci95_margin']} | {wl['adversarial']['p50']} | {wl['adversarial']['p95']} | {wl['adversarial']['p99']} |
-| **Malformed Payload** | {wl['malformed']['mean']} | ±{wl['malformed']['ci95_margin']} | {wl['malformed']['p50']} | {wl['malformed']['p95']} | {wl['malformed']['p99']} |
-| **High-Volume Payload** | {wl['high_volume']['mean']} | ±{wl['high_volume']['ci95_margin']} | {wl['high_volume']['p50']} | {wl['high_volume']['p95']} | {wl['high_volume']['p99']} |
+| Workload | Mean Latency (ms) | Mean 95% CI | p50 (ms) | p95 Mean (ms) | p95 95% CI | p99 Mean (ms) |
+|---|---|---|---|---|---|---|
+| **Benign Payload** | {wl['benign']['mean']} | ±{wl['benign']['ci95']} | {wl['benign']['p50']} | {wl['benign']['p95']} | ±{wl['benign']['p95_ci95']} | {wl['benign']['p99']} |
+| **Adversarial Payload** | {wl['adversarial']['mean']} | ±{wl['adversarial']['ci95']} | {wl['adversarial']['p50']} | {wl['adversarial']['p95']} | ±{wl['adversarial']['p95_ci95']} | {wl['adversarial']['p99']} |
+| **Malformed Payload** | {wl['malformed']['mean']} | ±{wl['malformed']['ci95']} | {wl['malformed']['p50']} | {wl['malformed']['p95']} | ±{wl['malformed']['p95_ci95']} | {wl['malformed']['p99']} |
+| **High-Volume Payload** | {wl['high_volume']['mean']} | ±{wl['high_volume']['ci95']} | {wl['high_volume']['p50']} | {wl['high_volume']['p95']} | ±{wl['high_volume']['p95_ci95']} | {wl['high_volume']['p99']} |
 
 ---
 
 ## 4. Concurrent Workload Throughput
-| Threads | QPS Mean (req/sec) | 95% CI Margin | p50 QPS | StdDev QPS |
+| Threads | QPS Mean (req/sec) | QPS 95% CI | p50 QPS | StdDev QPS |
 |---|---|---|---|---|
-| **1 Thread** | **{conc['1_threads']['qps_mean']} req/s** | ±{conc['1_threads']['qps_ci95_margin']} | {conc['1_threads']['qps_p50']} | {conc['1_threads']['qps_stddev']} |
-| **2 Threads** | **{conc['2_threads']['qps_mean']} req/s** | ±{conc['2_threads']['qps_ci95_margin']} | {conc['2_threads']['qps_p50']} | {conc['2_threads']['qps_stddev']} |
-| **4 Threads** | **{conc['4_threads']['qps_mean']} req/s** | ±{conc['4_threads']['qps_ci95_margin']} | {conc['4_threads']['qps_p50']} | {conc['4_threads']['qps_stddev']} |
-| **8 Threads** | **{conc['8_threads']['qps_mean']} req/s** | ±{conc['8_threads']['qps_ci95_margin']} | {conc['8_threads']['qps_p50']} | {conc['8_threads']['qps_stddev']} |
+| **1 Thread** | **{conc['1_threads']['qps_mean']} req/s** | ±{conc['1_threads']['qps_ci95']} | {conc['1_threads']['qps_p50']} | {conc['1_threads']['qps_stddev']} |
+| **2 Threads** | **{conc['2_threads']['qps_mean']} req/s** | ±{conc['2_threads']['qps_ci95']} | {conc['2_threads']['qps_p50']} | {conc['2_threads']['qps_stddev']} |
+| **4 Threads** | **{conc['4_threads']['qps_mean']} req/s** | ±{conc['4_threads']['qps_ci95']} | {conc['4_threads']['qps_p50']} | {conc['4_threads']['qps_stddev']} |
+| **8 Threads** | **{conc['8_threads']['qps_mean']} req/s** | ±{conc['8_threads']['qps_ci95']} | {conc['8_threads']['qps_p50']} | {conc['8_threads']['qps_stddev']} |
 
 ---
 
 ## 5. Cold-Start vs. Steady-State & Resource Allocations
-- **Cold-Start Latency Mean:** `{cs['cold_start']['mean']} ms` (±{cs['cold_start']['ci95_margin']})
-- **Steady-State Mean Latency:** `{cs['steady_state']['mean']} ms` (±{cs['steady_state']['ci95_margin']})
+- **Cold-Start Latency Mean:** `{cs['cold_start']['mean']} ms` (±{cs['cold_start']['ci95']})
+- **Steady-State Mean Latency:** `{cs['steady_state']['mean']} ms` (±{cs['steady_state']['ci95']})
 - **Cold-Start Overhead Ratio:** `{cs['overhead_ratio']}x`
 - **CPU Process Execution Time:** `{res_alloc['cpu_process_time_sec']} seconds`
 - **Current Heap Allocation:** `{res_alloc['current_memory_mb']} MB`
@@ -466,11 +512,11 @@ def generate_markdown_report(res: Dict[str, Any]):
 ---
 
 ## 7. Performance Evidence & Verification Summary
-Profiling identified CPU bottlenecks in `PermissionGate._deep_regex_inspection`, `TokenSurprisalSensor.compute_z_scores`, and schema validation error logging.
+Profiling identified CPU hotspots in `PermissionGate._deep_regex_inspection`, `TokenSurprisalSensor.compute_z_scores`, and schema validation error logging.
 1. **Empty-Object Short-Circuiting:** Fast-path check `if not obj: return False` in `_deep_regex_inspection` reduced redundant stack/DFS allocations for empty payloads/actions.
 2. **Fast-Path Type Checking:** Replaced per-element `try...except` exception wrapping in `compute_z_scores` with `type(lp) in (float, int)`, removing exception frame setup costs while preserving exact exception types and error messages.
 3. **Pre-Allocated Redaction Sets:** Replaced per-call set construction in `CanonicalProblemRepresentation.mask_egress_payload` with module-level `DEFAULT_REDACTION_KEYS`.
-4. **Equivalence & Safety Guarantees:** 100% decision and exception equivalence verified via `tests/unit/test_equivalence.py`.
+4. **Equivalence & Security Guarantees:** 100% decision and exception equivalence, audit-chain cryptographic integrity (`verify_chain_integrity()`), and multi-threaded scheduler state isolation verified via `tests/unit/test_equivalence.py`.
 """
 
     with open(REPORT_MD_PATH, "w", encoding="utf-8") as f:
