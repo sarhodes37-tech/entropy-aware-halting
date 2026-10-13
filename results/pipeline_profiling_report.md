@@ -1,68 +1,72 @@
-# 📊 EpistemicOS Complete Pipeline Profiling Report
+# 📊 EpistemicOS Empirical Profiling & Performance Report
 
-## 1. Environment & Hardware Context
-- **Python Version:** 3.12.13
-- **CPU Count:** 4
-- **Platform:** Linux-6.8.0-x86_64-with-glibc2.39
-- **PyTorch/CUDA Status:** CUDA Available = `False` (PyTorch Version: `N/A`)
+## 1. Provenance, Reproducibility & Environment
+- **Git Commit SHA:** `f993219a55a83429501d22d0cf51b3beec33af4b`
+- **Exact Benchmark Command:** `PYTHONPATH=. python3 benchmarks/run_pipeline_profiling.py`
+- **Repetitions:** 10 runs x 200 iterations/run
+- **Python Runtime:** Version 3.12.13 on Linux-6.8.0-x86_64-with-glibc2.39
+- **Hardware Profile:** 4 CPUs (x86_64)
+- **PyTorch/CUDA Acceleration:** CUDA Available = `False` (PyTorch Version: `N/A`)
 
 ---
 
 ## 2. Per-Gate & Component Latency Breakdown
-| Component / Gate | Mean (ms) | p50 (ms) | p95 (ms) | p99 (ms) | StdDev (ms) |
+*All measurements reported in milliseconds across 10 repetitions (with 95% confidence intervals).*
+
+| Component / Gate | Mean (ms) | 95% CI Margin | p50 (ms) | p95 (ms) | p99 (ms) | StdDev |
+|---|---|---|---|---|---|---|
+| **CPR Schema Validation** | 0.3293 | ±0.0086 | 0.1926 | 0.7992 | 1.2543 | 0.2766 |
+| **Permission Gate** | 1.3466 | ±0.0535 | 0.327 | 3.3961 | 5.1431 | 1.4937 |
+| **Entropy Gate** | 1.6115 | ±0.0691 | 0.3046 | 4.2433 | 6.5801 | 1.9297 |
+| **Triangulation Gate** | 0.0386 | ±0.0005 | 0.0311 | 0.0702 | 0.0998 | 0.0148 |
+| **Crypto Attestation Gate** | 0.0247 | ±0.0003 | 0.0213 | 0.041 | 0.0709 | 0.0096 |
+| **Audit Trail Persistence** | 0.5657 | ±0.0046 | 0.5332 | 0.7978 | 1.0595 | 0.128 |
+| **Total End-to-End Pipeline** | 3.7695 | ±0.1329 | 1.5776 | 10.7596 | 16.5176 | 4.2895 |
+
+---
+
+## 3. Workload Latency Comparison
+| Workload | Mean Latency (ms) | 95% CI Margin | p50 (ms) | p95 (ms) | p99 (ms) |
 |---|---|---|---|---|---|
-| **CPR Schema Validation** | 0.3091 | 0.1881 | 0.7471 | 0.8015 | 0.2338 |
-| **Permission Gate** | 1.3125 | 0.339 | 3.3031 | 3.6414 | 1.3864 |
-| **Entropy Gate** | 1.5477 | 0.3198 | 4.1058 | 4.5557 | 1.7885 |
-| **Triangulation Gate** | 0.0383 | 0.032 | 0.0702 | 0.094 | 0.0164 |
-| **Crypto Attestation Gate** | 0.0246 | 0.021 | 0.0499 | 0.0844 | 0.0112 |
-| **Audit Trail Persistence** | 0.5633 | 0.5354 | 0.8743 | 1.0965 | 0.1337 |
-| **Total End-to-End** | 3.6166 | 1.5718 | 10.3657 | 11.0094 | 3.8785 |
+| **Benign Payload** | 0.5048 | ±0.0048 | 0.4965 | 0.6067 | 0.6819 |
+| **Adversarial Payload** | 0.4946 | ±0.0026 | 0.4888 | 0.6019 | 0.6757 |
+| **Malformed Payload** | 0.2276 | ±0.0041 | 0.2172 | 0.3032 | 0.365 |
+| **High-Volume Payload** | 3.6861 | ±0.0089 | 3.6531 | 3.9064 | 4.1972 |
 
 ---
 
-## 3. Workload Comparison
-| Workload | Mean Latency (ms) | p50 (ms) | p95 (ms) | p99 (ms) |
+## 4. Concurrent Workload Throughput
+| Threads | QPS Mean (req/sec) | 95% CI Margin | p50 QPS | StdDev QPS |
 |---|---|---|---|---|
-| **Benign Payload** | 0.5104 | 0.5086 | 0.5912 | 0.6298 |
-| **Adversarial Payload** | 0.4958 | 0.4891 | 0.5758 | 0.6322 |
-| **Malformed Payload** | 0.2165 | 0.2081 | 0.2849 | 0.3072 |
-| **High-Volume Payload** | 3.7042 | 3.6334 | 4.0659 | 4.2419 |
-
----
-
-## 4. Concurrent Throughput
-| Threads | Total Requests | Duration (sec) | Throughput (req/sec) |
-|---|---|---|---|
-| **1 Thread** | 1000 | 2.123 | **471.04 req/s** |
-| **2 Threads** | 1000 | 2.5645 | **389.94 req/s** |
-| **4 Threads** | 1000 | 2.7152 | **368.3 req/s** |
-| **8 Threads** | 1000 | 2.5358 | **394.35 req/s** |
+| **1 Thread** | **466.3758 req/s** | ±6.0615 | 462.1854 | 9.7796 |
+| **2 Threads** | **410.5913 req/s** | ±9.6665 | 414.0859 | 15.5961 |
+| **4 Threads** | **395.4759 req/s** | ±3.4699 | 397.7432 | 5.5984 |
+| **8 Threads** | **383.6319 req/s** | ±8.003 | 390.0418 | 12.9121 |
 
 ---
 
 ## 5. Cold-Start vs. Steady-State & Resource Allocations
-- **Cold-Start Latency:** `2.6684 ms`
-- **Steady-State Mean Latency:** `0.641 ms`
-- **Cold-Start Overhead Ratio:** `4.16x`
-- **Total CPU Process Time:** `6.6602 seconds`
-- **Current Memory Allocation:** `0.2821 MB`
-- **Peak Memory Allocation:** `0.3561 MB`
+- **Cold-Start Latency Mean:** `1.3517 ms` (±0.1889)
+- **Steady-State Mean Latency:** `0.5141 ms` (±0.0035)
+- **Cold-Start Overhead Ratio:** `2.63x`
+- **CPU Process Execution Time:** `27.6537 seconds`
+- **Current Heap Allocation:** `0.7492 MB`
+- **Peak Heap Allocation:** `0.8232 MB`
 
 ---
 
-## 6. Audit Logging & Halt Recovery Costs
-- **In-Memory Receipt Minting Cost:** `1.1294 ms/call`
-- **Audit File Persistence (JSONL + SHA-256 + flock):** Mean `0.5633 ms` (p95: `0.8743 ms`)
-- **Allowed Request Mean Latency:** `0.5104 ms`
-- **Halted Request Mean Latency:** `0.5126 ms`
-- **False-Positive Halt + Recovery Loop:** `1.1055 ms` (2x pipeline pass overhead)
+## 6. Audit Logging & False-Positive Halt Recovery Overhead
+- **In-Memory Receipt Generation:** `1.1743 ms/call` (p95: `2.1826 ms`)
+- **Audit File Persistence (JSONL + HMAC Chain + flock):** `0.5657 ms/call` (p95: `0.7978 ms`)
+- **Allowed Submission Latency:** `0.5048 ms`
+- **Halted Submission Latency:** `0.5242 ms` (includes vector revocation + audit HALT record)
+- **False-Positive Halt + Recovery Retry Loop:** `1.0641 ms` (2x pipeline pass overhead)
 
 ---
 
-## 7. Evidence-Based Optimization Summary
-Profiling identified key CPU hotspots:
-1. **`PermissionGate._deep_regex_inspection`**: Added empty-object short-circuiting (`if not obj: return False`), eliminating redundant DFS traversals for empty/None payloads.
-2. **`TokenSurprisalSensor.compute_z_scores`**: Replaced per-element `try...except` exception wrapping with fast-path `type(lp) in (float, int)` checks, removing per-token exception frame overhead.
-3. **`CanonicalProblemRepresentation` Egress Masking**: Pre-allocated `DEFAULT_REDACTION_KEYS` set to eliminate per-call set construction.
-4. **`EpistemicOrchestrator._validate_and_normalize`**: Avoided dummy CPR object instantiation during schema error handling, speeding up malformed payload processing by ~25%.
+## 7. Performance Evidence & Verification Summary
+Profiling identified CPU bottlenecks in `PermissionGate._deep_regex_inspection`, `TokenSurprisalSensor.compute_z_scores`, and schema validation error logging.
+1. **Empty-Object Short-Circuiting:** Fast-path check `if not obj: return False` in `_deep_regex_inspection` reduced redundant stack/DFS allocations for empty payloads/actions.
+2. **Fast-Path Type Checking:** Replaced per-element `try...except` exception wrapping in `compute_z_scores` with `type(lp) in (float, int)`, removing exception frame setup costs while preserving exact exception types and error messages.
+3. **Pre-Allocated Redaction Sets:** Replaced per-call set construction in `CanonicalProblemRepresentation.mask_egress_payload` with module-level `DEFAULT_REDACTION_KEYS`.
+4. **Equivalence & Safety Guarantees:** 100% decision and exception equivalence verified via `tests/unit/test_equivalence.py`.
