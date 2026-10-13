@@ -47,6 +47,11 @@ class GateInput:
 
 @dataclass
 class GateConfig:
+    """
+    Versioned gate configuration.
+    Note: max_execution_cost_ms is an advisory execution envelope parameter used for
+    telemetry profiling and budget tracking; it does not forcibly interrupt execution threads.
+    """
     version: str = "1.0.0"
     is_critical: bool = True
     max_execution_cost_ms: float = 100.0
@@ -208,12 +213,17 @@ class ControlPlaneGate(Gate):
             return self.evaluate_contract(gate_input)
         except Exception as e:
             latency = (time.perf_counter() - t0) * 1000.0
-            if self.config.is_critical:
+            gate_name = getattr(self, "gate_name", self.__class__.__name__)
+            cfg = getattr(self, "config", None)
+            is_critical = getattr(cfg, "is_critical", True)
+            gate_version = getattr(cfg, "version", "1.0.0")
+
+            if is_critical:
                 return GateOutcome(
                     decision=GateDecision.HALT,
                     reason_code="GATE_EXECUTION_ERROR",
-                    gate_name=self.gate_name,
-                    gate_version=self.config.version,
+                    gate_name=gate_name,
+                    gate_version=gate_version,
                     evidence={"error": str(e), "exception_type": type(e).__name__},
                     latency_ms=latency
                 )
@@ -221,8 +231,8 @@ class ControlPlaneGate(Gate):
                 return GateOutcome(
                     decision=GateDecision.INDETERMINATE,
                     reason_code="GATE_EXECUTION_ERROR_NON_CRITICAL",
-                    gate_name=self.gate_name,
-                    gate_version=self.config.version,
+                    gate_name=gate_name,
+                    gate_version=gate_version,
                     evidence={"error": str(e)},
                     latency_ms=latency
                 )

@@ -131,3 +131,22 @@ def test_retry_composition_does_not_bypass_permissions():
     outcome = gate.evaluate_contract(gi_retry)
     assert outcome.decision in (GateDecision.DENY, GateDecision.HALT)
     assert outcome.passed is False
+
+
+def test_orchestrator_failing_gate_fails_closed(tmp_path):
+    """Verifies that an unhandled exception in a gate causes EpistemicOrchestrator to fail closed."""
+    log_file = str(tmp_path / "test_audit.jsonl")
+    orchestrator = EpistemicOrchestrator(audit_log_path=log_file)
+
+    class BrokenGate(ControlPlaneGate):
+        def evaluate_contract(self, gate_input: GateInput) -> GateOutcome:
+            raise RuntimeError("Database connection lost")
+
+    orchestrator.register_gate(BrokenGate())
+    res = orchestrator.process_submission(
+        raw_payload={"policy_id": "POL-ERR-TEST"},
+        context={}
+    )
+
+    assert res["status"] == "HALTED"
+    assert "GATE_EXECUTION_ERROR" in res["reason"] or "Database connection lost" in res["reason"]
