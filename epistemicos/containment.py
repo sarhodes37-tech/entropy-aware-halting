@@ -339,18 +339,25 @@ class ContainmentGuard:
         kwargs: Dict[str, Any],
         original_goal: Optional[str] = None,
     ) -> Tuple[bool, Any, ContainmentReceipt]:
-        """Wraps any tool call with active ingress, egress, and command containment checks."""
+        """Wraps any tool call with active ingress, egress, and command containment checks across normalized arguments."""
 
-        command_str = str(kwargs.get("command", "")) or str(kwargs.get("script", ""))
-        if command_str:
-            cmd_receipt = self.inspect_tool_command(command_str)
-            if not cmd_receipt.passed:
-                return False, None, cmd_receipt
+        # Inspect all string/list arguments in kwargs for OS-level command injection and goal mutation
+        for arg_key, arg_val in kwargs.items():
+            str_rep = ""
+            if isinstance(arg_val, (list, tuple)):
+                str_rep = " ".join(str(item) for item in arg_val)
+            elif isinstance(arg_val, str):
+                str_rep = arg_val
 
-            if original_goal:
-                goal_receipt = self.inspect_goal_integrity(original_goal, command_str)
-                if not goal_receipt.passed:
-                    return False, None, goal_receipt
+            if str_rep:
+                cmd_receipt = self.inspect_tool_command(str_rep)
+                if not cmd_receipt.passed:
+                    return False, None, cmd_receipt
+
+                if original_goal:
+                    goal_receipt = self.inspect_goal_integrity(original_goal, str_rep)
+                    if not goal_receipt.passed:
+                        return False, None, goal_receipt
 
         url_str = str(kwargs.get("url", "")) or str(kwargs.get("endpoint", ""))
         if url_str:

@@ -67,9 +67,27 @@ class EpistemicOrchestrator:
             TriangulationGate()
         ]
 
-    def process_step(self, probabilities, cost, state) -> DecisionResult:
+    def process_step(self, probabilities, cost, state, trajectory_id: Optional[str] = None) -> DecisionResult:
         """Handles the low-level entropy scheduling loop."""
-        decision = self.scheduler.step(probabilities, cost, state)
+        traj_key = trajectory_id or (state if isinstance(state, str) else str(uuid.uuid4()))
+        if not hasattr(self, "_schedulers"):
+            self._schedulers = {}
+
+        if traj_key not in self._schedulers:
+            # Instantiate an isolated scheduler with the same config
+            self._schedulers[traj_key] = EntropyAwareScheduler(
+                value_of_information=self.scheduler.V,
+                divergence_threshold=self.scheduler.divergence_threshold,
+                negative_yield_window=self.scheduler.negative_yield_window,
+                entropy_delta_threshold=self.scheduler.entropy_delta_threshold,
+                stagnation_window=self.scheduler.stagnation_window,
+                confidence_threshold=self.scheduler.confidence_threshold,
+                utility_epsilon=self.scheduler.utility_epsilon,
+                minimum_steps_before_convergence=self.scheduler.minimum_steps_before_convergence
+            )
+
+        scheduler = self._schedulers[traj_key]
+        decision = scheduler.step(probabilities, cost, state)
         if decision.halt:
             # You can link this directly to your audit logger if needed
             pass
@@ -122,7 +140,7 @@ class EpistemicOrchestrator:
     def _evaluate_gates(self, payload_dump: Dict[str, Any], context: Dict[str, Any]) -> Optional[Any]:
         for gate in self.gates:
             result = gate.evaluate(payload=payload_dump, context=context)
-            if result.action == GateAction.HALT:
+            if result.action != GateAction.ALLOW:
                 return result
         return None
 

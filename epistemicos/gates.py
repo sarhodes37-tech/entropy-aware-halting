@@ -307,6 +307,20 @@ class PermissionGate(Gate):
     def evaluate(self, payload: Dict[str, Any], context: Dict[str, Any]) -> GateResult:
         t0 = time.perf_counter()
 
+        # 0. Bind authorization to the resolved executable operation if present in context
+        actual_exec = context.get("actual_executable") or context.get("executable_operation")
+        if actual_exec and self.allowed_actions:
+            exec_name = getattr(actual_exec, "__name__", str(actual_exec))
+            if exec_name not in self.allowed_actions:
+                return GateResult(
+                    action=GateAction.HALT,
+                    status="HALTED",
+                    latency_ms=(time.perf_counter() - t0) * 1000,
+                    gate_name="PermissionGate",
+                    reason=f"Resolved executable '{exec_name}' not in gate allowed_actions: {self.allowed_actions}",
+                    confidence=0.0
+                )
+
         scope = payload.get("scope", {}) or context.get("scope", {})
         proposed_actions = context.get("proposed_actions", []) or payload.get("proposed_actions", [])
         llm_output = context.get("llm_output") or payload.get("llm_output")

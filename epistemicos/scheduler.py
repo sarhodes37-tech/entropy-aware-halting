@@ -1,3 +1,4 @@
+import math
 from dataclasses import dataclass
 from typing import Any
 
@@ -76,14 +77,40 @@ class EntropyAwareScheduler:
         self.initial_entropy = None
 
     def entropy(self, probabilities):
+        # Fallback pure-python check when torch is not available or before torch import
+        if isinstance(probabilities, (list, tuple)):
+            for v in probabilities:
+                try:
+                    fval = float(v)
+                    if math.isnan(fval) or math.isinf(fval):
+                        raise ValueError("Probabilities cannot contain NaN or non-finite values")
+                    if fval < 0:
+                        raise ValueError("Probabilities cannot contain negative values")
+                except (TypeError, ValueError) as e:
+                    if "NaN or non-finite" in str(e) or "negative values" in str(e):
+                        raise e
+                    raise ValueError(f"Invalid probability value: {v}")
+
         # Lazy import isolates heavy tensor packages to execution boundary
-        import torch
+        try:
+            import torch
+        except ImportError:
+            # Pure Python calculation
+            p_eps = [float(v) + 1e-9 for v in probabilities]
+            return -sum(v * math.log2(v) for v in p_eps)
 
         if not isinstance(probabilities, torch.Tensor):
             probabilities = torch.tensor(probabilities)
 
+        if torch.any(torch.isnan(probabilities)) or torch.any(torch.isinf(probabilities)):
+            raise ValueError("Probabilities cannot contain NaN or non-finite values")
+
         if torch.any(probabilities < 0):
             raise ValueError("Probabilities cannot contain negative values")
+
+        prob_sum = torch.sum(probabilities)
+        if torch.isnan(prob_sum) or prob_sum <= 0:
+            raise ValueError("Probabilities must sum to a positive finite value")
 
         # Add epsilon to prevent log(0)
         probabilities = probabilities + 1e-9
