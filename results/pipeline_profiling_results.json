@@ -1,0 +1,170 @@
+{
+  "environment": {
+    "python_version": "3.12.13",
+    "platform": "Linux-6.8.0-x86_64-with-glibc2.39",
+    "processor": "x86_64",
+    "cpu_count": 4,
+    "pytorch_version": "N/A",
+    "cuda_available": false
+  },
+  "cold_vs_steady": {
+    "cold_start_ms": 2.6684,
+    "steady_state": {
+      "p50": 0.547,
+      "p95": 1.0725,
+      "p99": 1.6839,
+      "mean": 0.641,
+      "stddev": 0.2617,
+      "min": 0.4219,
+      "max": 2.5314
+    },
+    "cold_overhead_ratio": 4.16
+  },
+  "component_latencies": {
+    "CPR_Validation": {
+      "p50": 0.1881,
+      "p95": 0.7471,
+      "p99": 0.8015,
+      "mean": 0.3091,
+      "stddev": 0.2338,
+      "min": 0.1243,
+      "max": 0.9369
+    },
+    "PermissionGate": {
+      "p50": 0.339,
+      "p95": 3.3031,
+      "p99": 3.6414,
+      "mean": 1.3125,
+      "stddev": 1.3864,
+      "min": 0.2688,
+      "max": 3.9576
+    },
+    "EntropyGate": {
+      "p50": 0.3198,
+      "p95": 4.1058,
+      "p99": 4.5557,
+      "mean": 1.5477,
+      "stddev": 1.7885,
+      "min": 0.1465,
+      "max": 5.0067
+    },
+    "TriangulationGate": {
+      "p50": 0.032,
+      "p95": 0.0702,
+      "p99": 0.094,
+      "mean": 0.0383,
+      "stddev": 0.0164,
+      "min": 0.0254,
+      "max": 0.2929
+    },
+    "CryptoAttestationGate": {
+      "p50": 0.021,
+      "p95": 0.0499,
+      "p99": 0.0844,
+      "mean": 0.0246,
+      "stddev": 0.0112,
+      "min": 0.0184,
+      "max": 0.0986
+    },
+    "AuditTrail_Logging": {
+      "p50": 0.5354,
+      "p95": 0.8743,
+      "p99": 1.0965,
+      "mean": 0.5633,
+      "stddev": 0.1337,
+      "min": 0.4308,
+      "max": 1.6127
+    },
+    "EndToEnd_Total": {
+      "p50": 1.5718,
+      "p95": 10.3657,
+      "p99": 11.0094,
+      "mean": 3.6166,
+      "stddev": 3.8785,
+      "min": 0.6852,
+      "max": 11.8458
+    }
+  },
+  "resource_allocations": {
+    "cpu_process_time_sec": 6.6602,
+    "current_memory_mb": 0.2821,
+    "peak_memory_mb": 0.3561
+  },
+  "workload_latencies": {
+    "benign": {
+      "p50": 0.5086,
+      "p95": 0.5912,
+      "p99": 0.6298,
+      "mean": 0.5104,
+      "stddev": 0.0481,
+      "min": 0.4374,
+      "max": 0.7323
+    },
+    "adversarial": {
+      "p50": 0.4891,
+      "p95": 0.5758,
+      "p99": 0.6322,
+      "mean": 0.4958,
+      "stddev": 0.0503,
+      "min": 0.4184,
+      "max": 0.8588
+    },
+    "malformed": {
+      "p50": 0.2081,
+      "p95": 0.2849,
+      "p99": 0.3072,
+      "mean": 0.2165,
+      "stddev": 0.0358,
+      "min": 0.1679,
+      "max": 0.3785
+    },
+    "high_volume": {
+      "p50": 3.6334,
+      "p95": 4.0659,
+      "p99": 4.2419,
+      "mean": 3.7042,
+      "stddev": 0.5478,
+      "min": 3.5067,
+      "max": 15.4538
+    }
+  },
+  "concurrency_throughput": {
+    "1_threads": {
+      "threads": 1,
+      "duration_sec": 2.123,
+      "requests_per_sec": 471.04
+    },
+    "2_threads": {
+      "threads": 2,
+      "duration_sec": 2.5645,
+      "requests_per_sec": 389.94
+    },
+    "4_threads": {
+      "threads": 4,
+      "duration_sec": 2.7152,
+      "requests_per_sec": 368.3
+    },
+    "8_threads": {
+      "threads": 8,
+      "duration_sec": 2.5358,
+      "requests_per_sec": 394.35
+    }
+  },
+  "audit_costs": {
+    "in_memory_receipt_ms_per_call": 1.1294,
+    "file_persistence_stats": {
+      "p50": 0.5354,
+      "p95": 0.8743,
+      "p99": 1.0965,
+      "mean": 0.5633,
+      "stddev": 0.1337,
+      "min": 0.4308,
+      "max": 1.6127
+    }
+  },
+  "halt_retry_costs": {
+    "allowed_request_mean_ms": 0.5104,
+    "halted_request_mean_ms": 0.5126,
+    "halt_retry_loop_mean_ms": 1.1055
+  }
+}
