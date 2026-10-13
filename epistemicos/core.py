@@ -19,7 +19,8 @@ from epistemicos.gates import (
     PermissionGate,
     TriangulationGate,
     CryptoAttestationGate,
-    GateAction
+    GateAction,
+    GateResult
 )
 
 class EpistemicOrchestrator:
@@ -139,8 +140,20 @@ class EpistemicOrchestrator:
 
     def _evaluate_gates(self, payload_dump: Dict[str, Any], context: Dict[str, Any]) -> Optional[Any]:
         for gate in self.gates:
-            result = gate.evaluate(payload=payload_dump, context=context)
-            if result.action != GateAction.ALLOW:
+            try:
+                result = gate.evaluate(payload=payload_dump, context=context)
+            except Exception as e:
+                # Security-critical gates fail closed on unhandled errors
+                gate_name = getattr(gate, "gate_name", gate.__class__.__name__)
+                return GateResult(
+                    action=GateAction.HALT,
+                    status="HALTED",
+                    gate_name=gate_name,
+                    reason=f"Gate Execution Failure ({gate_name}): {str(e)}",
+                    vectors_revoked=1
+                )
+
+            if not getattr(result, "passed", False) or getattr(result, "action", None) != GateAction.ALLOW:
                 return result
         return None
 
@@ -166,18 +179,21 @@ class EpistemicOrchestrator:
                     # Fallback to the gate's revocation count if the vector manager is mocked/empty
                     actual_revoked_count = max(len(revoked_ids), getattr(result, "vectors_revoked", 0))
 
+                    gate_name = getattr(result, "gate_name", getattr(result, "gate", "UnknownGate"))
+                    reason_msg = getattr(result, "reason", "Gate Execution Halted")
+
                     self._log_pipeline_event(
                         event_type=AuditLogLevel.HALT,
-                        gate_name=result.gate_name,
-                        reason=f"{result.reason} | Vectors Revoked: {actual_revoked_count}",
+                        gate_name=gate_name,
+                        reason=f"{reason_msg} | Vectors Revoked: {actual_revoked_count}",
                         masked_payload=masked_payload,
                         cpr=cpr,
                         telemetry=telemetry
                     )
                     return {
                         "status": "HALTED",
-                        "gate": result.gate_name,
-                        "reason": result.reason,
+                        "gate": gate_name,
+                        "reason": reason_msg,
                         "vectors_revoked": actual_revoked_count
                     }
 

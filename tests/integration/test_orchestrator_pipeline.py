@@ -26,8 +26,9 @@ from epistemicos.audit import TamperEvidentAuditTrail, AuditEvent, AuditLogLevel
 # =====================================================================
 
 @pytest.fixture
-def orchestrator():
-    return EpistemicOrchestrator()
+def orchestrator(tmp_path):
+    log_path = str(tmp_path / "test_audit.jsonl")
+    return EpistemicOrchestrator(audit_log_path=log_path)
 
 @pytest.fixture
 def base_spoof_payload():
@@ -47,12 +48,13 @@ def base_spoof_payload():
 # PART 1: ADV-CTF-004 & DOWNSTREAM SCOPE LOCKS
 # =====================================================================
 
-def test_ctf_sandbox_breakout_blocked():
+def test_ctf_sandbox_breakout_blocked(tmp_path):
     """
     Validates ADV-CTF-004: Ensures prompt-injected exfiltration attempts to external IPs
     trigger both EntropyGate and PermissionGate vetoes, resulting in a HALTED/ROLLED_BACK receipt.
     """
-    orchestrator = EpistemicOrchestrator()
+    log_path = str(tmp_path / "test_audit.jsonl")
+    orchestrator = EpistemicOrchestrator(audit_log_path=log_path)
 
     mock_payload = {
         "policy_id": "POL-2026-CTF",
@@ -79,12 +81,13 @@ def test_ctf_sandbox_breakout_blocked():
     assert result["gate"] in ("EntropyGate", "PermissionGate")
 
 
-def test_internal_subnet_mutating_action_permitted():
+def test_internal_subnet_mutating_action_permitted(tmp_path):
     """
     Validates that state-mutating requests ('update_db') originating from
     trusted internal subnets pass scope checks and commit successfully.
     """
-    orchestrator = EpistemicOrchestrator()
+    log_path = str(tmp_path / "test_audit.jsonl")
+    orchestrator = EpistemicOrchestrator(audit_log_path=log_path)
 
     scope = PermissionScope(
         origin_subnet="192.168.1.50",
@@ -111,12 +114,13 @@ def test_internal_subnet_mutating_action_permitted():
     assert result["status"] == "ALLOWED"
 
 
-def test_rmm_quarantine_subnet_mutating_action_blocked():
+def test_rmm_quarantine_subnet_mutating_action_blocked(tmp_path):
     """
     Validates that state-mutating requests ('update_db') originating from
     an RMM quarantine subnet trigger Downstream Scope Lock and halt execution.
     """
-    orchestrator = EpistemicOrchestrator()
+    log_path = str(tmp_path / "test_audit.jsonl")
+    orchestrator = EpistemicOrchestrator(audit_log_path=log_path)
 
     scope = PermissionScope(
         origin_subnet="10.240.1.100",
@@ -145,12 +149,13 @@ def test_rmm_quarantine_subnet_mutating_action_blocked():
     assert result["gate"] == "PermissionGate"
 
 
-def test_rmm_quarantine_subnet_read_only_permitted():
+def test_rmm_quarantine_subnet_read_only_permitted(tmp_path):
     """
     Validates that read-only diagnostic requests ('read') originating from
     an RMM quarantine subnet remain permitted under the degraded privilege profile.
     """
-    orchestrator = EpistemicOrchestrator()
+    log_path = str(tmp_path / "test_audit.jsonl")
+    orchestrator = EpistemicOrchestrator(audit_log_path=log_path)
 
     scope = PermissionScope(
         origin_subnet="10.240.1.100",
@@ -182,12 +187,13 @@ def test_rmm_quarantine_subnet_read_only_permitted():
 # PART 2: NOISY PAYLOADS, ENTROPY SCHEDULING, & AUDIT INTEGRITY
 # =====================================================================
 
-def test_orchestrator_noisy_surprisal_halt_and_rollback():
+def test_orchestrator_noisy_surprisal_halt_and_rollback(tmp_path):
     """
     Validates that high logprob surprisal triggers EntropyGate veto
     and stops execution safely within the unified orchestrator.
     """
-    orchestrator = EpistemicOrchestrator()
+    log_path = str(tmp_path / "test_audit.jsonl")
+    orchestrator = EpistemicOrchestrator(audit_log_path=log_path)
 
     mock_commercial_payload = {
         "policy_id": "POL-2026-N99",
@@ -219,9 +225,10 @@ def test_orchestrator_noisy_surprisal_halt_and_rollback():
     assert result["gate"] == "EntropyGate"
 
 
-def test_orchestrator_clean_logprobs_committed():
+def test_orchestrator_clean_logprobs_committed(tmp_path):
     """Validates that nominal logprobs without surprisal spikes commit successfully."""
-    orchestrator = EpistemicOrchestrator()
+    log_path = str(tmp_path / "test_audit.jsonl")
+    orchestrator = EpistemicOrchestrator(audit_log_path=log_path)
 
     mock_commercial_payload = {
         "policy_id": "POL-2026-N99",
@@ -313,12 +320,13 @@ def test_spoofed_client_attempt_counter_neutralized(orchestrator, base_spoof_pay
     assert res4["status"] == "HALTED"
 
 
-def test_lateral_breakout_blocked_by_permission_gate():
+def test_lateral_breakout_blocked_by_permission_gate(tmp_path):
     """
     Validates that a rogue agent attempting external web search breakout is
     blocked by PermissionGate even when token logprobs are extremely high/stable.
     """
-    orchestrator = EpistemicOrchestrator()
+    log_path = str(tmp_path / "test_audit.jsonl")
+    orchestrator = EpistemicOrchestrator(audit_log_path=log_path)
 
     # Define standard permission scope restricted to internal operations
     scope = PermissionScope(
@@ -463,12 +471,13 @@ def test_saas_egress_governor_row_limits_and_dict_evasion():
     assert scope.validate_egress(malicious_dict_evasion_payload) is False
 
 
-def test_crypto_attestation_gate_pqc_verification():
+def test_crypto_attestation_gate_pqc_verification(tmp_path):
     """
     Validates that requests lacking valid ML-DSA (Post-Quantum Cryptography)
     attestation signatures or using expired algorithms are halted at the perimeter.
     """
-    orchestrator = EpistemicOrchestrator()
+    log_path = str(tmp_path / "test_audit.jsonl")
+    orchestrator = EpistemicOrchestrator(audit_log_path=log_path)
     orchestrator.register_gate(CryptoAttestationGate(required_algorithm="ML-DSA", expiry_year=2030, revoked_keys=frozenset({"KEY-000-COMPROMISED", "KEY-999-STOLEN", "KEY-2026-COMPROMISED"})))
 
     payload = {"policy_id": "POL-PQC-2026", "action": "issue_binder"}
@@ -496,14 +505,15 @@ def test_crypto_attestation_gate_pqc_verification():
     assert result_valid["status"] == "ALLOWED"
 
 
-def test_governance_os_stateful_key_revocation():
+def test_governance_os_stateful_key_revocation(tmp_path):
     """
     Validates stateful revocation of compromised PQC keys within the EpistemicOrchestrator.
     - Scenario 1: Valid PQC Key -> ALLOWED receipt generated.
     - Scenario 2: Compromised PQC Key -> HALTED / ROLLED_BACK receipt generated.
     """
+    log_path = str(tmp_path / "test_audit.jsonl")
     priors = {"preferred": 0.5, "standard": 0.3, "substandard": 0.2}
-    orchestrator = EpistemicOrchestrator(prior_probabilities=priors)
+    orchestrator = EpistemicOrchestrator(audit_log_path=log_path, prior_probabilities=priors)
 
     orchestrator.register_gate(EntropyGate(z_threshold=2.85))
     orchestrator.register_gate(PermissionGate(contract_model=CanonicalProblemRepresentation))

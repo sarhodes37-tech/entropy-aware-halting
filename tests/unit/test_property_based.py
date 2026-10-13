@@ -26,6 +26,7 @@ import json
 import hashlib
 import tempfile
 import pytest
+hypothesis = pytest.importorskip("hypothesis")
 from hypothesis import given, strategies as st, settings, HealthCheck, assume
 
 from epistemicos.scheduler import EntropyAwareScheduler, DecisionResult
