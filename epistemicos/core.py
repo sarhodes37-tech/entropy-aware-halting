@@ -106,12 +106,8 @@ class EpistemicOrchestrator:
         except Exception as e:
             # Mask sensitive fields to prevent raw data exposure in the audit log
             if isinstance(raw_payload, dict):
-                # We instantiate a dummy CPR to get the correct defaults without relying on internals
-                try:
-                    dummy = CanonicalProblemRepresentation(policy_id="dummy")
-                    sensitive_fields = dummy.SENSITIVE_FIELDS
-                except Exception:
-                    # Fallback to hardcoded defaults if instantiation fails completely
+                sensitive_fields = getattr(CanonicalProblemRepresentation, "SENSITIVE_FIELDS", {"banking_routing", "account_number", "ssn", "account_balance_usd", "proprietary_cargo"})
+                if isinstance(sensitive_fields, property) or not isinstance(sensitive_fields, (set, frozenset)):
                     sensitive_fields = {"banking_routing", "account_number", "ssn", "account_balance_usd", "proprietary_cargo"}
                 masked_payload = {
                     k: v for k, v in raw_payload.items()

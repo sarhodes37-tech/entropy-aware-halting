@@ -23,6 +23,7 @@ from pydantic import BaseModel, Field, model_validator
 _DEFAULT_QUARANTINE_SUBNETS = [
     s.strip() for s in os.getenv("EPISTEMICOS_QUARANTINE_SUBNETS", "").split(",") if s.strip()
 ]
+DEFAULT_REDACTION_KEYS = frozenset({"api_key", "token", "password", "secret"})
 
 
 # ==========================================
@@ -121,13 +122,18 @@ class TokenSurprisalSensor:
 
         sanitized_logprobs = []
         for i, lp in enumerate(logprobs):
-            try:
-                val = float(lp)
-                if math.isnan(val) or math.isinf(val):
-                    raise ValueError(f"Non-finite logprob encountered at index {i}: {val}")
-                sanitized_logprobs.append(val)
-            except (TypeError, ValueError) as e:
-                raise ValueError(f"Malformed or non-finite logprob encountered at index {i}: {lp}") from e
+            if type(lp) in (float, int):
+                if math.isnan(lp) or math.isinf(lp):
+                    raise ValueError(f"Malformed or non-finite logprob encountered at index {i}: {lp}")
+                sanitized_logprobs.append(float(lp))
+            else:
+                try:
+                    val = float(lp)
+                    if math.isnan(val) or math.isinf(val):
+                        raise ValueError(f"Malformed or non-finite logprob encountered at index {i}: {val}")
+                    sanitized_logprobs.append(val)
+                except (TypeError, ValueError) as e:
+                    raise ValueError(f"Malformed or non-finite logprob encountered at index {i}: {lp}") from e
 
         surprisals = [-lp for lp in sanitized_logprobs]
         z_scores = []
@@ -382,7 +388,7 @@ class CanonicalProblemRepresentation(BaseModel):
         """
         Redact sensitive information from the raw payload before egress.
         """
-        to_redact = custom_redactions or {"api_key", "token", "password", "secret"}
+        to_redact = custom_redactions if custom_redactions is not None else DEFAULT_REDACTION_KEYS
         return {k: v for k, v in self.raw_payload.items() if k.lower() not in to_redact}
 
     def serialize_for_belief_kernel(self) -> List[float]:

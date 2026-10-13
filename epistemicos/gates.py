@@ -260,6 +260,8 @@ class PermissionGate(Gate):
 
     def _deep_regex_inspection(self, payload: Dict[str, Any], proposed_actions: List[Any], llm_output: Any, t0: float) -> Optional[GateResult]:
         def _check_stack(obj: Any) -> bool:
+            if not obj:
+                return False
             stack = [obj]
             seen = set()
             search = self.injection_regex.search
@@ -287,9 +289,10 @@ class PermissionGate(Gate):
 
                 if isinstance(curr, dict):
                     for k, v in curr.items():
-                        if isinstance(k, str) and search(k):
-                            return True
-                        elif not isinstance(k, str):
+                        if isinstance(k, str):
+                            if search(k):
+                                return True
+                        else:
                             append(k)
                         append(v)
                 elif cls in (list, tuple, set) or isinstance(curr, (list, tuple, set)):
