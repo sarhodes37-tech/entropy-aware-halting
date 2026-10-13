@@ -168,6 +168,462 @@ def test_record_event_payload_too_large(temp_audit_file):
         audit.record_event(event)
 
 
+# =====================================================================
+# ADVANCED AUDIT SECURITY & TAMPER TESTS
+# =====================================================================
+
+def test_audit_duplicate_event_id_detection(temp_audit_file):
+    """Validates that replayed or duplicate event IDs are detected."""
+    audit = TamperEvidentAuditTrail(temp_audit_file)
+    e1 = audit.record_event(AuditEvent(AuditLogLevel.INFO, "gate1", "reason1", "model1", "snippet1"))
+    e2 = audit.record_event(AuditEvent(AuditLogLevel.INFO, "gate2", "reason2", "model2", "snippet2"))
+
+    # Read and duplicate entry 2 with duplicate event_id
+    with open(temp_audit_file, "r") as f:
+        lines = f.readlines()
+
+    dup_entry = json.loads(lines[1])
+    lines.append(json.dumps(dup_entry) + "\n")
+
+    with open(temp_audit_file, "w") as f:
+        f.writelines(lines)
+
+    is_valid, count, msg = audit.verify_chain_integrity()
+    assert is_valid is False
+    assert "Duplicate event_id" in msg
+
+
+def test_audit_reordering_detection(temp_audit_file):
+    """Validates that swapping event sequence order breaks chain integrity."""
+    audit = TamperEvidentAuditTrail(temp_audit_file)
+    audit.record_event(AuditEvent(AuditLogLevel.INFO, "gate1", "reason1", "model1", "snippet1"))
+    audit.record_event(AuditEvent(AuditLogLevel.INFO, "gate2", "reason2", "model2", "snippet2"))
+
+    with open(temp_audit_file, "r") as f:
+        lines = f.readlines()
+
+    # Reorder lines
+    swapped = [lines[1], lines[0]]
+    with open(temp_audit_file, "w") as f:
+        f.writelines(swapped)
+
+    is_valid, count, msg = audit.verify_chain_integrity()
+    assert is_valid is False
+    assert "Broken chain link" in msg
+
+
+def test_audit_truncation_detection(temp_audit_file):
+    """Validates head, middle, and tail truncation behaviors."""
+    audit = TamperEvidentAuditTrail(temp_audit_file)
+    audit.record_event(AuditEvent(AuditLogLevel.INFO, "gate1", "r1", "m1", "s1"))
+    audit.record_event(AuditEvent(AuditLogLevel.INFO, "gate2", "r2", "m2", "s2"))
+    audit.record_event(AuditEvent(AuditLogLevel.INFO, "gate3", "r3", "m3", "s3"))
+
+    with open(temp_audit_file, "r") as f:
+        lines = f.readlines()
+
+    # 1. Head truncation (delete line 1)
+    with open(temp_audit_file, "w") as f:
+        f.writelines(lines[1:])
+
+    is_valid, count, msg = audit.verify_chain_integrity()
+    assert is_valid is False
+    assert "Broken chain link" in msg
+
+    # 2. Middle truncation (delete line 2)
+    with open(temp_audit_file, "w") as f:
+        f.writelines([lines[0], lines[2]])
+
+    is_valid, count, msg = audit.verify_chain_integrity()
+    assert is_valid is False
+    assert "Broken chain link" in msg
+
+    # 3. Tail truncation (delete line 3): Internal hash chain alone cannot detect tail truncation
+    with open(temp_audit_file, "w") as f:
+        f.writelines(lines[:2])
+
+    is_valid, count, msg = audit.verify_chain_integrity()
+    assert is_valid is True
+    assert count == 2
+
+
+def test_audit_partial_write_detection(temp_audit_file):
+    """Validates that partial line writes (corrupted JSON) are flagged."""
+    audit = TamperEvidentAuditTrail(temp_audit_file)
+    audit.record_event(AuditEvent(AuditLogLevel.INFO, "gate1", "r1", "m1", "s1"))
+
+    # Append corrupted JSON line representing a crash during write
+    with open(temp_audit_file, "a") as f:
+        f.write('{"event_id": "partial_write_123", "event_type": "INF')
+
+    is_valid, count, msg = audit.verify_chain_integrity()
+    assert is_valid is False
+    assert "Malformed JSON" in msg
+
+
+def test_audit_sensitive_data_redaction(temp_audit_file):
+    """Validates that sensitive credentials and PII are redacted from metadata and receipts."""
+    audit = TamperEvidentAuditTrail(temp_audit_file)
+    sensitive_metadata = {
+        "api_key": "sk-secret-12345",
+        "ssn": "000-00-0000",
+        "nested": {"password": "SuperSecretPassword123"}
+    }
+    audit.record_event(AuditEvent(
+        AuditLogLevel.INFO, "gate", "reason", "model", "snippet",
+        metadata=sensitive_metadata
+    ))
+
+    with open(temp_audit_file, "r") as f:
+        line = f.readline()
+    entry = json.loads(line)
+
+    metadata = entry["metadata"]
+    assert metadata["api_key"] == "[REDACTED]"
+    assert metadata["ssn"] == "[REDACTED]"
+    assert metadata["nested"]["password"] == "[REDACTED]"
+
+    # Test ReceiptGenerator sensitive data redaction
+    rg = ReceiptGenerator()
+    rg.log_event("ToolOutput", {"token": "bearer-token-abc", "safe_field": "public"})
+    rg.push_action(
+        {"op": "query", "secret": "shh"},
+        {"rollback": "purge", "private_key": "0x123"}
+    )
+    receipt = rg.mint_receipt("tx_sens", True, {"conf": 0.99})
+
+    assert receipt["event_log"][0]["details"]["token"] == "[REDACTED]"
+    assert receipt["event_log"][0]["details"]["safe_field"] == "public"
+    assert receipt["event_log"][1]["details"]["action"]["secret"] == "[REDACTED]"
+
+
+def test_receipt_exact_binding_and_verification():
+    """Validates receipt binding to input, config, gate_version, decision, outcome and independent verifier validation."""
+    key = b"secret_signing_key_32bytes_long!"
+    config = {"threshold": 0.95, "api_key": "should_be_masked"}
+    input_payload = {"user_prompt": "run_analysis", "password": "user_pass"}
+    decision = {"gate": "PermissionGate", "action": "ALLOW"}
+    outcome = {"vectors_revoked": 0}
+
+    rg = ReceiptGenerator(signing_key=key, gate_version="2.1.0", config=config)
+    rg.log_event("GateEvaluation", {"result": "PASSED"})
+
+    receipt = rg.mint_receipt(
+        transaction_id="tx_bound_001",
+        success=True,
+        confidence_matrix={"model": 0.98},
+        input_data=input_payload,
+        decision_details=decision,
+        execution_outcome=outcome
+    )
+
+    assert receipt["gate_version"] == "2.1.0"
+    assert receipt["config"]["api_key"] == "[REDACTED]"
+    assert "input_hash" in receipt
+    assert receipt["decision_details"] == decision
+    assert receipt["execution_outcome"] == outcome
+
+    # Verify signature independently with ReceiptGenerator.verify_receipt
+    assert ReceiptGenerator.verify_receipt(receipt, signing_key=key) is True
+
+    # Verify that altering any field invalidates signature
+    tampered_receipt = dict(receipt)
+    tampered_receipt["status"] = "ROLLED_BACK"
+    assert ReceiptGenerator.verify_receipt(tampered_receipt, signing_key=key) is False
+
+    # Verify wrong signing key fails
+    assert ReceiptGenerator.verify_receipt(receipt, signing_key=b"wrong_key") is False
+
+
+def test_audit_trail_concurrency_force_reload(temp_audit_file):
+    """Validates that two audit instances maintain chain link integrity via force_reload."""
+    audit1 = TamperEvidentAuditTrail(temp_audit_file)
+    audit2 = TamperEvidentAuditTrail(temp_audit_file)
+
+    audit1.record_event(AuditEvent(AuditLogLevel.INFO, "g1", "r1", "m1", "s1"))
+    audit2.record_event(AuditEvent(AuditLogLevel.INFO, "g2", "r2", "m2", "s2"))
+    audit1.record_event(AuditEvent(AuditLogLevel.INFO, "g3", "r3", "m3", "s3"))
+
+    is_valid, count, msg = audit1.verify_chain_integrity()
+    assert is_valid is True
+    assert count == 3
+
+
+def _multiprocess_writer_worker(file_path: str, worker_id: int, count: int):
+    """Helper target for multiprocessing concurrency tests."""
+    audit = TamperEvidentAuditTrail(file_path)
+    for i in range(count):
+        audit.record_event(AuditEvent(
+            AuditLogLevel.INFO,
+            f"worker_{worker_id}",
+            f"step_{i}",
+            "model_mp",
+            f"snippet_worker_{worker_id}_{i}"
+        ))
+
+
+def test_audit_multiprocess_concurrency(temp_audit_file):
+    """Validates concurrent log appends from independent OS processes maintain chain integrity."""
+    import multiprocessing
+
+    processes = []
+    num_workers = 4
+    events_per_worker = 5
+
+    for w_id in range(num_workers):
+        p = multiprocessing.Process(
+            target=_multiprocess_writer_worker,
+            args=(temp_audit_file, w_id, events_per_worker)
+        )
+        processes.append(p)
+        p.start()
+
+    for p in processes:
+        p.join(timeout=10)
+
+    audit_verifier = TamperEvidentAuditTrail(temp_audit_file)
+    is_valid, count, msg = audit_verifier.verify_chain_integrity()
+    assert is_valid is True
+    assert count == num_workers * events_per_worker
+
+
+def test_audit_crash_recovery_last_hash(temp_audit_file):
+    """Validates crash recovery, explicit corruption reporting, and repair workflow."""
+    audit = TamperEvidentAuditTrail(temp_audit_file)
+    e1 = audit.record_event(AuditEvent(AuditLogLevel.INFO, "g1", "r1", "m1", "s1"))
+    e2 = audit.record_event(AuditEvent(AuditLogLevel.INFO, "g2", "r2", "m2", "s2"))
+    e3 = audit.record_event(AuditEvent(AuditLogLevel.INFO, "g3", "r3", "m3", "s3"))
+
+    # Simulate crash mid-write by writing partial trailing JSON fragment
+    with open(temp_audit_file, "a") as f:
+        f.write('{"event_id": "crashed_mid_write_123", "event_type": "INF')
+
+    audit_after_crash = TamperEvidentAuditTrail(temp_audit_file)
+    is_healthy, last_valid_h, err = audit_after_crash.inspect_log_health()
+
+    # 1. Inspecting health flags corruption and identifies last valid hash
+    assert is_healthy is False
+    assert last_valid_h == e3["entry_hash"]
+    assert "Malformed JSON" in err
+
+    # 2. Attempting to record_event on a corrupted log MUST raise RuntimeError
+    with pytest.raises(RuntimeError, match="Log corruption detected"):
+        audit_after_crash.record_event(AuditEvent(AuditLogLevel.INFO, "g4", "r4", "m4", "s4"))
+
+    # 3. Explicit repair policy: truncate unparseable trailing bytes
+    with open(temp_audit_file, "r") as f:
+        lines = f.readlines()
+    clean_lines = [l for l in lines if not l.startswith('{"event_id": "crashed_mid_write_123"')]
+    with open(temp_audit_file, "w") as f:
+        f.writelines(clean_lines)
+
+    # 4. After repair, health is restored and new event appends properly
+    audit_repaired = TamperEvidentAuditTrail(temp_audit_file)
+    is_healthy_now, _, _ = audit_repaired.inspect_log_health()
+    assert is_healthy_now is True
+
+    e4 = audit_repaired.record_event(AuditEvent(AuditLogLevel.INFO, "g4", "r4", "m4", "s4"))
+    assert e4["prev_hash"] == e3["entry_hash"]
+
+    is_valid, count, msg = audit_repaired.verify_chain_integrity()
+    assert is_valid is True
+    assert count == 4
+
+
+def test_audit_unlinked_record_rejection(temp_audit_file):
+    """Validates that appending after a complete but unlinked record is rejected."""
+    audit = TamperEvidentAuditTrail(temp_audit_file)
+    e1 = audit.record_event(AuditEvent(AuditLogLevel.INFO, "g1", "r1", "m1", "s1"))
+
+    # Append an unlinked record with invalid prev_hash
+    unlinked_entry = {
+        "event_id": "unlinked_999",
+        "timestamp": "2026-08-02T00:00:00Z",
+        "event_type": "INFO",
+        "gate_name": "g_bad",
+        "reason": "bad_link",
+        "model_id": "m1",
+        "latency_ms": 0.0,
+        "payload_hash": "hash",
+        "payload_snippet": "s",
+        "metadata": {},
+        "prev_hash": "INVALID_PREV_HASH"
+    }
+    unlinked_entry["entry_hash"] = audit._compute_hash("INVALID_PREV_HASH", unlinked_entry)
+
+    with open(temp_audit_file, "a") as f:
+        f.write(json.dumps(unlinked_entry) + "\n")
+
+    is_healthy, last_h, err = audit.inspect_log_health()
+    assert is_healthy is False
+    assert "Broken chain link" in err
+
+    with pytest.raises(RuntimeError, match="Log corruption detected"):
+        audit.record_event(AuditEvent(AuditLogLevel.INFO, "g2", "r2", "m2", "s2"))
+
+
+def test_receipt_schema_enforcement_and_fail_closed():
+    """Validates strict schema enforcement, missing required fields, insertion of unknown fields, nulls, and malformed sigs."""
+    key = b"signing_key_12345"
+    rg = ReceiptGenerator(signing_key=key)
+    valid_receipt = rg.mint_receipt("tx_schema_001", True, {"g": 1.0})
+
+    assert ReceiptGenerator.verify_receipt(valid_receipt, signing_key=key) is True
+
+    # 1. Missing required field
+    for req_field in ["transaction_id", "status", "gate_version", "config", "confidence_matrix", "event_log", "signature_algorithm"]:
+        incomplete = dict(valid_receipt)
+        del incomplete[req_field]
+        assert ReceiptGenerator.verify_receipt(incomplete, signing_key=key) is False, f"Failed to reject missing field: {req_field}"
+
+    # 2. Unknown extra field
+    unknown_field_receipt = dict(valid_receipt)
+    unknown_field_receipt["unauthorized_key"] = "malicious_injection"
+    assert ReceiptGenerator.verify_receipt(unknown_field_receipt, signing_key=key) is False
+
+    # 3. Null substitution for required fields
+    for req_field in ["transaction_id", "status", "gate_version", "config", "confidence_matrix", "event_log"]:
+        null_receipt = dict(valid_receipt)
+        null_receipt[req_field] = None
+        assert ReceiptGenerator.verify_receipt(null_receipt, signing_key=key) is False
+
+    # 4. Invalid field types
+    invalid_type_receipt = dict(valid_receipt)
+    invalid_type_receipt["transaction_id"] = 12345
+    assert ReceiptGenerator.verify_receipt(invalid_type_receipt, signing_key=key) is False
+
+    invalid_status_receipt = dict(valid_receipt)
+    invalid_status_receipt["status"] = "PENDING"
+    assert ReceiptGenerator.verify_receipt(invalid_status_receipt, signing_key=key) is False
+
+    # 5. Malformed signature
+    malformed_sig_receipt = dict(valid_receipt)
+    malformed_sig_receipt["signature"] = "not_a_valid_64_char_hex_string"
+    assert ReceiptGenerator.verify_receipt(malformed_sig_receipt, signing_key=key) is False
+
+    # 6. Unknown signature algorithm
+    unknown_algo_receipt = dict(valid_receipt)
+    unknown_algo_receipt["signature_algorithm"] = "MD5"
+    assert ReceiptGenerator.verify_receipt(unknown_algo_receipt, signing_key=key) is False
+
+
+def test_receipt_set_canonicalization_determinism():
+    """Validates that sets and frozensets containing strings, mixed primitive types, and nested dicts are deterministically canonicalized, and unsupported un-serializable values fail explicitly."""
+    from epistemicos.audit import _sanitize_sensitive_data
+
+    rg = ReceiptGenerator()
+    rg.log_event("SetEvent", {"tags": {"tag_z", "tag_a", "tag_m"}})
+    receipt = rg.mint_receipt("tx_set_001", True, {"g": 1.0})
+
+    tags = receipt["event_log"][0]["details"]["tags"]
+    assert isinstance(tags, list)
+    assert tags == ["tag_a", "tag_m", "tag_z"]
+    assert ReceiptGenerator.verify_receipt(receipt) is True
+
+    # Test mixed primitive types in set
+    mixed_set = {10, "apple", True, None}
+    canonical_mixed = _sanitize_sensitive_data(mixed_set)
+    assert isinstance(canonical_mixed, list)
+    assert canonical_mixed == [10, "apple", True, None] or len(canonical_mixed) == 4
+
+    # Test that equivalent sets with mixed types yield identical canonical JSON bytes
+    set1 = {"b", 1, None}
+    set2 = {None, 1, "b"}
+    assert json.dumps(_sanitize_sensitive_data(set1)) == json.dumps(_sanitize_sensitive_data(set2))
+
+    # Test unsupported un-serializable value raises TypeError explicitly
+    unsupported_set = {lambda x: x}
+    with pytest.raises(TypeError):
+        _sanitize_sensitive_data(unsupported_set)
+
+
+def test_receipt_field_by_field_tampering():
+    """Validates that altering any individual field in a receipt invalidates its signature."""
+    key = b"signing_secret_key_123"
+    rg = ReceiptGenerator(signing_key=key, gate_version="1.0.0", config={"setting": 1})
+    rg.log_event("EventA", {"detail": "ok"})
+
+    receipt = rg.mint_receipt(
+        transaction_id="tx_test_tamper",
+        success=True,
+        confidence_matrix={"gate": 0.9},
+        input_data={"prompt": "test"},
+        decision_details={"action": "ALLOW"},
+        execution_outcome={"revoked": 0}
+    )
+
+    assert ReceiptGenerator.verify_receipt(receipt, signing_key=key) is True
+
+    # Test independent field modifications
+    tamper_scenarios = [
+        ("transaction_id", "tx_test_tamper_MODIFIED"),
+        ("status", "ROLLED_BACK"),
+        ("gate_version", "1.0.1"),
+        ("config", {"setting": 2}),
+        ("confidence_matrix", {"gate": 0.5}),
+        ("event_log", []),
+        ("input_hash", "0000000000000000000000000000000000000000000000000000000000000000"),
+        ("decision_details", {"action": "HALT"}),
+        ("execution_outcome", {"revoked": 1}),
+        ("signature_algorithm", "SHA256")
+    ]
+
+    for key_to_tamper, tampered_val in tamper_scenarios:
+        t_receipt = dict(receipt)
+        t_receipt[key_to_tamper] = tampered_val
+        assert ReceiptGenerator.verify_receipt(t_receipt, signing_key=key) is False, f"Failed to reject tampered key: {key_to_tamper}"
+
+
+def test_receipt_algorithm_downgrade_prevention():
+    """Validates protection against algorithm downgrade and key mismatch attacks."""
+    key = b"secret_key"
+    rg_hmac = ReceiptGenerator(signing_key=key)
+    receipt_hmac = rg_hmac.mint_receipt("tx_hmac", True, {"m": 1.0})
+
+    # HMAC receipt verified with key must pass
+    assert ReceiptGenerator.verify_receipt(receipt_hmac, signing_key=key) is True
+
+    # Verifying HMAC receipt without passing signing key must fail
+    assert ReceiptGenerator.verify_receipt(receipt_hmac, signing_key=None) is False
+
+    # Forging receipt: setting algorithm to SHA256 while keeping HMAC signature must fail
+    forged_downgrade = dict(receipt_hmac)
+    forged_downgrade["signature_algorithm"] = "SHA256"
+    assert ReceiptGenerator.verify_receipt(forged_downgrade, signing_key=None) is False
+    assert ReceiptGenerator.verify_receipt(forged_downgrade, signing_key=key) is False
+
+    # Plain SHA256 receipt
+    rg_sha = ReceiptGenerator(signing_key=None)
+    receipt_sha = rg_sha.mint_receipt("tx_sha", True, {"m": 1.0})
+    assert ReceiptGenerator.verify_receipt(receipt_sha, signing_key=None) is True
+
+    # Verifying plain SHA256 receipt when expecting HMAC (key provided) must fail
+    assert ReceiptGenerator.verify_receipt(receipt_sha, signing_key=key) is False
+
+
+def test_sanitize_sensitive_data_deep_structures_and_text():
+    """Validates redaction across sets, frozensets, unusual keys, and free-text token patterns."""
+    from epistemicos.audit import _sanitize_sensitive_data
+
+    raw_data = {
+        "x-api-key": "sk-123456789012345678901234",
+        "headers": {
+            "Authorization": "Bearer my_secret_bearer_token_123",
+            "Credential_Token": "secret_pass_123"
+        },
+        "tags_set": {"normal_tag", "password=my_raw_password"},
+        "config_tuple": ("clean_val", "api_key=sk-999999999999999999999999")
+    }
+
+    sanitized = _sanitize_sensitive_data(raw_data)
+
+    assert sanitized["x-api-key"] == "[REDACTED]"
+    assert sanitized["headers"]["Authorization"] == "[REDACTED]"
+    assert sanitized["headers"]["Credential_Token"] == "[REDACTED]"
+    assert "password=[REDACTED]" in sanitized["tags_set"]
+    assert "api_key=[REDACTED]" in sanitized["config_tuple"][1]
+
+
 def test_record_event_payload_too_large_multibyte(temp_audit_file):
     """Validates that payload snippets larger than 1MB in bytes (even if fewer chars) are rejected."""
     audit = TamperEvidentAuditTrail(temp_audit_file)
