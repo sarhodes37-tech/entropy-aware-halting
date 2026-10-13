@@ -30,17 +30,23 @@ from epistemicos.telemetry import HardwareTelemetry
 
 SENSITIVE_KEY_PATTERNS = ("api_key", "token", "password", "secret", "ssn", "banking_routing",
                           "account_number", "account_balance_usd", "proprietary_cargo",
-                          "credit_card", "private_key", "bearer", "auth", "credential", "x-api-key")
+                          "credit_card", "private_key", "bearer", "auth", "credential", "x-api-key",
+                          "email", "phone", "address", "name", "prompt", "user_data", "identity", "payload")
 
 REGEX_BEARER = re.compile(r"Bearer\s+[a-zA-Z0-9\._\-]+", re.IGNORECASE)
-REGEX_SK = re.compile(r"sk-[a-zA-Z0-9_\-]{20,}")
+REGEX_SK = re.compile(r"\b(sk-[a-zA-Z0-9_\-]{20,}|AKIA[0-9A-Z]{16}|ghp_[a-zA-Z0-9]{36}|xox[baprs]-[a-zA-Z0-9_\-]{10,})\b")
 REGEX_CRED_ASSIGN = re.compile(r"(password|api_key|secret|token)\s*=\s*[^\s;&]+", re.IGNORECASE)
+REGEX_EMAIL = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
+REGEX_PHONE = re.compile(r"(\+?\d{1,3}[-.\s]?)?(\(?\d{3}\)?[-.\s]?)?\d{3}[-.\s]?\d{4}\b")
+REGEX_SSN = re.compile(r"\b\d{3}[- ]?\d{2}[- ]?\d{4}\b")
 
 
 def _sanitize_string_value(val: str) -> str:
     val = REGEX_BEARER.sub("Bearer [REDACTED]", val)
     val = REGEX_SK.sub("sk-[REDACTED]", val)
     val = REGEX_CRED_ASSIGN.sub(r"\1=[REDACTED]", val)
+    val = REGEX_EMAIL.sub("[REDACTED_EMAIL]", val)
+    val = REGEX_SSN.sub("[REDACTED_SSN]", val)
     return val
 
 
@@ -50,7 +56,7 @@ def _sanitize_sensitive_data(obj: Any) -> Any:
         sanitized = {}
         for k, v in obj.items():
             k_str = str(k).lower()
-            if any(p in k_str for p in SENSITIVE_KEY_PATTERNS) and not k_str.endswith(("_id", "_hash", "_digest", "_uuid")):
+            if any(p in k_str for p in SENSITIVE_KEY_PATTERNS) and not k_str.endswith(("_id", "_hash", "_digest", "_uuid", "_count", "_type", "_ms", "_version", "_algorithm")):
                 sanitized[k] = "[REDACTED]"
             else:
                 sanitized[k] = _sanitize_sensitive_data(v)
