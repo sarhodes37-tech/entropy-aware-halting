@@ -8,6 +8,7 @@ Shannon entropy estimation for secrets, and configurable entity dictionaries.
 
 import math
 import re
+from collections import Counter
 from enum import Enum
 from dataclasses import dataclass, field
 from typing import List, Dict, Any, Optional, Tuple, Set
@@ -70,14 +71,20 @@ def _shannon_entropy(s: str) -> float:
     """Calculates Shannon entropy of string in bits per character."""
     if not s:
         return 0.0
-    prob = [float(s.count(c)) / len(s) for c in set(s)]
-    return -sum(p * math.log2(p) for p in prob)
+    length = len(s)
+    counts = Counter(s)
+    return -sum((count / length) * math.log2(count / length) for count in counts.values())
 
 
 COMMON_FIRST_NAMES = {
     "Alice", "Bob", "Charlie", "David", "Eve", "Frank", "Grace", "Heidi", "Ivan", "Judy",
     "Mallory", "Niaj", "Oscar", "Peggy", "Rupert", "Sybil", "Trent", "Victor", "Walter"
 }
+
+COMMON_FIRST_NAMES_PATTERNS = [
+    (name, re.compile(r"\b" + re.escape(name) + r"\b"))
+    for name in sorted(COMMON_FIRST_NAMES)
+]
 
 
 class SensitiveDataDetector:
@@ -94,8 +101,16 @@ class SensitiveDataDetector:
         min_entropy_len: int = 20
     ):
         self.custom_entities = set(custom_entities or [])
+        self.custom_entities_compiled = [
+            (entity, re.compile(r"(?<!\w)" + re.escape(entity) + r"(?!\w)", re.IGNORECASE))
+            for entity in sorted(self.custom_entities)
+            if entity
+        ]
         self.entropy_threshold = entropy_threshold
         self.min_entropy_len = min_entropy_len
+        self.entropy_regex = re.compile(
+            r"(?<![A-Za-z0-9_\-+/=])[A-Za-z0-9_\-+/=]{" + str(self.min_entropy_len) + r",}(?![A-Za-z0-9_\-+/=])"
+        )
 
         # Regex patterns
         self.email_regex = re.compile(
@@ -266,8 +281,7 @@ class SensitiveDataDetector:
                 suggested_treatment="PSEUDONYMIZE"
             ))
 
-        for name in COMMON_FIRST_NAMES:
-            pattern = re.compile(r"\b" + re.escape(name) + r"\b")
+        for name, pattern in COMMON_FIRST_NAMES_PATTERNS:
             for m in pattern.finditer(text):
                 _add_result(DetectionResult(
                     category=SensitivityCategory.NAME,
@@ -301,10 +315,7 @@ class SensitiveDataDetector:
             ))
 
         # 12. Custom Entities Dictionary
-        for entity in self.custom_entities:
-            if not entity:
-                continue
-            pattern = re.compile(r"\b" + re.escape(entity) + r"\b", re.IGNORECASE)
+        for entity, pattern in self.custom_entities_compiled:
             for m in pattern.finditer(text):
                 _add_result(DetectionResult(
                     category=SensitivityCategory.CUSTOM_ENTITY,
@@ -330,24 +341,20 @@ class SensitiveDataDetector:
                 ))
 
         # 14. Entropy-based secret detection for high-entropy tokens
-        words = re.findall(r"\b[A-Za-z0-9_\-+/=]{" + str(self.min_entropy_len) + r",}\b", text)
-        for word in words:
+        for m in self.entropy_regex.finditer(text):
+            word = m.group(0)
             ent = _shannon_entropy(word)
             if ent >= self.entropy_threshold:
-                # Find span
-                idx = text.find(word)
-                if idx != -1:
-                    span = (idx, idx + len(word))
-                    if not _is_overlapping(span):
-                        _add_result(DetectionResult(
-                            category=SensitivityCategory.CREDENTIAL,
-                            value=word,
-                            span=span,
-                            confidence=round(min(1.0, ent / 6.0), 2),
-                            detector_type="entropy",
-                            suggested_treatment="REDACT",
-                            metadata={"shannon_entropy": round(ent, 2)}
-                        ))
+                span = (m.start(), m.end())
+                _add_result(DetectionResult(
+                    category=SensitivityCategory.CREDENTIAL,
+                    value=word,
+                    span=span,
+                    confidence=round(min(1.0, ent / 6.0), 2),
+                    detector_type="entropy",
+                    suggested_treatment="REDACT",
+                    metadata={"shannon_entropy": round(ent, 2)}
+                ))
 
         # Sort by span start position
         results.sort(key=lambda r: r.span[0])
