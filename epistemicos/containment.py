@@ -353,14 +353,20 @@ class ContainmentGuard:
 
             if isinstance(curr, str):
                 strings.append(curr)
-                if "://" in curr or curr.startswith("http"):
+                if "://" in curr or curr.startswith(("http://", "https://", "ftp://")):
                     urls.append(curr)
             elif isinstance(curr, dict):
                 for k, v in curr.items():
                     stack.append(v)
                     if isinstance(k, str):
                         stack.append(k)
-            elif isinstance(curr, (list, tuple, set)):
+            elif isinstance(curr, (list, tuple, set, frozenset)):
+                if isinstance(curr, (set, frozenset)):
+                    scalar_items = sorted([str(x) for x in curr if type(x) in (str, int, float, bool)])
+                else:
+                    scalar_items = [str(x) for x in curr if type(x) in (str, int, float, bool)]
+                if scalar_items and len(scalar_items) > 1:
+                    strings.append(" ".join(scalar_items))
                 for item in curr:
                     stack.append(item)
 
