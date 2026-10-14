@@ -39,11 +39,14 @@ REGEX_BEARER = re.compile(r"Bearer\s+[a-zA-Z0-9\._\-]+", re.IGNORECASE)
 REGEX_SK = re.compile(r"\b(sk-[a-zA-Z0-9_\-]{20,}|AKIA[0-9A-Z]{16}|ghp_[a-zA-Z0-9]{36}|xox[baprs]-[a-zA-Z0-9_\-]{10,})\b")
 REGEX_CRED_ASSIGN = re.compile(r"(password|api_key|secret|token)\s*=\s*[^\s;&]+", re.IGNORECASE)
 REGEX_EMAIL = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
-REGEX_PHONE = re.compile(r"\b(?:\+?\d{1,3}[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b")
+REGEX_PHONE = re.compile(r"\b(?:\+\d{1,3}[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b")
 REGEX_SSN = re.compile(r"\b\d{3}[- ]?\d{2}[- ]?\d{4}\b")
+REGEX_UUID = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 
 
 def _sanitize_string_value(val: str) -> str:
+    if REGEX_UUID.match(val):
+        return val
     val = REGEX_BEARER.sub("Bearer [REDACTED]", val)
     val = REGEX_SK.sub("sk-[REDACTED]", val)
     val = REGEX_CRED_ASSIGN.sub(r"\1=[REDACTED]", val)
