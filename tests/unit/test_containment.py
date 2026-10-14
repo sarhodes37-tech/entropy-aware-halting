@@ -237,3 +237,74 @@ def test_wrapper_pipeline_failure_egress(default_guard):
     assert result is None
     assert receipt.passed is False
     assert receipt.violation_type == ContainmentViolationType.UNAUTHORIZED_EGRESS_ATTEMPT
+
+
+def test_wrapper_blocks_non_standard_params_and_never_invokes_target(default_guard):
+    """Verifies wrap_tool_execution blocks forbidden commands/unauthorized egress across non-standard param names,
+    positional args, tokenized lists/tuples, sets, and nested containers, and asserts target tool is never executed.
+    """
+    executed = []
+
+    def target_tool(*args, **kwargs):
+        executed.append((args, kwargs))
+        return "executed"
+
+    # 1. Non-standard keyword parameter "args" with tokenized command
+    ok1, res1, receipt1 = default_guard.wrap_tool_execution(
+        tool_name="shell",
+        tool_func=target_tool,
+        kwargs={"args": ["chmod", "777", "/etc/passwd"]}
+    )
+    assert ok1 is False
+    assert receipt1.passed is False
+    assert receipt1.violation_type == ContainmentViolationType.FORBIDDEN_COMMAND_EXECUTION
+
+    # 2. Non-standard keyword parameter "cmd" with tokenized command and embedded URL
+    ok2, res2, receipt2 = default_guard.wrap_tool_execution(
+        tool_name="fetch",
+        tool_func=target_tool,
+        kwargs={"cmd": ["wget", "http://169.254.169.254/latest/meta-data/"]}
+    )
+    assert ok2 is False
+    assert receipt2.passed is False
+
+    # 3. Non-standard keyword parameter "argv" with positional tokens
+    ok3, res3, receipt3 = default_guard.wrap_tool_execution(
+        tool_name="shell",
+        tool_func=target_tool,
+        kwargs={"argv": ("sudo", "rm", "-rf", "/")}
+    )
+    assert ok3 is False
+    assert receipt3.passed is False
+
+    # 4. Positional arguments with forbidden command
+    ok4, res4, receipt4 = default_guard.wrap_tool_execution(
+        tool_name="shell",
+        tool_func=target_tool,
+        args=("rm -rf /",)
+    )
+    assert ok4 is False
+    assert receipt4.passed is False
+
+    # 5. Set-valued arguments with deterministic sorted string joining
+    ok5, res5, receipt5 = default_guard.wrap_tool_execution(
+        tool_name="shell",
+        tool_func=target_tool,
+        kwargs={"options": {"rm", "-rf", "/"}}
+    )
+    assert ok5 is False
+    assert receipt5.passed is False
+
+    # Assert target_tool was NEVER invoked during blocked calls
+    assert len(executed) == 0
+
+    # 6. Benign mixed-argument control (verifies safe tool execution passes and invokes target tool)
+    ok_safe, res_safe, receipt_safe = default_guard.wrap_tool_execution(
+        tool_name="shell",
+        tool_func=target_tool,
+        args=("safe_command",),
+        kwargs={"opts": ["--verbose", "--output=out.txt"], "target": "https://www.python.org"}
+    )
+    assert ok_safe is True
+    assert receipt_safe.passed is True
+    assert len(executed) == 1

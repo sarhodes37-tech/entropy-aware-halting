@@ -360,8 +360,11 @@ class ContainmentGuard:
                     stack.append(v)
                     if isinstance(k, str):
                         stack.append(k)
-            elif isinstance(curr, (list, tuple, set)):
-                scalar_items = [str(x) for x in curr if type(x) in (str, int, float, bool)]
+            elif isinstance(curr, (list, tuple, set, frozenset)):
+                if isinstance(curr, (set, frozenset)):
+                    scalar_items = sorted([str(x) for x in curr if type(x) in (str, int, float, bool)])
+                else:
+                    scalar_items = [str(x) for x in curr if type(x) in (str, int, float, bool)]
                 if scalar_items and len(scalar_items) > 1:
                     strings.append(" ".join(scalar_items))
                 for item in curr:
