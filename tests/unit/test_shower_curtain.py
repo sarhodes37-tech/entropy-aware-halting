@@ -19,6 +19,7 @@ from epistemicos.shower_curtain import (
     ShowerCurtainOpenAIAdapter,
     SensitiveDataDetector,
     SensitivityCategory,
+    DetectionResult,
     PrivacyPolicy,
     PrivacyTreatment,
     LocalMappingVault,
@@ -91,14 +92,17 @@ def test_scenario_4_cross_session_isolation(engine):
     vault = engine.vault
     det_a = SensitiveDataDetector().detect("alice@example.com")[0]
     det_b = SensitiveDataDetector().detect("bob@example.com")[0]
+    det_name = SensitiveDataDetector().detect("Alice")[0]
 
     p1 = vault.get_or_create_pseudonym("session_A", det_a)
     p2 = vault.get_or_create_pseudonym("session_B", det_b)
+    p3 = vault.get_or_create_pseudonym("session_A", det_name)  # PERSON_1 in session_A only
 
     assert p1 == "EMAIL_1@sanitized.local"
     assert p2 == "EMAIL_1@sanitized.local"
 
-    # Rehydrating session_A placeholder in session_B must NOT work
+    # Rehydrating session_A placeholder in session_B must NOT rehydrate session_A's secret
+    assert vault.rehydrate("session_B", f"Contact {p3}") == f"Contact {p3}"
     assert vault.rehydrate("session_C", "NON_EXISTENT_PLACEHOLDER") == "NON_EXISTENT_PLACEHOLDER"
 
 
@@ -166,19 +170,20 @@ def test_response_inspection_exposed_sensitive_values_rejected(engine):
 
 def test_response_inspection_cross_session_placeholder_non_restoration(engine):
     # Vault setup for sess_A vs sess_B
-    det_a = SensitiveDataDetector().detect("alice@example.com")[0]
+    det_a = SensitiveDataDetector().detect("Alice")[0]
     det_b = SensitiveDataDetector().detect("bob@example.com")[0]
 
-    p_a = engine.vault.get_or_create_pseudonym("sess_A", det_a)
-    p_b = engine.vault.get_or_create_pseudonym("sess_B", det_b)
+    p_a = engine.vault.get_or_create_pseudonym("sess_A", det_a)  # PERSON_1
+    p_b = engine.vault.get_or_create_pseudonym("sess_B", det_b)  # EMAIL_1@sanitized.local
 
-    # Response for sess_B attempting to restore placeholder from sess_A
+    # Response for sess_B attempting to restore placeholder p_a from sess_A
     response = f"Contact {p_a} or {p_b}"
     rehydrated = engine.process_response(response, session_id="sess_B")
 
     # Only sess_B placeholder should be rehydrated
     assert "bob@example.com" in rehydrated
-    assert "alice@example.com" not in rehydrated
+    assert "Alice" not in rehydrated
+    assert p_a in rehydrated
 
 
 # ------------------------------------------------------------------------------
@@ -486,3 +491,198 @@ def test_detector_empty_and_falsy_input():
     assert detector.detect("") == []
     assert detector.detect(None) == []
     assert detector.detect(12345) == []
+
+
+# ------------------------------------------------------------------------------
+# Targeted Hardening & Priority Coverage Tests for Shower Curtain Modules
+# ------------------------------------------------------------------------------
+
+def test_shower_curtain_gate_exception_token_authorization_and_fallbacks():
+    """Verifies exception token logic, credential non-bypass, non-dict payloads, and empty text branches."""
+    detector = SensitiveDataDetector()
+    policy = PrivacyPolicy()
+    gate = ShowerCurtainGate(detector=detector, policy=policy, trusted_exception_token="SECRET_TOKEN_123")
+
+    # 1. Non-dict string payload with credential + matching exception token -> MUST HALT
+    res_cred = gate.evaluate(
+        payload="Outbound key is sk-proj1234567890abcdef1234567890",
+        context={"shower_curtain_exception_token": "SECRET_TOKEN_123"}
+    )
+    assert res_cred.action == GateAction.HALT
+    assert "Credentials cannot bypass mandatory privacy protection" in res_cred.reason
+
+    # 2. Non-credential payload (Name/Email) + matching exception token -> ALLOW
+    res_exc = gate.evaluate(
+        payload={"msg": "Contact Alice at alice@example.com"},
+        context={"shower_curtain_exception_token": "SECRET_TOKEN_123"}
+    )
+    assert res_exc.action == GateAction.ALLOW
+    assert res_exc.reason == "EXPLICIT_PRIVACY_EXCEPTION_AUTHORIZED_VIA_TRUSTED_TOKEN"
+
+    # 3. Invalid exception token -> Treated as standard unauthenticated request
+    res_bad_tok = gate.evaluate(
+        payload="Outbound email: alice@example.com",
+        context={"shower_curtain_exception_token": "WRONG_TOKEN"}
+    )
+    assert res_bad_tok.action == GateAction.HALT
+
+    # 4. Non-dict / non-string payload type fallback
+    res_int = gate.evaluate(payload=12345, context={})
+    assert res_int.action == GateAction.ALLOW
+
+    # 5. Empty or "{}" text payload
+    res_empty = gate.evaluate(payload={}, context={})
+    assert res_empty.action == GateAction.ALLOW
+    assert res_empty.reason == "NO_PAYLOAD_TEXT_TO_INSPECT"
+
+
+def test_local_mapping_vault_invariants_persistence_dir_and_session_clearing(tmp_path):
+    """Verifies vault prohibited category rejection, persistence dir, default category formatting, and clear_session."""
+    persistence_dir = tmp_path / "vault_storage"
+    vault = LocalMappingVault(persistence_dir=str(persistence_dir))
+    assert persistence_dir.exists()
+
+    detector = SensitiveDataDetector()
+
+    # 1. Invariant: CREDENTIAL, FINANCIAL, GOV_ID cannot enter vault
+    for prohibited_val, cat_expected in [
+        ("sk-proj1234567890abcdef1234567890", SensitivityCategory.CREDENTIAL),
+        ("4242424242424242", SensitivityCategory.FINANCIAL),
+        ("000-12-3456", SensitivityCategory.GOV_ID)
+    ]:
+        prohibited_det = detector.detect(prohibited_val)[0]
+        with pytest.raises(ValueError) as exc_info:
+            vault.get_or_create_pseudonym("sess_inv", prohibited_det)
+        assert "cannot be stored in reversible pseudonym vault" in str(exc_info.value)
+    assert len(vault.get_session_placeholders("sess_inv")) == 0
+
+    # 2. Default placeholder category generation for unknown or custom category
+    unk_det = DetectionResult(
+        category=SensitivityCategory.UNKNOWN,
+        value="UNK_VAL",
+        span=(0, 7),
+        confidence=1.0,
+        detector_type="unknown"
+    )
+    p_unk = vault.get_or_create_pseudonym("sess_inv", unk_det)
+    assert p_unk == "PLACEHOLDER_UNKNOWN_1"
+
+    custom_det = DetectionResult(
+        category=SensitivityCategory.CUSTOM_ENTITY,
+        value="CUSTOM_SECRET",
+        span=(0, 13),
+        confidence=1.0,
+        detector_type="custom"
+    )
+    p_custom = vault.get_or_create_pseudonym("sess_inv", custom_det)
+    assert p_custom == "ENTITY_1"
+
+    # 3. Non-existent session placeholders and rehydration empty checks
+    assert vault.get_session_placeholders("non_existent") == set()
+    assert vault.rehydrate("non_existent", "hello") == "hello"
+    assert vault.rehydrate("sess_inv", "") == ""
+
+    # 4. Rehydrate with allowed_placeholders filter
+    name_det = detector.detect("Alice")[0]
+    p_name = vault.get_or_create_pseudonym("sess_inv", name_det)
+    rehydrated_filtered = vault.rehydrate("sess_inv", f"Hello {p_name}", allowed_placeholders=set())
+    assert p_name in rehydrated_filtered  # Not rehydrated because allowed_placeholders is empty
+
+    # 5. clear_session wipes state
+    vault.clear_session("sess_inv")
+    assert vault.get_session_placeholders("sess_inv") == set()
+
+
+def test_shower_curtain_engine_treatments_and_response_inspection():
+    """Verifies GENERALIZE, TRANSFORM (custom vs missing), BLOCK, recursive payload types, and process_response checks."""
+    # Custom policy with custom transformer for PHONE and BLOCK for FINANCIAL
+    custom_policy = PrivacyPolicy(
+        category_treatments={
+            SensitivityCategory.IP_ADDRESS: PrivacyTreatment.GENERALIZE,
+            SensitivityCategory.FILE_PATH: PrivacyTreatment.GENERALIZE,
+            SensitivityCategory.PHONE: PrivacyTreatment.TRANSFORM,
+            SensitivityCategory.FINANCIAL: PrivacyTreatment.BLOCK,
+        },
+        transformers={
+            SensitivityCategory.PHONE: lambda val: "[MASKED_PHONE_XXXX]"
+        }
+    )
+
+    engine = ShowerCurtainEngine(policy=custom_policy)
+
+    # 1. Payload with GENERALIZE (IP & File path), TRANSFORM with registered callback (Phone), and non-string types
+    payload = {
+        "ip": "Server IP is 192.168.1.50",
+        "file": "Path is /var/log/app.log",
+        "phone": "Call 555-867-5309",
+        "metadata": {"count": 42, "active": True, "score": 3.14, "tags": ("a", "b")}
+    }
+    res = engine.transform_request(payload, session_id="sess_treatments")
+    assert res.gate_result.action == GateAction.ALLOW
+    assert "[REDACTED_IP_SUBNET]" in res.sanitized_payload["ip"]
+    assert "[REDACTED_FILE_PATH]" in res.sanitized_payload["file"]
+    assert "[MASKED_PHONE_XXXX]" in res.sanitized_payload["phone"]
+    assert res.sanitized_payload["metadata"]["count"] == 42
+
+    # 2. TRANSFORM treatment without registered transformer -> falls back to BLOCKED and halts gate
+    policy_no_trans = PrivacyPolicy(
+        category_treatments={SensitivityCategory.PHONE: PrivacyTreatment.TRANSFORM}
+    )
+    engine_no_trans = ShowerCurtainEngine(policy=policy_no_trans)
+    res_no_trans = engine_no_trans.transform_request({"phone": "555-867-5309"}, session_id="sess_no_trans")
+    assert res_no_trans.gate_result.action == GateAction.HALT
+    assert "Privacy policy BLOCK treatment triggered" in res_no_trans.gate_result.reason
+
+    # 3. BLOCK treatment -> halts gate
+    res_block = engine.transform_request({"card": "Card number 4242424242424242"}, session_id="sess_block")
+    assert res_block.gate_result.action == GateAction.HALT
+    assert "Privacy policy BLOCK treatment triggered" in res_block.gate_result.reason
+
+    # 4. process_response raw sensitive data leak detection
+    with pytest.raises(ValueError) as exc_cred:
+        engine.process_response({"output": "Exposed key sk-proj1234567890abcdef1234567890"}, session_id="sess_resp_cred")
+    assert "prohibited credentials" in str(exc_cred.value)
+
+    with pytest.raises(ValueError) as exc_info:
+        engine.process_response({"output": "Exposed SSN 000-12-3456"}, session_id="sess_resp_leak")
+    assert "Remote provider output exposed raw sensitive item" in str(exc_info.value)
+
+    # 5. process_response nested structure rehydration
+    det = SensitiveDataDetector().detect("alice@example.com")[0]
+    p_email = engine.vault.get_or_create_pseudonym("sess_nested", det)
+    nested_response = {"data": [{"user_email": p_email}], "status": 200}
+    rehydrated_nested = engine.process_response(nested_response, session_id="sess_nested")
+    assert rehydrated_nested["data"][0]["user_email"] == "alice@example.com"
+
+
+def test_shower_curtain_miscellaneous_uncovered_branches(engine):
+    """Verifies empty text sanitization, GENERALIZE default category, scalar payload pass-through, and empty vault rehydrate."""
+    assert engine._sanitize_text("", "sess", [], []) == ""
+
+    # GENERALIZE default category
+    policy_gen = PrivacyPolicy(category_treatments={SensitivityCategory.ADDRESS: PrivacyTreatment.GENERALIZE})
+    engine_gen = ShowerCurtainEngine(policy=policy_gen)
+    res_gen = engine_gen.transform_request({"addr": "123 Main St"}, session_id="sess_addr")
+    assert res_gen.gate_result.action == GateAction.ALLOW
+
+    # Scalar pass-through
+    assert engine.transform_request({"num": 123.45, "flag": True}).sanitized_payload["num"] == 123.45
+
+    # Non-existent session rehydration
+    assert engine.vault.rehydrate("non_existent_sess_123", "text") == "text"
+
+
+def test_transformer_exception_fails_closed_and_blocks_egress():
+    """Verifies that if a custom transformer raises an exception, execution halts and raises before provider call."""
+    def failing_transformer(val):
+        raise RuntimeError("Transformer internal failure")
+
+    custom_policy = PrivacyPolicy(
+        category_treatments={SensitivityCategory.PHONE: PrivacyTreatment.TRANSFORM},
+        transformers={SensitivityCategory.PHONE: failing_transformer}
+    )
+    engine = ShowerCurtainEngine(policy=custom_policy)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        engine.transform_request({"phone": "Call 555-867-5309"}, session_id="sess_failing_trans")
+    assert "Transformer internal failure" in str(exc_info.value)
