@@ -181,6 +181,18 @@ class TokenSurprisalSensor:
                 "token_z_scores": []
             }
 
+        if any(not math.isfinite(z) for z in z_scores):
+            non_finite_count = sum(1 for z in z_scores if not math.isfinite(z))
+            sanitized_z_scores = [z if math.isfinite(z) else None for z in z_scores]
+            return {
+                "passed": False,
+                "reason": "MALFORMED_NON_FINITE_LOGPROBS",
+                "error": f"Derived Z-scores contain {non_finite_count} non-finite value(s)",
+                "max_z_score": 0.0,
+                "flagged_tokens": len(logprobs) if logprobs else 1,
+                "token_z_scores": sanitized_z_scores
+            }
+
         flagged_count = sum(1 for z in z_scores if z > self.z_threshold)
         max_z = float(max(z_scores)) if z_scores else 0.0
 
