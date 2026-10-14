@@ -181,7 +181,7 @@ class TokenSurprisalSensor:
                 "token_z_scores": []
             }
 
-        flagged_count = sum(1 for z in z_scores if z > self.z_threshold)
+        flagged_count = sum(1 for z in z_scores if math.isnan(z) or z > self.z_threshold)
         max_z = float(max(z_scores)) if z_scores else 0.0
 
         return {

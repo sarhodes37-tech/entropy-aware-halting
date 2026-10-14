@@ -346,3 +346,25 @@ def test_token_surprisal_sensor_evaluate_integration_flagged():
     assert result["flagged_tokens"] > 0
     assert result["max_z_score"] > 2.85
     assert len(result["token_z_scores"]) == len(logprobs)
+
+
+def test_token_surprisal_sensor_evaluate_nan_z_score(monkeypatch):
+    """Validates that NaN Z-scores in compute_z_scores output are correctly flagged and fail evaluation."""
+    sensor = TokenSurprisalSensor(z_threshold=2.85)
+
+    # Mock compute_z_scores to simulate a computation producing a NaN Z-score
+    monkeypatch.setattr(sensor, "compute_z_scores", lambda logprobs: [0.0, float('nan'), 1.2])
+
+    result = sensor.evaluate([-0.1, -0.2, -0.3])
+
+    assert result["passed"] is False
+    assert result["flagged_tokens"] == 1
+
+
+def test_token_surprisal_sensor_evaluate_malformed_nan_logprob():
+    """Validates that NaN input logprobs trigger ValueError handling and return failure."""
+    sensor = TokenSurprisalSensor(z_threshold=2.85)
+    result = sensor.evaluate([float('nan'), -0.5])
+
+    assert result["passed"] is False
+    assert result["reason"] == "MALFORMED_NON_FINITE_LOGPROBS"
