@@ -18,13 +18,22 @@ def main():
     for text in sample_texts[:1000]:
         _ = resolver._normalize(text)
 
-    start_time = time.perf_counter()
-    for text in sample_texts:
-        _ = resolver._normalize(text)
-    end_time = time.perf_counter()
+    # Multiple runs to measure mean and distribution
+    normalize_times = []
+    rounds = 5
+    for r in range(rounds):
+        t0 = time.perf_counter()
+        for text in sample_texts:
+            _ = resolver._normalize(text)
+        t1 = time.perf_counter()
+        normalize_times.append(t1 - t0)
 
-    elapsed = end_time - start_time
-    print(f"Baseline _normalize ({len(sample_texts)} calls): {elapsed:.4f} seconds ({elapsed / len(sample_texts) * 1e6:.2f} µs/op)")
+    mean_norm = sum(normalize_times) / rounds
+    min_norm = min(normalize_times)
+    max_norm = max(normalize_times)
+    print(f"Measured _normalize ({len(sample_texts)} calls x {rounds} rounds):")
+    print(f"  Mean: {mean_norm:.4f} s ({mean_norm / len(sample_texts) * 1e6:.2f} µs/op)")
+    print(f"  Min:  {min_norm:.4f} s | Max: {max_norm:.4f} s")
 
     estimator = SemanticUncertaintyEstimator(resolver=resolver)
     candidates = [
@@ -36,13 +45,21 @@ def main():
         "The transaction succeeded.",
     ] * 5
 
-    start_time = time.perf_counter()
-    for _ in range(200):
-        _ = estimator.estimate(candidates)
-    end_time = time.perf_counter()
+    estimate_runs = 50
+    estimate_times = []
+    for r in range(rounds):
+        t0 = time.perf_counter()
+        for _ in range(estimate_runs):
+            _ = estimator.estimate(candidates)
+        t1 = time.perf_counter()
+        estimate_times.append(t1 - t0)
 
-    elapsed_est = end_time - start_time
-    print(f"Baseline estimate (200 runs): {elapsed_est:.4f} seconds ({elapsed_est / 200 * 1e3:.2f} ms/op)")
+    mean_est = sum(estimate_times) / rounds
+    min_est = min(estimate_times)
+    max_est = max(estimate_times)
+    print(f"\nMeasured estimate ({estimate_runs} runs x {rounds} rounds):")
+    print(f"  Mean: {mean_est:.4f} s ({mean_est / estimate_runs * 1e3:.2f} ms/op)")
+    print(f"  Min:  {min_est:.4f} s | Max: {max_est:.4f} s")
 
 if __name__ == "__main__":
     main()
