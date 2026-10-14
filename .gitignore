@@ -12,6 +12,8 @@ env/
 # Testing
 .pytest_cache/
 .mypy_cache/
+.coverage
+.coverage.*
 
 # Runtime telemetry, local audit logs, and generated benchmarks
 audit_ledger.json

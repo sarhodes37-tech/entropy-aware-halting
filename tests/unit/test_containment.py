@@ -308,3 +308,133 @@ def test_wrapper_blocks_non_standard_params_and_never_invokes_target(default_gua
     assert ok_safe is True
     assert receipt_safe.passed is True
     assert len(executed) == 1
+
+
+# =========================================================================
+# 5. ADVANCED HARDENING & ADVERSARIAL COVERAGE TESTS
+# =========================================================================
+
+@patch('epistemicos.containment._original_getaddrinfo')
+def test_patched_getaddrinfo_restricted_ips_and_safe_dns_context(mock_orig_getaddrinfo, default_guard):
+    """Verifies _patched_getaddrinfo enforces restricted IP checks when safe DNS context is active."""
+    # 1. Non-restricted IP returned
+    mock_orig_getaddrinfo.return_value = [(socket.AF_INET, socket.SOCK_STREAM, 6, '', ('93.184.216.34', 80))]
+    with default_guard._safe_dns_resolution():
+        res_ok = socket.getaddrinfo("unrestricted.org", 80)
+        assert len(res_ok) == 1
+
+    # 2. Restricted IP 0.0.0.0 returned -> raises socket.error
+    mock_orig_getaddrinfo.return_value = [(socket.AF_INET, socket.SOCK_STREAM, 6, '', ('0.0.0.0', 80))]
+    with pytest.raises(socket.error) as exc_info:
+        with default_guard._safe_dns_resolution():
+            socket.getaddrinfo("restricted.org", 80)
+    assert "Egress blocked: DNS resolution" in str(exc_info.value)
+
+    # 3. Invalid IP string causing ValueError inside _patched_getaddrinfo
+    mock_orig_getaddrinfo.return_value = [(socket.AF_INET, socket.SOCK_STREAM, 6, '', ('invalid_ip_str', 80))]
+    with default_guard._safe_dns_resolution():
+        res_invalid = socket.getaddrinfo("invalid_ip.org", 80)
+        assert len(res_invalid) == 1
+
+
+@patch('socket.getaddrinfo')
+def test_is_restricted_target_ip_ranges_and_duplicates(mock_getaddrinfo, default_guard):
+    """Verifies _is_restricted_target evaluates all restricted IP categories and handles duplicate IPs."""
+    # 1. Direct IP evaluation
+    assert default_guard._is_restricted_target("") is True
+    assert default_guard._is_restricted_target("127.0.0.1") is True
+    assert default_guard._is_restricted_target("10.0.0.1") is True
+    assert default_guard._is_restricted_target("169.254.1.1") is True
+    assert default_guard._is_restricted_target("0.0.0.0") is True
+    assert default_guard._is_restricted_target("240.0.0.1") is True  # Reserved range
+    assert default_guard._is_restricted_target("8.8.8.8") is False
+
+    # 2. Duplicate IPs returned by DNS resolution
+    mock_getaddrinfo.return_value = [
+        (socket.AF_INET, socket.SOCK_STREAM, 6, '', ('93.184.216.34', 80)),
+        (socket.AF_INET, socket.SOCK_STREAM, 6, '', ('93.184.216.34', 80)),
+    ]
+    assert default_guard._is_restricted_target("example.com") is False
+
+
+def test_extract_hostname_secure_edge_cases(default_guard):
+    """Verifies IPv6 bracketed hosts, malformed netlocs, invalid chars, authority fragments, and exception branches."""
+    # IPv6 bracketed
+    assert default_guard._extract_hostname_secure("http://[::1]:8080/path") == "::1"
+    assert default_guard._extract_hostname_secure("http://[2001:db8::1]/path") == "2001:db8::1"
+    assert default_guard._extract_hostname_secure("http://[unclosed_bracket") == ""
+
+    # Authority fragments and encoded #
+    assert default_guard._extract_hostname_secure("http://user:pass#@example.com/") == ""
+    assert default_guard._extract_hostname_secure("http://user:pass%23@example.com/") == ""
+
+    # Invalid netloc characters
+    assert default_guard._extract_hostname_secure("http://invalid_host<script>/") == ""
+    assert default_guard._extract_hostname_secure("http://host$invalid.com/") == ""
+    assert default_guard._extract_hostname_secure("http://host!name.com/") == ""
+
+    # Exception branch on invalid non-string input
+    assert default_guard._extract_hostname_secure(None) == ""
+
+
+@patch.object(ContainmentGuard, '_extract_hostname_secure')
+def test_inspect_network_egress_exception_fallback(mock_extract, default_guard):
+    """Verifies inspect_network_egress exception handler catches unexpected errors and fails closed."""
+    mock_extract.side_effect = RuntimeError("Unexpected URL parsing failure")
+    receipt = default_guard.inspect_network_egress("http://example.com")
+    assert receipt.passed is False
+    assert receipt.violation_type == ContainmentViolationType.UNAUTHORIZED_EGRESS_ATTEMPT
+    assert "Malformed URL provided for egress" in receipt.reason
+
+
+@pytest.mark.parametrize("cheat_pattern", [
+    "assert True",
+    "return True # skip test",
+    "sys.exit(0)",
+    "unittest.skip('bypassed')",
+    "pytest.mark.skip('disabled')",
+])
+def test_goal_integrity_cheat_keywords(default_guard, cheat_pattern):
+    """Verifies all reward-cheating keywords are trapped during goal integrity inspection."""
+    receipt = default_guard.inspect_goal_integrity("Solve puzzle", f"def run(): {cheat_pattern}")
+    assert receipt.passed is False
+    assert receipt.violation_type == ContainmentViolationType.GOAL_MUTATION_REWARD_CHEATING
+
+
+def test_containment_miscellaneous_uncovered_branches(default_guard):
+    """Verifies goal integrity pass branch and scalar extraction helper branches."""
+    res_goal = default_guard.inspect_goal_integrity("Goal", "Clean action without keywords")
+    assert res_goal.passed is True
+
+    strings, urls = default_guard._extract_all_strings_and_urls({"cmd": "ls", "opts": {"a", "b"}, "args": ["x", "y"]})
+    assert len(strings) > 0
+
+
+def test_wrapper_tool_exception_and_goal_integrity_failure(default_guard):
+    """Verifies wrapper returns failure when tool function raises an exception or violates goal integrity."""
+    executed = []
+
+    def failing_tool(*args, **kwargs):
+        executed.append(True)
+        raise RuntimeError("Tool execution internal error")
+
+    # Goal integrity failure
+    ok_goal, _, receipt_goal = default_guard.wrap_tool_execution(
+        tool_name="failing_tool",
+        tool_func=failing_tool,
+        args=("sys.exit(0)",),
+        original_goal="Run benchmark"
+    )
+    assert ok_goal is False
+    assert receipt_goal.violation_type == ContainmentViolationType.GOAL_MUTATION_REWARD_CHEATING
+    assert len(executed) == 0
+
+    # Tool runtime exception
+    ok_ex, _, receipt_ex = default_guard.wrap_tool_execution(
+        tool_name="failing_tool",
+        tool_func=failing_tool,
+        args=("safe_arg",)
+    )
+    assert ok_ex is False
+    assert "Tool transport error" in receipt_ex.reason
+    assert len(executed) == 1
