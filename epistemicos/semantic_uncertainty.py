@@ -69,12 +69,12 @@ class ExactAndNormalizedResolver(SemanticResolver):
     CONDITIONAL_WORDS = {"if", "unless", "provided", "assuming", "except", "conditional", "subject"}
     TEMPORAL_WORDS = {"before", "after", "during", "until", "since", "prior"}
     DOUBLE_NEGATION_PATTERNS = [
-        (r"\bnot\s+unauthorized\b", "authorized"),
-        (r"\bnot\s+invalid\b", "valid"),
-        (r"\bnot\s+false\b", "true"),
-        (r"\bnot\s+denied\b", "approved"),
-        (r"\bnot\s+impossible\b", "possible"),
-        (r"\bnot\s+incorrect\b", "correct"),
+        (re.compile(r"\bnot\s+unauthorized\b"), "authorized"),
+        (re.compile(r"\bnot\s+invalid\b"), "valid"),
+        (re.compile(r"\bnot\s+false\b"), "true"),
+        (re.compile(r"\bnot\s+denied\b"), "approved"),
+        (re.compile(r"\bnot\s+impossible\b"), "possible"),
+        (re.compile(r"\bnot\s+incorrect\b"), "correct"),
     ]
 
     def __init__(self, confidence_threshold: float = 0.85):
@@ -84,7 +84,7 @@ class ExactAndNormalizedResolver(SemanticResolver):
         clean = text.strip().lower()
         # Simplify double negations
         for pattern, replacement in self.DOUBLE_NEGATION_PATTERNS:
-            clean = re.sub(pattern, replacement, clean)
+            clean = pattern.sub(replacement, clean)
         clean = re.sub(r"[^\w\s\$\€\£\¥]", "", clean)
         return " ".join(clean.split())
 
