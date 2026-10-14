@@ -348,9 +348,11 @@ def test_token_surprisal_sensor_evaluate_integration_flagged():
     assert len(result["token_z_scores"]) == len(logprobs)
 
 
+import json
+
 @pytest.mark.parametrize("non_finite_val", [float('nan'), float('inf'), float('-inf')])
 def test_token_surprisal_sensor_evaluate_non_finite_z_scores(monkeypatch, non_finite_val):
-    """Validates that NaN, +inf, and -inf Z-scores are rejected as malformed numerical output."""
+    """Validates that NaN, +inf, and -inf Z-scores are rejected as malformed numerical output and sanitized for JSON."""
     sensor = TokenSurprisalSensor(z_threshold=2.85)
 
     # Mock compute_z_scores to simulate a computation producing a non-finite Z-score
@@ -363,7 +365,10 @@ def test_token_surprisal_sensor_evaluate_non_finite_z_scores(monkeypatch, non_fi
     assert "Derived Z-scores contain 1 non-finite value(s)" in result["error"]
     assert result["max_z_score"] == 0.0
     assert result["flagged_tokens"] == 3
-    assert result["token_z_scores"] == [0.0, non_finite_val, 1.2]
+    assert result["token_z_scores"] == [0.0, None, 1.2]
+    # Ensure JSON serializability without allow_nan
+    serialized = json.dumps(result, allow_nan=False)
+    assert "null" in serialized
 
 
 @pytest.mark.parametrize("non_finite_lp", [float('nan'), float('inf'), float('-inf')])
