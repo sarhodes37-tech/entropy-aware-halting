@@ -475,3 +475,253 @@ def test_corrupted_log_health_detection(tmp_path):
         store.record_event(event2)
 
     assert "corruption detected" in str(exc_info.value).lower() or "fail-closed" in str(exc_info.value).lower()
+
+
+def test_provenance_store_input_validation(tmp_path):
+    log_file = str(tmp_path / "prov_val.jsonl")
+    store = LocalProvenanceStore(log_path=log_file, fail_closed=True)
+
+    # Invalid schema_version
+    bad_schema_evt = ProvenanceEvent(
+        schema_version="",
+        event_id=str(uuid.uuid4()),
+        event_type=ProvenanceEventType.ACTION_PROPOSED.value,
+        provenance_source=ProvenanceSource.AGENT_ADAPTER.value,
+        correlation_id="c1",
+        request_id="r1",
+        action_name="ACT",
+        target="TGT",
+        canonical_request_digest="dig",
+        timestamp="2025-01-01T00:00:00Z"
+    )
+    with pytest.raises(RuntimeError, match="Invalid or missing schema_version"):
+        store.record_event(bad_schema_evt)
+
+    # Unsupported event_type
+    bad_type_evt = ProvenanceEvent(
+        schema_version="1.0.0",
+        event_id=str(uuid.uuid4()),
+        event_type="UNSUPPORTED_TYPE",
+        provenance_source=ProvenanceSource.AGENT_ADAPTER.value,
+        correlation_id="c1",
+        request_id="r1",
+        action_name="ACT",
+        target="TGT",
+        canonical_request_digest="dig",
+        timestamp="2025-01-01T00:00:00Z"
+    )
+    with pytest.raises(RuntimeError, match="Unsupported event_type"):
+        store.record_event(bad_type_evt)
+
+    # Unsupported provenance_source
+    bad_src_evt = ProvenanceEvent(
+        schema_version="1.0.0",
+        event_id=str(uuid.uuid4()),
+        event_type=ProvenanceEventType.ACTION_PROPOSED.value,
+        provenance_source="UNSUPPORTED_SOURCE",
+        correlation_id="c1",
+        request_id="r1",
+        action_name="ACT",
+        target="TGT",
+        canonical_request_digest="dig",
+        timestamp="2025-01-01T00:00:00Z"
+    )
+    with pytest.raises(RuntimeError, match="Unsupported provenance_source"):
+        store.record_event(bad_src_evt)
+
+    # Duplicate event_id
+    dup_id = str(uuid.uuid4())
+    good_evt = ProvenanceEvent(
+        schema_version="1.0.0",
+        event_id=dup_id,
+        event_type=ProvenanceEventType.ACTION_PROPOSED.value,
+        provenance_source=ProvenanceSource.AGENT_ADAPTER.value,
+        correlation_id="c1",
+        request_id="r1",
+        action_name="ACT",
+        target="TGT",
+        canonical_request_digest="dig",
+        timestamp="2025-01-01T00:00:00Z"
+    )
+    store.record_event(good_evt)
+    with pytest.raises(RuntimeError, match="Duplicate event_id"):
+        store.record_event(good_evt)
+
+    # Fail-open behavior
+    open_store = LocalProvenanceStore(log_path=log_file, fail_closed=False)
+    assert open_store.record_event(good_evt) == {}
+
+
+def test_trusted_execution_boundary_validation(tmp_path):
+    log_file = str(tmp_path / "prov_exec_val.jsonl")
+    store = LocalProvenanceStore(log_path=log_file)
+    boundary = TrustedExecutionBoundary(provenance_store=store)
+
+    payload = {"data": "test"}
+    digest = boundary.compute_canonical_digest(payload)
+
+    # Reject authorization not granted
+    with pytest.raises(PermissionError, match="Authorization was not granted"):
+        boundary.execute_protected_action(
+            action_name="ACT",
+            target="TGT",
+            request_payload=payload,
+            correlation_id="c1",
+            request_id="r1",
+            authorization_token_id="tok1",
+            authorized_digest=digest,
+            authorization_granted=False,
+            executor_func=lambda: True
+        )
+
+    # Digest mismatch
+    with pytest.raises(ValueError, match="digest changed"):
+        boundary.execute_protected_action(
+            action_name="ACT",
+            target="TGT",
+            request_payload=payload,
+            correlation_id="c1",
+            request_id="r1",
+            authorization_token_id="tok2",
+            authorized_digest="wrong_digest",
+            authorization_granted=True,
+            executor_func=lambda: True
+        )
+
+    # Attempt ID reuse
+    attempt_id = str(uuid.uuid4())
+    boundary.execute_protected_action(
+        action_name="ACT",
+        target="TGT",
+        request_payload=payload,
+        correlation_id="c1",
+        request_id="r1",
+        authorization_token_id="tok3",
+        authorized_digest=digest,
+        authorization_granted=True,
+        execution_attempt_id=attempt_id,
+        executor_func=lambda: True
+    )
+    with pytest.raises(ValueError, match="has already been processed"):
+        boundary.execute_protected_action(
+            action_name="ACT",
+            target="TGT",
+            request_payload=payload,
+            correlation_id="c1",
+            request_id="r1",
+            authorization_token_id="tok4",
+            authorized_digest=digest,
+            authorization_granted=True,
+            execution_attempt_id=attempt_id,
+            executor_func=lambda: True
+        )
+
+
+def test_provenance_reconciler_edge_cases():
+    reconciler = ProvenanceReconciler()
+
+    # Rule 0: Empty events
+    rep_empty = reconciler.reconcile_correlation("c_empty", [])
+    assert not rep_empty.valid
+    assert rep_empty.status == "INCOMPLETE_EVIDENCE"
+
+    # Rule: Unmatched execution attempt despite auth_granted
+    auth_redacted = ProvenanceEvent(
+        schema_version="1.0.0",
+        event_id=str(uuid.uuid4()),
+        event_type=ProvenanceEventType.AUTHORIZATION_GRANTED.value,
+        provenance_source=ProvenanceSource.GOVERNANCE_GATE.value,
+        correlation_id="c_unmatch",
+        request_id="[REDACTED]",
+        action_name="READ",
+        target="T1",
+        canonical_request_digest="d1",
+        timestamp="ts",
+        authorization_token_id="[REDACTED]"
+    )
+    auth_redacted2 = ProvenanceEvent(
+        schema_version="1.0.0",
+        event_id=str(uuid.uuid4()),
+        event_type=ProvenanceEventType.AUTHORIZATION_GRANTED.value,
+        provenance_source=ProvenanceSource.GOVERNANCE_GATE.value,
+        correlation_id="c_unmatch",
+        request_id="[REDACTED]",
+        action_name="WRITE",
+        target="T2",
+        canonical_request_digest="d2",
+        timestamp="ts",
+        authorization_token_id="[REDACTED]"
+    )
+    exec_unmatched = ProvenanceEvent(
+        schema_version="1.0.0",
+        event_id=str(uuid.uuid4()),
+        event_type=ProvenanceEventType.EXECUTION_STARTED.value,
+        provenance_source=ProvenanceSource.EXECUTOR.value,
+        correlation_id="c_unmatch",
+        request_id="r_other",
+        action_name="READ",
+        target="T1",
+        canonical_request_digest="d1",
+        timestamp="ts",
+        authorization_token_id="tok_other",
+        execution_attempt_id="att1"
+    )
+    rep_unmatch = reconciler.reconcile_correlation("c_unmatch", [auth_redacted, auth_redacted2, exec_unmatched])
+    assert not rep_unmatch.valid
+    assert any("could not be matched" in v for v in rep_unmatch.violations)
+
+    # Rule 6: Duplicate execution attempt for single-use token
+    exec_dup_start = ProvenanceEvent(
+        schema_version="1.0.0",
+        event_id=str(uuid.uuid4()),
+        event_type=ProvenanceEventType.EXECUTION_STARTED.value,
+        provenance_source=ProvenanceSource.EXECUTOR.value,
+        correlation_id="c_unmatch",
+        request_id="r_other",
+        action_name="READ",
+        target="T1",
+        canonical_request_digest="d1",
+        timestamp="ts",
+        authorization_token_id="tok_other",
+        execution_attempt_id="att2"
+    )
+    rep_dup_token = reconciler.reconcile_correlation("c_unmatch", [auth_redacted, auth_redacted2, exec_unmatched, exec_dup_start])
+    assert any("Multiple execution attempts" in v for v in rep_dup_token.violations)
+
+    # Rule 7 & Incomplete evidence: Missing terminal outcome event
+    rep_unended = reconciler.reconcile_correlation("c_unended", [exec_unmatched])
+    assert any("missing terminal outcome event" in v for v in rep_unended.violations)
+
+    # Rule 8: Egress blocked by Shower Curtain
+    egress_evt = ProvenanceEvent(
+        schema_version="1.0.0",
+        event_id=str(uuid.uuid4()),
+        event_type=ProvenanceEventType.EGRESS_BLOCKED.value,
+        provenance_source=ProvenanceSource.EGRESS_GATE.value,
+        correlation_id="c_egress",
+        request_id="r1",
+        action_name="DISCLOSE",
+        target="remote",
+        canonical_request_digest="d1",
+        timestamp="ts"
+    )
+    rep_egress = reconciler.reconcile_correlation("c_egress", [egress_evt], agent_claimed_success=True)
+    assert any("egress was blocked" in v for v in rep_egress.violations)
+
+    # Status: INCOMPLETE_EVIDENCE when auth_granted but no execution started/succeeded
+    auth_only = ProvenanceEvent(
+        schema_version="1.0.0",
+        event_id=str(uuid.uuid4()),
+        event_type=ProvenanceEventType.AUTHORIZATION_GRANTED.value,
+        provenance_source=ProvenanceSource.GOVERNANCE_GATE.value,
+        correlation_id="c_incomplete",
+        request_id="r1",
+        action_name="READ",
+        target="T1",
+        canonical_request_digest="d1",
+        timestamp="ts",
+        authorization_token_id="tok1"
+    )
+    rep_inc = reconciler.reconcile_correlation("c_incomplete", [auth_only])
+    assert not rep_inc.valid
+    assert rep_inc.status == "INCOMPLETE_EVIDENCE"

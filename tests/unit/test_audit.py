@@ -168,6 +168,45 @@ def test_record_event_payload_too_large(temp_audit_file):
         audit.record_event(event)
 
 
+def test_verify_receipt_type_and_format_edge_cases():
+    """Validates verify_receipt type and format error handling branches."""
+    # Line 420: Non-dict receipt
+    assert ReceiptGenerator.verify_receipt("not_a_dict") is False
+
+    rg = ReceiptGenerator()
+    valid_receipt = rg.mint_receipt("tx_edge", True, {"g": 1.0})
+
+    # Line 444: signature_algorithm non-string
+    rec_algo = dict(valid_receipt)
+    rec_algo["signature_algorithm"] = 123
+    assert ReceiptGenerator.verify_receipt(rec_algo) is False
+
+    # Line 451-452: Non-hex signature of length 64
+    rec_sig_hex = dict(valid_receipt)
+    rec_sig_hex["signature"] = "Z" * 64
+    assert ReceiptGenerator.verify_receipt(rec_sig_hex) is False
+
+    # Line 458: Invalid length input_hash
+    rec_ih_len = dict(valid_receipt)
+    rec_ih_len["input_hash"] = "short"
+    assert ReceiptGenerator.verify_receipt(rec_ih_len) is False
+
+    # Line 461-462: Non-hex input_hash of length 64
+    rec_ih_hex = dict(valid_receipt)
+    rec_ih_hex["input_hash"] = "G" * 64
+    assert ReceiptGenerator.verify_receipt(rec_ih_hex) is False
+
+    # Line 465: decision_details not dict
+    rec_dec = dict(valid_receipt)
+    rec_dec["decision_details"] = "string_desc"
+    assert ReceiptGenerator.verify_receipt(rec_dec) is False
+
+    # Line 468: execution_outcome not dict
+    rec_out = dict(valid_receipt)
+    rec_out["execution_outcome"] = [1, 2, 3]
+    assert ReceiptGenerator.verify_receipt(rec_out) is False
+
+
 # =====================================================================
 # ADVANCED AUDIT SECURITY & TAMPER TESTS
 # =====================================================================
