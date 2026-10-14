@@ -346,15 +346,16 @@ class SensitiveDataDetector:
             ent = _shannon_entropy(word)
             if ent >= self.entropy_threshold:
                 span = (m.start(), m.end())
-                _add_result(DetectionResult(
-                    category=SensitivityCategory.CREDENTIAL,
-                    value=word,
-                    span=span,
-                    confidence=round(min(1.0, ent / 6.0), 2),
-                    detector_type="entropy",
-                    suggested_treatment="REDACT",
-                    metadata={"shannon_entropy": round(ent, 2)}
-                ))
+                if not _is_overlapping(span):
+                    _add_result(DetectionResult(
+                        category=SensitivityCategory.CREDENTIAL,
+                        value=word,
+                        span=span,
+                        confidence=round(min(1.0, ent / 6.0), 2),
+                        detector_type="entropy",
+                        suggested_treatment="REDACT",
+                        metadata={"shannon_entropy": round(ent, 2)}
+                    ))
 
         # Sort by span start position
         results.sort(key=lambda r: r.span[0])
