@@ -10,7 +10,8 @@ from epistemicos.gates import (
     CryptoAttestationGate,
     TriangulationGate,
     GateResult,
-    GateAction
+    GateAction,
+    GateConfig
 )
 from epistemicos.models import CanonicalProblemRepresentation
 
@@ -205,3 +206,45 @@ def test_crypto_attestation_gate():
     res_dep = gate.evaluate({}, deprecated_crypto)
     assert res_dep["passed"] is False
     assert "Deprecated" in res_dep["reason"]
+
+
+def test_entropy_gate_strict_mode():
+    # Default mode (strict_mode=False) allows missing logprobs
+    gate_default = EntropyGate()
+    res_default = gate_default.evaluate({}, {})
+    assert res_default["passed"] is True
+    assert res_default["reason"] == "NO_LOGPROBS_PROVIDED"
+
+    # Direct strict_mode parameter halts on missing logprobs
+    gate_strict = EntropyGate(strict_mode=True)
+    res_strict = gate_strict.evaluate({}, {})
+    assert res_strict["passed"] is False
+    assert res_strict["reason"] == "MISSING_LOGPROBS_STRICT_MODE"
+
+    # GateConfig custom_params strict_mode halts on missing logprobs
+    cfg = GateConfig(custom_params={"strict_mode": True})
+    gate_config_strict = EntropyGate(config=cfg)
+    res_cfg = gate_config_strict.evaluate({}, {})
+    assert res_cfg["passed"] is False
+    assert res_cfg["reason"] == "MISSING_LOGPROBS_STRICT_MODE"
+
+
+def test_triangulation_gate_strict_mode():
+    # Default mode allows missing telemetry
+    gate_default = TriangulationGate()
+    res_default = gate_default.evaluate({}, {})
+    assert res_default["passed"] is True
+    assert res_default["reason"] == "TELEMETRY_NOT_PROVIDED"
+
+    # Direct strict_mode parameter halts on missing telemetry
+    gate_strict = TriangulationGate(strict_mode=True)
+    res_strict = gate_strict.evaluate({}, {})
+    assert res_strict["passed"] is False
+    assert res_strict["reason"] == "MISSING_TELEMETRY_STRICT_MODE"
+
+    # GateConfig custom_params strict_mode halts on missing telemetry
+    cfg = GateConfig(custom_params={"strict_mode": True})
+    gate_config_strict = TriangulationGate(config=cfg)
+    res_cfg = gate_config_strict.evaluate({}, {})
+    assert res_cfg["passed"] is False
+    assert res_cfg["reason"] == "MISSING_TELEMETRY_STRICT_MODE"

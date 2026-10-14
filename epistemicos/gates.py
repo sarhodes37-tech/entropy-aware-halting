@@ -256,15 +256,25 @@ class EntropyGate(ControlPlaneGate):
     granular, token-by-token surprisal sensor.
     """
 
-    def __init__(self, z_threshold: float = 2.85, window_size: int = 10, config: Optional[GateConfig] = None):
+    def __init__(self, z_threshold: float = 2.85, window_size: int = 10, strict_mode: bool = False, config: Optional[GateConfig] = None):
         super().__init__(config=config or GateConfig(version="1.0.0", is_critical=True))
         self.sensor = TokenSurprisalSensor(z_threshold=z_threshold, window_size=window_size)
+        self.strict_mode = strict_mode
 
     def evaluate_contract(self, gate_input: GateInput) -> GateOutcome:
         t0 = time.perf_counter()
         logprobs = gate_input.context.get("token_logprobs", [])
 
         if not logprobs:
+            if self.strict_mode or self.config.custom_params.get("strict_mode", False):
+                return GateOutcome(
+                    decision=GateDecision.HALT,
+                    reason_code="MISSING_LOGPROBS_STRICT_MODE",
+                    gate_name=self.gate_name,
+                    gate_version=self.config.version,
+                    evidence={"confidence": 0.0, "status": "HALTED"},
+                    latency_ms=(time.perf_counter() - t0) * 1000
+                )
             return GateOutcome(
                 decision=GateDecision.ALLOW,
                 reason_code="NO_LOGPROBS_PROVIDED",
@@ -585,9 +595,10 @@ class TriangulationGate(ControlPlaneGate):
     Input Integrity and Telemetry Cross-Check Module.
     """
 
-    def __init__(self, max_divergence_threshold: float = 0.15, config: Optional[GateConfig] = None):
+    def __init__(self, max_divergence_threshold: float = 0.15, strict_mode: bool = False, config: Optional[GateConfig] = None):
         super().__init__(config=config or GateConfig(version="1.0.0", is_critical=True))
         self.max_divergence_threshold = max_divergence_threshold
+        self.strict_mode = strict_mode
 
     def evaluate_contract(self, gate_input: GateInput) -> GateOutcome:
         t0 = time.perf_counter()
@@ -598,6 +609,15 @@ class TriangulationGate(ControlPlaneGate):
         telemetry = context.get("heterogeneous_telemetry", payload.get("heterogeneous_telemetry", []))
 
         if primary is None or not telemetry:
+            if self.strict_mode or self.config.custom_params.get("strict_mode", False):
+                return GateOutcome(
+                    decision=GateDecision.HALT,
+                    reason_code="MISSING_TELEMETRY_STRICT_MODE",
+                    gate_name=self.gate_name,
+                    gate_version=self.config.version,
+                    evidence={"confidence": 0.0, "status": "HALTED"},
+                    latency_ms=(time.perf_counter() - t0) * 1000
+                )
             return GateOutcome(
                 decision=GateDecision.ALLOW,
                 reason_code="TELEMETRY_NOT_PROVIDED",
