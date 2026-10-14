@@ -168,6 +168,84 @@ def test_record_event_payload_too_large(temp_audit_file):
         audit.record_event(event)
 
 
+def test_audit_event_cpr_telemetry_belief_snapshots(temp_audit_file):
+    """Validates audit event logging with CPR, telemetry, and belief state snapshots."""
+    from epistemicos.models import CanonicalProblemRepresentation, BeliefObject, PopperianContract
+    from epistemicos.telemetry import HardwareTelemetry
+
+    audit = TamperEvidentAuditTrail(temp_audit_file)
+    cpr = CanonicalProblemRepresentation(policy_id="P1", fleet_data={"count": 1})
+    telemetry = HardwareTelemetry(
+        wall_clock_ms=12.34, cuda_time_ms=0.0, vram_allocated_mb=0.0,
+        vram_reserved_mb=0.0, vram_peak_mb=0.0, fragmentation_index=0.0,
+        tokens_processed=10, ms_per_token=1.23
+    )
+    popper = PopperianContract(
+        claim_id="claim_001", target_metric="loss_ratio",
+        falsification_threshold=0.1, comparison_operator=">", observation_window_days=30
+    )
+    belief = BeliefObject(
+        belief_id="b1", cpr_frame_id="f1", assertion="claim",
+        prior_probability=0.5, current_posterior=0.9, popp_contract=popper
+    )
+
+    event = AuditEvent(
+        event_type=AuditLogLevel.INFO,
+        gate_name="SnapGate",
+        reason="Testing snapshots",
+        model_id="M1",
+        payload_snippet="snippet",
+        cpr_snapshot=cpr,
+        telemetry=telemetry,
+        belief_snapshot=belief
+    )
+
+    rec = audit.record_event(event)
+    assert rec["latency_ms"] == 12.34
+    assert "cpr_state" in rec["metadata"]
+    assert "hardware_telemetry" in rec["metadata"]
+    assert "belief_state" in rec["metadata"]
+
+
+def test_verify_receipt_type_and_format_edge_cases():
+    """Validates verify_receipt type and format error handling branches."""
+    # Line 420: Non-dict receipt
+    assert ReceiptGenerator.verify_receipt("not_a_dict") is False
+
+    rg = ReceiptGenerator()
+    valid_receipt = rg.mint_receipt("tx_edge", True, {"g": 1.0})
+
+    # Line 444: signature_algorithm non-string
+    rec_algo = dict(valid_receipt)
+    rec_algo["signature_algorithm"] = 123
+    assert ReceiptGenerator.verify_receipt(rec_algo) is False
+
+    # Line 451-452: Non-hex signature of length 64
+    rec_sig_hex = dict(valid_receipt)
+    rec_sig_hex["signature"] = "Z" * 64
+    assert ReceiptGenerator.verify_receipt(rec_sig_hex) is False
+
+    # Line 458: Invalid length input_hash
+    rec_ih_len = dict(valid_receipt)
+    rec_ih_len["input_hash"] = "short"
+    assert ReceiptGenerator.verify_receipt(rec_ih_len) is False
+
+    # Line 461-462: Non-hex input_hash of length 64
+    rec_ih_hex = dict(valid_receipt)
+    rec_ih_hex["input_hash"] = "G" * 64
+    assert ReceiptGenerator.verify_receipt(rec_ih_hex) is False
+
+    # Line 465: decision_details not dict
+    rec_dec = dict(valid_receipt)
+    rec_dec["decision_details"] = "string_desc"
+    assert ReceiptGenerator.verify_receipt(rec_dec) is False
+
+    # Line 468: execution_outcome not dict
+    rec_out = dict(valid_receipt)
+    rec_out["execution_outcome"] = [1, 2, 3]
+    assert ReceiptGenerator.verify_receipt(rec_out) is False
+
+
 # =====================================================================
 # ADVANCED AUDIT SECURITY & TAMPER TESTS
 # =====================================================================
