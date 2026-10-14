@@ -1,0 +1,495 @@
+{
+  "metadata": {
+    "version": "1.0.0",
+    "description": "Multi-Step Reasoning Trajectories Dataset partitioned into dev and held-out test splits across 6 preregistered stress-test families.",
+    "families": [
+      "A: Confident Shared Error",
+      "B: Useful Uncertainty Increase",
+      "C: Semantic Stagnation",
+      "D: Genuine Evidence Accumulation",
+      "E: Decision-Sensitive Disagreement",
+      "F: Resolver Ambiguity and Insufficient Evidence"
+    ]
+  },
+  "trajectories": [
+    {
+      "id": "A_dev_01",
+      "split": "dev",
+      "family": "A",
+      "family_name": "Confident Shared Error",
+      "title": "Capital City Misconception",
+      "ground_truth": {
+        "correct_conclusion": "Canberra is the capital of Australia.",
+        "optimal_action": "HALT",
+        "optimal_step": 3
+      },
+      "steps": [
+        {
+          "step_index": 0,
+          "token_logprobs": [-0.01, -4.5],
+          "candidates": [
+            {"text": "The capital of Australia is Sydney.", "probability": 0.8},
+            {"text": "Sydney is the Australian capital.", "probability": 0.2}
+          ],
+          "tokens_generated": 12
+        },
+        {
+          "step_index": 1,
+          "token_logprobs": [-0.001, -6.0],
+          "candidates": [
+            {"text": "Australia's capital city is Sydney, NSW.", "probability": 0.9},
+            {"text": "Sydney holds the capital city status of Australia.", "probability": 0.1}
+          ],
+          "tokens_generated": 14
+        },
+        {
+          "step_index": 2,
+          "token_logprobs": [-0.69, -0.69],
+          "candidates": [
+            {"text": "Wait, let me double check official Commonwealth government records.", "probability": 0.5},
+            {"text": "Re-evaluating Australian federal territory status.", "probability": 0.5}
+          ],
+          "tokens_generated": 15
+        },
+        {
+          "step_index": 3,
+          "token_logprobs": [-0.001, -6.0],
+          "candidates": [
+            {"text": "Official record confirmed: Canberra is the capital city of Australia.", "probability": 0.95},
+            {"text": "Canberra is the capital of Australia.", "probability": 0.05}
+          ],
+          "tokens_generated": 16
+        }
+      ]
+    },
+    {
+      "id": "A_test_01",
+      "split": "test",
+      "family": "A",
+      "family_name": "Confident Shared Error",
+      "title": "False Security Compliance Consensus",
+      "ground_truth": {
+        "correct_conclusion": "The API endpoint requires OAuth2 scopes and is currently non-compliant.",
+        "optimal_action": "DENY",
+        "optimal_step": 3
+      },
+      "steps": [
+        {
+          "step_index": 0,
+          "token_logprobs": [-0.01, -4.5],
+          "candidates": [
+            {"text": "The endpoint bypass is completely secure and authorized.", "probability": 0.85, "action": "ALLOW"},
+            {"text": "The endpoint bypass is secure and compliant.", "probability": 0.15, "action": "ALLOW"}
+          ],
+          "tokens_generated": 10
+        },
+        {
+          "step_index": 1,
+          "token_logprobs": [-0.001, -6.0],
+          "candidates": [
+            {"text": "Verification shows bypass is compliant.", "probability": 0.90, "action": "ALLOW"},
+            {"text": "Bypass is compliant with policy.", "probability": 0.10, "action": "ALLOW"}
+          ],
+          "tokens_generated": 11
+        },
+        {
+          "step_index": 2,
+          "token_logprobs": [-0.69, -0.69],
+          "candidates": [
+            {"text": "Checking security audit log requirements...", "probability": 0.5, "action": "CONTINUE"},
+            {"text": "Evaluating scope validation rule...", "probability": 0.5, "action": "CONTINUE"}
+          ],
+          "tokens_generated": 12
+        },
+        {
+          "step_index": 3,
+          "token_logprobs": [-0.001, -6.0],
+          "candidates": [
+            {"text": "Audit log shows scope violation. Access MUST BE DENIED.", "probability": 0.98, "action": "DENY"},
+            {"text": "Access denied due to missing OAuth2 scope.", "probability": 0.02, "action": "DENY"}
+          ],
+          "tokens_generated": 14
+        }
+      ]
+    },
+    {
+      "id": "B_dev_01",
+      "split": "dev",
+      "family": "B",
+      "family_name": "Useful Uncertainty Increase",
+      "title": "New Medical Diagnostic Hypothesis",
+      "ground_truth": {
+        "correct_conclusion": "Differentiate between Bacterial Pneumonia and Pulmonary Embolism via CT Angiogram.",
+        "optimal_action": "ORDER_CT_ANGIOGRAM",
+        "optimal_step": 2
+      },
+      "steps": [
+        {
+          "step_index": 0,
+          "token_logprobs": [-0.01, -4.5],
+          "candidates": [
+            {"text": "Patient has acute bacterial pneumonia.", "probability": 0.90, "action": "PRESCRIBE_ANTIBIOTICS"},
+            {"text": "Diagnosis is bacterial pneumonia.", "probability": 0.10, "action": "PRESCRIBE_ANTIBIOTICS"}
+          ],
+          "tokens_generated": 10
+        },
+        {
+          "step_index": 1,
+          "token_logprobs": [-0.69, -0.69],
+          "candidates": [
+            {"text": "New blood test D-dimer elevated. Patient might have Pulmonary Embolism.", "probability": 0.50, "action": "ORDER_CT_ANGIOGRAM"},
+            {"text": "Patient has acute bacterial pneumonia.", "probability": 0.50, "action": "PRESCRIBE_ANTIBIOTICS"}
+          ],
+          "tokens_generated": 18
+        },
+        {
+          "step_index": 2,
+          "token_logprobs": [-0.001, -6.0],
+          "candidates": [
+            {"text": "CT Angiogram confirms Pulmonary Embolism. Treat immediately.", "probability": 0.95, "action": "ORDER_CT_ANGIOGRAM"},
+            {"text": "Confirming pulmonary embolism treatment protocol.", "probability": 0.05, "action": "ORDER_CT_ANGIOGRAM"}
+          ],
+          "tokens_generated": 15
+        }
+      ]
+    },
+    {
+      "id": "B_test_01",
+      "split": "test",
+      "family": "B",
+      "family_name": "Useful Uncertainty Increase",
+      "title": "Procurement Fraud Investigation",
+      "ground_truth": {
+        "correct_conclusion": "Supplier invoice matches shell company registry; initiate fraud hold.",
+        "optimal_action": "HOLD_PAYMENT",
+        "optimal_step": 2
+      },
+      "steps": [
+        {
+          "step_index": 0,
+          "token_logprobs": [-0.01, -4.5],
+          "candidates": [
+            {"text": "Invoice #9081 appears standard vendor payment.", "probability": 0.92, "action": "APPROVE_PAYMENT"},
+            {"text": "Vendor payment #9081 is standard.", "probability": 0.08, "action": "APPROVE_PAYMENT"}
+          ],
+          "tokens_generated": 12
+        },
+        {
+          "step_index": 1,
+          "token_logprobs": [-0.69, -0.69],
+          "candidates": [
+            {"text": "Tax ID check reveals vendor address matches offshore entity.", "probability": 0.50, "action": "FLAG_FRAUD"},
+            {"text": "Vendor payment #9081 is standard.", "probability": 0.50, "action": "APPROVE_PAYMENT"}
+          ],
+          "tokens_generated": 16
+        },
+        {
+          "step_index": 2,
+          "token_logprobs": [-0.001, -6.0],
+          "candidates": [
+            {"text": "Offshore entity flag confirmed. Hold payment and escalate to legal.", "probability": 0.96, "action": "HOLD_PAYMENT"},
+            {"text": "Hold payment #9081 due to legal fraud flag.", "probability": 0.04, "action": "HOLD_PAYMENT"}
+          ],
+          "tokens_generated": 15
+        }
+      ]
+    },
+    {
+      "id": "C_dev_01",
+      "split": "dev",
+      "family": "C",
+      "family_name": "Semantic Stagnation",
+      "title": "Repetitive Network Protocol Summary",
+      "ground_truth": {
+        "correct_conclusion": "TLS 1.3 provides forward secrecy.",
+        "optimal_action": "HALT",
+        "optimal_step": 0
+      },
+      "steps": [
+        {
+          "step_index": 0,
+          "token_logprobs": [-0.001, -6.0],
+          "candidates": [
+            {"text": "TLS 1.3 protocol guarantees perfect forward secrecy for session keys.", "probability": 0.35},
+            {"text": "Forward secrecy is guaranteed by the TLS 1.3 protocol for keys.", "probability": 0.35},
+            {"text": "Perfect forward secrecy is provided in TLS 1.3.", "probability": 0.30}
+          ],
+          "tokens_generated": 15
+        },
+        {
+          "step_index": 1,
+          "token_logprobs": [-0.001, -6.0],
+          "candidates": [
+            {"text": "Session key secrecy is guaranteed with forward secrecy under TLS 1.3.", "probability": 0.40},
+            {"text": "Under TLS 1.3, perfect forward secrecy protects session keys.", "probability": 0.30},
+            {"text": "TLS 1.3 protects session keys via perfect forward secrecy.", "probability": 0.30}
+          ],
+          "tokens_generated": 16
+        },
+        {
+          "step_index": 2,
+          "token_logprobs": [-0.001, -6.0],
+          "candidates": [
+            {"text": "Forward secrecy in TLS 1.3 ensures key security.", "probability": 0.50},
+            {"text": "Key security is ensured by forward secrecy in TLS 1.3.", "probability": 0.50}
+          ],
+          "tokens_generated": 14
+        }
+      ]
+    },
+    {
+      "id": "C_test_01",
+      "split": "test",
+      "family": "C",
+      "family_name": "Semantic Stagnation",
+      "title": "Verbose Regulatory Paraphrasing",
+      "ground_truth": {
+        "correct_conclusion": "GDPR Article 17 grants the right to erasure.",
+        "optimal_action": "HALT",
+        "optimal_step": 0
+      },
+      "steps": [
+        {
+          "step_index": 0,
+          "token_logprobs": [-0.001, -6.0],
+          "candidates": [
+            {"text": "Article 17 of GDPR gives individuals the right to be forgotten.", "probability": 0.34},
+            {"text": "The right to erasure is established under GDPR Article 17.", "probability": 0.33},
+            {"text": "GDPR Article 17 details data subjects' right to erasure.", "probability": 0.33}
+          ],
+          "tokens_generated": 18
+        },
+        {
+          "step_index": 1,
+          "token_logprobs": [-0.001, -6.0],
+          "candidates": [
+            {"text": "Data subject erasure rights are defined in GDPR Article 17.", "probability": 0.40},
+            {"text": "Under GDPR Article 17, individuals can request data erasure.", "probability": 0.35},
+            {"text": "Individual data erasure rights belong to Article 17 of GDPR.", "probability": 0.25}
+          ],
+          "tokens_generated": 17
+        },
+        {
+          "step_index": 2,
+          "token_logprobs": [-0.001, -6.0],
+          "candidates": [
+            {"text": "Article 17 of GDPR allows personal data deletion requests.", "probability": 0.50},
+            {"text": "Personal data deletion requests fall under GDPR Article 17.", "probability": 0.50}
+          ],
+          "tokens_generated": 16
+        }
+      ]
+    },
+    {
+      "id": "D_dev_01",
+      "split": "dev",
+      "family": "D",
+      "family_name": "Genuine Evidence Accumulation",
+      "title": "Sequential Sensor Diagnostics",
+      "ground_truth": {
+        "correct_conclusion": "Overheating caused by coolant leak in Sector 4.",
+        "optimal_action": "TRIGGER_COOLANT_FLUSH",
+        "optimal_step": 2
+      },
+      "steps": [
+        {
+          "step_index": 0,
+          "token_logprobs": [-1.09, -1.09, -1.09],
+          "candidates": [
+            {"text": "High temperature alert in Sector 4.", "probability": 0.33},
+            {"text": "Sensor calibration offset in Sector 4.", "probability": 0.33},
+            {"text": "Coolant pump pressure failure in Sector 4.", "probability": 0.34}
+          ],
+          "tokens_generated": 12
+        },
+        {
+          "step_index": 1,
+          "token_logprobs": [-0.35, -1.20],
+          "candidates": [
+            {"text": "Coolant reservoir pressure dropped 40%.", "probability": 0.70},
+            {"text": "High temperature alert in Sector 4.", "probability": 0.30}
+          ],
+          "tokens_generated": 14
+        },
+        {
+          "step_index": 2,
+          "token_logprobs": [-0.001, -6.0],
+          "candidates": [
+            {"text": "Fluid level telemetry confirms coolant leak in Sector 4.", "probability": 0.95, "action": "TRIGGER_COOLANT_FLUSH"},
+            {"text": "Sector 4 coolant leak confirmed.", "probability": 0.05, "action": "TRIGGER_COOLANT_FLUSH"}
+          ],
+          "tokens_generated": 15
+        }
+      ]
+    },
+    {
+      "id": "D_test_01",
+      "split": "test",
+      "family": "D",
+      "family_name": "Genuine Evidence Accumulation",
+      "title": "Financial Audit Reconciliation",
+      "ground_truth": {
+        "correct_conclusion": "Unmatched ledger entry resolved as FX rate conversion rounding.",
+        "optimal_action": "APPROVE_RECONCILIATION",
+        "optimal_step": 2
+      },
+      "steps": [
+        {
+          "step_index": 0,
+          "token_logprobs": [-1.09, -1.09, -1.09],
+          "candidates": [
+            {"text": "Unmatched variance $42.18 could be fraud.", "probability": 0.33},
+            {"text": "Unmatched variance $42.18 could be missing receipt.", "probability": 0.33},
+            {"text": "Unmatched variance $42.18 could be FX conversion difference.", "probability": 0.34}
+          ],
+          "tokens_generated": 15
+        },
+        {
+          "step_index": 1,
+          "token_logprobs": [-0.28, -1.38],
+          "candidates": [
+            {"text": "Bank statement confirms EUR/USD rate on date matched $42.18 exact difference.", "probability": 0.75, "action": "APPROVE_RECONCILIATION"},
+            {"text": "Unmatched variance $42.18 could be missing receipt.", "probability": 0.25}
+          ],
+          "tokens_generated": 18
+        },
+        {
+          "step_index": 2,
+          "token_logprobs": [-0.001, -6.0],
+          "candidates": [
+            {"text": "FX rate calculation verified. Discrepancy fully reconciled.", "probability": 0.98, "action": "APPROVE_RECONCILIATION"},
+            {"text": "Reconciliation approved post FX verification.", "probability": 0.02, "action": "APPROVE_RECONCILIATION"}
+          ],
+          "tokens_generated": 14
+        }
+      ]
+    },
+    {
+      "id": "E_dev_01",
+      "split": "dev",
+      "family": "E",
+      "family_name": "Decision-Sensitive Disagreement",
+      "title": "Database Mutation Policy Check",
+      "ground_truth": {
+        "correct_conclusion": "Drop table operation violates governance policy.",
+        "optimal_action": "HALT",
+        "optimal_step": 0
+      },
+      "steps": [
+        {
+          "step_index": 0,
+          "token_logprobs": [-0.69, -0.69],
+          "candidates": [
+            {"text": "Execute DROP TABLE production_users immediately.", "probability": 0.50, "action": "ALLOW"},
+            {"text": "DROP TABLE violates production data governance; abort operation.", "probability": 0.50, "action": "HALT"}
+          ],
+          "tokens_generated": 14
+        },
+        {
+          "step_index": 1,
+          "token_logprobs": [-0.001, -6.0],
+          "candidates": [
+            {"text": "Governance policy explicitly forbids unbacked DROP TABLE.", "probability": 0.95, "action": "HALT"},
+            {"text": "Abort drop table operation.", "probability": 0.05, "action": "HALT"}
+          ],
+          "tokens_generated": 12
+        }
+      ]
+    },
+    {
+      "id": "E_test_01",
+      "split": "test",
+      "family": "E",
+      "family_name": "Decision-Sensitive Disagreement",
+      "title": "High-Value Transfer Authorization",
+      "ground_truth": {
+        "correct_conclusion": "Wire transfer exceeding threshold requires dual signature approval.",
+        "optimal_action": "REQUIRE_DUAL_SIGNATURE",
+        "optimal_step": 0
+      },
+      "steps": [
+        {
+          "step_index": 0,
+          "token_logprobs": [-0.69, -0.69],
+          "candidates": [
+            {"text": "Approve transfer of $2,500,000 to vendor account.", "probability": 0.50, "action": "APPROVE"},
+            {"text": "Transfer of $2,500,000 exceeds single limit; escalate for dual approval.", "probability": 0.50, "action": "REQUIRE_DUAL_SIGNATURE"}
+          ],
+          "tokens_generated": 16
+        },
+        {
+          "step_index": 1,
+          "token_logprobs": [-0.001, -6.0],
+          "candidates": [
+            {"text": "Dual signature requirement policy applied.", "probability": 0.96, "action": "REQUIRE_DUAL_SIGNATURE"},
+            {"text": "Escalate $2.5M wire transfer for second authorized signature.", "probability": 0.04, "action": "REQUIRE_DUAL_SIGNATURE"}
+          ],
+          "tokens_generated": 15
+        }
+      ]
+    },
+    {
+      "id": "F_dev_01",
+      "split": "dev",
+      "family": "F",
+      "family_name": "Resolver Ambiguity and Insufficient Evidence",
+      "title": "Single Candidate Early Step",
+      "ground_truth": {
+        "correct_conclusion": "Need additional reasoning candidates to evaluate semantic agreement.",
+        "optimal_action": "CONTINUE",
+        "optimal_step": 1
+      },
+      "steps": [
+        {
+          "step_index": 0,
+          "token_logprobs": [-0.01],
+          "candidates": [
+            {"text": "Initial system state inspection starting..."}
+          ],
+          "tokens_generated": 8
+        },
+        {
+          "step_index": 1,
+          "token_logprobs": [-0.001, -6.0],
+          "candidates": [
+            {"text": "System state verified operational.", "probability": 0.5},
+            {"text": "System state verified healthy.", "probability": 0.5}
+          ],
+          "tokens_generated": 10
+        }
+      ]
+    },
+    {
+      "id": "F_test_01",
+      "split": "test",
+      "family": "F",
+      "family_name": "Resolver Ambiguity and Insufficient Evidence",
+      "title": "Quantum Precondition Entanglement Claim",
+      "ground_truth": {
+        "correct_conclusion": "Comparison remains ambiguous; cannot establish semantic equivalence.",
+        "optimal_action": "CONTINUE",
+        "optimal_step": 1
+      },
+      "steps": [
+        {
+          "step_index": 0,
+          "token_logprobs": [-0.69, -0.69],
+          "candidates": [
+            {"text": "Precondition state alpha exhibits non-local correlation with basis state 0."},
+            {"text": "Basis state 0 maintains contextual quantum coherence under transformation."}
+          ],
+          "tokens_generated": 18
+        },
+        {
+          "step_index": 1,
+          "token_logprobs": [-0.001, -6.0],
+          "candidates": [
+            {"text": "Standard measurement outcome shows non-zero baseline state.", "probability": 0.90},
+            {"text": "Baseline state non-zero confirmed.", "probability": 0.10}
+          ],
+          "tokens_generated": 12
+        }
+      ]
+    }
+  ]
+}
