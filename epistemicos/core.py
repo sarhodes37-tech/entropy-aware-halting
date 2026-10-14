@@ -156,7 +156,8 @@ class EpistemicOrchestrator:
                     vectors_revoked=1
                 )
 
-            if not getattr(result, "passed", False) or getattr(result, "action", None) != GateAction.ALLOW:
+            action = getattr(result, "action", None)
+            if action in (GateAction.HALT, GateAction.ROLLBACK) or action != GateAction.ALLOW or not getattr(result, "passed", False):
                 return result
         return None
 
