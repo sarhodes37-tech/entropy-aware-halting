@@ -725,3 +725,150 @@ def test_provenance_reconciler_edge_cases():
     rep_inc = reconciler.reconcile_correlation("c_incomplete", [auth_only])
     assert not rep_inc.valid
     assert rep_inc.status == "INCOMPLETE_EVIDENCE"
+
+
+def test_provenance_store_corruption_detection_branches(tmp_path):
+    log_file = tmp_path / "prov_corrupt_branches.jsonl"
+    store = LocalProvenanceStore(log_path=str(log_file))
+
+    e1 = ProvenanceEvent(
+        schema_version="1.0.0",
+        event_id="evt1",
+        event_type=ProvenanceEventType.ACTION_PROPOSED.value,
+        provenance_source=ProvenanceSource.AGENT_ADAPTER.value,
+        correlation_id="c1",
+        request_id="r1",
+        action_name="A",
+        target="T",
+        canonical_request_digest="d1",
+        timestamp="ts"
+    )
+    res1 = store.record_event(e1)
+
+    # 1. Test duplicate event ID detection during log health inspection (Line 172)
+    with open(log_file, "a") as f:
+        f.write(json.dumps(res1) + "\n")
+
+    healthy, _, count, ids = store._inspect_health()
+    assert healthy is False
+
+    # 2. Test broken chain prev_hash detection (Line 181)
+    with open(log_file, "w") as f:
+        broken_entry = dict(res1)
+        broken_entry["event_id"] = "evt2"
+        broken_entry["prev_hash"] = "WRONG_PREV"
+        broken_entry["entry_hash"] = store._compute_chain_hash("WRONG_PREV", {k: v for k, v in broken_entry.items() if k != "entry_hash"})
+        f.write(json.dumps(broken_entry) + "\n")
+
+    healthy2, _, _, _ = store._inspect_health()
+    assert healthy2 is False
+
+    # 3. Test tampered entry hash detection (Line 188)
+    with open(log_file, "w") as f:
+        tampered_entry = dict(res1)
+        tampered_entry["action_name"] = "MUTATED"
+        f.write(json.dumps(tampered_entry) + "\n")
+
+    healthy3, _, _, _ = store._inspect_health()
+    assert healthy3 is False
+
+    # 4. Test defensive skipping of malformed JSON lines during get_events_for_correlation (Line 203 & 209)
+    with open(log_file, "w") as f:
+        f.write("{malformed json line}\n")
+        f.write(json.dumps(res1) + "\n")
+        f.write("{another bad line\n")
+
+    events = store.get_events_for_correlation("c1")
+    assert len(events) == 1
+    assert events[0].event_id == "evt1"
+
+
+def test_provenance_reconciler_digest_mismatch_branch():
+    reconciler = ProvenanceReconciler()
+    auth = ProvenanceEvent(
+        schema_version="1.0.0",
+        event_id="e1",
+        event_type=ProvenanceEventType.AUTHORIZATION_GRANTED.value,
+        provenance_source=ProvenanceSource.GOVERNANCE_GATE.value,
+        correlation_id="c_dig",
+        request_id="r1",
+        action_name="READ",
+        target="T1",
+        canonical_request_digest="dig_original",
+        timestamp="ts",
+        authorization_token_id="tok1"
+    )
+    exec_start = ProvenanceEvent(
+        schema_version="1.0.0",
+        event_id="e2",
+        event_type=ProvenanceEventType.EXECUTION_STARTED.value,
+        provenance_source=ProvenanceSource.EXECUTOR.value,
+        correlation_id="c_dig",
+        request_id="r1",
+        action_name="READ",
+        target="T1",
+        canonical_request_digest="dig_MUTATED",
+        timestamp="ts",
+        authorization_token_id="tok1",
+        execution_attempt_id="att1"
+    )
+    report = reconciler.reconcile_correlation("c_dig", [auth, exec_start])
+    assert not report.valid
+    assert any("digest changed" in v for v in report.violations)
+
+
+def test_reconciliation_report_to_dict_and_single_redacted_auth_fallback():
+    reconciler = ProvenanceReconciler()
+
+    # Redacted auth_granted single fallback (Line 438)
+    auth_redacted = ProvenanceEvent(
+        schema_version="1.0.0",
+        event_id=str(uuid.uuid4()),
+        event_type=ProvenanceEventType.AUTHORIZATION_GRANTED.value,
+        provenance_source=ProvenanceSource.GOVERNANCE_GATE.value,
+        correlation_id="c_single_redacted",
+        request_id="[REDACTED]",
+        action_name="READ",
+        target="T1",
+        canonical_request_digest="d1",
+        timestamp="ts",
+        authorization_token_id="[REDACTED]"
+    )
+    exec_started = ProvenanceEvent(
+        schema_version="1.0.0",
+        event_id=str(uuid.uuid4()),
+        event_type=ProvenanceEventType.EXECUTION_STARTED.value,
+        provenance_source=ProvenanceSource.EXECUTOR.value,
+        correlation_id="c_single_redacted",
+        request_id="[REDACTED]",
+        action_name="READ",
+        target="T1",
+        canonical_request_digest="d1",
+        timestamp="ts",
+        authorization_token_id="[REDACTED]",
+        execution_attempt_id="att1"
+    )
+    exec_succ = ProvenanceEvent(
+        schema_version="1.0.0",
+        event_id=str(uuid.uuid4()),
+        event_type=ProvenanceEventType.EXECUTION_SUCCEEDED.value,
+        provenance_source=ProvenanceSource.EXECUTOR.value,
+        correlation_id="c_single_redacted",
+        request_id="[REDACTED]",
+        action_name="READ",
+        target="T1",
+        canonical_request_digest="d1",
+        timestamp="ts",
+        authorization_token_id="[REDACTED]",
+        execution_attempt_id="att1"
+    )
+
+    report = reconciler.reconcile_correlation("c_single_redacted", [auth_redacted, exec_started, exec_succ], agent_claimed_success=True)
+    assert report.valid is True
+    assert report.status == "RECONCILED"
+
+    # Line 369: ReconciliationReport.to_dict()
+    rep_dict = report.to_dict()
+    assert isinstance(rep_dict, dict)
+    assert rep_dict["valid"] is True
+    assert rep_dict["status"] == "RECONCILED"

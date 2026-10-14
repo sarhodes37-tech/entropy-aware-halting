@@ -220,7 +220,7 @@ class TamperEvidentAuditTrail:
                 event.execution_latency_ms = event.telemetry.wall_clock_ms
         if event.belief_snapshot:
             # Pydantic serialization
-            event_metadata["belief_state"] = event.belief_snapshot.model_dump()
+            event_metadata["belief_state"] = event.belief_snapshot.model_dump(mode="json")
 
         # Fallback if no latency provided
         final_latency = round(event.execution_latency_ms, 4) if event.execution_latency_ms is not None else 0.0

@@ -168,6 +168,45 @@ def test_record_event_payload_too_large(temp_audit_file):
         audit.record_event(event)
 
 
+def test_audit_event_cpr_telemetry_belief_snapshots(temp_audit_file):
+    """Validates audit event logging with CPR, telemetry, and belief state snapshots."""
+    from epistemicos.models import CanonicalProblemRepresentation, BeliefObject, PopperianContract
+    from epistemicos.telemetry import HardwareTelemetry
+
+    audit = TamperEvidentAuditTrail(temp_audit_file)
+    cpr = CanonicalProblemRepresentation(policy_id="P1", fleet_data={"count": 1})
+    telemetry = HardwareTelemetry(
+        wall_clock_ms=12.34, cuda_time_ms=0.0, vram_allocated_mb=0.0,
+        vram_reserved_mb=0.0, vram_peak_mb=0.0, fragmentation_index=0.0,
+        tokens_processed=10, ms_per_token=1.23
+    )
+    popper = PopperianContract(
+        claim_id="claim_001", target_metric="loss_ratio",
+        falsification_threshold=0.1, comparison_operator=">", observation_window_days=30
+    )
+    belief = BeliefObject(
+        belief_id="b1", cpr_frame_id="f1", assertion="claim",
+        prior_probability=0.5, current_posterior=0.9, popp_contract=popper
+    )
+
+    event = AuditEvent(
+        event_type=AuditLogLevel.INFO,
+        gate_name="SnapGate",
+        reason="Testing snapshots",
+        model_id="M1",
+        payload_snippet="snippet",
+        cpr_snapshot=cpr,
+        telemetry=telemetry,
+        belief_snapshot=belief
+    )
+
+    rec = audit.record_event(event)
+    assert rec["latency_ms"] == 12.34
+    assert "cpr_state" in rec["metadata"]
+    assert "hardware_telemetry" in rec["metadata"]
+    assert "belief_state" in rec["metadata"]
+
+
 def test_verify_receipt_type_and_format_edge_cases():
     """Validates verify_receipt type and format error handling branches."""
     # Line 420: Non-dict receipt
