@@ -212,45 +212,44 @@ class ContainmentGuard:
     # =========================================================================
 
     def _extract_hostname_secure(self, url: str) -> str:
-        """Extracts the hostname securely to prevent SSRF bypasses via URL parsing inconsistencies."""
+        """Extracts the hostname securely using urllib.parse to prevent SSRF bypasses via URL parsing inconsistencies."""
+        if not isinstance(url, str):
+            return ""
         try:
             url = url.strip()
-            url_norm = url.replace('\\', '/')
-
-            if "://" in url_norm:
-                rest = url_norm.split("://", 1)[1]
-                authority = rest.split("/", 1)[0].split("?", 1)[0]
-                if "#" in authority or "%23" in authority.lower():
-                    return ""
-
-            parsed = urlsplit(url_norm)
-            decoded_netloc = unquote(parsed.netloc)
-
-            if '#' in decoded_netloc:
+            if not url:
                 return ""
 
-            decoded_netloc = ''.join(decoded_netloc.split())
+            url_norm = url.replace('\\', '/')
 
-            if '@' in decoded_netloc:
-                host_port = decoded_netloc.rsplit('@', 1)[-1]
+            # Reject URLs containing '#' or '%23' in the authority portion before path or query
+            if "://" in url_norm:
+                scheme_rest = url_norm.split("://", 1)[1]
+            elif url_norm.startswith("//"):
+                scheme_rest = url_norm[2:]
             else:
-                host_port = decoded_netloc
+                scheme_rest = url_norm
 
-            if host_port.startswith('['):
-                end_bracket = host_port.find(']')
-                if end_bracket != -1:
-                    hostname = host_port[1:end_bracket]
-                else:
-                    hostname = host_port
-            else:
-                if ':' in host_port:
-                    hostname = host_port.rsplit(':', 1)[0]
-                else:
-                    hostname = host_port
+            authority_part = scheme_rest.split("/", 1)[0].split("?", 1)[0]
+            if "#" in authority_part or "%23" in authority_part.lower():
+                return ""
 
-            hostname = hostname.lower()
+            parsed = urlsplit(url_norm)
 
-            if not re.match(r'^[\w\-\.\[\]\:]+$', hostname):
+            # urllib.parse.urlsplit parsed.hostname extracts hostname, strips userinfo and port,
+            # strips brackets from IPv6, and handles lowercase.
+            hostname = parsed.hostname
+            if not hostname:
+                return ""
+
+            hostname = hostname.lower().strip()
+
+            # Reject whitespace inside hostname
+            if any(c.isspace() for c in hostname):
+                return ""
+
+            # Validate character set (alphanumeric, hyphens, dots, and colons for unbracketed IPv6)
+            if not re.match(r'^[a-zA-Z0-9\-\.\:]+$', hostname):
                 return ""
 
             return hostname
