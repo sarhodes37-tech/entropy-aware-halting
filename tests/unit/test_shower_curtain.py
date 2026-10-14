@@ -423,3 +423,66 @@ def test_vault_concurrent_access_thread_safety():
 
     assert len(results) == 50
     assert all("alice@example.com" in r for r in results)
+
+
+# ------------------------------------------------------------------------------
+# Regression tests for Detector Optimization & Edge Cases
+# ------------------------------------------------------------------------------
+def test_detector_repeated_names():
+    text = "Alice went to town. Later Alice met Bob and Alice called Eve."
+    detector = SensitiveDataDetector()
+    results = detector.detect(text)
+
+    alice_results = [r for r in results if r.value == "Alice"]
+    assert len(alice_results) == 3
+    assert alice_results[0].span == (0, 5)
+    assert alice_results[1].span == (26, 31)
+    assert alice_results[2].span == (44, 49)
+
+
+def test_detector_repeated_entropy_tokens():
+    token = "d2FybmluZ19zZWNyZXRfa2V5XzEyMzQ1Njc4OTA="
+    text = f"First token is {token} and second token is {token}."
+    detector = SensitiveDataDetector()
+    results = detector.detect(text)
+
+    entropy_results = [r for r in results if r.detector_type == "entropy"]
+    assert len(entropy_results) == 2
+    assert entropy_results[0].value == token
+    assert entropy_results[1].value == token
+
+    idx1 = text.find(token)
+    idx2 = text.rfind(token)
+    assert entropy_results[0].span == (idx1, idx1 + len(token))
+    assert entropy_results[1].span == (idx2, idx2 + len(token))
+
+
+def test_detector_case_insensitive_custom_entities():
+    text = "Found project ACME, acme, and AcMe in log."
+    detector = SensitiveDataDetector(custom_entities=["ACME"])
+    results = detector.detect(text)
+
+    acme_results = [r for r in results if r.category == SensitivityCategory.CUSTOM_ENTITY]
+    assert len(acme_results) == 3
+    assert [r.value for r in acme_results] == ["ACME", "acme", "AcMe"]
+    assert acme_results[0].span == (14, 18)
+    assert acme_results[1].span == (20, 24)
+    assert acme_results[2].span == (30, 34)
+
+
+def test_detector_regex_metacharacters_in_entity_names():
+    text = "Service api.v1$key[test] returned error for user."
+    detector = SensitiveDataDetector(custom_entities=["api.v1$key[test]"])
+    results = detector.detect(text)
+
+    entity_results = [r for r in results if r.category == SensitivityCategory.CUSTOM_ENTITY]
+    assert len(entity_results) == 1
+    assert entity_results[0].value == "api.v1$key[test]"
+    assert entity_results[0].span == (8, 24)
+
+
+def test_detector_empty_and_falsy_input():
+    detector = SensitiveDataDetector()
+    assert detector.detect("") == []
+    assert detector.detect(None) == []
+    assert detector.detect(12345) == []
