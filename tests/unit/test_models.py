@@ -89,19 +89,49 @@ def test_token_surprisal_sensor_empty_logprobs():
 
 def test_token_surprisal_sensor_warmup_period_anomaly():
     """Validates that initial token logprobs (index 0 and 1) are evaluated against baseline_prior_surprisal."""
-    sensor = TokenSurprisalSensor(z_threshold=2.85, baseline_prior_surprisal=1.0, std_floor=0.05)
+    sensor = TokenSurprisalSensor(z_threshold=2.85, baseline_prior_surprisal=1.0, baseline_prior_std=1.0, std_floor=0.05)
 
-    # Low surprisal initial tokens (-0.1 -> surprisal 0.1, z = (0.1 - 1.0)/0.05 = -18.0)
+    # Low surprisal initial tokens (-0.1 -> surprisal 0.1, z = (0.1 - 1.0)/1.0 = -0.9)
     z_scores_low = sensor.compute_z_scores([-0.1, -0.2])
     assert len(z_scores_low) == 2
     assert z_scores_low[0] < sensor.z_threshold
     assert z_scores_low[1] < sensor.z_threshold
 
-    # High surprisal initial token at index 0 (-15.0 -> surprisal 15.0, z = (15.0 - 1.0)/0.05 = 280.0)
-    result_high = sensor.evaluate([-15.0, -0.1])
-    assert result_high["passed"] is False
-    assert result_high["flagged_tokens"] >= 1
-    assert result_high["max_z_score"] > sensor.z_threshold
+
+def test_token_surprisal_extreme_anomaly_at_index_0():
+    """Validates that extreme surprisal at token index 0 (during warm-up) is flagged."""
+    sensor = TokenSurprisalSensor(z_threshold=2.85)
+    result = sensor.evaluate([-25.0, -0.1, -0.1])
+    assert result["passed"] is False
+    assert result["flagged_tokens"] >= 1
+    assert result["token_z_scores"][0] > sensor.z_threshold
+
+
+def test_token_surprisal_extreme_anomaly_at_index_1():
+    """Validates that extreme surprisal at token index 1 (during warm-up) is flagged."""
+    sensor = TokenSurprisalSensor(z_threshold=2.85)
+    result = sensor.evaluate([-0.1, -25.0, -0.1])
+    assert result["passed"] is False
+    assert result["flagged_tokens"] >= 1
+    assert result["token_z_scores"][1] > sensor.z_threshold
+
+
+def test_token_surprisal_extreme_anomaly_after_warmup():
+    """Validates that extreme surprisal after the warm-up period (index >= 2) is flagged."""
+    sensor = TokenSurprisalSensor(z_threshold=2.85)
+    result = sensor.evaluate([-0.1, -0.1, -25.0, -0.1])
+    assert result["passed"] is False
+    assert result["flagged_tokens"] >= 1
+    assert result["token_z_scores"][2] > sensor.z_threshold
+
+
+def test_token_surprisal_ordinary_tokens_not_flagged():
+    """Validates that ordinary, low-surprisal tokens throughout the sequence are not flagged."""
+    sensor = TokenSurprisalSensor(z_threshold=2.85)
+    result = sensor.evaluate([-0.1, -0.2, -0.15, -0.1, -0.2, -0.1])
+    assert result["passed"] is True
+    assert result["flagged_tokens"] == 0
+    assert result["max_z_score"] < sensor.z_threshold
 
 
 # ==========================================
