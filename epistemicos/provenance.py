@@ -47,6 +47,24 @@ class ProvenanceSource(Enum):
 
 
 @dataclass
+class ExecutionContext:
+    """
+    Execution context grouping correlation, request, and authorization parameters
+    for protected action execution.
+    """
+    correlation_id: str
+    request_id: str
+    authorization_token_id: str
+    authorized_digest: str
+    authorization_granted: bool = True
+    execution_attempt_id: Optional[str] = None
+    policy_version: str = "1.0.0"
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
 class ProvenanceEvent:
     schema_version: str
     event_id: str
@@ -242,38 +260,62 @@ class TrustedExecutionBoundary:
         action_name: str,
         target: str,
         request_payload: Any,
-        correlation_id: str,
-        request_id: str,
-        authorization_token_id: str,
-        authorized_digest: str,
-        authorization_granted: bool,
-        executor_func: Any,
+        correlation_id: Optional[Any] = None,
+        request_id: Optional[Any] = None,
+        authorization_token_id: Optional[str] = None,
+        authorized_digest: Optional[str] = None,
+        authorization_granted: Optional[bool] = None,
+        executor_func: Optional[Any] = None,
         execution_attempt_id: Optional[str] = None,
-        policy_version: str = "1.0.0"
+        policy_version: str = "1.0.0",
+        *,
+        context: Optional[ExecutionContext] = None
     ) -> Dict[str, Any]:
         """
         Atomically validates authorization and executes the protected operation,
         emitting trusted EXECUTION_STARTED, EXECUTION_SUCCEEDED, EXECUTION_FAILED, or EXECUTION_INTERRUPTED events.
+        Accepts parameters via an `ExecutionContext` instance or individual arguments for backward compatibility.
         """
-        attempt_id = execution_attempt_id or str(uuid.uuid4())
+        if isinstance(correlation_id, ExecutionContext):
+            context = correlation_id
+            if executor_func is None and callable(request_id):
+                executor_func = request_id
+
+        if context is not None:
+            corr_id = context.correlation_id
+            req_id = context.request_id
+            auth_token_id = context.authorization_token_id
+            auth_digest = context.authorized_digest
+            auth_granted = context.authorization_granted
+            attempt_id = execution_attempt_id or context.execution_attempt_id or str(uuid.uuid4())
+            pol_version = policy_version if policy_version != "1.0.0" else context.policy_version
+        else:
+            corr_id = correlation_id
+            req_id = request_id
+            auth_token_id = authorization_token_id
+            auth_digest = authorized_digest
+            auth_granted = authorization_granted if authorization_granted is not None else True
+            attempt_id = execution_attempt_id or str(uuid.uuid4())
+            pol_version = policy_version
+
         current_digest = self.compute_canonical_digest(request_payload)
         now_ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
         # Atomic token consumption and retry check
         with self._lock:
-            if not authorization_granted:
-                raise PermissionError(f"Execution rejected: Authorization was not granted for token {authorization_token_id}")
+            if not auth_granted:
+                raise PermissionError(f"Execution rejected: Authorization was not granted for token {auth_token_id}")
 
-            if authorization_token_id in self._consumed_tokens:
-                raise PermissionError(f"Authorization token {authorization_token_id} has already been consumed (replay attempt)")
+            if auth_token_id in self._consumed_tokens:
+                raise PermissionError(f"Authorization token {auth_token_id} has already been consumed (replay attempt)")
 
             if attempt_id in self._consumed_attempts:
                 raise ValueError(f"Execution attempt ID {attempt_id} has already been processed")
 
-            if current_digest != authorized_digest:
+            if current_digest != auth_digest:
                 raise ValueError("Request payload digest changed between authorization and execution")
 
-            self._consumed_tokens.add(authorization_token_id)
+            self._consumed_tokens.add(auth_token_id)
             self._consumed_attempts.add(attempt_id)
 
         # Emit EXECUTION_STARTED
@@ -282,15 +324,15 @@ class TrustedExecutionBoundary:
             event_id=str(uuid.uuid4()),
             event_type=ProvenanceEventType.EXECUTION_STARTED.value,
             provenance_source=ProvenanceSource.EXECUTOR.value,
-            correlation_id=correlation_id,
-            request_id=request_id,
+            correlation_id=corr_id,
+            request_id=req_id,
             action_name=action_name,
             target=target,
             canonical_request_digest=current_digest,
             timestamp=now_ts,
-            authorization_token_id=authorization_token_id,
+            authorization_token_id=auth_token_id,
             execution_attempt_id=attempt_id,
-            policy_version=policy_version
+            policy_version=pol_version
         )
         self.store.record_event(start_event)
 
@@ -303,15 +345,15 @@ class TrustedExecutionBoundary:
                 event_id=str(uuid.uuid4()),
                 event_type=ProvenanceEventType.EXECUTION_SUCCEEDED.value,
                 provenance_source=ProvenanceSource.EXECUTOR.value,
-                correlation_id=correlation_id,
-                request_id=request_id,
+                correlation_id=corr_id,
+                request_id=req_id,
                 action_name=action_name,
                 target=target,
                 canonical_request_digest=current_digest,
                 timestamp=end_ts,
-                authorization_token_id=authorization_token_id,
+                authorization_token_id=auth_token_id,
                 execution_attempt_id=attempt_id,
-                policy_version=policy_version,
+                policy_version=pol_version,
                 outcome={"status": "SUCCESS", "result": _sanitize_sensitive_data(result)}
             )
             self.store.record_event(success_event)
@@ -323,15 +365,15 @@ class TrustedExecutionBoundary:
                 event_id=str(uuid.uuid4()),
                 event_type=ProvenanceEventType.EXECUTION_FAILED.value,
                 provenance_source=ProvenanceSource.EXECUTOR.value,
-                correlation_id=correlation_id,
-                request_id=request_id,
+                correlation_id=corr_id,
+                request_id=req_id,
                 action_name=action_name,
                 target=target,
                 canonical_request_digest=current_digest,
                 timestamp=end_ts,
-                authorization_token_id=authorization_token_id,
+                authorization_token_id=auth_token_id,
                 execution_attempt_id=attempt_id,
-                policy_version=policy_version,
+                policy_version=pol_version,
                 outcome={"status": "FAILED", "error": str(e)}
             )
             self.store.record_event(fail_event)
@@ -343,15 +385,15 @@ class TrustedExecutionBoundary:
                 event_id=str(uuid.uuid4()),
                 event_type=ProvenanceEventType.EXECUTION_INTERRUPTED.value,
                 provenance_source=ProvenanceSource.EXECUTOR.value,
-                correlation_id=correlation_id,
-                request_id=request_id,
+                correlation_id=corr_id,
+                request_id=req_id,
                 action_name=action_name,
                 target=target,
                 canonical_request_digest=current_digest,
                 timestamp=end_ts,
-                authorization_token_id=authorization_token_id,
+                authorization_token_id=auth_token_id,
                 execution_attempt_id=attempt_id,
-                policy_version=policy_version,
+                policy_version=pol_version,
                 outcome={"status": "INTERRUPTED", "reason": str(be)}
             )
             self.store.record_event(interrupt_event)

@@ -71,6 +71,7 @@ from epistemicos.shower_curtain import (
 
 # Expose Execution Provenance subsystem
 from epistemicos.provenance import (
+    ExecutionContext,
     ProvenanceEvent,
     ProvenanceEventType,
     ProvenanceSource,
@@ -99,6 +100,7 @@ __all__.extend([
     "SensitiveDataDetector",
     "PrivacyPolicy",
     "LocalMappingVault",
+    "ExecutionContext",
     "ProvenanceEvent",
     "ProvenanceEventType",
     "ProvenanceSource",
