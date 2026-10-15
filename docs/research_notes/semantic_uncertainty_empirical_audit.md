@@ -2,7 +2,7 @@
 
 **Author:** EpistemicOS Research & Security Audit Team
 **Audit Execution Date:** October 2026 (Verified Sandbox & Repository Execution Time: Oct 15, 2026)
-**Document Version:** `1.0.0`
+**Document Version:** `1.1.0`
 **Target Module:** `epistemicos/semantic_uncertainty.py`, `epistemicos/semantic_adapter.py`
 **Status:** COMPLETE / NEUTRAL EMPIRICAL FINDINGS
 
@@ -12,14 +12,30 @@
 
 This report documents a repository-grounded research, mathematical, and implementation audit of `SemanticUncertaintyEstimator` and `SemanticSchedulerAdapter` in EpistemicOS. We evaluate whether meaning-level conclusion clustering and semantic entropy ($H_{\mathrm{sem}}$) provide measurable, incremental decision value beyond token-level entropy ($H_{\text{token}}$), and whether combining the two signals improves the performance of the EpistemicOS control plane.
 
-### 1.1 Date Provenance and Verification Audit
+### 1.1 Git History, File Provenance, and Metadata Verification
 
-To ensure complete transparency regarding document metadata and audit provenance:
+A rigorous audit of git commit history (`git log --follow --stat`) establishes the exact physical provenance of all research notes and implementation files in the repository:
 
-- **Original Prototype Research Note (`docs/research_notes/semantic_uncertainty_prototype.md`):** Written in **October 2024** by the EpistemicOS Core Research Team (`SemanticUncertaintyEstimator-v1.0`).
-- **Held-Out Evaluation Research Note (`docs/research_notes/held_out_semantic_uncertainty_evaluation.md`):** Written in **March 2026** (`SemanticUncertaintyEvaluation-v1.0`).
-- **Audit Execution & Report Generation Date:** **October 2026** (System execution date: `Thu Oct 15 09:03:22 UTC 2026`, Git HEAD commit `95444b5` dated `2026-10-15`).
-- *Clarification Note:* Earlier drafts of this audit report inherited a "March 2026" header string by direct reference to the held-out evaluation research note (`docs/research_notes/held_out_semantic_uncertainty_evaluation.md`). The audit execution timestamp has been verified against repository git commit logs and sandbox system runtime metadata as **October 2026**.
+- **Initial Repository Commit:**
+  - **Commit Hash:** `95444b500300c3c89709195346abfb0d0d83c90a`
+  - **Author:** Steven Rhodes <sarhodes37@gmail.com>
+  - **Commit Timestamp:** `Thu Oct 15 03:59:07 2026 -0400`
+  - **Subject:** `Merge pull request #196 from sarhodes37-tech/security/fix-surprisal-warmup-bypass-426472564809678886`
+
+- **Concurrent Introduction of All Core Components:**
+  In commit `95444b5`, the following files were introduced into the repository simultaneously on **October 15, 2026**:
+  1. `docs/research_notes/semantic_uncertainty_prototype.md` (110 lines; embedded text header: "October 2024")
+  2. `docs/research_notes/held_out_semantic_uncertainty_evaluation.md` (46 lines; embedded text header: "March 2026")
+  3. `docs/HELD_OUT_SEMANTIC_EVALUATION_PREREGISTRATION.md` (106 lines)
+  4. `epistemicos/semantic_uncertainty.py` (470 lines)
+  5. `epistemicos/semantic_adapter.py` (198 lines)
+  6. `benchmarks/run_held_out_semantic_evaluation.py` (396 lines)
+  7. `benchmarks/data/held_out_semantic_trajectories.json` (495 lines)
+
+- **Provenance Findings:**
+  1. *Substantive Content Origin:* Git history confirms that the entire implementation, dataset, and research note documentation entered the codebase together on **October 15, 2026**.
+  2. *Textual Date Discrepancy:* The dates written inside the headers ("October 2024", "March 2026") are textual metadata string labels embedded in the pre-authored manuscripts at the time of commit `95444b5`. Git commit timestamps prove that all these files physically appeared in the repository on **October 15, 2026**.
+  3. *Audit Verification:* The current empirical audit was conducted on October 15, 2026, using the code, datasets, and benchmark tools committed in `95444b5`.
 
 ### 1.2 Key Evidence-Based Conclusions
 
