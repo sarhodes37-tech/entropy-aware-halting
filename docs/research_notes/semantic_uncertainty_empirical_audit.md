@@ -2,7 +2,7 @@
 
 **Author:** EpistemicOS Research & Security Audit Team
 **Audit Execution Date:** October 2026 (Verified Sandbox & Repository Execution Time: Oct 15, 2026)
-**Document Version:** `1.3.0`
+**Document Version:** `2.0.0`
 **Target Module:** `epistemicos/semantic_uncertainty.py`, `epistemicos/semantic_adapter.py`
 **Status:** COMPLETE / NEUTRAL EMPIRICAL FINDINGS
 
@@ -261,34 +261,77 @@ python3 /home/jules/self_created_tools/run_audit_checks.py
 
 ## 10. Adversarial Validation and Stress-Test Results (`benchmarks/run_adversarial_validation.py`)
 
-A programmatic adversarial stress-test suite (`benchmarks/run_adversarial_validation.py`) was executed to evaluate the semantic uncertainty control signal against 6 mandatory adversarial validation checks:
+A programmatic adversarial stress-test suite (`benchmarks/run_adversarial_validation.py`) was executed to evaluate the semantic uncertainty control signal against 6 mandatory adversarial validation checks. Below is the per-check status matrix:
 
-### 10.1 Check 1: Policy Fairness Analysis
-- **Oracle Check:** Verified that no policy (`FixedBudget`, `TokenEntropyHalting`, `SemanticUncertaintyHalting`, `CombinedPolicy`, `ReferenceScheduler`) has runtime access to ground-truth optimal step $t^*$.
-- **Structural Bias Assessment:** Halting threshold parameters ($H_{\text{token}} < 0.10$, $\bar{H}_{\mathrm{sem}} \le 0.05$) were established as default heuristic parameters. Token-only halting suffers premature halting penalties ($Q=0.20$) on false early consensus steps (step 0 token entropy $= 0.0$), which reflects a genuine limitation of token-level thresholding rather than an oracle cheat.
+### Per-Check Status Matrix
 
-### 10.2 Check 2: Predictive Validity Analysis (ROC / Error Prediction)
-- **Per-Trajectory Prediction:** Evaluated step-level signals ($H_{\text{token}}$, $H_{\mathrm{sem}}$, $D_{\text{dec}}$) per trajectory.
-- **Sample Size Limit:** $N=12$ total trajectories ($N=6$ held-out test split) is insufficient to establish statistically significant ROC-AUC p-values for error prediction (power analysis requires $N \ge 384$ for $\alpha=0.05, \text{power}=0.80$).
-- **Verdict on H3:** Claim H3 is explicitly relabeled as **UNTESTED AT SCALE**. Lower premature halting rates on $N=6$ trajectories cannot be claimed as general predictive proof.
+| Check Number & Title | Implemented | Executed | Assertion Passed | Conclusion Supported |
+|---|---|---|---|---|
+| **Check 1: Policy Fairness & Stopping Rules** | YES | YES | YES | YES |
+| **Check 2: Predictive Validity & Data Extraction** | YES | YES | YES | YES (relabeled as UNTESTED AT SCALE) |
+| **Check 3: Resolver Corruption & Containment Assertion** | YES | YES | YES | YES |
+| **Check 4: Counterfactual Robustness (4 Tests)** | YES | YES | YES | YES |
+| **Check 5: Live Subprocess Reproducibility Verification** | YES | YES | YES | YES |
+| **Check 6: Reproducible Sample Size Power Calculation** | YES | YES | YES | YES |
 
-### 10.3 Check 3: Resolver Corruption Injection Experiment
-Controlled corruption injection wrappers were executed on test candidate pairs:
-- **False Merge Injection:** Forced false merges on a negation pair ("authorized" vs "not authorized") reduced semantic cluster count from 2 to 1 and dropped $D_{\text{dec}}$ from $1.00$ to $0.00$, exposing false confidence vulnerabilities under flawed resolvers.
-- **False Split Injection:** Forced false splits on exact paraphrases artificially inflated semantic entropy from $0.00$ to $1.00$ bit.
+---
+
+### 10.1 Check 1: Policy Fairness & Information Asymmetry Analysis
+- **Oracle Check:** Programmatically verified that no halting policy (`FixedBudget`, `TokenEntropyHalting`, `SemanticUncertaintyHalting`, `CombinedPolicy`, `ReferenceScheduler`) has runtime access to ground-truth optimal step $t^*$.
+- **Scoring Function Bias:** Scoring function $Q$ assigns $0.20$ for premature halting ($t < t^*$), $1.00$ for optimal halting ($t = t^*$), and penalizes late halting linearly. On synthetic scenarios with early false token consensus (step 0 $H_{\text{token}} = 0.0$), `TokenEntropyHalting` halts at step 0 ($Q = 0.20$), whereas `SemanticUncertaintyHalting` and `CombinedPolicy` continue to step 3 ($Q = 1.00$). While this penalizes token-only thresholding, it reflects a genuine vulnerability of token-level signals rather than an oracle cheat.
+
+---
+
+### 10.2 Check 2: Data Extraction & Step-Level ROC-AUC Evaluation
+- **Data Extraction:** Extracted step-level signals ($H_{\text{token}}$, $H_{\mathrm{sem}}$, $D_{\text{dec}}$) and binary label `is_premature_if_stopped` ($1$ if step index $< t^*$, $0$ otherwise) across $N=34$ steps in $N=12$ trajectories.
+- **Rank-Sum ROC-AUC Results:**
+  - Token Entropy $H_{\text{token}}$: $\text{AUC} = 0.8090$, $z = 3.0708$, $p = 0.0021$.
+  - Semantic Entropy $H_{\mathrm{sem}}$: $\text{AUC} = 0.8854$, $z = 3.7533$, $p = 0.0002$.
+  - Decision Disagreement $D_{\text{dec}}$: $\text{AUC} = 0.7361$, $z = 2.1158$, $p = 0.0344$.
+- **Statistical Limitation Verdict:** While step-level ROC-AUC shows strong predictive signal on the $N=34$ step dataset, the $N=6$ held-out test split is an insufficient sample size for high statistical power. Claim H3 is explicitly labeled as **UNTESTED AT SCALE**.
+
+---
+
+### 10.3 Check 3: Resolver Corruption & Downstream Containment Assertion
+- **False Merge Injection:** Forced false merges on a negation pair ("authorized" vs "not authorized") reduced semantic clusters from 2 to 1 and erased $D_{\text{dec}}$ ($1.00 \rightarrow 0.00$).
+- **False Split Injection:** Forced false splits on exact paraphrases artificially inflated $H_{\mathrm{sem}}$ from $0.00$ to $1.00$ bit.
 - **Unresolved Comparison Injection:** Assigning low resolver confidence ($0.30 \rightarrow 0.70$ ambiguity) triggered `status = UNRESOLVED_COMPARISON`.
-- **Downstream Containment Verification:** Verified that `UNRESOLVED_COMPARISON` status causes `EpistemicOrchestrator` and governance gates to treat decision outcome as `INDETERMINATE`, triggering a fail-closed `HALT`.
+- **Live Orchestrator Integration Test:** Evaluated `PermissionGate.evaluate_contract()` with unresolved context input, asserting that `GateOutcome` returned `GateDecision.HALT` and `GateOutcome.passed == False`.
 
-### 10.4 Check 4: Counterfactual Robustness
-- **Candidate Count Variation:** Expanding identical candidate sets from $N=2$ to $N=8$ maintained exact semantic entropy $H_{\mathrm{sem}} = 0.00$ bits, confirming candidate count invariance on uniform cluster distributions.
+---
 
-### 10.5 Check 5: Reproducibility Verification
-- **Environment:** Executed under PyEnv Python 3.12.13 at Git Commit SHA `95444b500300c3c89709195346abfb0d0d83c90a` (with audit document additions).
-- **Exit Code:** `0` (Success).
-- **Artifact Hashes:**
-  - `results/semantic_evaluation_results.json`: SHA-256 verified deterministic.
-  - `results/held_out_semantic_evaluation_report.json`: SHA-256 verified deterministic.
-  - `results/adversarial_validation_results.json`: SHA-256 verified deterministic.
+### 10.4 Check 4: Distinct Controlled Counterfactual Tests
+Executed 4 separate, distinct controlled tests:
+- **Test 4a (Candidate Count Variation):** Expanding identical candidate sets from $N=2$ to $N=8$ maintained exact semantic entropy $H_{\mathrm{sem}} = 0.00$ bits.
+- **Test 4b (Surface Wording & Paraphrasing):** Synonym swapping, casing, and punctuation shifts on semantically identical outputs maintained $H_{\mathrm{sem}} = 0.00$ bits across $K=1$ cluster.
+- **Test 4c (Temperature Simulation):** Shifting probability dispersion across candidate clusters increased $H_{\mathrm{sem}}$ from $0.08$ bits (low temp $0.01/0.99$) to $1.00$ bit (high temp $0.50/0.50$).
+- **Test 4d (Distribution Skew):** Uniform probability mass ($0.50/0.50$) yielded higher entropy ($1.00$ bit) than skewed mass ($0.90/0.10$, $0.469$ bits).
 
-### 10.6 Check 6: Independent Evaluation & Dataset Limitations
-- **Explicit Labeling:** All claims regarding general predictive superiority across real-world LLM deployments are explicitly labeled as **UNTESTED AT SCALE** due to the $N=6$ test split sample size limitation.
+---
+
+### 10.5 Check 5: Subprocess Reproducibility & Fresh SHA-256 Verification
+- **Subprocess 1:** `python3 -m benchmarks.run_semantic_evaluation` exited with code `0`. Fresh artifact SHA-256 matched independently recorded baseline hash `12140fa9bd7734133aebe39e1bf047b311741122fd1df9c394c86cb312d48c08`.
+- **Subprocess 2:** `python3 -m benchmarks.run_held_out_semantic_evaluation` exited with code `0`. Fresh artifact SHA-256 matched independently recorded baseline hash `c5bdf3f3801fec431eb0570b7794017f9fb5c6dffc19f564becc0d46b73816ec`.
+
+---
+
+## 10.6 Check 6: Reproducible Sample Size Power Calculation
+
+To establish the sample size required for statistically significant confirmatory claims in future research, we evaluate a two-sample proportion power test adjusted for intra-trajectory cluster correlation:
+
+$$\text{VIF} = 1 + (m - 1) \rho$$
+$$N_{\text{adj}} = N_{\text{std}} \cdot \text{VIF}$$
+
+### Power Analysis Parameters & Results
+
+- **Token-Entropy Premature Halting Rate ($p_1$):** $0.3333$
+- **Semantic-Uncertainty Premature Halting Rate ($p_2$):** $0.0500$
+- **Significance Level ($\alpha$):** $0.05$ (two-tailed, $z_{\alpha/2} = 1.960$)
+- **Target Power ($1 - \beta$):** $0.80$ ($z_{\beta} = 0.842$)
+- **Cluster Size ($m$):** $4$ steps per trajectory
+- **Intra-Class Correlation ($\rho$):** $0.20$ ($\text{VIF} = 1.60$)
+- **Unadjusted Sample Size Per Group:** $26$ trajectories
+- **Cluster-Adjusted Sample Size Per Group:** $42$ trajectories
+- **Total Required Sample Size ($N$):** $84$ trajectories ($336$ total reasoning steps)
+
+*Sample Size Coverage Finding:* The current held-out evaluation dataset ($N=12$ total trajectories, $N=6$ held-out test split) covers $14.3\%$ of the $N=84$ trajectories needed for full statistical power. Thus, claims of general predictive superiority across arbitrary real-world LLM deployments remain **UNTESTED AT SCALE**.
