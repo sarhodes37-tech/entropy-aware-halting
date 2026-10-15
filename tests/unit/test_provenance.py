@@ -7,6 +7,7 @@ import uuid
 import pytest
 import threading
 from epistemicos.provenance import (
+    ExecutionContext,
     ProvenanceEvent,
     ProvenanceEventType,
     ProvenanceSource,
@@ -872,3 +873,91 @@ def test_reconciliation_report_to_dict_and_single_redacted_auth_fallback():
     assert isinstance(rep_dict, dict)
     assert rep_dict["valid"] is True
     assert rep_dict["status"] == "RECONCILED"
+
+
+def test_execution_context_dataclass():
+    ctx = ExecutionContext(
+        correlation_id="corr-ctx-1",
+        request_id="req-ctx-1",
+        authorization_token_id="tok-ctx-1",
+        authorized_digest="digest-ctx-1",
+        authorization_granted=True,
+        execution_attempt_id="att-ctx-1",
+        policy_version="1.1.0"
+    )
+    d = ctx.to_dict()
+    assert d["correlation_id"] == "corr-ctx-1"
+    assert d["request_id"] == "req-ctx-1"
+    assert d["authorization_token_id"] == "tok-ctx-1"
+    assert d["authorized_digest"] == "digest-ctx-1"
+    assert d["authorization_granted"] is True
+    assert d["execution_attempt_id"] == "att-ctx-1"
+    assert d["policy_version"] == "1.1.0"
+
+
+def test_execute_protected_action_with_execution_context_keyword(tmp_path):
+    log_file = str(tmp_path / "prov_ctx_kw.jsonl")
+    store = LocalProvenanceStore(log_path=log_file)
+    boundary = TrustedExecutionBoundary(provenance_store=store)
+
+    payload = {"action": "UPDATE_POLICY"}
+    digest = boundary.compute_canonical_digest(payload)
+    corr_id = str(uuid.uuid4())
+
+    ctx = ExecutionContext(
+        correlation_id=corr_id,
+        request_id="req-kw",
+        authorization_token_id="tok-kw",
+        authorized_digest=digest,
+        authorization_granted=True,
+        policy_version="2.0.0"
+    )
+
+    res = boundary.execute_protected_action(
+        action_name="UPDATE",
+        target="policy-engine",
+        request_payload=payload,
+        executor_func=lambda: "UPDATED",
+        context=ctx
+    )
+
+    assert res["status"] == "SUCCESS"
+    assert res["result"] == "UPDATED"
+
+    events = store.get_events_for_correlation(corr_id)
+    assert len(events) == 2
+    assert events[0].authorization_token_id == "tok-kw"
+    assert events[0].policy_version == "2.0.0"
+
+
+def test_execute_protected_action_with_execution_context_positional(tmp_path):
+    log_file = str(tmp_path / "prov_ctx_pos.jsonl")
+    store = LocalProvenanceStore(log_path=log_file)
+    boundary = TrustedExecutionBoundary(provenance_store=store)
+
+    payload = {"action": "RESET_CACHE"}
+    digest = boundary.compute_canonical_digest(payload)
+    corr_id = str(uuid.uuid4())
+
+    ctx = ExecutionContext(
+        correlation_id=corr_id,
+        request_id="req-pos",
+        authorization_token_id="tok-pos",
+        authorized_digest=digest,
+        authorization_granted=True
+    )
+
+    res = boundary.execute_protected_action(
+        "CACHE_RESET",
+        "redis-cluster",
+        payload,
+        ctx,
+        lambda: "CACHE_CLEARED"
+    )
+
+    assert res["status"] == "SUCCESS"
+    assert res["result"] == "CACHE_CLEARED"
+
+    events = store.get_events_for_correlation(corr_id)
+    assert len(events) == 2
+    assert events[0].authorization_token_id == "tok-pos"
