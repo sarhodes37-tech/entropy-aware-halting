@@ -76,6 +76,17 @@ class EntropyAwareScheduler:
         self.best_utility = float("-inf")
         self.initial_entropy = None
 
+    def reset(self) -> None:
+        """Resets trajectory state tracking metrics for a new execution trajectory/session."""
+        self.entropy_history = []
+        self.utility_history = []
+        self.history = []
+        self.total_cost = 0
+        self.best_state = None
+        self.best_step = -1
+        self.best_utility = float("-inf")
+        self.initial_entropy = None
+
     def entropy(self, probabilities):
         """
         Input Contract for Probability Distributions:

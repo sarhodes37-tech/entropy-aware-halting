@@ -78,6 +78,47 @@ class EpistemicOrchestrator:
             TriangulationGate()
         ]
 
+    def get_trajectory_scheduler(self, trajectory_id: str) -> EntropyAwareScheduler:
+        """Retrieves or instantiates the isolated EntropyAwareScheduler for a trajectory."""
+        with self._registry_lock:
+            if trajectory_id not in self._schedulers:
+                self._schedulers[trajectory_id] = EntropyAwareScheduler(
+                    value_of_information=self._base_scheduler.V,
+                    divergence_threshold=self._base_scheduler.divergence_threshold,
+                    negative_yield_window=self._base_scheduler.negative_yield_window,
+                    entropy_delta_threshold=self._base_scheduler.entropy_delta_threshold,
+                    stagnation_window=self._base_scheduler.stagnation_window,
+                    confidence_threshold=self._base_scheduler.confidence_threshold,
+                    utility_epsilon=self._base_scheduler.utility_epsilon,
+                    minimum_steps_before_convergence=self._base_scheduler.minimum_steps_before_convergence
+                )
+            return self._schedulers[trajectory_id]
+
+    def reset_trajectory(self, trajectory_id: str) -> None:
+        """Explicitly retires and resets the scheduler state associated with a given trajectory ID."""
+        with self._registry_lock:
+            if trajectory_id in self._schedulers:
+                self._schedulers[trajectory_id].reset()
+                del self._schedulers[trajectory_id]
+            if trajectory_id in self._trajectory_locks:
+                del self._trajectory_locks[trajectory_id]
+
+    def retire_trajectory(self, trajectory_id: str) -> None:
+        """Alias for reset_trajectory to formally retire a completed or halted trajectory."""
+        self.reset_trajectory(trajectory_id)
+
+    def reset_schedulers(self) -> None:
+        """Clears and resets all managed trajectory schedulers and base/default scheduler state."""
+        with self._registry_lock:
+            for sched in list(self._schedulers.values()):
+                sched.reset()
+            self._schedulers.clear()
+            self._trajectory_locks.clear()
+            if hasattr(self._base_scheduler, "reset"):
+                self._base_scheduler.reset()
+            if hasattr(self.scheduler, "reset") and self.scheduler is not self._base_scheduler:
+                self.scheduler.reset()
+
     def process_step(self, probabilities, cost, state, trajectory_id: Optional[str] = None) -> DecisionResult:
         """Handles the low-level entropy scheduling loop."""
         traj_key = trajectory_id or (state if isinstance(state, str) else None)
@@ -244,6 +285,13 @@ class EpistemicOrchestrator:
         """
         # Assign a trajectory ID for vector tracking if one isn't provided
         traj_id = trajectory_id or str(uuid.uuid4())
+
+        # Retire/reset any existing trajectory scheduler state for this trajectory ID so the session starts fresh
+        self.reset_trajectory(traj_id)
+
+        # Reset default/base scheduler if present
+        if hasattr(self.scheduler, "reset"):
+            self.scheduler.reset()
 
         cpr, error_response = self._validate_and_normalize(raw_payload)
         if error_response:

@@ -235,3 +235,98 @@ def test_entropy_aware_scheduler_input_contract():
     # Handles zero probabilities using 0 * log(0) = 0 limit
     h_zero = scheduler.entropy([1.0, 0.0])
     assert math.isclose(h_zero, 0.0)
+
+
+# =============================================================================
+# CONCERN 6: EntropyAwareScheduler.reset & Orchestrator Submission Session Reset
+# =============================================================================
+
+def test_entropy_aware_scheduler_reset():
+    """Proves EntropyAwareScheduler.reset clears all trajectory state tracking metrics."""
+    scheduler = EntropyAwareScheduler()
+    scheduler.step([0.5, 0.5], cost=1.0, state="step1")
+    scheduler.step([1.0, 0.0], cost=2.0, state="step2")
+
+    assert len(scheduler.history) == 2
+    assert len(scheduler.entropy_history) == 2
+    assert len(scheduler.utility_history) == 2
+    assert scheduler.total_cost == 3.0
+    assert scheduler.best_state is not None
+    assert scheduler.initial_entropy is not None
+
+    scheduler.reset()
+
+    assert scheduler.history == []
+    assert scheduler.entropy_history == []
+    assert scheduler.utility_history == []
+    assert scheduler.total_cost == 0
+    assert scheduler.best_state is None
+    assert scheduler.best_step == -1
+    assert scheduler.best_utility == float("-inf")
+    assert scheduler.initial_entropy is None
+
+
+def test_orchestrator_process_submission_resets_scheduler():
+    """Proves EpistemicOrchestrator.process_submission resets self.scheduler per submission session."""
+    orchestrator = EpistemicOrchestrator()
+    orchestrator.scheduler.step([0.5, 0.5], cost=1.0, state="prev_session")
+    assert len(orchestrator.scheduler.history) == 1
+
+    payload = {"problem_id": "test_1", "description": "test problem"}
+    context = {"token_logprobs": [-0.1, -0.2]}
+    orchestrator.process_submission(payload, context)
+
+    assert len(orchestrator.scheduler.history) == 0
+
+
+def test_reused_trajectory_id_cross_request_isolation():
+    """Proves that reusing a trajectory ID across requests resets trajectory state so no history/cost leaks."""
+    orchestrator = EpistemicOrchestrator()
+    traj_id = "shared_trajectory_1"
+
+    # Request 1 runs 2 steps on traj_id
+    orchestrator.process_step([0.5, 0.5], cost=10.0, state="req1_step1", trajectory_id=traj_id)
+    orchestrator.process_step([0.4, 0.6], cost=15.0, state="req1_step2", trajectory_id=traj_id)
+
+    sched_req1 = orchestrator._schedulers[traj_id]
+    assert len(sched_req1.history) == 2
+    assert sched_req1.total_cost == 25.0
+
+    # Request 2 reuses traj_id in a new submission session
+    payload = {"problem_id": "test_p2", "description": "request 2 payload"}
+    orchestrator.process_submission(payload, context={}, trajectory_id=traj_id)
+
+    # Request 2 runs step 1 on traj_id
+    res_req2 = orchestrator.process_step([0.9, 0.1], cost=5.0, state="req2_step1", trajectory_id=traj_id)
+
+    sched_req2 = orchestrator._schedulers[traj_id]
+    assert len(sched_req2.history) == 1
+    assert sched_req2.total_cost == 5.0
+    assert sched_req2.history[0].state == "req2_step1"
+    assert res_req2.termination_step == 0
+
+
+def test_trajectory_scheduler_lifecycle_and_ownership():
+    """Proves explicit trajectory scheduler lifecycle methods (get, reset, retire, reset_schedulers)."""
+    orchestrator = EpistemicOrchestrator()
+    traj_id = "lifecycle_traj"
+
+    sched = orchestrator.get_trajectory_scheduler(traj_id)
+    assert traj_id in orchestrator._schedulers
+
+    orchestrator.process_step([0.5, 0.5], cost=5.0, state="s1", trajectory_id=traj_id)
+    assert len(sched.history) == 1
+
+    # Retire trajectory
+    orchestrator.retire_trajectory(traj_id)
+    assert traj_id not in orchestrator._schedulers
+    assert traj_id not in orchestrator._trajectory_locks
+
+    # Populate multiple trajectories and clear all
+    orchestrator.process_step([0.5, 0.5], cost=1.0, state="s1", trajectory_id="t1")
+    orchestrator.process_step([0.5, 0.5], cost=1.0, state="s1", trajectory_id="t2")
+    assert len(orchestrator._schedulers) == 2
+
+    orchestrator.reset_schedulers()
+    assert len(orchestrator._schedulers) == 0
+    assert len(orchestrator._trajectory_locks) == 0
