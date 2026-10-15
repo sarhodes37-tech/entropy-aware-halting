@@ -242,6 +242,9 @@ class EpistemicOrchestrator:
         and immutably logs the outcome. Automatically handles vector rollbacks
         if a trajectory is halted.
         """
+        if hasattr(self.scheduler, "reset"):
+            self.scheduler.reset()
+
         # Assign a trajectory ID for vector tracking if one isn't provided
         traj_id = trajectory_id or str(uuid.uuid4())
 

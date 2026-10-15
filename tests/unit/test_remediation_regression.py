@@ -235,3 +235,45 @@ def test_entropy_aware_scheduler_input_contract():
     # Handles zero probabilities using 0 * log(0) = 0 limit
     h_zero = scheduler.entropy([1.0, 0.0])
     assert math.isclose(h_zero, 0.0)
+
+
+# =============================================================================
+# CONCERN 6: EntropyAwareScheduler.reset & Orchestrator Submission Session Reset
+# =============================================================================
+
+def test_entropy_aware_scheduler_reset():
+    """Proves EntropyAwareScheduler.reset clears all trajectory state tracking metrics."""
+    scheduler = EntropyAwareScheduler()
+    scheduler.step([0.5, 0.5], cost=1.0, state="step1")
+    scheduler.step([1.0, 0.0], cost=2.0, state="step2")
+
+    assert len(scheduler.history) == 2
+    assert len(scheduler.entropy_history) == 2
+    assert len(scheduler.utility_history) == 2
+    assert scheduler.total_cost == 3.0
+    assert scheduler.best_state is not None
+    assert scheduler.initial_entropy is not None
+
+    scheduler.reset()
+
+    assert scheduler.history == []
+    assert scheduler.entropy_history == []
+    assert scheduler.utility_history == []
+    assert scheduler.total_cost == 0
+    assert scheduler.best_state is None
+    assert scheduler.best_step == -1
+    assert scheduler.best_utility == float("-inf")
+    assert scheduler.initial_entropy is None
+
+
+def test_orchestrator_process_submission_resets_scheduler():
+    """Proves EpistemicOrchestrator.process_submission resets self.scheduler per submission session."""
+    orchestrator = EpistemicOrchestrator()
+    orchestrator.scheduler.step([0.5, 0.5], cost=1.0, state="prev_session")
+    assert len(orchestrator.scheduler.history) == 1
+
+    payload = {"problem_id": "test_1", "description": "test problem"}
+    context = {"token_logprobs": [-0.1, -0.2]}
+    orchestrator.process_submission(payload, context)
+
+    assert len(orchestrator.scheduler.history) == 0

@@ -213,3 +213,24 @@ def test_scheduler_step_irreducible_uncertainty():
     res3 = scheduler.step(torch.tensor([0.5, 0.5]), cost=0, state="s4")
     assert res3.directive == "IRREDUCIBLE_UNCERTAINTY"
     assert res3.halt is True
+
+
+def test_scheduler_reset():
+    """Validates that reset() clears all state tracking metrics."""
+    scheduler = EntropyAwareScheduler()
+    scheduler.step(torch.tensor([0.5, 0.5]), cost=10, state="s1")
+    scheduler.step(torch.tensor([1.0, 0.0]), cost=5, state="s2")
+
+    assert len(scheduler.history) == 2
+    assert scheduler.total_cost == 15
+
+    scheduler.reset()
+
+    assert len(scheduler.history) == 0
+    assert len(scheduler.entropy_history) == 0
+    assert len(scheduler.utility_history) == 0
+    assert scheduler.total_cost == 0
+    assert scheduler.best_state is None
+    assert scheduler.best_step == -1
+    assert scheduler.best_utility == float("-inf")
+    assert scheduler.initial_entropy is None
