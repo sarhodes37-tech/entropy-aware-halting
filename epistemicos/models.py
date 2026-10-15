@@ -111,10 +111,19 @@ class EpistemicStatus(str, Enum):
 
 class TokenSurprisalSensor:
     """Canonical statistical sensor for token-level surprisal anomaly detection."""
-    def __init__(self, z_threshold: float = 2.85, window_size: int = 10, std_floor: float = 0.05):
+    def __init__(
+        self,
+        z_threshold: float = 2.85,
+        window_size: int = 10,
+        std_floor: float = 0.05,
+        baseline_prior_surprisal: float = 1.0,
+        baseline_prior_std: float = 1.0
+    ):
         self.z_threshold = z_threshold
         self.window_size = window_size
         self.std_floor = std_floor
+        self.baseline_prior_surprisal = baseline_prior_surprisal
+        self.baseline_prior_std = baseline_prior_std
 
     def compute_z_scores(self, logprobs: List[float]) -> List[float]:
         if not logprobs:
@@ -143,7 +152,9 @@ class TokenSurprisalSensor:
 
         for i, h in enumerate(surprisals):
             if i < 2:
-                z_scores.append(0.0)
+                # For warm-up tokens (i < 2), evaluate surprisal against baseline prior surprisal and prior std
+                std_prior = max(self.baseline_prior_std, self.std_floor)
+                z_scores.append(float((h - self.baseline_prior_surprisal) / std_prior))
                 sum_x += h
                 sum_sq += h * h
                 continue

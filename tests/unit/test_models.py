@@ -87,6 +87,23 @@ def test_token_surprisal_sensor_empty_logprobs():
     assert sensor.compute_z_scores([]) == []
 
 
+def test_token_surprisal_sensor_warmup_period_anomaly():
+    """Validates that initial token logprobs (index 0 and 1) are evaluated against baseline_prior_surprisal."""
+    sensor = TokenSurprisalSensor(z_threshold=2.85, baseline_prior_surprisal=1.0, std_floor=0.05)
+
+    # Low surprisal initial tokens (-0.1 -> surprisal 0.1, z = (0.1 - 1.0)/0.05 = -18.0)
+    z_scores_low = sensor.compute_z_scores([-0.1, -0.2])
+    assert len(z_scores_low) == 2
+    assert z_scores_low[0] < sensor.z_threshold
+    assert z_scores_low[1] < sensor.z_threshold
+
+    # High surprisal initial token at index 0 (-15.0 -> surprisal 15.0, z = (15.0 - 1.0)/0.05 = 280.0)
+    result_high = sensor.evaluate([-15.0, -0.1])
+    assert result_high["passed"] is False
+    assert result_high["flagged_tokens"] >= 1
+    assert result_high["max_z_score"] > sensor.z_threshold
+
+
 # ==========================================
 # BAYESIAN BELIEF KERNEL TESTS
 # ==========================================

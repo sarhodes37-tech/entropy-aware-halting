@@ -42,14 +42,19 @@ def test_defect_1_rollback_treated_as_allow():
 
 
 def test_defect_2_surprisal_warmup_bypass():
-    """Finding Disposition: False Positive / Architectural Design.
-    Index 0/1 lack sufficient prior token history to calculate variance.
-    Surprisal calculation is preserved as uncertainty signal.
-    """
+    """Verifies Remediation: Warm-up tokens at index 0 and 1 evaluate against baseline prior surprisal."""
     sensor = TokenSurprisalSensor(z_threshold=1.5, window_size=10)
-    logprobs = [-25.0, -30.0]
-    result = sensor.evaluate(logprobs)
-    assert result["passed"] is True
+
+    # Nominal logprobs close to baseline (-1.0 surprisal vs baseline prior surprisal 1.0)
+    nominal_logprobs = [-1.0, -0.8]
+    nominal_result = sensor.evaluate(nominal_logprobs)
+    assert nominal_result["passed"] is True
+
+    # Extreme anomaly/prompt injection at index 0 or 1
+    anomalous_logprobs = [-25.0, -30.0]
+    anomalous_result = sensor.evaluate(anomalous_logprobs)
+    assert anomalous_result["passed"] is False
+    assert anomalous_result["flagged_tokens"] > 0
 
 
 def test_defect_3_nan_logprob_bypass():
