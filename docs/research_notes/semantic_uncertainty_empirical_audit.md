@@ -2,7 +2,7 @@
 
 **Author:** EpistemicOS Research & Security Audit Team
 **Audit Execution Date:** October 2026 (Verified Sandbox & Repository Execution Time: Oct 15, 2026)
-**Document Version:** `1.1.0`
+**Document Version:** `1.2.0`
 **Target Module:** `epistemicos/semantic_uncertainty.py`, `epistemicos/semantic_adapter.py`
 **Status:** COMPLETE / NEUTRAL EMPIRICAL FINDINGS
 
@@ -176,6 +176,23 @@ Below are the actual benchmark results executed on the codebase:
 
 - **Executed:** Deterministic rule-based resolver (`ExactAndNormalizedResolver`), synthetic 5-scenario suite, held-out 12-trajectory multi-step evaluation across families A–F with bootstrap 95% CIs.
 - **Proposed (Future Work):** Neural cross-encoder NLI model judge (e.g. DeBERTa-v3-large), large-scale dataset expansion ($N \ge 500$ real LLM logprob samples), and live API provider benchmarking.
+
+### 6.3 Benchmark Code Execution Verification & Artifact Audit
+
+To address scientific integrity and verify that reported metrics reflect **live code execution** rather than asserted or hardcoded values:
+
+1. **Live Code Execution Verification:**
+   - Both benchmark harnesses (`benchmarks/run_semantic_evaluation.py` and `benchmarks/run_held_out_semantic_evaluation.py`) execute Python logic at runtime, calling `SemanticUncertaintyEstimator.estimate()` and `SemanticSchedulerAdapter.step()` dynamically.
+   - The dataset trajectories in `benchmarks/data/held_out_semantic_trajectories.json` contain candidate text lists and token logprobs. Step metrics are evaluated dynamically per trajectory run.
+
+2. **Artifact Generation Consistency:**
+   - Running `python3 -m benchmarks.run_semantic_evaluation` generates `results/semantic_evaluation_results.json`.
+   - Running `python3 -m benchmarks.run_held_out_semantic_evaluation` generates `results/held_out_semantic_evaluation_report.json`.
+   - Re-running these scripts in the sandbox environment deterministically regenerates identical JSON result structures and statistical values (bootstrap seed `42`).
+
+3. **Scope and Limits of Benchmark Dataset:**
+   - The current held-out evaluation dataset contains $N=12$ trajectories ($N=6$ dev split, $N=6$ test split) constructed to stress-test specific failure modes (A–F).
+   - *Scientific Disclaimer:* While this benchmark is live, executable, and deterministic, it is an initial $N=12$ trajectory test suite. Expanding to $N \ge 500$ real multi-step LLM reasoning traces remains a recommended future research extension.
 
 ---
 
