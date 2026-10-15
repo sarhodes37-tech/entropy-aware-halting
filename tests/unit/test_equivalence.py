@@ -65,7 +65,7 @@ def reference_check_stack(obj: Any, injection_regex) -> bool:
 
     return False
 
-def reference_compute_z_scores(logprobs: List[float]) -> List[float]:
+def reference_compute_z_scores(logprobs: List[float], baseline_prior_surprisal: float = 1.0, baseline_prior_std: float = 1.0) -> List[float]:
     """Reference implementation of compute_z_scores with unconditional try-except wrapping."""
     if not logprobs:
         return []
@@ -90,7 +90,8 @@ def reference_compute_z_scores(logprobs: List[float]) -> List[float]:
 
     for i, h in enumerate(surprisals):
         if i < 2:
-            z_scores.append(0.0)
+            std_prior = max(baseline_prior_std, std_floor)
+            z_scores.append(float((h - baseline_prior_surprisal) / std_prior))
             sum_x += h
             sum_sq += h * h
             continue

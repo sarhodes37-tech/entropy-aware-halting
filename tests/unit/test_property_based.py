@@ -345,9 +345,10 @@ def test_property_window_boundary_transitions_surprisal(window_logprobs):
     z_scores = sensor.compute_z_scores(window_logprobs)
 
     assert len(z_scores) == len(window_logprobs)
-    # First 2 tokens should always have 0.0 Z-scores (insufficient window)
-    assert z_scores[0] == 0.0
-    assert z_scores[1] == 0.0
+    # First 2 tokens should evaluate against baseline_prior_surprisal and baseline_prior_std
+    std_prior = max(sensor.baseline_prior_std, sensor.std_floor)
+    assert math.isclose(z_scores[0], (-window_logprobs[0] - sensor.baseline_prior_surprisal) / std_prior)
+    assert math.isclose(z_scores[1], (-window_logprobs[1] - sensor.baseline_prior_surprisal) / std_prior)
 
 
 @given(
