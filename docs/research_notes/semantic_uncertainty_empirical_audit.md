@@ -1,7 +1,7 @@
 # Empirical Validation and Audit Report: Semantic Uncertainty as a Control Signal in EpistemicOS
 
 **Author:** EpistemicOS Research & Security Audit Team
-**Date:** March 2026
+**Audit Execution Date:** October 2026 (Verified Sandbox & Repository Execution Time: Oct 15, 2026)
 **Document Version:** `1.0.0`
 **Target Module:** `epistemicos/semantic_uncertainty.py`, `epistemicos/semantic_adapter.py`
 **Status:** COMPLETE / NEUTRAL EMPIRICAL FINDINGS
@@ -12,7 +12,16 @@
 
 This report documents a repository-grounded research, mathematical, and implementation audit of `SemanticUncertaintyEstimator` and `SemanticSchedulerAdapter` in EpistemicOS. We evaluate whether meaning-level conclusion clustering and semantic entropy ($H_{\mathrm{sem}}$) provide measurable, incremental decision value beyond token-level entropy ($H_{\text{token}}$), and whether combining the two signals improves the performance of the EpistemicOS control plane.
 
-### Key Evidence-Based Conclusions
+### 1.1 Date Provenance and Verification Audit
+
+To ensure complete transparency regarding document metadata and audit provenance:
+
+- **Original Prototype Research Note (`docs/research_notes/semantic_uncertainty_prototype.md`):** Written in **October 2024** by the EpistemicOS Core Research Team (`SemanticUncertaintyEstimator-v1.0`).
+- **Held-Out Evaluation Research Note (`docs/research_notes/held_out_semantic_uncertainty_evaluation.md`):** Written in **March 2026** (`SemanticUncertaintyEvaluation-v1.0`).
+- **Audit Execution & Report Generation Date:** **October 2026** (System execution date: `Thu Oct 15 09:03:22 UTC 2026`, Git HEAD commit `95444b5` dated `2026-10-15`).
+- *Clarification Note:* Earlier drafts of this audit report inherited a "March 2026" header string by direct reference to the held-out evaluation research note (`docs/research_notes/held_out_semantic_uncertainty_evaluation.md`). The audit execution timestamp has been verified against repository git commit logs and sandbox system runtime metadata as **October 2026**.
+
+### 1.2 Key Evidence-Based Conclusions
 
 1. **Information Disconnect between Token & Semantic Entropy:**
    Token-level entropy ($H_{\text{token}}$) frequently over-reports uncertainty on syntactic paraphrases (e.g., $2.00$ bits of token entropy on 4 semantically identical outputs) and under-reports uncertainty on subtle semantic flips like negation or actor swaps. Measuring semantic entropy ($H_{\mathrm{sem}}$) successfully isolates meaning-level divergence from syntactic variation.
