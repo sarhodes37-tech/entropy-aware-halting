@@ -117,13 +117,15 @@ class TokenSurprisalSensor:
         window_size: int = 10,
         std_floor: float = 0.05,
         baseline_prior_surprisal: float = 1.0,
-        baseline_prior_std: float = 1.0
+        baseline_prior_std: float = 1.0,
+        max_surprisal_ceiling: Optional[float] = 10.0
     ):
         self.z_threshold = z_threshold
         self.window_size = window_size
         self.std_floor = std_floor
         self.baseline_prior_surprisal = baseline_prior_surprisal
         self.baseline_prior_std = baseline_prior_std
+        self.max_surprisal_ceiling = max_surprisal_ceiling
 
     def compute_z_scores(self, logprobs: List[float]) -> List[float]:
         if not logprobs:
@@ -204,7 +206,18 @@ class TokenSurprisalSensor:
                 "token_z_scores": sanitized_z_scores
             }
 
-        flagged_count = sum(1 for z in z_scores if z > self.z_threshold)
+        flagged_count = 0
+        for i, z in enumerate(z_scores):
+            lp = float(logprobs[i])
+            surprisal = -lp
+            is_z_anomaly = z > self.z_threshold
+            is_ceiling_anomaly = (
+                self.max_surprisal_ceiling is not None
+                and surprisal > self.max_surprisal_ceiling
+            )
+            if is_z_anomaly or is_ceiling_anomaly:
+                flagged_count += 1
+
         max_z = float(max(z_scores)) if z_scores else 0.0
 
         return {
