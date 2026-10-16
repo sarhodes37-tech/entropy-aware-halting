@@ -428,3 +428,18 @@ def test_token_surprisal_sensor_evaluate_malformed_non_finite_logprob(non_finite
     assert result["reason"] == "MALFORMED_NON_FINITE_LOGPROBS"
     assert result["max_z_score"] == 0.0
     assert result["flagged_tokens"] == 2
+
+
+def test_token_surprisal_ramping_evasion_blocked_by_ceiling():
+    """Validates that smooth surprisal ramping that breaches max_surprisal_ceiling is flagged."""
+    sensor = TokenSurprisalSensor(z_threshold=2.85, window_size=10, max_surprisal_ceiling=10.0)
+
+    # Base low surprisals (around 1.0)
+    base = [1.0, 1.5, 0.8, 1.4, 0.9, 1.6, 0.7, 1.3, 0.8, 1.2]
+    # Gradually ramp surprisal up to 15.0 with step size 0.15 so Z-score stays low
+    ramp = [1.2 + 0.15 * i for i in range(1, 100)]
+    logprobs = [-x for x in (base + ramp)]
+
+    result = sensor.evaluate(logprobs)
+    assert result["passed"] is False
+    assert result["flagged_tokens"] > 0

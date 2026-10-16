@@ -286,3 +286,16 @@ def test_triangulation_gate_strict_mode():
     res_cfg = gate_config_strict.evaluate({}, {})
     assert res_cfg["passed"] is False
     assert res_cfg["reason"] == "MISSING_TELEMETRY_STRICT_MODE"
+
+
+def test_entropy_gate_ramping_evasion_blocked():
+    """Validates that EntropyGate halts when surprisals breach max_surprisal_ceiling."""
+    gate = EntropyGate(z_threshold=2.85, window_size=10, max_surprisal_ceiling=10.0)
+
+    base = [1.0, 1.5, 0.8, 1.4, 0.9, 1.6, 0.7, 1.3, 0.8, 1.2]
+    ramp = [1.2 + 0.15 * i for i in range(1, 100)]
+    logprobs = [-x for x in (base + ramp)]
+
+    res = gate.evaluate({}, {"token_logprobs": logprobs})
+    assert res["passed"] is False
+    assert res["flagged_tokens"] > 0

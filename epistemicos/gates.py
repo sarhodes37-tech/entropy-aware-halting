@@ -256,9 +256,20 @@ class EntropyGate(ControlPlaneGate):
     granular, token-by-token surprisal sensor.
     """
 
-    def __init__(self, z_threshold: float = 2.85, window_size: int = 10, strict_mode: bool = False, config: Optional[GateConfig] = None):
+    def __init__(
+        self,
+        z_threshold: float = 2.85,
+        window_size: int = 10,
+        strict_mode: bool = False,
+        max_surprisal_ceiling: Optional[float] = 10.0,
+        config: Optional[GateConfig] = None
+    ):
         super().__init__(config=config or GateConfig(version="1.0.0", is_critical=True))
-        self.sensor = TokenSurprisalSensor(z_threshold=z_threshold, window_size=window_size)
+        self.sensor = TokenSurprisalSensor(
+            z_threshold=z_threshold,
+            window_size=window_size,
+            max_surprisal_ceiling=max_surprisal_ceiling
+        )
         self.strict_mode = strict_mode
 
     def evaluate_contract(self, gate_input: GateInput) -> GateOutcome:
