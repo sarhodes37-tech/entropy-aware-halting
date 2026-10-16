@@ -76,6 +76,7 @@ class ExactAndNormalizedResolver(SemanticResolver):
         (re.compile(r"\bnot\s+impossible\b"), "possible"),
         (re.compile(r"\bnot\s+incorrect\b"), "correct"),
     ]
+    CLEAN_PUNCTUATION_PATTERN = re.compile(r"[^\w\s\$\€\£\¥]")
 
     def __init__(self, confidence_threshold: float = 0.85):
         self.confidence_threshold = confidence_threshold
@@ -85,7 +86,7 @@ class ExactAndNormalizedResolver(SemanticResolver):
         # Simplify double negations
         for pattern, replacement in self.DOUBLE_NEGATION_PATTERNS:
             clean = pattern.sub(replacement, clean)
-        clean = re.sub(r"[^\w\s\$\€\£\¥]", "", clean)
+        clean = self.CLEAN_PUNCTUATION_PATTERN.sub("", clean)
         return " ".join(clean.split())
 
     def _extract_tokens(self, text: str) -> List[str]:
