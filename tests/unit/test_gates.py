@@ -147,6 +147,44 @@ def test_permission_gate_injection_regex():
     assert "Unsafe Command Injection" in res.reason
 
 
+def test_permission_gate_executable_callable_validation():
+    """Validates that PermissionGate inspects executable callables directly and rejects unauthorized objects."""
+    def authorized_query():
+        return "data"
+
+    def unauthorized_exploit():
+        return "pwned"
+
+    # Test allowed_actions checking on executable name
+    gate_allowed = PermissionGate(allowed_actions=["authorized_query"])
+
+    # Valid callable matching allowed_actions passes
+    res_valid = gate_allowed.evaluate(
+        payload={},
+        context={"actual_executable": authorized_query, "requested_operation_id": "authorized_query"}
+    )
+    assert res_valid.passed is True
+
+    # Unauthorized callable is rejected even if metadata dictionary claims allowed operation
+    res_unauth = gate_allowed.evaluate(
+        payload={"op": "authorized_query"},
+        context={"actual_executable": unauthorized_exploit, "requested_operation_id": "authorized_query"}
+    )
+    assert res_unauth.passed is False
+    assert "not in gate allowed_actions" in res_unauth.reason
+
+    # Test trusted_operations registry substitution defense
+    gate_trusted = PermissionGate(trusted_operations={"query_op": authorized_query})
+
+    # Substituted executable for trusted operation is HALTED
+    res_sub = gate_trusted.evaluate(
+        payload={},
+        context={"actual_executable": unauthorized_exploit, "requested_operation_id": "query_op"}
+    )
+    assert res_sub.passed is False
+    assert "substituted executable detected" in res_sub.reason
+
+
 # ==========================================
 # TRIANGULATION GATE
 # ==========================================

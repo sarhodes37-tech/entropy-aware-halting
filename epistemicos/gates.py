@@ -475,6 +475,7 @@ class PermissionGate(ControlPlaneGate):
         requested_op = gate_input.operation_id or context.get("requested_operation_id") or context.get("operation_name")
 
         if actual_exec:
+            is_trusted_match = False
             if self.trusted_operations:
                 if not requested_op or requested_op not in self.trusted_operations:
                     return GateOutcome(
@@ -495,10 +496,11 @@ class PermissionGate(ControlPlaneGate):
                         evidence={"status": "HALTED", "confidence": 0.0},
                         latency_ms=(time.perf_counter() - t0) * 1000
                     )
+                is_trusted_match = True
 
             if self.allowed_actions:
                 exec_name = getattr(actual_exec, "__name__", str(actual_exec))
-                if exec_name not in self.allowed_actions and requested_op not in self.allowed_actions:
+                if exec_name not in self.allowed_actions and not (is_trusted_match and requested_op in self.allowed_actions):
                     return GateOutcome(
                         decision=GateDecision.HALT,
                         reason_code=f"Resolved executable '{exec_name}' or operation '{requested_op}' not in gate allowed_actions: {self.allowed_actions}",
