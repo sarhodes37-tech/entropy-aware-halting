@@ -22,9 +22,11 @@ EpistemicOS is a low-latency security middleware designed to enforce determinist
 
 ## 📊 Measured Benchmark Results
 
-The benchmark suite evaluates EpistemicOS on a held-out dataset across 6 baseline conditions. Benchmark metrics reflect actual measured predictions and outcomes rather than unit test pass statuses.
+The benchmark suite evaluates EpistemicOS on a stratified held-out evaluation dataset across 6 baseline conditions. Benchmark metrics reflect actual measured predictions and outcomes rather than unit test pass statuses.
 
-### Baseline Comparison (N = 10 Held-Out Evaluation Samples)
+### Historical N = 10 Exploratory Baseline vs N = 100 Stratified Benchmark
+
+#### Original N = 10 Baseline (Exploratory Evaluation)
 
 | Baseline Condition | Sample Count | Accuracy (95% CI) | False Positives (Benign Blocked) | False Negatives (Security Bypass) | Avg Latency (ms) | Total Tokens |
 |---|---|---|---|---|---|---|
@@ -35,7 +37,36 @@ The benchmark suite evaluates EpistemicOS on a held-out dataset across 6 baselin
 | **Active Execution-Gated Recovery** | 10 | 50.0% [23.66%, 76.34%] | 3 | 2 | 31.65 ms | 520 |
 | **Compute-Matched Baseline** | 10 | 40.0% [16.82%, 68.73%] | 0 | 6 | 39.64 ms | 600 |
 
-*Note: Confidence intervals are calculated using the Wilson score interval at a 95% confidence level. Current benchmark results reflect a 10-sample exploratory evaluation set; larger production evaluations should be performed per application domain.*
+#### Primary N = 100 Stratified Evaluation Results
+
+| Baseline Condition | Sample Count | Accuracy (95% CI) | Precision | Recall | False Positives (Benign Blocked) | False Negatives (Security Bypass) | Avg Latency (ms) | Total Tokens |
+|---|---|---|---|---|---|---|---|---|
+| **Ungated Generation** | 100 | 35.0% [26.36%, 44.75%] | 0.0% | 0.0% | 0 | 65 | 18.05 ms | 2000 |
+| **Entropy-Only Gating** | 100 | 90.0% [82.56%, 94.48%] | 100.0% | 84.62% | 0 | 10 | 22.29 ms | 2000 |
+| **Permission-Only Gating** | 100 | 50.0% [40.38%, 59.62%] | 58.82% | 76.92% | 35 | 15 | 26.12 ms | 2000 |
+| **Combined Gating** | 100 | 65.0% [55.25%, 73.64%] | 65.00% | 100.0% | 35 | 0 | 31.62 ms | 2000 |
+| **Active Execution-Gated Recovery** | 100 | 50.0% [40.38%, 59.62%] | 58.82% | 76.92% | 35 | 15 | 113.36 ms | 5700 |
+| **Compute-Matched Baseline** | 100 | 35.0% [26.36%, 44.75%] | 0.0% | 0.0% | 0 | 65 | 154.93 ms | 6000 |
+
+*Note: Confidence intervals are calculated using the Wilson score interval at a 95% confidence level.*
+
+### Scenario Family Breakdown (Combined Gating, N = 100)
+
+| Scenario Family | Cases | Accuracy (%) | Adversarial Recall (%) | Benign FPR (%) |
+|---|---|---|---|---|
+| Commercial Underwriting & Operations | 20 | 0.0% | 100.0% | 100.0% |
+| Cyber, Shell & DB Threat Vectors | 15 | 100.0% | 100.0% | 0.0% |
+| Multi-Turn & Obfuscated Prompt Injections | 15 | 100.0% | 100.0% | 0.0% |
+| Impossible Paradoxes & Introspection | 15 | 100.0% | 100.0% | 0.0% |
+| High-Noise Benign Controls | 15 | 0.0% | 100.0% | 100.0% |
+| Unauthorized Operations & Boundary Failures | 10 | 100.0% | 100.0% | 0.0% |
+| Gate Exceptions & Edge Cases | 10 | 100.0% | 100.0% | 0.0% |
+
+### Paired Inferential Comparisons (McNemar's Test)
+
+* **Combined Gating vs Ungated Generation:** $\chi^2 = 8.41, p = 0.0037$ (Statistically Significant)
+* **Combined Gating vs Compute-Matched Baseline:** $\chi^2 = 8.41, p = 0.0037$ (Statistically Significant)
+* **Entropy-Only Gating vs Ungated Generation:** $\chi^2 = 53.02, p < 0.0001$ (Statistically Significant)
 
 ---
 

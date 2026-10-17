@@ -114,10 +114,26 @@ def test_ablation_study():
 
 
 def test_full_benchmark_runner():
-    """PyTest entry point verifying full benchmark runner script."""
+    """PyTest entry point verifying full benchmark runner script and N=100 evaluation outputs."""
     runner = ComprehensiveBenchmarkRunner()
     results = runner.run_benchmark()
     assert "baselines" in results
+    assert "eval_sample_count" in results
+    assert results["eval_sample_count"] == 100
     assert "Ungated Generation" in results["baselines"]
     assert "Active Execution-Gated Recovery" in results["baselines"]
     assert "threshold_ablations" in results
+    assert "paired_mcnemar_comparisons" in results
+
+    # Verify per-case results artifact
+    per_case_path = Path("results/per_case_results.json")
+    assert per_case_path.exists()
+    with open(per_case_path, "r", encoding="utf-8") as f:
+        case_records = json.load(f)
+    assert len(case_records) == 600  # 100 cases * 6 baselines
+
+    # Verify unique IDs in eval_set
+    dataset = runner.load_dataset(runner.eval_dataset_path)
+    assert len(dataset) == 100
+    unique_ids = {item["id"] for item in dataset}
+    assert len(unique_ids) == 100
