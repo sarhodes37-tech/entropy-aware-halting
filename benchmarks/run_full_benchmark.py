@@ -102,6 +102,7 @@ class ComprehensiveBenchmarkRunner:
         return dataset
 
     def run_benchmark(self) -> Dict[str, Any]:
+        Path("logs/benchmark_audit.jsonl").unlink(missing_ok=True)
         dataset = self.load_dataset(self.eval_dataset_path)
 
         baseline_configs = {
@@ -149,7 +150,7 @@ class ComprehensiveBenchmarkRunner:
 
                 while True:
                     engine = EpistemicOrchestrator(
-                        audit_log_path="logs/audit.jsonl"
+                        audit_log_path="logs/benchmark_audit.jsonl"
                     )
 
                     active_gates = []
@@ -234,10 +235,10 @@ class ComprehensiveBenchmarkRunner:
             fn_rate = (fc / adversarial_total * 100) if adversarial_total > 0 else 0.0
             fp_rate = (fr / benign_total * 100) if benign_total > 0 else 0.0
 
-            precision = (tr / (tr + fr) * 100) if (tr + fr) > 0 else 0.0
+            precision = (tr / (tr + fr) * 100) if (tr + fr) > 0 else None
             recall = (tr / (tr + fc) * 100) if (tr + fc) > 0 else 0.0
             specificity = (tc / (tc + fr) * 100) if (tc + fr) > 0 else 0.0
-            f1 = (2 * precision * recall / (precision + recall)) if (precision + recall) > 0 else 0.0
+            f1 = (2 * precision * recall / (precision + recall)) if (precision is not None and recall is not None and (precision + recall) > 0) else 0.0
 
             fam_breakdown = {}
             for f_name, f_data in family_metrics.items():
@@ -246,8 +247,8 @@ class ComprehensiveBenchmarkRunner:
                 f_acc = round((f_tc + f_tr) / f_tot * 100, 2) if f_tot > 0 else 0.0
                 f_adv_tot = f_tr + f_fc
                 f_ben_tot = f_tc + f_fr
-                f_recall = round(f_tr / f_adv_tot * 100, 2) if f_adv_tot > 0 else 100.0
-                f_fpr = round(f_fr / f_ben_tot * 100, 2) if f_ben_tot > 0 else 0.0
+                f_recall = round(f_tr / f_adv_tot * 100, 2) if f_adv_tot > 0 else "N/A"
+                f_fpr = round(f_fr / f_ben_tot * 100, 2) if f_ben_tot > 0 else "N/A"
                 fam_breakdown[f_name] = {
                     "total_cases": f_tot,
                     "TC": f_tc, "FC": f_fc, "TR": f_tr, "FR": f_fr,
@@ -265,10 +266,10 @@ class ComprehensiveBenchmarkRunner:
                 "confusion_matrix": {"TC": tc, "FC": fc, "TR": tr, "FR": fr},
                 "accuracy_pct": round(acc * 100, 2),
                 "accuracy_95ci": [round(acc_ci[0] * 100, 2), round(acc_ci[1] * 100, 2)],
-                "precision_pct": round(precision, 2),
+                "precision_pct": round(precision, 2) if precision is not None else "N/A",
                 "recall_pct": round(recall, 2),
                 "specificity_pct": round(specificity, 2),
-                "f1_score": round(f1 / 100.0, 4),
+                "f1_score": round(f1 / 100.0, 4) if f1 else 0.0,
                 "false_positives_benign_blocked": fr,
                 "false_negatives_adversarial_passed": fc,
                 "false_positive_rate_pct": round(fp_rate, 2),
@@ -308,7 +309,7 @@ class ComprehensiveBenchmarkRunner:
         # Threshold Ablation Study
         threshold_results = {}
         for z_thresh in self.config["thresholds"]["ablation_z_thresholds"]:
-            engine = EpistemicOrchestrator(audit_log_path="logs/audit.jsonl")
+            engine = EpistemicOrchestrator(audit_log_path="logs/benchmark_audit.jsonl")
             engine.gates = [EntropyGate(z_threshold=z_thresh, window_size=10)]
 
             thresh_tr, thresh_fr, thresh_tc, thresh_fc = 0, 0, 0, 0
@@ -325,7 +326,7 @@ class ComprehensiveBenchmarkRunner:
             threshold_results[f"z_threshold_{z_thresh}"] = {
                 "z_threshold": z_thresh,
                 "TC": thresh_tc, "FC": thresh_fc, "TR": thresh_tr, "FR": thresh_fr,
-                "precision": round(thresh_tc / (thresh_tc + thresh_fc) * 100, 2) if (thresh_tc + thresh_fc) > 0 else 0.0,
+                "precision": round(thresh_tr / (thresh_tr + thresh_fr) * 100, 2) if (thresh_tr + thresh_fr) > 0 else "N/A",
                 "recall": round(thresh_tr / (thresh_tr + thresh_fc) * 100, 2) if (thresh_tr + thresh_fc) > 0 else 0.0
             }
 
@@ -370,8 +371,9 @@ class ComprehensiveBenchmarkRunner:
 
         for base_name, bdata in data["baselines"].items():
             ci_str = f"{bdata['accuracy_pct']}% [{bdata['accuracy_95ci'][0]}%, {bdata['accuracy_95ci'][1]}%]"
+            prec_str = f"{bdata['precision_pct']}%" if bdata['precision_pct'] != "N/A" else "N/A"
             md_lines.append(
-                f"| **{base_name}** | {bdata['sample_count']} | {ci_str} | {bdata['precision_pct']}% | {bdata['recall_pct']}% | {bdata['false_positive_rate_pct']}% | {bdata['false_negative_rate_pct']}% | {bdata['avg_latency_ms']} ms | {bdata['total_tokens_spent']} |"
+                f"| **{base_name}** | {bdata['sample_count']} | {ci_str} | {prec_str} | {bdata['recall_pct']}% | {bdata['false_positive_rate_pct']}% | {bdata['false_negative_rate_pct']}% | {bdata['avg_latency_ms']} ms | {bdata['total_tokens_spent']} |"
             )
 
         md_lines.extend([
@@ -398,8 +400,10 @@ class ComprehensiveBenchmarkRunner:
 
         combined_breakdown = data["baselines"]["Combined Gating"]["scenario_family_breakdown"]
         for fam_name, fam_data in combined_breakdown.items():
+            rec_str = f"{fam_data['adversarial_recall_pct']}%" if fam_data['adversarial_recall_pct'] != "N/A" else "N/A"
+            fpr_str = f"{fam_data['benign_fpr_pct']}%" if fam_data['benign_fpr_pct'] != "N/A" else "N/A"
             md_lines.append(
-                f"| {fam_name} | {fam_data['total_cases']} | {fam_data['accuracy_pct']}% | {fam_data['adversarial_recall_pct']}% | {fam_data['benign_fpr_pct']}% |"
+                f"| {fam_name} | {fam_data['total_cases']} | {fam_data['accuracy_pct']}% | {rec_str} | {fpr_str} |"
             )
 
         md_lines.extend([

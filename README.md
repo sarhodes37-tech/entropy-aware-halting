@@ -41,26 +41,28 @@ The benchmark suite evaluates EpistemicOS on a stratified held-out evaluation da
 
 | Baseline Condition | Sample Count | Accuracy (95% CI) | Precision | Recall | False Positives (Benign Blocked) | False Negatives (Security Bypass) | Avg Latency (ms) | Total Tokens |
 |---|---|---|---|---|---|---|---|---|
-| **Ungated Generation** | 100 | 35.0% [26.36%, 44.75%] | 0.0% | 0.0% | 0 | 65 | 18.05 ms | 2000 |
+| **Ungated Generation** | 100 | 35.0% [26.36%, 44.75%] | N/A | 0.0% | 0 | 65 | 18.05 ms | 2000 |
 | **Entropy-Only Gating** | 100 | 90.0% [82.56%, 94.48%] | 100.0% | 84.62% | 0 | 10 | 22.29 ms | 2000 |
 | **Permission-Only Gating** | 100 | 50.0% [40.38%, 59.62%] | 58.82% | 76.92% | 35 | 15 | 26.12 ms | 2000 |
 | **Combined Gating** | 100 | 65.0% [55.25%, 73.64%] | 65.00% | 100.0% | 35 | 0 | 31.62 ms | 2000 |
 | **Active Execution-Gated Recovery** | 100 | 50.0% [40.38%, 59.62%] | 58.82% | 76.92% | 35 | 15 | 113.36 ms | 5700 |
-| **Compute-Matched Baseline** | 100 | 35.0% [26.36%, 44.75%] | 0.0% | 0.0% | 0 | 65 | 154.93 ms | 6000 |
+| **Compute-Matched Baseline** | 100 | 35.0% [26.36%, 44.75%] | N/A | 0.0% | 0 | 65 | 154.93 ms | 6000 |
 
-*Note: Confidence intervals are calculated using the Wilson score interval at a 95% confidence level.*
+*Note: Confidence intervals are calculated using the Wilson score interval at a 95% confidence level. Undefined metrics where the denominator is zero (such as Precision when no items are halted) are denoted as N/A.*
 
 ### Scenario Family Breakdown (Combined Gating, N = 100)
 
 | Scenario Family | Cases | Accuracy (%) | Adversarial Recall (%) | Benign FPR (%) |
 |---|---|---|---|---|
-| Commercial Underwriting & Operations | 20 | 0.0% | 100.0% | 100.0% |
-| Cyber, Shell & DB Threat Vectors | 15 | 100.0% | 100.0% | 0.0% |
-| Multi-Turn & Obfuscated Prompt Injections | 15 | 100.0% | 100.0% | 0.0% |
-| Impossible Paradoxes & Introspection | 15 | 100.0% | 100.0% | 0.0% |
-| High-Noise Benign Controls | 15 | 0.0% | 100.0% | 100.0% |
-| Unauthorized Operations & Boundary Failures | 10 | 100.0% | 100.0% | 0.0% |
-| Gate Exceptions & Edge Cases | 10 | 100.0% | 100.0% | 0.0% |
+| Commercial Underwriting & Operations | 20 | 0.0% | N/A | 100.0% |
+| Cyber, Shell & DB Threat Vectors | 15 | 100.0% | 100.0% | N/A |
+| Multi-Turn & Obfuscated Prompt Injections | 15 | 100.0% | 100.0% | N/A |
+| Impossible Paradoxes & Introspection | 15 | 100.0% | 100.0% | N/A |
+| High-Noise Benign Controls | 15 | 0.0% | N/A | 100.0% |
+| Unauthorized Operations & Boundary Failures | 10 | 100.0% | 100.0% | N/A |
+| Gate Exceptions & Edge Cases | 10 | 100.0% | 100.0% | N/A |
+
+*Note: Metrics for scenario families containing zero positive or zero negative ground-truth cases are denoted as N/A.*
 
 ### Paired Inferential Comparisons (McNemar's Test)
 
