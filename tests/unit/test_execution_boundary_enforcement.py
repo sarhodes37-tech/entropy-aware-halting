@@ -16,81 +16,170 @@ from epistemicos.provenance import (
 from epistemicos.gates import PermissionGate
 
 
-def test_arbitrary_token_id_correct_digest_granted_true_denied():
+def test_missing_provenance_store_fails_closed():
     """
-    1. Arbitrary token ID + correct payload digest + authorization_granted=True is denied
-    when authorization_granted=False or when invalid.
+    1. Missing store fails closed and produces zero executable calls and zero side effects.
     """
-    execution_callback = MagicMock(return_value={"status": "FORGED_EXECUTION"})
+    execution_callback = MagicMock(return_value={"status": "FORGED"})
     orchestrator = EpistemicOrchestrator()
-    perm_gate = PermissionGate(
-        trusted_scope={
-            "allowed_operations": ["api_call"],
-            "allowed_resources": ["/issue_binder"],
-        }
-    )
-    orchestrator.gates = [perm_gate]
+    orchestrator.execution_boundary.store = None  # Store missing
 
-    raw_payload = {"policy_id": "POL-2026-FORGE", "primary_metric": 100.0}
-    payload_digest = orchestrator.execution_boundary.compute_canonical_digest(raw_payload)
-
-    # Caller attempts to forge authorization via caller-asserted values with authorization_granted=False
+    raw_payload = {"policy_id": "POL-2026-NO-STORE", "primary_metric": 100.0}
     context = {
         "proposed_actions": [{"action": {"op": "api_call", "endpoint": "/issue_binder"}}],
         "actual_executable": execution_callback,
-        "authorization_token_id": "FORGED-TOKEN-12345",
-        "authorized_digest": payload_digest,
-        "authorization_granted": False,  # Denied grant
+        "authorization_token_id": "TOKEN-NO-STORE",
     }
 
     res = orchestrator.process_submission(raw_payload, context)
 
     assert res["status"] == "HALTED"
+    assert "Provenance store missing or lookup unavailable" in res["reason"]
     assert execution_callback.call_count == 0
+    assert res["vectors_revoked"] == 0
 
 
-def test_caller_provided_execution_context_cannot_self_authorize():
+def test_unavailable_lookup_method_fails_closed():
     """
-    2. Caller-provided ExecutionContext cannot self-authorize if authorization_granted=False.
+    2. Unavailable lookup method fails closed.
     """
-    execution_callback = MagicMock(return_value={"status": "SELF_AUTH_EXECUTION"})
+    execution_callback = MagicMock(return_value={"status": "FORGED"})
     orchestrator = EpistemicOrchestrator()
-    perm_gate = PermissionGate(
-        trusted_scope={
-            "allowed_operations": ["api_call"],
-            "allowed_resources": ["/issue_binder"],
-        }
-    )
-    orchestrator.gates = [perm_gate]
+    # Mock store without get_events_for_correlation method
+    orchestrator.execution_boundary.store = object()
 
-    raw_payload = {"policy_id": "POL-2026-SELF-AUTH", "primary_metric": 200.0}
-    payload_digest = orchestrator.execution_boundary.compute_canonical_digest(raw_payload)
-
-    exec_ctx = ExecutionContext(
-        correlation_id=str(uuid.uuid4()),
-        request_id="req-self-auth",
-        authorization_token_id="FORGED-CTX-TOKEN",
-        authorized_digest=payload_digest,
-        authorization_granted=False,  # Attempting to execute with False authorization_granted
-    )
-
+    raw_payload = {"policy_id": "POL-2026-NO-METHOD", "primary_metric": 100.0}
     context = {
         "proposed_actions": [{"action": {"op": "api_call", "endpoint": "/issue_binder"}}],
         "actual_executable": execution_callback,
-        "execution_context": exec_ctx,
+        "authorization_token_id": "TOKEN-NO-METHOD",
     }
 
     res = orchestrator.process_submission(raw_payload, context)
 
     assert res["status"] == "HALTED"
+    assert "Provenance store missing or lookup unavailable" in res["reason"]
     assert execution_callback.call_count == 0
 
 
-def test_valid_grant_for_one_action_cannot_authorize_different_action_or_target():
+def test_lookup_exception_fails_closed():
     """
-    3. A valid grant for one action cannot authorize a different action or target.
+    3. Lookup exception fails closed.
     """
-    execution_callback = MagicMock(return_value={"status": "SUBSTITUTED_EXECUTION"})
+    execution_callback = MagicMock(return_value={"status": "FORGED"})
+    orchestrator = EpistemicOrchestrator()
+    orchestrator.execution_boundary.store = MagicMock()
+    orchestrator.execution_boundary.store.get_events_for_correlation.side_effect = RuntimeError("Database I/O error")
+
+    raw_payload = {"policy_id": "POL-2026-IO-ERR", "primary_metric": 100.0}
+    context = {
+        "proposed_actions": [{"action": {"op": "api_call", "endpoint": "/issue_binder"}}],
+        "actual_executable": execution_callback,
+        "authorization_token_id": "TOKEN-IO-ERR",
+    }
+
+    res = orchestrator.process_submission(raw_payload, context)
+
+    assert res["status"] == "HALTED"
+    assert "Provenance store lookup error" in res["reason"]
+    assert execution_callback.call_count == 0
+
+
+def test_nonexistent_grant_fails_closed():
+    """
+    4. Nonexistent grant fails closed.
+    """
+    execution_callback = MagicMock(return_value={"status": "FORGED"})
+    orchestrator = EpistemicOrchestrator()
+
+    raw_payload = {"policy_id": "POL-2026-NO-GRANT", "primary_metric": 100.0}
+    context = {
+        "proposed_actions": [{"action": {"op": "api_call", "endpoint": "/issue_binder"}}],
+        "actual_executable": execution_callback,
+        "authorization_token_id": "NONEXISTENT-TOKEN",
+    }
+
+    res = orchestrator.process_submission(raw_payload, context)
+
+    assert res["status"] == "HALTED"
+    assert "No matching AUTHORIZATION_GRANTED record found" in res["reason"]
+    assert execution_callback.call_count == 0
+
+
+def test_forged_grant_fields_denied():
+    """
+    5. Forged grant fields (caller asserts authorization_granted=True, fake digest) are denied.
+    """
+    execution_callback = MagicMock(return_value={"status": "FORGED"})
+    orchestrator = EpistemicOrchestrator()
+
+    raw_payload = {"policy_id": "POL-2026-FORGE-FIELDS", "primary_metric": 100.0}
+
+    context = {
+        "proposed_actions": [{"action": {"op": "api_call", "endpoint": "/issue_binder"}}],
+        "actual_executable": execution_callback,
+        "authorization_token_id": "FORGED-TOKEN-999",
+        "authorization_granted": True,
+        "authorized_digest": "fake_digest_12345",
+    }
+
+    res = orchestrator.process_submission(raw_payload, context)
+
+    assert res["status"] == "HALTED"
+    assert "No matching AUTHORIZATION_GRANTED record found" in res["reason"]
+    assert execution_callback.call_count == 0
+
+
+def test_wrong_correlation_id_denied():
+    """
+    6. Wrong correlation ID cannot pick up a grant recorded under a different correlation ID.
+    """
+    execution_callback = MagicMock(return_value={"status": "WRONG_CORR"})
+    orchestrator = EpistemicOrchestrator()
+
+    raw_payload = {"policy_id": "POL-2026-WRONG-CORR", "primary_metric": 100.0}
+    payload_digest = orchestrator.execution_boundary.compute_canonical_digest(raw_payload)
+
+    token_id = "TOKEN-CORR-111"
+    correct_corr = str(uuid.uuid4())
+    wrong_corr = str(uuid.uuid4())
+
+    # Grant recorded under correct_corr
+    auth_event = ProvenanceEvent(
+        schema_version="1.0.0",
+        event_id=str(uuid.uuid4()),
+        event_type=ProvenanceEventType.AUTHORIZATION_GRANTED.value,
+        provenance_source=ProvenanceSource.GOVERNANCE_GATE.value,
+        correlation_id=correct_corr,
+        request_id="req-corr-1",
+        action_name="api_call",
+        target="/issue_binder",
+        canonical_request_digest=payload_digest,
+        timestamp="2026-01-01T00:00:00Z",
+        authorization_token_id=token_id,
+    )
+    orchestrator.execution_boundary.store.record_event(auth_event)
+
+    # Context uses wrong_corr
+    context = {
+        "correlation_id": wrong_corr,
+        "proposed_actions": [{"action": {"op": "api_call", "endpoint": "/issue_binder"}}],
+        "actual_executable": execution_callback,
+        "authorization_token_id": token_id,
+    }
+
+    res = orchestrator.process_submission(raw_payload, context)
+
+    assert res["status"] == "HALTED"
+    assert "No matching AUTHORIZATION_GRANTED record found" in res["reason"]
+    assert execution_callback.call_count == 0
+
+
+def test_action_target_substitution_denied():
+    """
+    7. Valid grant for one action/target cannot authorize a substituted action or target.
+    """
+    execution_callback = MagicMock(return_value={"status": "SUBSTITUTED"})
     orchestrator = EpistemicOrchestrator()
     perm_gate = PermissionGate(
         trusted_scope={
@@ -100,20 +189,19 @@ def test_valid_grant_for_one_action_cannot_authorize_different_action_or_target(
     )
     orchestrator.gates = [perm_gate]
 
-    raw_payload = {"policy_id": "POL-2026-ACTION-SUB", "primary_metric": 300.0}
+    raw_payload = {"policy_id": "POL-2026-SUBST", "primary_metric": 100.0}
     payload_digest = orchestrator.execution_boundary.compute_canonical_digest(raw_payload)
 
-    token_id = "TRUSTED-TOKEN-555"
+    token_id = "TOKEN-SUBST-222"
     corr_id = str(uuid.uuid4())
 
-    # Pre-record a genuine AUTHORIZATION_GRANTED event for 'api_call' on '/issue_binder'
     auth_event = ProvenanceEvent(
         schema_version="1.0.0",
         event_id=str(uuid.uuid4()),
         event_type=ProvenanceEventType.AUTHORIZATION_GRANTED.value,
         provenance_source=ProvenanceSource.GOVERNANCE_GATE.value,
         correlation_id=corr_id,
-        request_id="req-grant-1",
+        request_id="req-subst-1",
         action_name="api_call",
         target="/issue_binder",
         canonical_request_digest=payload_digest,
@@ -122,14 +210,12 @@ def test_valid_grant_for_one_action_cannot_authorize_different_action_or_target(
     )
     orchestrator.execution_boundary.store.record_event(auth_event)
 
-    # Caller attempts to use token_id for a substituted target '/unauthorized_resource'
+    # Substituted target '/unauthorized_resource'
     context = {
         "correlation_id": corr_id,
         "proposed_actions": [{"action": {"op": "api_call", "endpoint": "/unauthorized_resource"}}],
         "actual_executable": execution_callback,
         "authorization_token_id": token_id,
-        "authorized_digest": payload_digest,
-        "authorization_granted": True,
     }
 
     res = orchestrator.process_submission(raw_payload, context)
@@ -139,11 +225,11 @@ def test_valid_grant_for_one_action_cannot_authorize_different_action_or_target(
     assert execution_callback.call_count == 0
 
 
-def test_payload_changed_after_authorization_denied():
+def test_payload_mutation_after_authorization_denied():
     """
-    4. A payload changed after authorization is denied.
+    8. Payload changed after authorization is denied.
     """
-    execution_callback = MagicMock(return_value={"status": "PAYLOAD_MUTATED_EXECUTION"})
+    execution_callback = MagicMock(return_value={"status": "MUTATED"})
     orchestrator = EpistemicOrchestrator()
     perm_gate = PermissionGate(
         trusted_scope={
@@ -153,10 +239,10 @@ def test_payload_changed_after_authorization_denied():
     )
     orchestrator.gates = [perm_gate]
 
-    original_payload = {"policy_id": "POL-2026-ORIGINAL", "primary_metric": 100.0}
+    original_payload = {"policy_id": "POL-2026-ORIG", "primary_metric": 100.0}
     original_digest = orchestrator.execution_boundary.compute_canonical_digest(original_payload)
 
-    token_id = "TRUSTED-TOKEN-777"
+    token_id = "TOKEN-MUT-333"
     corr_id = str(uuid.uuid4())
 
     auth_event = ProvenanceEvent(
@@ -165,7 +251,7 @@ def test_payload_changed_after_authorization_denied():
         event_type=ProvenanceEventType.AUTHORIZATION_GRANTED.value,
         provenance_source=ProvenanceSource.GOVERNANCE_GATE.value,
         correlation_id=corr_id,
-        request_id="req-grant-2",
+        request_id="req-mut-1",
         action_name="api_call",
         target="/issue_binder",
         canonical_request_digest=original_digest,
@@ -174,16 +260,13 @@ def test_payload_changed_after_authorization_denied():
     )
     orchestrator.execution_boundary.store.record_event(auth_event)
 
-    # Payload is mutated after authorization
-    mutated_payload = {"policy_id": "POL-2026-ORIGINAL", "primary_metric": 999999.0}
+    mutated_payload = {"policy_id": "POL-2026-ORIG", "primary_metric": 999999.0}
 
     context = {
         "correlation_id": corr_id,
         "proposed_actions": [{"action": {"op": "api_call", "endpoint": "/issue_binder"}}],
         "actual_executable": execution_callback,
         "authorization_token_id": token_id,
-        "authorized_digest": original_digest,
-        "authorization_granted": True,
     }
 
     res = orchestrator.process_submission(mutated_payload, context)
@@ -193,9 +276,9 @@ def test_payload_changed_after_authorization_denied():
     assert execution_callback.call_count == 0
 
 
-def test_genuine_trusted_grant_executes_exactly_once():
+def test_valid_trusted_grant_executes_exactly_once():
     """
-    5. A genuine trusted grant for the matching action, target, and payload executes exactly once.
+    9. A valid trusted grant executes exactly once when store-backed grant matches.
     """
     execution_callback = MagicMock(return_value={"status": "GENUINE_SUCCESS"})
     orchestrator = EpistemicOrchestrator()
@@ -207,20 +290,19 @@ def test_genuine_trusted_grant_executes_exactly_once():
     )
     orchestrator.gates = [perm_gate]
 
-    raw_payload = {"policy_id": "POL-2026-GENUINE", "primary_metric": 500.0}
+    raw_payload = {"policy_id": "POL-2026-SUCCESS", "primary_metric": 500.0}
     payload_digest = orchestrator.execution_boundary.compute_canonical_digest(raw_payload)
 
-    token_id = "TRUSTED-TOKEN-GENUINE-888"
+    token_id = "TOKEN-GENUINE-444"
     corr_id = str(uuid.uuid4())
 
-    # Issue genuine trusted grant event into provenance store
     auth_event = ProvenanceEvent(
         schema_version="1.0.0",
         event_id=str(uuid.uuid4()),
         event_type=ProvenanceEventType.AUTHORIZATION_GRANTED.value,
         provenance_source=ProvenanceSource.GOVERNANCE_GATE.value,
         correlation_id=corr_id,
-        request_id="req-grant-3",
+        request_id="req-succ-1",
         action_name="api_call",
         target="/issue_binder",
         canonical_request_digest=payload_digest,
@@ -234,8 +316,6 @@ def test_genuine_trusted_grant_executes_exactly_once():
         "proposed_actions": [{"action": {"op": "api_call", "endpoint": "/issue_binder"}}],
         "actual_executable": execution_callback,
         "authorization_token_id": token_id,
-        "authorized_digest": payload_digest,
-        "authorization_granted": True,
     }
 
     res = orchestrator.process_submission(raw_payload, context)
@@ -244,35 +324,3 @@ def test_genuine_trusted_grant_executes_exactly_once():
     assert execution_callback.call_count == 1
     assert res["execution_outcome"]["status"] == "SUCCESS"
     assert res["execution_outcome"]["result"] == {"status": "GENUINE_SUCCESS"}
-
-
-def test_denial_produces_zero_executable_invocations_and_zero_active_state():
-    """
-    6. Denial produces zero executable invocations and zero active state/vector side effects.
-    """
-    execution_callback = MagicMock(return_value={"status": "DENIED_EXECUTION"})
-    orchestrator = EpistemicOrchestrator()
-    perm_gate = PermissionGate(
-        trusted_scope={
-            "allowed_operations": ["api_call"],
-            "allowed_resources": ["/allowed_only"],
-        }
-    )
-    orchestrator.gates = [perm_gate]
-
-    raw_payload = {"policy_id": "POL-2026-DENIED", "primary_metric": 600.0}
-    payload_digest = orchestrator.execution_boundary.compute_canonical_digest(raw_payload)
-
-    context = {
-        "proposed_actions": [{"action": {"op": "api_call", "endpoint": "/forbidden"}}],
-        "actual_executable": execution_callback,
-        "authorization_token_id": "TOK-DENIED",
-        "authorized_digest": payload_digest,
-        "authorization_granted": True,
-    }
-
-    res = orchestrator.process_submission(raw_payload, context)
-
-    assert res["status"] == "HALTED"
-    assert execution_callback.call_count == 0
-    assert res["vectors_revoked"] >= 0

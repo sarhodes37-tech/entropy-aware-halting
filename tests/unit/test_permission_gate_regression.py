@@ -2,6 +2,7 @@
 Regression tests for PermissionGate action parsing and nested endpoint boundaries.
 """
 
+import uuid
 from typing import Dict, Any
 from unittest.mock import MagicMock
 from epistemicos.gates import PermissionGate, GateInput, GateDecision, GateOutcome
@@ -82,10 +83,28 @@ def test_permission_gate_nested_endpoint_execution_reached():
         "actual_executable": execution_callback,
     }
 
+    token_id = "AUTH-TOKEN-PERM-GATE"
+    corr_id = str(uuid.uuid4())
     digest = orchestrator.execution_boundary.compute_canonical_digest(raw_payload)
-    context["authorization_token_id"] = "AUTH-TOKEN-PERM-GATE"
-    context["authorized_digest"] = digest
-    context["authorization_granted"] = True
+
+    from epistemicos.provenance import ProvenanceEvent, ProvenanceEventType, ProvenanceSource
+    auth_event = ProvenanceEvent(
+        schema_version="1.0.0",
+        event_id=str(uuid.uuid4()),
+        event_type=ProvenanceEventType.AUTHORIZATION_GRANTED.value,
+        provenance_source=ProvenanceSource.GOVERNANCE_GATE.value,
+        correlation_id=corr_id,
+        request_id="req-perm-gate",
+        action_name="api_call",
+        target="/issue_binder",
+        canonical_request_digest=digest,
+        timestamp="2026-01-01T00:00:00Z",
+        authorization_token_id=token_id,
+    )
+    orchestrator.execution_boundary.store.record_event(auth_event)
+
+    context["correlation_id"] = corr_id
+    context["authorization_token_id"] = token_id
 
     res = orchestrator.process_submission(raw_payload, context)
 
