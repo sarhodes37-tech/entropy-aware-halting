@@ -105,6 +105,7 @@ def test_internal_subnet_mutating_action_permitted(tmp_path):
     context = {
         "token_count": 2,
         "token_logprobs": [-0.02, -0.02],
+        "trusted_scope": scope,
         "proposed_actions": [
             {"op": "update_db", "node": "logistics_db"}
         ]
@@ -139,6 +140,7 @@ def test_rmm_quarantine_subnet_mutating_action_blocked(tmp_path):
     context = {
         "token_count": 2,
         "token_logprobs": [-0.02, -0.02],
+        "trusted_scope": scope,
         "proposed_actions": [
             {"op": "update_db", "node": "logistics_db"}
         ]
@@ -174,6 +176,7 @@ def test_rmm_quarantine_subnet_read_only_permitted(tmp_path):
     context = {
         "token_count": 2,
         "token_logprobs": [-0.02, -0.02],
+        "trusted_scope": scope,
         "proposed_actions": [
             {"op": "read", "node": "logistics_db"}
         ]
@@ -290,8 +293,8 @@ def test_spoofed_client_attempt_counter_neutralized(orchestrator, base_spoof_pay
     noisy_logprobs = [-0.01] * 5 + [-12.0]
 
     actions = [{"op": "update_db", "node": "logistics_db"}]
-    context_clean = {"token_count": 10, "token_logprobs": clean_logprobs, "proposed_actions": actions}
-    context_noisy = {"token_count": 6, "token_logprobs": noisy_logprobs, "proposed_actions": actions}
+    context_clean = {"token_count": 10, "token_logprobs": clean_logprobs, "proposed_actions": actions, "trusted_scope": base_spoof_payload["scope"]}
+    context_noisy = {"token_count": 6, "token_logprobs": noisy_logprobs, "proposed_actions": actions, "trusted_scope": base_spoof_payload["scope"]}
 
     session_id = "TRACKED-SESSION-001"
 
@@ -309,14 +312,19 @@ def test_spoofed_client_attempt_counter_neutralized(orchestrator, base_spoof_pay
 
     # Attempt 4: Exceeds max_attempts (4 > 3) -> Server halts immediately due to retry exhaustion
     breached_payload = base_spoof_payload.copy()
-    breached_payload["scope"] = {
-        "attempt_count": 4,
-        "max_attempts": 3,
-        "allowed_resources": ["NONE"],
-        "allowed_operations": ["read"]
+    context_exhausted = {
+        "token_count": 10,
+        "token_logprobs": clean_logprobs,
+        "proposed_actions": actions,
+        "trusted_scope": {
+            "attempt_count": 4,
+            "max_attempts": 3,
+            "allowed_resources": ["NONE"],
+            "allowed_operations": ["read"]
+        }
     }
 
-    res4 = orchestrator.process_submission(breached_payload, context_clean, trajectory_id=session_id)
+    res4 = orchestrator.process_submission(breached_payload, context_exhausted, trajectory_id=session_id)
     assert res4["status"] == "HALTED"
 
 

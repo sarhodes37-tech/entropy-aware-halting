@@ -105,21 +105,18 @@ def test_permission_gate_scope_boundaries():
     """Validates rejections for unauthorized operations and resources."""
     gate = PermissionGate(allowed_actions=["query", "read"])
     
-    # Operation outside payload's allowed_operations
-    payload_ops = {"scope": {"allowed_operations": ["query"]}}
-    res_ops = gate.evaluate(payload_ops, {"proposed_actions": [{"op": "update_db", "node": "db"}]})
+    # Operation outside trusted_scope's allowed_operations
+    res_ops = gate.evaluate({}, {"trusted_scope": {"allowed_operations": ["query"]}, "proposed_actions": [{"op": "update_db", "node": "db"}]})
     assert res_ops.passed is False
     assert "outside allowed scope operations" in res_ops.reason
 
-    # Resource outside payload's allowed_resources
-    payload_res = {"scope": {"allowed_resources": ["db1"]}}
-    res_res = gate.evaluate(payload_res, {"proposed_actions": [{"op": "query", "node": "db2"}]})
+    # Resource outside trusted_scope's allowed_resources
+    res_res = gate.evaluate({}, {"trusted_scope": {"allowed_resources": ["db1"]}, "proposed_actions": [{"op": "query", "node": "db2"}]})
     assert res_res.passed is False
     assert "outside allowed scope resources" in res_res.reason
     
     # Operation outside gate's base allowed_actions
-    payload_empty_scope = {"scope": {}}
-    res_base = gate.evaluate(payload_empty_scope, {"proposed_actions": [{"op": "drop_table", "node": "db1"}]})
+    res_base = gate.evaluate({}, {"trusted_scope": {}, "proposed_actions": [{"op": "drop_table", "node": "db1"}]})
     assert res_base.passed is False
     assert "not in gate allowed_actions" in res_base.reason
 
@@ -127,9 +124,9 @@ def test_permission_gate_scope_boundaries():
 def test_permission_gate_rmm_quarantine():
     """Validates state-mutating actions are blocked from RMM quarantine subnets."""
     gate = PermissionGate()
-    payload = {"scope": {"is_rmm_origin": True}}
+    context = {"trusted_scope": {"is_rmm_origin": True}, "proposed_actions": [{"op": "issue_binder", "node": "system"}]}
     
-    res = gate.evaluate(payload, {"proposed_actions": [{"op": "issue_binder", "node": "system"}]})
+    res = gate.evaluate({}, context)
     
     assert res.passed is False
     assert "Downstream Scope Lock" in res.reason
