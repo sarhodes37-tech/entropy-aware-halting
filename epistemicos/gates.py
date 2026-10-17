@@ -554,18 +554,13 @@ class PermissionGate(ControlPlaneGate):
                     )
 
         # Security Hardening: Authorization Scope Resolution
-        # Priority: self.trusted_scope (gate config) > context.get("trusted_scope") > context.get("scope") > payload.scope
+        # Priority: self.trusted_scope (gate config) > context.get("trusted_scope")
+        # Request-, payload-, or model-supplied scope fields are strictly ignored for authorization decisions.
         trusted_scope_raw = (
             self.trusted_scope
             if self.trusted_scope is not None
             else context.get("trusted_scope")
             if context.get("trusted_scope") is not None
-            else context.get("scope")
-            if context.get("scope") is not None
-            else getattr(payload, "scope", None)
-            if hasattr(payload, "scope")
-            else payload.get("scope")
-            if isinstance(payload, dict)
             else None
         )
 
@@ -581,8 +576,8 @@ class PermissionGate(ControlPlaneGate):
         else:
             trusted_scope = {}
 
-        proposed_actions = context.get("proposed_actions", []) or payload.get("proposed_actions", [])
-        llm_output = context.get("llm_output") or payload.get("llm_output")
+        proposed_actions = context.get("proposed_actions", []) or (payload.get("proposed_actions", []) if isinstance(payload, dict) else getattr(payload, "proposed_actions", []))
+        llm_output = context.get("llm_output") or (payload.get("llm_output") if isinstance(payload, dict) else getattr(payload, "llm_output", None))
 
         # Require explicit, non-ambiguous action contract details (both operation AND target/resource)
         if proposed_actions:

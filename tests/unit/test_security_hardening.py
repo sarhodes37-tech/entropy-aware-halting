@@ -316,7 +316,7 @@ def test_exceptions_and_malformed_evidence_fail_closed():
 
     class FaultyPayload:
         @property
-        def scope(self):
+        def proposed_actions(self):
             raise RuntimeError("Database connection exploded during scope resolution!")
 
     # Unhandled exception during evaluation must fail closed
