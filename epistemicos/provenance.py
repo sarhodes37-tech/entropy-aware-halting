@@ -253,8 +253,16 @@ class TrustedExecutionBoundary:
         self._lock = threading.Lock()
 
     def compute_canonical_digest(self, payload: Any) -> str:
-        sanitized = _sanitize_sensitive_data(payload)
-        canonical_bytes = json.dumps(sanitized, sort_keys=True).encode("utf-8")
+        if isinstance(payload, bytes):
+            canonical_bytes = payload
+        elif isinstance(payload, str):
+            canonical_bytes = payload.encode("utf-8")
+        else:
+            try:
+                canonical_bytes = json.dumps(payload, sort_keys=True, default=str).encode("utf-8")
+            except Exception:
+                sanitized = _sanitize_sensitive_data(payload)
+                canonical_bytes = json.dumps(sanitized, sort_keys=True, default=str).encode("utf-8")
         return hashlib.sha256(canonical_bytes).hexdigest()
 
     def execute_protected_action(
@@ -351,25 +359,6 @@ class TrustedExecutionBoundary:
         # Execute under BaseException catching to handle interruptions and errors
         try:
             result = executor_func()
-            end_ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-            success_event = ProvenanceEvent(
-                schema_version="1.0.0",
-                event_id=str(uuid.uuid4()),
-                event_type=ProvenanceEventType.EXECUTION_SUCCEEDED.value,
-                provenance_source=ProvenanceSource.EXECUTOR.value,
-                correlation_id=corr_id,
-                request_id=req_id,
-                action_name=action_name,
-                target=target,
-                canonical_request_digest=current_digest,
-                timestamp=end_ts,
-                authorization_token_id=auth_token_id,
-                execution_attempt_id=attempt_id,
-                policy_version=pol_version,
-                outcome={"status": "SUCCESS", "result": _sanitize_sensitive_data(result)}
-            )
-            self.store.record_event(success_event)
-            return {"status": "SUCCESS", "result": result, "attempt_id": attempt_id}
         except Exception as e:
             end_ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
             fail_event = ProvenanceEvent(
@@ -388,7 +377,10 @@ class TrustedExecutionBoundary:
                 policy_version=pol_version,
                 outcome={"status": "FAILED", "error": str(e)}
             )
-            self.store.record_event(fail_event)
+            try:
+                self.store.record_event(fail_event)
+            except Exception:
+                pass
             raise
         except BaseException as be:
             end_ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -408,8 +400,35 @@ class TrustedExecutionBoundary:
                 policy_version=pol_version,
                 outcome={"status": "INTERRUPTED", "reason": str(be)}
             )
-            self.store.record_event(interrupt_event)
+            try:
+                self.store.record_event(interrupt_event)
+            except Exception:
+                pass
             raise
+
+        end_ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        success_event = ProvenanceEvent(
+            schema_version="1.0.0",
+            event_id=str(uuid.uuid4()),
+            event_type=ProvenanceEventType.EXECUTION_SUCCEEDED.value,
+            provenance_source=ProvenanceSource.EXECUTOR.value,
+            correlation_id=corr_id,
+            request_id=req_id,
+            action_name=action_name,
+            target=target,
+            canonical_request_digest=current_digest,
+            timestamp=end_ts,
+            authorization_token_id=auth_token_id,
+            execution_attempt_id=attempt_id,
+            policy_version=pol_version,
+            outcome={"status": "SUCCESS", "result": _sanitize_sensitive_data(result)}
+        )
+        try:
+            self.store.record_event(success_event)
+        except Exception as audit_err:
+            raise RuntimeError(f"Execution completed but terminal audit event recording failed: {str(audit_err)}") from audit_err
+
+        return {"status": "SUCCESS", "result": result, "attempt_id": attempt_id}
 
 
 @dataclass
