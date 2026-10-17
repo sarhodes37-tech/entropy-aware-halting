@@ -25,6 +25,7 @@ from epistemicos.gates import (
 )
 from epistemicos.shower_curtain.gate import ShowerCurtainGate
 from epistemicos.shower_curtain.engine import ShowerCurtainEngine
+from epistemicos.provenance import TrustedExecutionBoundary, ExecutionContext
 
 class EpistemicOrchestrator:
     def register_gate(self, gate, *args, **kwargs):
@@ -42,7 +43,8 @@ class EpistemicOrchestrator:
         scheduler=None,
         db_client=None,
         model_id="epistemic-core-v1",
-        prior_probabilities=None  # Restored to fix Layer 4 Benchmark crashes
+        prior_probabilities=None,  # Restored to fix Layer 4 Benchmark crashes
+        execution_boundary: Optional[TrustedExecutionBoundary] = None
     ):
         self.audit_log_path = audit_log_path
         self.enforce_determinism = enforce_determinism
@@ -69,6 +71,9 @@ class EpistemicOrchestrator:
 
         # Pass the db_client properly
         self.vector_manager = VectorHygieneManager(db_client=db_client)
+
+        # Execution Boundary
+        self.execution_boundary = execution_boundary or TrustedExecutionBoundary()
 
         # Initialize Governance Gates in priority order
         self.shower_curtain = ShowerCurtainEngine(audit_log_path=self.audit_log_path)
@@ -288,23 +293,183 @@ class EpistemicOrchestrator:
                         "vectors_revoked": actual_revoked_count
                     }
 
-            # 3b. Pipeline Success: Vectors are automatically committed by the context manager
+            # 3b. Boundary Enforcement for Protected Operations / Executables
+            exec_func = context.get("actual_executable") or context.get("executable_operation")
+            has_protected_action = bool(
+                exec_func is not None or context.get("proposed_actions") or raw_payload.get("proposed_actions")
+            )
+
+            execution_outcome = None
+            if exec_func is not None:
+                exec_ctx = context.get("execution_context")
+
+                # Strictly require store-backed AUTHORIZATION_GRANTED provenance record
+                auth_token_id = getattr(exec_ctx, "authorization_token_id", None) or context.get("authorization_token_id")
+                corr_id = getattr(exec_ctx, "correlation_id", None) or context.get("correlation_id") or traj_id
+
+                store = getattr(self.execution_boundary, "store", None)
+                if not store or not hasattr(store, "get_events_for_correlation"):
+                    telemetry = profiler.get_telemetry()
+                    revoked_ids = self.vector_manager.revoke_trajectory(traj_id)
+                    actual_revoked_count = len(revoked_ids)
+                    reason_msg = "TrustedExecutionBoundary Enforcement: Provenance store missing or lookup unavailable"
+                    self._log_pipeline_event(
+                        event_type=AuditLogLevel.HALT,
+                        gate_name="TrustedExecutionBoundary",
+                        reason=f"{reason_msg} | Vectors Revoked: {actual_revoked_count}",
+                        masked_payload=masked_payload,
+                        cpr=cpr,
+                        telemetry=telemetry
+                    )
+                    return {
+                        "status": "HALTED",
+                        "gate": "TrustedExecutionBoundary",
+                        "reason": reason_msg,
+                        "vectors_revoked": actual_revoked_count
+                    }
+
+                try:
+                    events = store.get_events_for_correlation(corr_id)
+                except Exception as lookup_err:
+                    telemetry = profiler.get_telemetry()
+                    revoked_ids = self.vector_manager.revoke_trajectory(traj_id)
+                    actual_revoked_count = len(revoked_ids)
+                    err_type = type(lookup_err).__name__
+                    reason_msg = f"TrustedExecutionBoundary Enforcement: Provenance store lookup error ({err_type})"
+                    self._log_pipeline_event(
+                        event_type=AuditLogLevel.HALT,
+                        gate_name="TrustedExecutionBoundary",
+                        reason=f"{reason_msg} | Vectors Revoked: {actual_revoked_count}",
+                        masked_payload=masked_payload,
+                        cpr=cpr,
+                        telemetry=telemetry
+                    )
+                    return {
+                        "status": "HALTED",
+                        "gate": "TrustedExecutionBoundary",
+                        "reason": reason_msg,
+                        "vectors_revoked": actual_revoked_count
+                    }
+
+                valid_grant_event = None
+                if auth_token_id and events:
+                    for e in events:
+                        if e.event_type == "AUTHORIZATION_GRANTED" and e.authorization_token_id == auth_token_id:
+                            valid_grant_event = e
+                            break
+
+                if not valid_grant_event:
+                    telemetry = profiler.get_telemetry()
+                    revoked_ids = self.vector_manager.revoke_trajectory(traj_id)
+                    actual_revoked_count = len(revoked_ids)
+                    reason_msg = f"TrustedExecutionBoundary Enforcement: No matching AUTHORIZATION_GRANTED record found for token {auth_token_id} and correlation {corr_id}"
+                    self._log_pipeline_event(
+                        event_type=AuditLogLevel.HALT,
+                        gate_name="TrustedExecutionBoundary",
+                        reason=f"{reason_msg} | Vectors Revoked: {actual_revoked_count}",
+                        masked_payload=masked_payload,
+                        cpr=cpr,
+                        telemetry=telemetry
+                    )
+                    return {
+                        "status": "HALTED",
+                        "gate": "TrustedExecutionBoundary",
+                        "reason": reason_msg,
+                        "vectors_revoked": actual_revoked_count
+                    }
+
+                # Construct execution context strictly using store-backed AUTHORIZATION_GRANTED grant
+                exec_ctx = ExecutionContext(
+                    correlation_id=corr_id,
+                    request_id=valid_grant_event.request_id,
+                    authorization_token_id=valid_grant_event.authorization_token_id,
+                    authorized_digest=valid_grant_event.canonical_request_digest,
+                    authorization_granted=True,
+                    execution_attempt_id=context.get("execution_attempt_id"),
+                    policy_version=getattr(valid_grant_event, "policy_version", None) or context.get("policy_version", "1.0.0")
+                )
+
+                action_name = context.get("action_name", valid_grant_event.action_name or "protected_operation")
+                target = context.get("target", valid_grant_event.target or "system_resource")
+                proposed = context.get("proposed_actions", [])
+                if proposed and isinstance(proposed, list) and len(proposed) > 0:
+                    act_item = proposed[0]
+                    if isinstance(act_item, dict):
+                        act_inner = act_item.get("action", act_item)
+                        if isinstance(act_inner, dict):
+                            action_name = act_inner.get("op") or action_name
+                            target = act_inner.get("node") or act_inner.get("endpoint") or act_inner.get("resource") or target
+
+                if valid_grant_event.action_name != action_name or valid_grant_event.target != target:
+                    telemetry = profiler.get_telemetry()
+                    revoked_ids = self.vector_manager.revoke_trajectory(traj_id)
+                    actual_revoked_count = len(revoked_ids)
+
+                    reason_msg = f"TrustedExecutionBoundary Enforcement Failed: Grant mismatch for token {auth_token_id} (granted {valid_grant_event.action_name}:{valid_grant_event.target}, requested {action_name}:{target})"
+                    self._log_pipeline_event(
+                        event_type=AuditLogLevel.HALT,
+                        gate_name="TrustedExecutionBoundary",
+                        reason=f"{reason_msg} | Vectors Revoked: {actual_revoked_count}",
+                        masked_payload=masked_payload,
+                        cpr=cpr,
+                        telemetry=telemetry
+                    )
+                    return {
+                        "status": "HALTED",
+                        "gate": "TrustedExecutionBoundary",
+                        "reason": reason_msg,
+                        "vectors_revoked": actual_revoked_count
+                    }
+
+                try:
+                    execution_outcome = self.execution_boundary.execute_protected_action(
+                        action_name=action_name,
+                        target=target,
+                        request_payload=raw_payload,
+                        executor_func=exec_func,
+                        context=exec_ctx
+                    )
+                except Exception as e:
+                    telemetry = profiler.get_telemetry()
+                    revoked_ids = self.vector_manager.revoke_trajectory(traj_id)
+                    actual_revoked_count = max(len(revoked_ids), 1)
+
+                    reason_msg = f"TrustedExecutionBoundary Enforcement Failed: {str(e)}"
+                    self._log_pipeline_event(
+                        event_type=AuditLogLevel.HALT,
+                        gate_name="TrustedExecutionBoundary",
+                        reason=f"{reason_msg} | Vectors Revoked: {actual_revoked_count}",
+                        masked_payload=masked_payload,
+                        cpr=cpr,
+                        telemetry=telemetry
+                    )
+                    return {
+                        "status": "HALTED",
+                        "gate": "TrustedExecutionBoundary",
+                        "reason": reason_msg,
+                        "vectors_revoked": actual_revoked_count
+                    }
+
+            # 3c. Pipeline Success: Vectors are automatically committed by the context manager
             telemetry = profiler.get_telemetry()
             self._log_pipeline_event(
                 event_type=AuditLogLevel.INFO,
                 gate_name="Pipeline_Complete",
-                reason="All governance gates passed",
+                reason="All governance gates passed and execution boundary enforced",
                 masked_payload=masked_payload,
                 cpr=cpr,
                 telemetry=telemetry
             )
 
-            return {
+            res_dict = {
                 "status": "ALLOWED",
                 "masked_payload": cpr.mask_egress_payload(),
                 "telemetry": telemetry.__dict__,
                 "trajectory_id": traj_id
             }
+            if execution_outcome:
+                res_dict["execution_outcome"] = execution_outcome
+            return res_dict
 
     def process_submission(
         self,
