@@ -115,6 +115,8 @@ class LocalProvenanceStore(ProvenanceStore):
     """
 
     GENESIS_SEED = b"EPISTEMICOS_PROVENANCE_GENESIS"
+    _VALID_EVENT_TYPES: Set[str] = frozenset(e.value for e in ProvenanceEventType)
+    _VALID_PROVENANCE_SOURCES: Set[str] = frozenset(s.value for s in ProvenanceSource)
 
     def __init__(self, log_path: str = "logs/provenance_audit.jsonl", fail_closed: bool = True):
         self.log_path = Path(log_path)
@@ -135,10 +137,10 @@ class LocalProvenanceStore(ProvenanceStore):
                 if not event.schema_version or not isinstance(event.schema_version, str):
                     raise ValueError("Invalid or missing schema_version")
 
-                if event.event_type not in [e.value for e in ProvenanceEventType]:
+                if event.event_type not in self._VALID_EVENT_TYPES:
                     raise ValueError(f"Unsupported event_type: {event.event_type}")
 
-                if event.provenance_source not in [s.value for s in ProvenanceSource]:
+                if event.provenance_source not in self._VALID_PROVENANCE_SOURCES:
                     raise ValueError(f"Unsupported provenance_source: {event.provenance_source}")
 
                 # Acquire file lock FIRST before inspecting health and reading tail hash to avoid multi-process race conditions
