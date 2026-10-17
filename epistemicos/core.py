@@ -302,12 +302,24 @@ class EpistemicOrchestrator:
             execution_outcome = None
             if exec_func is not None:
                 exec_ctx = context.get("execution_context")
+
+                # Verify against store-backed AUTHORIZATION_GRANTED provenance record when available
+                auth_token_id = getattr(exec_ctx, "authorization_token_id", None) or context.get("authorization_token_id")
+                corr_id = getattr(exec_ctx, "correlation_id", None) or context.get("correlation_id") or traj_id
+
+                # Query store for existing trusted AUTHORIZATION_GRANTED provenance events if store exists
+                valid_grant_event = None
+                if auth_token_id and hasattr(self.execution_boundary, "store") and hasattr(self.execution_boundary.store, "get_events_for_correlation"):
+                    events = self.execution_boundary.store.get_events_for_correlation(corr_id)
+                    for e in events:
+                        if e.event_type == "AUTHORIZATION_GRANTED" and e.authorization_token_id == auth_token_id:
+                            valid_grant_event = e
+                            break
+
                 if not isinstance(exec_ctx, ExecutionContext):
-                    corr_id = context.get("correlation_id") or traj_id
-                    req_id = context.get("request_id") or str(uuid.uuid4())
-                    auth_token_id = context.get("authorization_token_id")
-                    auth_digest = context.get("authorized_digest")
-                    auth_granted = context.get("authorization_granted", context.get("authorized", False))
+                    req_id = context.get("request_id") or (valid_grant_event.request_id if valid_grant_event else str(uuid.uuid4()))
+                    auth_digest = context.get("authorized_digest") or (valid_grant_event.canonical_request_digest if valid_grant_event else None)
+                    auth_granted = (valid_grant_event is not None) or context.get("authorization_granted", context.get("authorized", False))
 
                     if not auth_token_id or not auth_digest:
                         # Fail closed before vector commit if required boundary configuration/authorization evidence is missing
@@ -341,9 +353,9 @@ class EpistemicOrchestrator:
                         policy_version=context.get("policy_version", "1.0.0")
                     )
 
-                # Determine action name and target
-                action_name = context.get("action_name", "protected_operation")
-                target = context.get("target", "system_resource")
+                # If a valid_grant_event exists in the store, cross-validate action_name and target against the grant
+                action_name = context.get("action_name", valid_grant_event.action_name if valid_grant_event else "protected_operation")
+                target = context.get("target", valid_grant_event.target if valid_grant_event else "system_resource")
                 proposed = context.get("proposed_actions", [])
                 if proposed and isinstance(proposed, list) and len(proposed) > 0:
                     act_item = proposed[0]
@@ -352,6 +364,28 @@ class EpistemicOrchestrator:
                         if isinstance(act_inner, dict):
                             action_name = act_inner.get("op") or action_name
                             target = act_inner.get("node") or act_inner.get("endpoint") or act_inner.get("resource") or target
+
+                if valid_grant_event:
+                    if valid_grant_event.action_name != action_name or valid_grant_event.target != target:
+                        telemetry = profiler.get_telemetry()
+                        revoked_ids = self.vector_manager.revoke_trajectory(traj_id)
+                        actual_revoked_count = max(len(revoked_ids), 1)
+
+                        reason_msg = f"TrustedExecutionBoundary Enforcement Failed: Grant mismatch for token {auth_token_id} (granted {valid_grant_event.action_name}:{valid_grant_event.target}, requested {action_name}:{target})"
+                        self._log_pipeline_event(
+                            event_type=AuditLogLevel.HALT,
+                            gate_name="TrustedExecutionBoundary",
+                            reason=f"{reason_msg} | Vectors Revoked: {actual_revoked_count}",
+                            masked_payload=masked_payload,
+                            cpr=cpr,
+                            telemetry=telemetry
+                        )
+                        return {
+                            "status": "HALTED",
+                            "gate": "TrustedExecutionBoundary",
+                            "reason": reason_msg,
+                            "vectors_revoked": actual_revoked_count
+                        }
 
                 try:
                     execution_outcome = self.execution_boundary.execute_protected_action(
