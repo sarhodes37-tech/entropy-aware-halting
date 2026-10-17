@@ -1,6 +1,6 @@
 # EpistemicOS: Deterministic Halting & Security Middleware for LLMs
 
-EpistemicOS is a low-latency security middleware designed to enforce deterministic halting, privacy invariants, and strict sandbox boundaries on Large Language Model (LLM) outputs. It intercepts structural collapse, N-gram loops, epistemic hallucinations, unauthorized tool-calling vectors, and sensitive data leakage before execution.
+EpistemicOS is an experimental low-latency security middleware designed to enforce deterministic halting, authorization policies, privacy controls, and execution governance for Large Language Model (LLM) workflows. It intercepts structural collapse, N-gram loops, epistemic hallucinations, unauthorized tool-calling vectors, and sensitive data leakage prior to execution within configured control plane boundaries.
 
 ---
 
@@ -8,53 +8,26 @@ EpistemicOS is a low-latency security middleware designed to enforce determinist
 
 ### Control Plane Architecture Diagram
 
-```mermaid
-flowchart TD
-    subgraph Ingress ["1. Request Ingress & Normalization"]
-        A[Task Payload & Context] --> B[Input Validation & CPR Normalization]
-    end
-
-    subgraph Governance ["2. Ordered Governance Gates (Fail-Closed)"]
-        B --> C{Shower Curtain Gate}
-        C -- "Clean / Anonymized" --> D{Entropy-Aware Halting Gate}
-        C -- "PII Leakage / Policy Block" --> HALT["HALT / ROLLBACK\n(Fail-Closed Execution Block)"]
-
-        D -- "Low Surprisal / Low Entropy" --> E{Permission & Policy Gate}
-        D -- "High Surprisal / Structural Collapse" --> HALT
-
-        E -- "Authorized Scope & Resource" --> F{Triangulation Gate}
-        E -- "Unauthorized Action / Missing Resource" --> HALT
-
-        F -- "Telemetry Consistent" --> ALLOW["ALLOW / COMMIT\n(Approved Action Payload)"]
-        F -- "Data Divergence / Tampering" --> HALT
-    end
-
-    subgraph Boundary ["3. Execution Boundary & Containment"]
-        ALLOW --> G["Trusted Execution Boundary\n(execute_protected_action)"]
-        G --> H["Containment Guard\n(Command & Network Regex Guard)"]
-        H --> I["Isolated Executor / Tool Invocation"]
-    end
-
-    subgraph Audit ["4. Audit & Provenance Trail"]
-        HALT --> J["Tamper-Evident Audit Trail\n(SHA-256 Entry Hash Chain)"]
-        I --> J
-        J --> K["Local Provenance Store\n& Signed Receipt Minting"]
-    end
-
-    subgraph Egress ["5. Decision Emission"]
-        K --> L["Final System Outcome\n(ALLOWED | HALTED | DENIED)"]
-    end
-
-    style HALT fill:#421414,stroke:#f85149,stroke-width:2px,color:#fff
-    style ALLOW fill:#0d2818,stroke:#3fb950,stroke-width:2px,color:#fff
-    style Governance fill:#161b22,stroke:#30363d,stroke-width:1px
-    style Boundary fill:#161b22,stroke:#30363d,stroke-width:1px
-    style Audit fill:#161b22,stroke:#30363d,stroke-width:1px
-```
-
 ![EpistemicOS Control Plane Architecture](docs/figures/control_plane.svg)
 
-*Figure A — EpistemicOS Control Plane Architecture: Workloads route through ordered governance gates before reaching the trusted execution boundary. Any gate violation triggers an immediate fail-closed halt, revokes execution vectors, and commits an audit receipt to the tamper-evident hash chain.*
+*Figure 1 — EpistemicOS Control Plane Architecture: Workloads route through ordered governance gates before reaching the trusted execution boundary. Any gate violation triggers an immediate fail-closed halt, revokes execution vectors, and commits an audit receipt to the tamper-evident hash chain.*
+
+---
+
+### Shower Curtain Privacy Architecture
+
+![Shower Curtain Privacy Boundary](docs/figures/shower_curtain_boundary.svg)
+
+*Figure 2 — Shower Curtain Privacy Boundary: Local data sanitization, session-scoped pseudonym mapping, egress fail-closed policy enforcement, and inbound response inspection.*
+
+The **Shower Curtain** subsystem forms a local-first privacy boundary mediating interaction between client applications and external inference providers:
+
+* **Local Trust Boundary:** Sensitive PII, financial data, and authentication credentials remain within the local client perimeter.
+* **Multi-Stage Processing:** Ingress workloads pass through deterministic detection (Stage A), classification and policy evaluation (Stage B), local pseudonym mapping (Stage C), context minimization (Stage D), and serialized egress gate inspection (Stage E).
+* **Session Pseudonyms & Zero Credential Leakage:** Reversible pseudonyms replace identifiable entities within isolated session scopes. Credentials and secrets are strictly redacted or blocked and cannot be rehydrated inbound.
+* **Fail-Closed Egress Enforcement:** Egress payloads are serialized and inspected prior to provider transmission. Unsanitized sensitive data or policy violations trigger immediate execution halts.
+
+For detailed architecture specifications and security guarantees, see [`docs/SHOWER_CURTAIN_ARCHITECTURE.md`](docs/SHOWER_CURTAIN_ARCHITECTURE.md).
 
 ---
 
@@ -72,14 +45,14 @@ EpistemicOS strictly decouples three distinct control-plane responsibilities:
 
 * **Ordered Fail-Closed Gates:** Gates evaluate sequentially (`ShowerCurtainGate` $\rightarrow$ `EntropyGate` $\rightarrow$ `PermissionGate` $\rightarrow$ `TriangulationGate`). The first gate that returns `GateDecision.HALT` or `GateDecision.DENY` immediately halts the pipeline without evaluating remaining gates.
 * **Malformed Inputs & Exceptions:** If a payload lacks required action contract attributes (such as missing `op` or `endpoint`), or if a gate encounters an unhandled exception, `EpistemicOrchestrator` catches the error and defaults to `GateDecision.HALT` with a reason code describing the failure.
-* **Audit & Receipt Binding:** Every gate outcome—whether allowed or halted—is cryptographically bound to the input hash and recorded in `TamperEvidentAuditTrail` via a SHA-256 entry chain.
+* **Audit & Receipt Binding:** Every gate outcome—whether allowed or halted—is cryptographically bound to the input hash and recorded in `TamperEvidentAuditTrail` via a SHA-256 entry hash chain. Receipt minting uses SHA-256 digests by default, or symmetric HMAC-SHA256 signatures when configured with a trusted secret key.
 
 ### Core Architectural Invariants
 
 The control plane is designed around five core invariants:
 
 1. **Authorization Non-Overridability:** High information utility, low token surprisal, or high LLM confidence cannot override a `PermissionGate` denial. Authorization is a non-compensatory constraint.
-2. **No Unsanitized Alternative Execution Paths:** Execution callbacks (`actual_executable`) can only be invoked through `TrustedExecutionBoundary.execute_protected_action()`. Direct invocation or unauthenticated fallback routes are rejected.
+2. **No Unsanitized Alternative Execution Paths:** Within the orchestrator pipeline, execution callbacks (`actual_executable`) are mediated through `TrustedExecutionBoundary.execute_protected_action()`. Direct invocation or unauthenticated fallback routes are rejected.
 3. **Action-Resource Binding:** Authorization is granted specifically to a `(operation, resource)` tuple extracted via `_extract_action_details()`. Granting permission for an operation on resource $A$ does not grant permission for the same operation on resource $B$.
 4. **Execution Prevention on Denial:** A gate denial immediately halts pipeline execution. Gate outcomes are enforced prior to execution, not merely logged post-hoc.
 5. **Accurate Outcome Reporting:** Final pipeline status reporting reflects actual execution outcomes. A session where execution was denied or halted will never return `ALLOWED` status.
@@ -88,42 +61,30 @@ The control plane is designed around five core invariants:
 
 * **Enforced & Verified in Code:** Test coverage in `tests/unit/test_gates.py`, `tests/unit/test_provenance.py`, and `tests/unit/test_permission_gate_regression.py` confirms fail-closed behavior on missing fields, single-use token consumption, strict scope matching, and execution suppression upon gate denial.
 * **Limitations & Unverified Assumptions:**
-  * *Application-Level vs. OS Sandbox:* `ContainmentGuard` provides application-level regex parameter validation; it is not a kernel-level hardware sandbox or container isolation boundary.
+  * *Application-Level vs. OS Sandbox:* `ContainmentGuard` provides application-level regex parameter inspection for shell commands and network URIs; it does not replace operating system or kernel-level hardware sandbox isolation.
   * *Audit Chain Tamper Detection:* `TamperEvidentAuditTrail` detects log insertion, deletion, or modification at read time via hash chain verification, but does not prevent root-level host file deletion unless backed by external write-once storage (WORM).
   * *Synthetic Benchmark Generalization:* Evaluated performance on `benchmarks/data/eval_set.jsonl` demonstrates control-plane logic correctness under fixed test scenarios, but does not substitute for production threat modeling across arbitrary real-world LLM workloads.
 
 ---
 
-## 🛠 `PermissionGate` Correction & Nested Resource Extraction
+## 🛠 Authorization Scope & Resource Extraction Refinement
 
-### Bug Description & Root Cause Analysis
+### Defect Analysis & Research Impact
 
-Prior to the correction in [`epistemicos/gates.py`](epistemicos/gates.py), `PermissionGate._extract_action_details()` extracted operation and resource identifiers from top-level dictionary keys (`op`, `operation`, `action`, `node`, `target`, `resource`). However, when action structures contained nested action objects (e.g., `{"action": {"op": "api_call", "endpoint": "/issue_binder"}}`), `_extract_action_details()` extracted the top-level `op` value from the nested dictionary but failed to inspect the nested `"endpoint"` field for the resource target.
+An audit identified an issue in authorization resource resolution where nested action structures (such as API call payloads with embedded endpoints) were unparsed during resource scope checks. Valid nested tool calls failed resource matching and were falsely halted as unauthorized actions.
 
-As a result, valid requests containing nested `"endpoint"` attributes failed the mandatory resource check ("Missing or invalid target/resource identifier in proposed action") and were incorrectly halted as unauthorized.
+On the $N = 100$ benchmark evaluation dataset, this defect caused **35 benign control cases** (20 in *Commercial Underwriting & Operations* and 15 in *High-Noise Benign Controls*) to be incorrectly halted, yielding a **35.0% false positive rate (FPR)** and reducing Combined Gating accuracy to **65.0%**.
 
-### Measured Impact on Benchmark Performance
+### Technical Resolution & Benchmark Restoration
 
-In the original pre-fix benchmark run, this defect caused **35 benign control cases** (all 20 cases in *Commercial Underwriting & Operations* and all 15 cases in *High-Noise Benign Controls*) to be falsely halted by `PermissionGate`. This resulted in a **35.0% false positive rate (FPR)** and reduced Combined Gating accuracy to **65.0%**.
+Resource extraction in `PermissionGate` was refined to evaluate resource targets consistently across top-level, nested, and object-wrapped action representations without altering security contracts.
 
-### Code Path & Fix Details
+Following this refinement:
+* All 35 false-positive halts on benign workloads were eliminated (**0.0% Benign FPR**).
+* Combined Gating accuracy was restored to **100.0%** across the $N=100$ evaluation set.
+* Strict fail-closed defense against unauthorized operations, missing parameters, and malformed actions was preserved.
 
-The fix in `PermissionGate` was applied to two key methods in `epistemicos/gates.py`:
-
-1. **`_extract_action_details(act)`:** Extended resource field lookup to inspect `endpoint`, `node`, `policy`, `resource`, and `target` inside nested dictionary structures (`act.get("action")`) and object attributes (`getattr(act, "action")`).
-2. **`_validate_actions(trusted_scope, proposed_actions, t0)`:** Unified scope matching logic to ensure resource validation against `allowed_resources` uses the exact same extracted resource string (`node_val`) across both contract evaluation and scope checks.
-
-### Regression Test Suite
-
-The fix is covered by comprehensive regression tests in [`tests/unit/test_permission_gate_regression.py`](tests/unit/test_permission_gate_regression.py):
-
-* `test_permission_gate_nested_endpoint_extraction_allowed`: Asserts that nested `{"action": {"op": "api_call", "endpoint": "/issue_binder"}}` is correctly extracted and allowed.
-* `test_permission_gate_nested_endpoint_execution_reached`: Asserts that an authorized nested endpoint request reaches the orchestrator's execution callback.
-* `test_permission_gate_unauthorized_endpoint_denied`: Confirms that unauthorized nested endpoints remain strictly blocked (`HALT`).
-* `test_permission_gate_missing_malformed_structures_fail_closed`: Verifies that truly missing or empty operation/resource fields fail closed without false passes.
-* `test_permission_gate_equivalent_representations_consistency`: Ensures top-level dicts, nested dicts, and custom object wrappers evaluate consistently.
-
-Following the fix, all 35 false positive benign cases were eliminated, restoring Combined Gating accuracy to **100.0%** on the N=100 evaluation set.
+Detailed root-cause analysis, internal code paths, and regression test suite specifications are documented in [`docs/audit_guarantees.md`](docs/audit_guarantees.md) and verified in [`tests/unit/test_permission_gate_regression.py`](tests/unit/test_permission_gate_regression.py).
 
 ---
 
@@ -210,7 +171,7 @@ To document the impact of the `PermissionGate` nested-resource extraction fix, t
 ### Benchmark Interpretation & Key Findings
 
 1. **Orthogonal Security Coverage:** `EntropyGate` and `PermissionGate` address complementary threat vectors. `EntropyGate` intercepts hallucinatory collapse, prompt injections, and introspective paradoxes (84.62% recall independently), while `PermissionGate` blocks explicit unauthorized tool calls and shell vectors (55.38% recall independently).
-2. **Combined Defense Synergies:** Combined Gating achieves 100.0% accuracy across the N=100 dataset because every adversarial vector is caught by at least one gate, while benign requests satisfy both scope and surprisal criteria.
+2. **Combined Defense Synergies:** Combined Gating achieves 100.0% accuracy across the evaluated $N=100$ benchmark dataset (`benchmarks/data/eval_set.jsonl`) because every adversarial vector in the evaluation set is intercepted by at least one gate, while benign requests satisfy both scope and surprisal criteria. This result is explicitly scoped to the current evaluation dataset and does not represent universal security or 100% interception on arbitrary, unseen real-world LLM workloads.
 3. **Compute Matching vs. Security Gating:** Allocating additional retry compute without governance gates (`Compute-Matched Baseline`, 6000 tokens) provides 0.0% security improvement over single-pass ungated generation, proving that safety requires deterministic middleware filtering rather than sampling budget.
 
 ---
