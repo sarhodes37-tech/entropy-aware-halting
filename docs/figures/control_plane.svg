@@ -32,7 +32,7 @@
   </defs>
 
   <!-- Title Section -->
-  <text x="30" y="35" class="title">Figure A — EpistemicOS Control Plane Architecture</text>
+  <text x="30" y="35" class="title">Figure 1 — EpistemicOS Control Plane Architecture</text>
   <text x="30" y="55" class="subtitle">Deterministic Halting, Ordered Governance Gates, Vector Revocation, and Audit Trail</text>
 
   <!-- Main Pipeline Boundary -->

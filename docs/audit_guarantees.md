@@ -76,3 +76,26 @@ $$\text{entry\_hash}_i = \text{SHA-256}(\text{prev\_hash}_i \mathbin{\Vert} \tex
 
 ### 2.3 Asymmetric Non-Repudiation
 - True non-repudiation without key-holder collusion risk requires asymmetric digital signatures (e.g. RSA/ECDSA/Ed25519) and a Public Key Infrastructure (PKI) or Key Management System (KMS).
+
+---
+
+## 3. Authorization Scope & Nested Resource Extraction Mechanics
+
+### 3.1 Defect Analysis & Root Cause
+Prior to the refinement in `epistemicos/gates.py`:
+- `PermissionGate._extract_action_details()` extracted operation and resource identifiers from top-level dictionary keys (`op`, `operation`, `action`, `node`, `target`, `resource`).
+- When action payloads contained nested action objects (e.g., `{"action": {"op": "api_call", "endpoint": "/issue_binder"}}`), `_extract_action_details()` extracted the top-level `op` value from the nested dictionary but failed to inspect the nested `"endpoint"` field for the resource target.
+- Valid requests containing nested `"endpoint"` attributes failed the mandatory resource check ("Missing or invalid target/resource identifier in proposed action") and were incorrectly halted as unauthorized.
+
+### 3.2 Implementation & Code Paths
+The refinement in `PermissionGate` was applied to two key methods in `epistemicos/gates.py`:
+1. **`_extract_action_details(act)`:** Extended resource field lookup to inspect `endpoint`, `node`, `policy`, `resource`, and `target` inside nested dictionary structures (`act.get("action")`) and object attributes (`getattr(act, "action")`).
+2. **`_validate_actions(trusted_scope, proposed_actions, t0)`:** Unified scope matching logic to ensure resource validation against `allowed_resources` uses the exact same extracted resource string (`node_val`) across both contract evaluation and scope checks.
+
+### 3.3 Regression Test Matrix
+The behavior is verified in `tests/unit/test_permission_gate_regression.py`:
+- `test_permission_gate_nested_endpoint_extraction_allowed`: Asserts that nested `{"action": {"op": "api_call", "endpoint": "/issue_binder"}}` is correctly extracted and allowed.
+- `test_permission_gate_nested_endpoint_execution_reached`: Asserts that an authorized nested endpoint request reaches the orchestrator's execution callback.
+- `test_permission_gate_unauthorized_endpoint_denied`: Confirms that unauthorized nested endpoints remain strictly blocked (`HALT`).
+- `test_permission_gate_missing_malformed_structures_fail_closed`: Verifies that truly missing or empty operation/resource fields fail closed without false passes.
+- `test_permission_gate_equivalent_representations_consistency`: Ensures top-level dicts, nested dicts, and custom object wrappers evaluate consistently.

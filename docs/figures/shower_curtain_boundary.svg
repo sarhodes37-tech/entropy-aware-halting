@@ -32,7 +32,7 @@
   </defs>
 
   <!-- Title Section -->
-  <text x="30" y="35" class="title">Figure B — Shower Curtain Privacy Boundary</text>
+  <text x="30" y="35" class="title">Figure 2 — Shower Curtain Privacy Boundary</text>
   <text x="30" y="55" class="subtitle">Local Data Sanitization, Pseudonym Mapping, Egress Gate, and Inbound Response Inspection</text>
 
   <!-- Local Trusted Boundary -->

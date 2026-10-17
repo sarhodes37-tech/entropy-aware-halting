@@ -54,7 +54,24 @@ flowchart TD
 
 ![EpistemicOS Control Plane Architecture](docs/figures/control_plane.svg)
 
-*Figure A — EpistemicOS Control Plane Architecture: Workloads route through ordered governance gates before reaching the trusted execution boundary. Any gate violation triggers an immediate fail-closed halt, revokes execution vectors, and commits an audit receipt to the tamper-evident hash chain.*
+*Figure 1 — EpistemicOS Control Plane Architecture: Workloads route through ordered governance gates before reaching the trusted execution boundary. Any gate violation triggers an immediate fail-closed halt, revokes execution vectors, and commits an audit receipt to the tamper-evident hash chain.*
+
+---
+
+### Shower Curtain Privacy Architecture
+
+![Shower Curtain Privacy Boundary](docs/figures/shower_curtain_boundary.svg)
+
+*Figure 2 — Shower Curtain Privacy Boundary: Local data sanitization, session-scoped pseudonym mapping, egress fail-closed policy enforcement, and inbound response inspection.*
+
+The **Shower Curtain** subsystem forms a local-first privacy boundary mediating interaction between client applications and external inference providers:
+
+* **Local Trust Boundary:** Sensitive PII, financial data, and authentication credentials remain within the local client perimeter.
+* **Multi-Stage Processing:** Ingress workloads pass through deterministic detection (Stage A), classification and policy evaluation (Stage B), local pseudonym mapping (Stage C), context minimization (Stage D), and serialized egress gate inspection (Stage E).
+* **Session Pseudonyms & Zero Credential Leakage:** Reversible pseudonyms replace identifiable entities within isolated session scopes. Credentials and secrets are strictly redacted or blocked and cannot be rehydrated inbound.
+* **Fail-Closed Egress Enforcement:** Egress payloads are serialized and inspected prior to provider transmission. Unsanitized sensitive data or policy violations trigger immediate execution halts.
+
+For detailed architecture specifications and security guarantees, see [`docs/SHOWER_CURTAIN_ARCHITECTURE.md`](docs/SHOWER_CURTAIN_ARCHITECTURE.md).
 
 ---
 
@@ -94,36 +111,24 @@ The control plane is designed around five core invariants:
 
 ---
 
-## 🛠 `PermissionGate` Correction & Nested Resource Extraction
+## 🛠 Authorization Scope & Resource Extraction Refinement
 
-### Bug Description & Root Cause Analysis
+### Defect Analysis & Research Impact
 
-Prior to the correction in [`epistemicos/gates.py`](epistemicos/gates.py), `PermissionGate._extract_action_details()` extracted operation and resource identifiers from top-level dictionary keys (`op`, `operation`, `action`, `node`, `target`, `resource`). However, when action structures contained nested action objects (e.g., `{"action": {"op": "api_call", "endpoint": "/issue_binder"}}`), `_extract_action_details()` extracted the top-level `op` value from the nested dictionary but failed to inspect the nested `"endpoint"` field for the resource target.
+An audit identified an issue in authorization resource resolution where nested action structures (such as API call payloads with embedded endpoints) were unparsed during resource scope checks. Valid nested tool calls failed resource matching and were falsely halted as unauthorized actions.
 
-As a result, valid requests containing nested `"endpoint"` attributes failed the mandatory resource check ("Missing or invalid target/resource identifier in proposed action") and were incorrectly halted as unauthorized.
+On the $N = 100$ benchmark evaluation dataset, this defect caused **35 benign control cases** (20 in *Commercial Underwriting & Operations* and 15 in *High-Noise Benign Controls*) to be incorrectly halted, yielding a **35.0% false positive rate (FPR)** and reducing Combined Gating accuracy to **65.0%**.
 
-### Measured Impact on Benchmark Performance
+### Technical Resolution & Benchmark Restoration
 
-In the original pre-fix benchmark run, this defect caused **35 benign control cases** (all 20 cases in *Commercial Underwriting & Operations* and all 15 cases in *High-Noise Benign Controls*) to be falsely halted by `PermissionGate`. This resulted in a **35.0% false positive rate (FPR)** and reduced Combined Gating accuracy to **65.0%**.
+Resource extraction in `PermissionGate` was refined to evaluate resource targets consistently across top-level, nested, and object-wrapped action representations without altering security contracts.
 
-### Code Path & Fix Details
+Following this refinement:
+* All 35 false-positive halts on benign workloads were eliminated (**0.0% Benign FPR**).
+* Combined Gating accuracy was restored to **100.0%** across the $N=100$ evaluation set.
+* Strict fail-closed defense against unauthorized operations, missing parameters, and malformed actions was preserved.
 
-The fix in `PermissionGate` was applied to two key methods in `epistemicos/gates.py`:
-
-1. **`_extract_action_details(act)`:** Extended resource field lookup to inspect `endpoint`, `node`, `policy`, `resource`, and `target` inside nested dictionary structures (`act.get("action")`) and object attributes (`getattr(act, "action")`).
-2. **`_validate_actions(trusted_scope, proposed_actions, t0)`:** Unified scope matching logic to ensure resource validation against `allowed_resources` uses the exact same extracted resource string (`node_val`) across both contract evaluation and scope checks.
-
-### Regression Test Suite
-
-The fix is covered by comprehensive regression tests in [`tests/unit/test_permission_gate_regression.py`](tests/unit/test_permission_gate_regression.py):
-
-* `test_permission_gate_nested_endpoint_extraction_allowed`: Asserts that nested `{"action": {"op": "api_call", "endpoint": "/issue_binder"}}` is correctly extracted and allowed.
-* `test_permission_gate_nested_endpoint_execution_reached`: Asserts that an authorized nested endpoint request reaches the orchestrator's execution callback.
-* `test_permission_gate_unauthorized_endpoint_denied`: Confirms that unauthorized nested endpoints remain strictly blocked (`HALT`).
-* `test_permission_gate_missing_malformed_structures_fail_closed`: Verifies that truly missing or empty operation/resource fields fail closed without false passes.
-* `test_permission_gate_equivalent_representations_consistency`: Ensures top-level dicts, nested dicts, and custom object wrappers evaluate consistently.
-
-Following the fix, all 35 false positive benign cases were eliminated, restoring Combined Gating accuracy to **100.0%** on the N=100 evaluation set.
+Detailed root-cause analysis, internal code paths, and regression test suite specifications are documented in [`docs/audit_guarantees.md`](docs/audit_guarantees.md) and verified in [`tests/unit/test_permission_gate_regression.py`](tests/unit/test_permission_gate_regression.py).
 
 ---
 
