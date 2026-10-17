@@ -195,11 +195,11 @@ class EpistemicOrchestrator:
 
     def _evaluate_gates(self, payload_dump: Dict[str, Any], context: Dict[str, Any]) -> Optional[Any]:
         for gate in self.gates:
+            gate_name = getattr(gate, "gate_name", gate.__class__.__name__)
             try:
                 result = gate.evaluate(payload=payload_dump, context=context)
             except Exception as e:
                 # Security-critical gates fail closed on unhandled errors
-                gate_name = getattr(gate, "gate_name", gate.__class__.__name__)
                 return GateResult(
                     action=GateAction.HALT,
                     status="HALTED",
@@ -208,9 +208,44 @@ class EpistemicOrchestrator:
                     vectors_revoked=1
                 )
 
+            if result is None:
+                return GateResult(
+                    action=GateAction.HALT,
+                    status="HALTED",
+                    gate_name=gate_name,
+                    reason=f"Gate Evaluation Returned None ({gate_name})",
+                    vectors_revoked=1
+                )
+
             action = getattr(result, "action", None)
-            if action in (GateAction.HALT, GateAction.ROLLBACK) or action != GateAction.ALLOW or not getattr(result, "passed", False):
+            passed = getattr(result, "passed", False) if hasattr(result, "passed") else getattr(result, "get", lambda k, d=None: d)("passed", False)
+
+            valid_actions = {
+                GateAction.ALLOW, GateAction.HALT, GateAction.ROLLBACK,
+                "ALLOW", "DETERMINISTIC_HALT", "ACTION_ROLLBACK", "HALT", "DENY", "INDETERMINATE"
+            }
+            if action not in valid_actions:
+                return GateResult(
+                    action=GateAction.HALT,
+                    status="HALTED",
+                    gate_name=gate_name,
+                    reason=f"Gate Evaluation Returned Invalid or Unknown Action '{action}' ({gate_name})",
+                    vectors_revoked=1
+                )
+
+            is_allow = (action == GateAction.ALLOW or action == "ALLOW")
+            if is_allow and not passed:
+                return GateResult(
+                    action=GateAction.HALT,
+                    status="HALTED",
+                    gate_name=gate_name,
+                    reason=f"Gate Evaluation Contradiction: Action ALLOW with passed=False ({gate_name})",
+                    vectors_revoked=1
+                )
+
+            if not is_allow or not passed:
                 return result
+
         return None
 
     def _execute_pipeline(self, cpr: CanonicalProblemRepresentation, raw_payload: Dict[str, Any], context: Dict[str, Any], traj_id: str) -> Dict[str, Any]:

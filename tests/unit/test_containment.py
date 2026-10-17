@@ -239,10 +239,12 @@ def test_wrapper_pipeline_failure_egress(default_guard):
     assert receipt.violation_type == ContainmentViolationType.UNAUTHORIZED_EGRESS_ATTEMPT
 
 
-def test_wrapper_blocks_non_standard_params_and_never_invokes_target(default_guard):
+@patch('socket.getaddrinfo')
+def test_wrapper_blocks_non_standard_params_and_never_invokes_target(mock_getaddrinfo, default_guard):
     """Verifies wrap_tool_execution blocks forbidden commands/unauthorized egress across non-standard param names,
     positional args, tokenized lists/tuples, sets, and nested containers, and asserts target tool is never executed.
     """
+    mock_getaddrinfo.return_value = [(socket.AF_INET, socket.SOCK_STREAM, 6, '', ('93.184.216.34', 80))]
     executed = []
 
     def target_tool(*args, **kwargs):

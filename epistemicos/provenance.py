@@ -296,18 +296,28 @@ class TrustedExecutionBoundary:
             req_id = request_id
             auth_token_id = authorization_token_id
             auth_digest = authorized_digest
-            auth_granted = authorization_granted if authorization_granted is not None else True
+            auth_granted = authorization_granted
             attempt_id = execution_attempt_id or str(uuid.uuid4())
             pol_version = policy_version
+
+        # Enforce strict validation of authorization evidence, token ID, digest, and executor
+        if auth_granted is not True:
+            raise PermissionError(f"Execution rejected: Authorization was not granted for token {auth_token_id}")
+
+        if not auth_token_id or not isinstance(auth_token_id, str) or not auth_token_id.strip():
+            raise PermissionError("Execution rejected: Missing or invalid authorization token ID")
+
+        if not auth_digest or not isinstance(auth_digest, str) or not auth_digest.strip():
+            raise PermissionError("Execution rejected: Missing or invalid authorized digest")
+
+        if executor_func is None or not callable(executor_func):
+            raise ValueError("Execution rejected: executor_func must be a callable object")
 
         current_digest = self.compute_canonical_digest(request_payload)
         now_ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
         # Atomic token consumption and retry check
         with self._lock:
-            if not auth_granted:
-                raise PermissionError(f"Execution rejected: Authorization was not granted for token {auth_token_id}")
-
             if auth_token_id in self._consumed_tokens:
                 raise PermissionError(f"Authorization token {auth_token_id} has already been consumed (replay attempt)")
 
