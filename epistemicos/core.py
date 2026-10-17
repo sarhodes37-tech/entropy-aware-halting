@@ -334,7 +334,8 @@ class EpistemicOrchestrator:
                     telemetry = profiler.get_telemetry()
                     revoked_ids = self.vector_manager.revoke_trajectory(traj_id)
                     actual_revoked_count = len(revoked_ids)
-                    reason_msg = f"TrustedExecutionBoundary Enforcement: Provenance store lookup error ({str(lookup_err)})"
+                    err_type = type(lookup_err).__name__
+                    reason_msg = f"TrustedExecutionBoundary Enforcement: Provenance store lookup error ({err_type})"
                     self._log_pipeline_event(
                         event_type=AuditLogLevel.HALT,
                         gate_name="TrustedExecutionBoundary",
