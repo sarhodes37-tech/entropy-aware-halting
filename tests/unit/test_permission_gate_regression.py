@@ -82,13 +82,15 @@ def test_permission_gate_nested_endpoint_execution_reached():
         "actual_executable": execution_callback,
     }
 
+    digest = orchestrator.execution_boundary.compute_canonical_digest(raw_payload)
+    context["authorization_token_id"] = "AUTH-TOKEN-PERM-GATE"
+    context["authorized_digest"] = digest
+    context["authorization_granted"] = True
+
     res = orchestrator.process_submission(raw_payload, context)
 
     assert res["status"] == "ALLOWED"
     assert "telemetry" in res
-
-    if res["status"] == "ALLOWED":
-        context["actual_executable"]()
 
     execution_callback.assert_called_once()
 

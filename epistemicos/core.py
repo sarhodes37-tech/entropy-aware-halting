@@ -25,6 +25,7 @@ from epistemicos.gates import (
 )
 from epistemicos.shower_curtain.gate import ShowerCurtainGate
 from epistemicos.shower_curtain.engine import ShowerCurtainEngine
+from epistemicos.provenance import TrustedExecutionBoundary, ExecutionContext
 
 class EpistemicOrchestrator:
     def register_gate(self, gate, *args, **kwargs):
@@ -42,7 +43,8 @@ class EpistemicOrchestrator:
         scheduler=None,
         db_client=None,
         model_id="epistemic-core-v1",
-        prior_probabilities=None  # Restored to fix Layer 4 Benchmark crashes
+        prior_probabilities=None,  # Restored to fix Layer 4 Benchmark crashes
+        execution_boundary: Optional[TrustedExecutionBoundary] = None
     ):
         self.audit_log_path = audit_log_path
         self.enforce_determinism = enforce_determinism
@@ -69,6 +71,9 @@ class EpistemicOrchestrator:
 
         # Pass the db_client properly
         self.vector_manager = VectorHygieneManager(db_client=db_client)
+
+        # Execution Boundary
+        self.execution_boundary = execution_boundary or TrustedExecutionBoundary()
 
         # Initialize Governance Gates in priority order
         self.shower_curtain = ShowerCurtainEngine(audit_log_path=self.audit_log_path)
@@ -288,23 +293,115 @@ class EpistemicOrchestrator:
                         "vectors_revoked": actual_revoked_count
                     }
 
-            # 3b. Pipeline Success: Vectors are automatically committed by the context manager
+            # 3b. Boundary Enforcement for Protected Operations / Executables
+            exec_func = context.get("actual_executable") or context.get("executable_operation")
+            has_protected_action = bool(
+                exec_func is not None or context.get("proposed_actions") or raw_payload.get("proposed_actions")
+            )
+
+            execution_outcome = None
+            if exec_func is not None:
+                exec_ctx = context.get("execution_context")
+                if not isinstance(exec_ctx, ExecutionContext):
+                    corr_id = context.get("correlation_id") or traj_id
+                    req_id = context.get("request_id") or str(uuid.uuid4())
+                    auth_token_id = context.get("authorization_token_id")
+                    auth_digest = context.get("authorized_digest")
+                    auth_granted = context.get("authorization_granted", context.get("authorized", False))
+
+                    if not auth_token_id or not auth_digest:
+                        # Fail closed before vector commit if required boundary configuration/authorization evidence is missing
+                        telemetry = profiler.get_telemetry()
+                        revoked_ids = self.vector_manager.revoke_trajectory(traj_id)
+                        actual_revoked_count = max(len(revoked_ids), 1)
+
+                        reason_msg = "TrustedExecutionBoundary Enforcement: Missing required authorization token ID or digest"
+                        self._log_pipeline_event(
+                            event_type=AuditLogLevel.HALT,
+                            gate_name="TrustedExecutionBoundary",
+                            reason=f"{reason_msg} | Vectors Revoked: {actual_revoked_count}",
+                            masked_payload=masked_payload,
+                            cpr=cpr,
+                            telemetry=telemetry
+                        )
+                        return {
+                            "status": "HALTED",
+                            "gate": "TrustedExecutionBoundary",
+                            "reason": reason_msg,
+                            "vectors_revoked": actual_revoked_count
+                        }
+
+                    exec_ctx = ExecutionContext(
+                        correlation_id=corr_id,
+                        request_id=req_id,
+                        authorization_token_id=auth_token_id,
+                        authorized_digest=auth_digest,
+                        authorization_granted=bool(auth_granted),
+                        execution_attempt_id=context.get("execution_attempt_id"),
+                        policy_version=context.get("policy_version", "1.0.0")
+                    )
+
+                # Determine action name and target
+                action_name = context.get("action_name", "protected_operation")
+                target = context.get("target", "system_resource")
+                proposed = context.get("proposed_actions", [])
+                if proposed and isinstance(proposed, list) and len(proposed) > 0:
+                    act_item = proposed[0]
+                    if isinstance(act_item, dict):
+                        act_inner = act_item.get("action", act_item)
+                        if isinstance(act_inner, dict):
+                            action_name = act_inner.get("op") or action_name
+                            target = act_inner.get("node") or act_inner.get("endpoint") or act_inner.get("resource") or target
+
+                try:
+                    execution_outcome = self.execution_boundary.execute_protected_action(
+                        action_name=action_name,
+                        target=target,
+                        request_payload=raw_payload,
+                        executor_func=exec_func,
+                        context=exec_ctx
+                    )
+                except Exception as e:
+                    telemetry = profiler.get_telemetry()
+                    revoked_ids = self.vector_manager.revoke_trajectory(traj_id)
+                    actual_revoked_count = max(len(revoked_ids), 1)
+
+                    reason_msg = f"TrustedExecutionBoundary Enforcement Failed: {str(e)}"
+                    self._log_pipeline_event(
+                        event_type=AuditLogLevel.HALT,
+                        gate_name="TrustedExecutionBoundary",
+                        reason=f"{reason_msg} | Vectors Revoked: {actual_revoked_count}",
+                        masked_payload=masked_payload,
+                        cpr=cpr,
+                        telemetry=telemetry
+                    )
+                    return {
+                        "status": "HALTED",
+                        "gate": "TrustedExecutionBoundary",
+                        "reason": reason_msg,
+                        "vectors_revoked": actual_revoked_count
+                    }
+
+            # 3c. Pipeline Success: Vectors are automatically committed by the context manager
             telemetry = profiler.get_telemetry()
             self._log_pipeline_event(
                 event_type=AuditLogLevel.INFO,
                 gate_name="Pipeline_Complete",
-                reason="All governance gates passed",
+                reason="All governance gates passed and execution boundary enforced",
                 masked_payload=masked_payload,
                 cpr=cpr,
                 telemetry=telemetry
             )
 
-            return {
+            res_dict = {
                 "status": "ALLOWED",
                 "masked_payload": cpr.mask_egress_payload(),
                 "telemetry": telemetry.__dict__,
                 "trajectory_id": traj_id
             }
+            if execution_outcome:
+                res_dict["execution_outcome"] = execution_outcome
+            return res_dict
 
     def process_submission(
         self,
