@@ -363,6 +363,44 @@ class PermissionGate(ControlPlaneGate):
                 )
         return None
 
+    @staticmethod
+    def _extract_action_details(action: Any) -> tuple[Optional[str], Optional[str]]:
+        """
+        Extracts operation ('op') and target/resource ('node', 'endpoint', or 'policy')
+        from a proposed action dictionary or object, supporting nested action representations.
+        """
+        if action is None:
+            return None, None
+
+        inner_action = None
+        if isinstance(action, dict):
+            inner_action = action.get("action")
+        elif hasattr(action, "action"):
+            inner_action = getattr(action, "action")
+
+        target_obj = inner_action if (inner_action is not None and (isinstance(inner_action, dict) or hasattr(inner_action, "__dict__") or hasattr(inner_action, "op"))) else action
+
+        if isinstance(target_obj, dict):
+            op = target_obj.get("op")
+            node = target_obj.get("node") or target_obj.get("endpoint") or target_obj.get("policy") or target_obj.get("resource") or target_obj.get("target")
+        else:
+            op = getattr(target_obj, "op", None)
+            node = getattr(target_obj, "node", None) or getattr(target_obj, "endpoint", None) or getattr(target_obj, "policy", None) or getattr(target_obj, "resource", None) or getattr(target_obj, "target", None)
+
+        if not op and target_obj is not action:
+            if isinstance(action, dict):
+                op = action.get("op")
+            else:
+                op = getattr(action, "op", None)
+
+        if not node and target_obj is not action:
+            if isinstance(action, dict):
+                node = action.get("node") or action.get("endpoint") or action.get("policy") or action.get("resource") or action.get("target")
+            else:
+                node = getattr(action, "node", None) or getattr(action, "endpoint", None) or getattr(action, "policy", None) or getattr(action, "resource", None) or getattr(action, "target", None)
+
+        return op, node
+
     def _validate_actions(self, scope: Dict[str, Any], proposed_actions: List[Any], t0: float) -> Optional[GateOutcome]:
         allowed_ops = scope.get("allowed_operations")
         allowed_res = scope.get("allowed_resources")
@@ -372,13 +410,7 @@ class PermissionGate(ControlPlaneGate):
             return None
 
         for action in proposed_actions:
-            if isinstance(action, dict):
-                inner_act = action.get("action") if isinstance(action.get("action"), dict) else action
-                op = inner_act.get("op")
-                node = inner_act.get("node") or inner_act.get("endpoint")
-            else:
-                op = getattr(action, "op", None)
-                node = getattr(action, "node", None) or getattr(action, "endpoint", None)
+            op, node = self._extract_action_details(action)
 
             if allowed_ops is not None and op not in allowed_ops:
                 return GateOutcome(
@@ -555,12 +587,7 @@ class PermissionGate(ControlPlaneGate):
         # Require explicit, non-ambiguous action contract details (both operation AND target/resource)
         if proposed_actions:
             for act in proposed_actions:
-                if isinstance(act, dict):
-                    op_val = act.get("op") or (act.get("action", {}).get("op") if isinstance(act.get("action"), dict) else None)
-                    node_val = act.get("node") or act.get("endpoint") or act.get("policy") or (act.get("action", {}).get("node") if isinstance(act.get("action"), dict) else None)
-                else:
-                    op_val = getattr(act, "op", None)
-                    node_val = getattr(act, "node", None) or getattr(act, "endpoint", None) or getattr(act, "policy", None)
+                op_val, node_val = self._extract_action_details(act)
 
                 if not op_val or not isinstance(op_val, str) or not op_val.strip():
                     return GateOutcome(
