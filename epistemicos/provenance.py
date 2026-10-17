@@ -253,8 +253,16 @@ class TrustedExecutionBoundary:
         self._lock = threading.Lock()
 
     def compute_canonical_digest(self, payload: Any) -> str:
-        sanitized = _sanitize_sensitive_data(payload)
-        canonical_bytes = json.dumps(sanitized, sort_keys=True).encode("utf-8")
+        if isinstance(payload, bytes):
+            canonical_bytes = payload
+        elif isinstance(payload, str):
+            canonical_bytes = payload.encode("utf-8")
+        else:
+            try:
+                canonical_bytes = json.dumps(payload, sort_keys=True, default=str).encode("utf-8")
+            except Exception:
+                sanitized = _sanitize_sensitive_data(payload)
+                canonical_bytes = json.dumps(sanitized, sort_keys=True, default=str).encode("utf-8")
         return hashlib.sha256(canonical_bytes).hexdigest()
 
     def execute_protected_action(
@@ -296,18 +304,28 @@ class TrustedExecutionBoundary:
             req_id = request_id
             auth_token_id = authorization_token_id
             auth_digest = authorized_digest
-            auth_granted = authorization_granted if authorization_granted is not None else True
+            auth_granted = authorization_granted
             attempt_id = execution_attempt_id or str(uuid.uuid4())
             pol_version = policy_version
+
+        # Enforce strict validation of authorization evidence, token ID, digest, and executor
+        if auth_granted is not True:
+            raise PermissionError(f"Execution rejected: Authorization was not granted for token {auth_token_id}")
+
+        if not auth_token_id or not isinstance(auth_token_id, str) or not auth_token_id.strip():
+            raise PermissionError("Execution rejected: Missing or invalid authorization token ID")
+
+        if not auth_digest or not isinstance(auth_digest, str) or not auth_digest.strip():
+            raise PermissionError("Execution rejected: Missing or invalid authorized digest")
+
+        if executor_func is None or not callable(executor_func):
+            raise ValueError("Execution rejected: executor_func must be a callable object")
 
         current_digest = self.compute_canonical_digest(request_payload)
         now_ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
         # Atomic token consumption and retry check
         with self._lock:
-            if not auth_granted:
-                raise PermissionError(f"Execution rejected: Authorization was not granted for token {auth_token_id}")
-
             if auth_token_id in self._consumed_tokens:
                 raise PermissionError(f"Authorization token {auth_token_id} has already been consumed (replay attempt)")
 
@@ -341,25 +359,6 @@ class TrustedExecutionBoundary:
         # Execute under BaseException catching to handle interruptions and errors
         try:
             result = executor_func()
-            end_ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-            success_event = ProvenanceEvent(
-                schema_version="1.0.0",
-                event_id=str(uuid.uuid4()),
-                event_type=ProvenanceEventType.EXECUTION_SUCCEEDED.value,
-                provenance_source=ProvenanceSource.EXECUTOR.value,
-                correlation_id=corr_id,
-                request_id=req_id,
-                action_name=action_name,
-                target=target,
-                canonical_request_digest=current_digest,
-                timestamp=end_ts,
-                authorization_token_id=auth_token_id,
-                execution_attempt_id=attempt_id,
-                policy_version=pol_version,
-                outcome={"status": "SUCCESS", "result": _sanitize_sensitive_data(result)}
-            )
-            self.store.record_event(success_event)
-            return {"status": "SUCCESS", "result": result, "attempt_id": attempt_id}
         except Exception as e:
             end_ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
             fail_event = ProvenanceEvent(
@@ -378,7 +377,10 @@ class TrustedExecutionBoundary:
                 policy_version=pol_version,
                 outcome={"status": "FAILED", "error": str(e)}
             )
-            self.store.record_event(fail_event)
+            try:
+                self.store.record_event(fail_event)
+            except Exception:
+                pass
             raise
         except BaseException as be:
             end_ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -398,8 +400,35 @@ class TrustedExecutionBoundary:
                 policy_version=pol_version,
                 outcome={"status": "INTERRUPTED", "reason": str(be)}
             )
-            self.store.record_event(interrupt_event)
+            try:
+                self.store.record_event(interrupt_event)
+            except Exception:
+                pass
             raise
+
+        end_ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        success_event = ProvenanceEvent(
+            schema_version="1.0.0",
+            event_id=str(uuid.uuid4()),
+            event_type=ProvenanceEventType.EXECUTION_SUCCEEDED.value,
+            provenance_source=ProvenanceSource.EXECUTOR.value,
+            correlation_id=corr_id,
+            request_id=req_id,
+            action_name=action_name,
+            target=target,
+            canonical_request_digest=current_digest,
+            timestamp=end_ts,
+            authorization_token_id=auth_token_id,
+            execution_attempt_id=attempt_id,
+            policy_version=pol_version,
+            outcome={"status": "SUCCESS", "result": _sanitize_sensitive_data(result)}
+        )
+        try:
+            self.store.record_event(success_event)
+        except Exception as audit_err:
+            raise RuntimeError(f"Execution completed but terminal audit event recording failed: {str(audit_err)}") from audit_err
+
+        return {"status": "SUCCESS", "result": result, "attempt_id": attempt_id}
 
 
 @dataclass
