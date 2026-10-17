@@ -1,6 +1,6 @@
 # EpistemicOS: Deterministic Halting & Security Middleware for LLMs
 
-EpistemicOS is a low-latency security middleware designed to enforce deterministic halting, privacy invariants, and strict sandbox boundaries on Large Language Model (LLM) outputs. It intercepts structural collapse, N-gram loops, epistemic hallucinations, unauthorized tool-calling vectors, and sensitive data leakage before execution.
+EpistemicOS is an experimental low-latency security middleware designed to enforce deterministic halting, authorization policies, privacy controls, and execution governance for Large Language Model (LLM) workflows. It intercepts structural collapse, N-gram loops, epistemic hallucinations, unauthorized tool-calling vectors, and sensitive data leakage prior to execution within configured control plane boundaries.
 
 ---
 
@@ -89,14 +89,14 @@ EpistemicOS strictly decouples three distinct control-plane responsibilities:
 
 * **Ordered Fail-Closed Gates:** Gates evaluate sequentially (`ShowerCurtainGate` $\rightarrow$ `EntropyGate` $\rightarrow$ `PermissionGate` $\rightarrow$ `TriangulationGate`). The first gate that returns `GateDecision.HALT` or `GateDecision.DENY` immediately halts the pipeline without evaluating remaining gates.
 * **Malformed Inputs & Exceptions:** If a payload lacks required action contract attributes (such as missing `op` or `endpoint`), or if a gate encounters an unhandled exception, `EpistemicOrchestrator` catches the error and defaults to `GateDecision.HALT` with a reason code describing the failure.
-* **Audit & Receipt Binding:** Every gate outcome—whether allowed or halted—is cryptographically bound to the input hash and recorded in `TamperEvidentAuditTrail` via a SHA-256 entry chain.
+* **Audit & Receipt Binding:** Every gate outcome—whether allowed or halted—is cryptographically bound to the input hash and recorded in `TamperEvidentAuditTrail` via a SHA-256 entry hash chain. Receipt minting uses SHA-256 digests by default, or symmetric HMAC-SHA256 signatures when configured with a trusted secret key.
 
 ### Core Architectural Invariants
 
 The control plane is designed around five core invariants:
 
 1. **Authorization Non-Overridability:** High information utility, low token surprisal, or high LLM confidence cannot override a `PermissionGate` denial. Authorization is a non-compensatory constraint.
-2. **No Unsanitized Alternative Execution Paths:** Execution callbacks (`actual_executable`) can only be invoked through `TrustedExecutionBoundary.execute_protected_action()`. Direct invocation or unauthenticated fallback routes are rejected.
+2. **No Unsanitized Alternative Execution Paths:** Within the orchestrator pipeline, execution callbacks (`actual_executable`) are mediated through `TrustedExecutionBoundary.execute_protected_action()`. Direct invocation or unauthenticated fallback routes are rejected.
 3. **Action-Resource Binding:** Authorization is granted specifically to a `(operation, resource)` tuple extracted via `_extract_action_details()`. Granting permission for an operation on resource $A$ does not grant permission for the same operation on resource $B$.
 4. **Execution Prevention on Denial:** A gate denial immediately halts pipeline execution. Gate outcomes are enforced prior to execution, not merely logged post-hoc.
 5. **Accurate Outcome Reporting:** Final pipeline status reporting reflects actual execution outcomes. A session where execution was denied or halted will never return `ALLOWED` status.
@@ -105,7 +105,7 @@ The control plane is designed around five core invariants:
 
 * **Enforced & Verified in Code:** Test coverage in `tests/unit/test_gates.py`, `tests/unit/test_provenance.py`, and `tests/unit/test_permission_gate_regression.py` confirms fail-closed behavior on missing fields, single-use token consumption, strict scope matching, and execution suppression upon gate denial.
 * **Limitations & Unverified Assumptions:**
-  * *Application-Level vs. OS Sandbox:* `ContainmentGuard` provides application-level regex parameter validation; it is not a kernel-level hardware sandbox or container isolation boundary.
+  * *Application-Level vs. OS Sandbox:* `ContainmentGuard` provides application-level regex parameter inspection for shell commands and network URIs; it does not replace operating system or kernel-level hardware sandbox isolation.
   * *Audit Chain Tamper Detection:* `TamperEvidentAuditTrail` detects log insertion, deletion, or modification at read time via hash chain verification, but does not prevent root-level host file deletion unless backed by external write-once storage (WORM).
   * *Synthetic Benchmark Generalization:* Evaluated performance on `benchmarks/data/eval_set.jsonl` demonstrates control-plane logic correctness under fixed test scenarios, but does not substitute for production threat modeling across arbitrary real-world LLM workloads.
 
@@ -215,7 +215,7 @@ To document the impact of the `PermissionGate` nested-resource extraction fix, t
 ### Benchmark Interpretation & Key Findings
 
 1. **Orthogonal Security Coverage:** `EntropyGate` and `PermissionGate` address complementary threat vectors. `EntropyGate` intercepts hallucinatory collapse, prompt injections, and introspective paradoxes (84.62% recall independently), while `PermissionGate` blocks explicit unauthorized tool calls and shell vectors (55.38% recall independently).
-2. **Combined Defense Synergies:** Combined Gating achieves 100.0% accuracy across the N=100 dataset because every adversarial vector is caught by at least one gate, while benign requests satisfy both scope and surprisal criteria.
+2. **Combined Defense Synergies:** Combined Gating achieves 100.0% accuracy across the evaluated $N=100$ benchmark dataset (`benchmarks/data/eval_set.jsonl`) because every adversarial vector in the evaluation set is intercepted by at least one gate, while benign requests satisfy both scope and surprisal criteria. This result is explicitly scoped to the current evaluation dataset and does not represent universal security or 100% interception on arbitrary, unseen real-world LLM workloads.
 3. **Compute Matching vs. Security Gating:** Allocating additional retry compute without governance gates (`Compute-Matched Baseline`, 6000 tokens) provides 0.0% security improvement over single-pass ungated generation, proving that safety requires deterministic middleware filtering rather than sampling budget.
 
 ---
