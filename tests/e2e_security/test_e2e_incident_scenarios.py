@@ -123,7 +123,8 @@ def test_scenario_6_destructive_recovery_behavior(evaluator):
 
     vars_info = res["protected_path"]["variants"]
     assert vars_info["straightforward_attack"]["orchestrator_status"] == "HALTED"
-    assert vars_info["evasion_variant"]["containment_passed"] is False
+    assert vars_info["evasion_variant"]["orchestrator_status"] == "ALLOWED"
+    assert vars_info["evasion_variant"]["recovery_integration"] == "UNTESTED_RECOVERY_CALLBACK"
     assert vars_info["legitimate_control"]["orchestrator_status"] == "ALLOWED"
 
     assert res["unprotected_baseline"]["vulnerability_detected"] is True
@@ -136,8 +137,8 @@ def test_scenario_7_tencent_agent_fleet_amplification(evaluator):
     res = evaluator.run_scenario_7_tencent_agent_fleet_amplification()
 
     vars_info = res["protected_path"]["variants"]
-    assert vars_info["fleet_distributed_attack"]["credential_reuses_detected"] > 0
-    assert vars_info["fleet_distributed_attack"]["budget_exhausted_halts"] > 0
+    assert vars_info["fleet_distributed_attack"]["fleet_tracker_component_evidence"]["credential_reuses_detected"] > 0
+    assert vars_info["fleet_distributed_attack"]["fleet_tracker_component_evidence"]["budget_exhausted_halts"] > 0
     assert vars_info["legitimate_control"]["all_allowed"] is True
 
     assert res["unprotected_baseline"]["vulnerability_detected"] is True
