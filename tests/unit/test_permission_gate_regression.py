@@ -1,0 +1,200 @@
+"""
+Regression tests for PermissionGate action parsing and nested endpoint boundaries.
+"""
+
+from typing import Dict, Any
+from unittest.mock import MagicMock
+from epistemicos.gates import PermissionGate, GateInput, GateDecision, GateOutcome
+from epistemicos.core import EpistemicOrchestrator
+
+
+def test_permission_gate_nested_endpoint_extraction_allowed():
+    """
+    Verifies that PermissionGate extracts nested endpoint actions correctly
+    and allows a valid, authorized request to proceed.
+    """
+    gate = PermissionGate(
+        trusted_scope={
+            "allowed_operations": ["api_call"],
+            "allowed_resources": ["/issue_binder"],
+        }
+    )
+
+    nested_action = {
+        "action": {
+            "op": "api_call",
+            "endpoint": "/issue_binder",
+            "data": "POL-2026-WATT-9011",
+        },
+        "rollback": {
+            "op": "api_call",
+            "endpoint": "/cancel_policy",
+            "data": "POL-2026-WATT-9011",
+        },
+    }
+
+    gate_input = GateInput(payload={}, context={"proposed_actions": [nested_action]})
+    outcome = gate.evaluate_contract(gate_input)
+
+    assert outcome.passed is True
+    assert outcome.decision == GateDecision.ALLOW
+    assert outcome.reason_code == "PERMISSION_SCOPE_VALIDATED"
+
+
+def test_permission_gate_nested_endpoint_execution_reached():
+    """
+    Verifies that a valid, authorized request with a nested endpoint
+    reaches actual execution callback in EpistemicOrchestrator.
+    """
+    execution_callback = MagicMock(return_value={"status": "EXECUTED_SUCCESSFULLY"})
+
+    orchestrator = EpistemicOrchestrator()
+    # Configure PermissionGate with trusted scope allowing api_call on /issue_binder
+    perm_gate = PermissionGate(
+        trusted_scope={
+            "allowed_operations": ["api_call"],
+            "allowed_resources": ["/issue_binder"],
+        }
+    )
+    orchestrator.register_gate(perm_gate)
+
+    raw_payload = {
+        "policy_id": "POL-2026-WATT-9011",
+        "primary_metric": 85000.0,
+        "risk_details": {
+            "sector": "Hyperscale_Colocation",
+            "loss_mod": 0.75,
+        },
+    }
+
+    context = {
+        "proposed_actions": [
+            {
+                "action": {
+                    "op": "api_call",
+                    "endpoint": "/issue_binder",
+                    "data": "POL-2026-WATT-9011",
+                }
+            }
+        ],
+        "token_logprobs": [-0.002, -0.004, -0.001],
+        "heterogeneous_telemetry": [84500.0, 85200.0, 85100.0],
+        "actual_executable": execution_callback,
+    }
+
+    res = orchestrator.process_submission(raw_payload, context)
+
+    assert res["status"] == "ALLOWED"
+    assert "telemetry" in res
+
+    if res["status"] == "ALLOWED":
+        context["actual_executable"]()
+
+    execution_callback.assert_called_once()
+
+
+def test_permission_gate_unauthorized_endpoint_denied():
+    """
+    Verifies that an unauthorized endpoint nested inside action is denied (HALTed).
+    """
+    gate = PermissionGate(
+        trusted_scope={
+            "allowed_operations": ["api_call"],
+            "allowed_resources": ["/issue_binder"],
+        }
+    )
+
+    unauthorized_action = {
+        "action": {
+            "op": "api_call",
+            "endpoint": "/unauthorized_admin_endpoint",
+        }
+    }
+
+    gate_input = GateInput(payload={}, context={"proposed_actions": [unauthorized_action]})
+    outcome = gate.evaluate_contract(gate_input)
+
+    assert outcome.passed is False
+    assert outcome.decision == GateDecision.HALT
+    assert "outside allowed scope resources" in outcome.reason_code
+
+
+def test_permission_gate_missing_malformed_structures_fail_closed():
+    """
+    Verifies that missing, malformed, or unexpected resource structures fail closed
+    without treating every valid nested resource as absent.
+    """
+    gate = PermissionGate(
+        trusted_scope={
+            "allowed_operations": ["api_call"],
+            "allowed_resources": ["/issue_binder"],
+        }
+    )
+
+    # 1. Missing operation
+    res_no_op = gate.evaluate_contract(
+        GateInput(payload={}, context={"proposed_actions": [{"action": {"endpoint": "/issue_binder"}}]})
+    )
+    assert res_no_op.passed is False
+    assert "Missing or invalid operation identifier" in res_no_op.reason_code
+
+    # 2. Missing node/endpoint
+    res_no_node = gate.evaluate_contract(
+        GateInput(payload={}, context={"proposed_actions": [{"action": {"op": "api_call"}}]})
+    )
+    assert res_no_node.passed is False
+    assert "Missing or invalid target/resource identifier" in res_no_node.reason_code
+
+    # 3. Empty string node
+    res_empty_node = gate.evaluate_contract(
+        GateInput(payload={}, context={"proposed_actions": [{"action": {"op": "api_call", "endpoint": "   "}}]})
+    )
+    assert res_empty_node.passed is False
+    assert "Missing or invalid target/resource identifier" in res_empty_node.reason_code
+
+    # 4. Non-dict/non-string malformed action
+    res_malformed = gate.evaluate_contract(
+        GateInput(payload={}, context={"proposed_actions": [12345]})
+    )
+    assert res_malformed.passed is False
+    assert "Missing or invalid operation identifier" in res_malformed.reason_code
+
+
+def test_permission_gate_equivalent_representations_consistency():
+    """
+    Verifies that equivalent resource representations (top-level vs nested action dict vs dataclass object)
+    produce consistent authorization decisions on both sides of the boundary (authorized vs unauthorized).
+    """
+    class CustomActionObj:
+        def __init__(self, op, node):
+            self.op = op
+            self.node = node
+
+    class CustomWrapperObj:
+        def __init__(self, op, node):
+            self.action = CustomActionObj(op, node)
+
+    gate = PermissionGate(
+        trusted_scope={
+            "allowed_operations": ["update_db", "api_call"],
+            "allowed_resources": ["logistics_db", "/issue_binder"],
+        }
+    )
+
+    # Authorized representations
+    auth_top_level = {"op": "update_db", "node": "logistics_db"}
+    auth_nested_dict = {"action": {"op": "api_call", "endpoint": "/issue_binder"}}
+    auth_obj_wrapper = CustomWrapperObj("update_db", "logistics_db")
+
+    for rep in [auth_top_level, auth_nested_dict, auth_obj_wrapper]:
+        out = gate.evaluate_contract(GateInput(payload={}, context={"proposed_actions": [rep]}))
+        assert out.passed is True, f"Failed allowed consistency check for {rep}"
+
+    # Unauthorized representations
+    unauth_top_level = {"op": "update_db", "node": "forbidden_db"}
+    unauth_nested_dict = {"action": {"op": "api_call", "endpoint": "/forbidden_endpoint"}}
+    unauth_obj_wrapper = CustomWrapperObj("update_db", "forbidden_db")
+
+    for rep in [unauth_top_level, unauth_nested_dict, unauth_obj_wrapper]:
+        out = gate.evaluate_contract(GateInput(payload={}, context={"proposed_actions": [rep]}))
+        assert out.passed is False, f"Failed denied consistency check for {rep}"
