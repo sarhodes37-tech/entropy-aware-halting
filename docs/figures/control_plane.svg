@@ -1,108 +1,152 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 480" width="100%" height="100%" style="background-color: #0d1117; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 520" width="100%" height="100%" style="background-color: #ffffff; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;">
   <style>
-    .title { font-size: 18px; font-weight: bold; fill: #58a6ff; }
-    .subtitle { font-size: 12px; fill: #8b949e; }
-    .box { fill: #161b22; stroke: #30363d; stroke-width: 1.5; rx: 6px; }
-    .box-highlight { fill: #1c2128; stroke: #58a6ff; stroke-width: 2; rx: 6px; }
-    .box-gate { fill: #1f242e; stroke: #d29922; stroke-width: 1.5; rx: 6px; }
-    .box-halt { fill: #271010; stroke: #f85149; stroke-width: 1.5; rx: 6px; }
-    .box-allow { fill: #0d2818; stroke: #3fb950; stroke-width: 1.5; rx: 6px; }
-    .text-main { font-size: 13px; font-weight: 600; fill: #c9d1d9; }
-    .text-sub { font-size: 11px; fill: #8b949e; }
-    .text-gate { font-size: 13px; font-weight: 600; fill: #e3b341; }
-    .text-halt { font-size: 12px; font-weight: bold; fill: #f85149; }
-    .text-allow { font-size: 12px; font-weight: bold; fill: #3fb950; }
-    .arrow { stroke: #58a6ff; stroke-width: 1.5; fill: none; marker-end: url(#arrowhead); }
-    .arrow-dashed { stroke: #8b949e; stroke-width: 1.5; stroke-dasharray: 4,4; fill: none; marker-end: url(#arrowhead-gray); }
-    .arrow-halt { stroke: #f85149; stroke-width: 1.5; fill: none; marker-end: url(#arrowhead-red); }
-    .boundary { fill: none; stroke: #30363d; stroke-width: 1.5; stroke-dasharray: 6,6; rx: 8px; }
-    .boundary-label { font-size: 11px; font-weight: bold; fill: #8b949e; text-anchor: end; }
+    .title { font-size: 18px; font-weight: bold; fill: #1f2328; }
+    .subtitle { font-size: 12px; fill: #57606a; }
+    .container { fill: #f8f9fa; stroke: #d0d7de; stroke-width: 1.5; rx: 8px; }
+    .container-governance { fill: #fffcf0; stroke: #d4a72c; stroke-width: 1.5; rx: 8px; }
+    .container-boundary { fill: #f0f7ff; stroke: #0969da; stroke-width: 1.5; rx: 8px; }
+    .container-audit { fill: #f6f8fa; stroke: #0969da; stroke-width: 1.5; rx: 8px; }
+
+    .box-step { fill: #ffffff; stroke: #d0d7de; stroke-width: 1.2; rx: 6px; }
+    .box-gate { fill: #ffffff; stroke: #d4a72c; stroke-width: 1.2; rx: 6px; }
+    .box-exec { fill: #ffffff; stroke: #0969da; stroke-width: 1.2; rx: 6px; }
+    .box-allow { fill: #dafbe1; stroke: #1a7f37; stroke-width: 1.5; rx: 6px; }
+    .box-halt { fill: #ffebe9; stroke: #cf222e; stroke-width: 1.5; rx: 6px; }
+
+    .text-title { font-size: 12px; font-weight: bold; fill: #1f2328; }
+    .text-gov-title { font-size: 12px; font-weight: bold; fill: #7d4e00; }
+    .text-boundary-title { font-size: 12px; font-weight: bold; fill: #0550ae; }
+    .text-main { font-size: 11px; font-weight: 600; fill: #1f2328; }
+    .text-sub { font-size: 10px; fill: #57606a; }
+    .text-allow { font-size: 12px; font-weight: bold; fill: #116329; }
+    .text-halt { font-size: 12px; font-weight: bold; fill: #82071e; }
+
+    .arrow { stroke: #0969da; stroke-width: 1.5; fill: none; marker-end: url(#arrow-blue); }
+    .arrow-allow { stroke: #1a7f37; stroke-width: 1.5; fill: none; marker-end: url(#arrow-green); }
+    .arrow-halt { stroke: #cf222e; stroke-width: 1.5; fill: none; marker-end: url(#arrow-red); }
+    .arrow-audit { stroke: #57606a; stroke-width: 1.2; stroke-dasharray: 4,4; fill: none; marker-end: url(#arrow-gray); }
   </style>
 
   <defs>
-    <marker id="arrowhead" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
-      <polygon points="0 0, 8 3, 0 6" fill="#58a6ff" />
+    <marker id="arrow-blue" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="#0969da" />
     </marker>
-    <marker id="arrowhead-gray" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
-      <polygon points="0 0, 8 3, 0 6" fill="#8b949e" />
+    <marker id="arrow-green" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="#1a7f37" />
     </marker>
-    <marker id="arrowhead-red" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
-      <polygon points="0 0, 8 3, 0 6" fill="#f85149" />
+    <marker id="arrow-red" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="#cf222e" />
+    </marker>
+    <marker id="arrow-gray" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="#57606a" />
     </marker>
   </defs>
 
   <!-- Title Section -->
-  <text x="30" y="35" class="title">Figure 1 — EpistemicOS Control Plane Architecture</text>
-  <text x="30" y="55" class="subtitle">Deterministic Halting, Ordered Governance Gates, Vector Revocation, and Audit Trail</text>
+  <text x="30" y="32" class="title">Figure 1 — EpistemicOS Control Plane Architecture</text>
+  <text x="30" y="50" class="subtitle">Deterministic Halting, Ordered Governance Gates, Execution Boundary, and Cryptographic Audit Trail</text>
 
-  <!-- Main Pipeline Boundary -->
-  <rect x="20" y="75" width="860" height="380" class="boundary" />
-  <text x="865" y="95" class="boundary-label">EPISTEMICOS CONTROL PLANE BOUNDARY</text>
+  <!-- Section 1: Ingress & Normalization -->
+  <rect x="25" y="70" width="165" height="295" class="container" />
+  <text x="35" y="92" class="text-title">1. Ingress &amp; Normalization</text>
 
-  <!-- Step 1: Input -->
-  <rect x="40" y="130" width="140" height="70" class="box" />
-  <text x="110" y="160" class="text-main" text-anchor="middle">Input Task Payload</text>
-  <text x="110" y="178" class="text-sub" text-anchor="middle">&amp; Request Context</text>
+  <rect x="37" y="110" width="141" height="55" class="box-step" />
+  <text x="107" y="132" class="text-main" text-anchor="middle">Task Payload &amp; Context</text>
+  <text x="107" y="148" class="text-sub" text-anchor="middle">Raw Unsanitized Input</text>
 
-  <!-- Step 2: Normalization -->
-  <rect x="220" y="130" width="150" height="70" class="box" />
-  <text x="295" y="155" class="text-main" text-anchor="middle">1. Input Validation</text>
-  <text x="295" y="173" class="text-sub" text-anchor="middle">&amp; CPR Normalization</text>
+  <path d="M 107 165 L 107 195" class="arrow" />
 
-  <!-- Step 3: Governance Gates -->
-  <rect x="410" y="110" width="230" height="190" class="box-highlight" />
-  <text x="525" y="135" class="text-main" text-anchor="middle">2. Ordered Governance Gates</text>
+  <rect x="37" y="195" width="141" height="55" class="box-step" />
+  <text x="107" y="217" class="text-main" text-anchor="middle">CPR Normalization</text>
+  <text x="107" y="233" class="text-sub" text-anchor="middle">Input Schema Validation</text>
 
-  <!-- Sub-Gate A: Shower Curtain (Optional/Configured) -->
-  <rect x="430" y="150" width="190" height="38" class="box-gate" />
-  <text x="525" y="173" class="text-gate" text-anchor="middle">Shower Curtain Privacy Gate</text>
+  <!-- Section 2: Ordered Governance Gates -->
+  <rect x="210" y="70" width="320" height="295" class="container-governance" />
+  <text x="220" y="92" class="text-gov-title">2. Ordered Governance Gates (Fail-Closed)</text>
 
-  <!-- Sub-Gate B: Entropy Gate -->
-  <rect x="430" y="198" width="190" height="38" class="box-gate" />
-  <text x="525" y="221" class="text-gate" text-anchor="middle">Entropy-Aware Halting Gate</text>
+  <!-- Gate 1: ShowerCurtain -->
+  <rect x="225" y="105" width="290" height="48" class="box-gate" />
+  <text x="370" y="125" class="text-main" text-anchor="middle">Stage A–E: ShowerCurtain Privacy Gate</text>
+  <text x="370" y="140" class="text-sub" text-anchor="middle">PII Detection, Pseudonym Mapping &amp; Egress Policy</text>
 
-  <!-- Sub-Gate C: Permission Gate -->
-  <rect x="430" y="246" width="190" height="38" class="box-gate" />
-  <text x="525" y="269" class="text-gate" text-anchor="middle">Permission &amp; Command Gate</text>
+  <!-- Gate 2: Entropy Gate -->
+  <rect x="225" y="168" width="290" height="48" class="box-gate" />
+  <text x="370" y="188" class="text-main" text-anchor="middle">Entropy-Aware Halting Gate</text>
+  <text x="370" y="203" class="text-sub" text-anchor="middle">Token Surprisal &amp; Information Utility ($h = -\log p$)</text>
 
-  <!-- Step 4: Decision Flow -->
-  <!-- Allow Outcome -->
-  <rect x="680" y="130" width="170" height="55" class="box-allow" />
-  <text x="765" y="155" class="text-allow" text-anchor="middle">ALLOW / COMMIT</text>
-  <text x="765" y="172" class="text-sub" text-anchor="middle">Execute Payload Action</text>
+  <!-- Gate 3: Permission Gate -->
+  <rect x="225" y="231" width="290" height="48" class="box-gate" />
+  <text x="370" y="251" class="text-main" text-anchor="middle">Permission &amp; Scope Gate</text>
+  <text x="370" y="266" class="text-sub" text-anchor="middle">Action-Resource Scope Binding &amp; Executable Validation</text>
 
-  <!-- Halt Outcome -->
-  <rect x="680" y="225" width="170" height="55" class="box-halt" />
-  <text x="765" y="250" class="text-halt" text-anchor="middle">HALT / ROLLBACK</text>
-  <text x="765" y="267" class="text-sub" text-anchor="middle">Fail-Closed Defense</text>
+  <!-- Gate 4: Triangulation Gate -->
+  <rect x="225" y="294" width="290" height="48" class="box-gate" />
+  <text x="370" y="314" class="text-main" text-anchor="middle">Triangulation Gate</text>
+  <text x="370" y="329" class="text-sub" text-anchor="middle">Cross-Stream Telemetry &amp; Hardware Consistency</text>
 
-  <!-- Step 5: Side Effects -->
-  <!-- Vector Revocation -->
-  <rect x="680" y="310" width="170" height="45" class="box" />
-  <text x="765" y="337" class="text-main" text-anchor="middle">Vector Revocation</text>
+  <!-- Gate Connectors -->
+  <path d="M 370 153 L 370 168" class="arrow" />
+  <path d="M 370 216 L 370 231" class="arrow" />
+  <path d="M 370 279 L 370 294" class="arrow" />
 
-  <!-- Telemetry & Audit -->
-  <rect x="220" y="370" width="420" height="60" class="box" />
-  <text x="430" y="395" class="text-main" text-anchor="middle">3. Telemetry &amp; Cryptographic Audit Trail</text>
-  <text x="430" y="413" class="text-sub" text-anchor="middle">Hardware Telemetry, Latency MS, Hash Chain Receipt Minting</text>
+  <!-- Section 3: Execution Boundary & Containment -->
+  <rect x="550" y="70" width="195" height="295" class="container-boundary" />
+  <text x="560" y="92" class="text-boundary-title">3. Execution Boundary</text>
 
-  <!-- Entropy Scheduler (Optional / Associated Module) -->
-  <rect x="40" y="240" width="140" height="80" class="box" />
-  <text x="110" y="268" class="text-main" text-anchor="middle">Entropy Scheduler</text>
-  <text x="110" y="286" class="text-sub" text-anchor="middle">(Optional Iterative</text>
-  <text x="110" y="300" class="text-sub" text-anchor="middle">Trajectory Search)</text>
+  <rect x="562" y="110" width="171" height="55" class="box-exec" />
+  <text x="647" y="130" class="text-main" text-anchor="middle">Trusted Boundary</text>
+  <text x="647" y="146" class="text-sub" text-anchor="middle">Single-Use Token Verification</text>
 
-  <!-- Arrows -->
-  <path d="M 180 165 L 220 165" class="arrow" />
-  <path d="M 370 165 L 410 165" class="arrow" />
-  <path d="M 640 157 L 680 157" class="arrow" />
-  <path d="M 640 252 L 680 252" class="arrow-halt" />
-  <path d="M 765 280 L 765 310" class="arrow-halt" />
+  <path d="M 647 165 L 647 195" class="arrow" />
 
-  <!-- Audit log connectors -->
-  <path d="M 525 300 L 525 370" class="arrow-dashed" />
-  <path d="M 765 355 L 765 400 L 640 400" class="arrow-dashed" />
+  <rect x="562" y="195" width="171" height="55" class="box-exec" />
+  <text x="647" y="215" class="text-main" text-anchor="middle">Containment Guard</text>
+  <text x="647" y="231" class="text-sub" text-anchor="middle">App-Level Command/URI Filter</text>
 
-  <!-- Scheduler connector -->
-  <path d="M 110 200 L 110 240" class="arrow-dashed" />
+  <path d="M 647 250 L 647 280" class="arrow" />
+
+  <rect x="562" y="280" width="171" height="55" class="box-exec" />
+  <text x="647" y="300" class="text-main" text-anchor="middle">Registered Tool Invocation</text>
+  <text x="647" y="316" class="text-sub" text-anchor="middle">Authorized Action Callback</text>
+
+  <!-- Section 4: Decision Outcomes -->
+  <rect x="765" y="70" width="170" height="295" class="container" />
+  <text x="775" y="92" class="text-title">4. Decision Outcomes</text>
+
+  <!-- ALLOW / COMMIT -->
+  <rect x="777" y="110" width="146" height="80" class="box-allow" />
+  <text x="850" y="140" class="text-allow" text-anchor="middle">ALLOW / COMMIT</text>
+  <text x="850" y="158" class="text-sub" text-anchor="middle">Approved Action Payload</text>
+
+  <!-- HALT / ROLLBACK -->
+  <rect x="777" y="230" width="146" height="105" class="box-halt" />
+  <text x="850" y="258" class="text-halt" text-anchor="middle">HALT / ROLLBACK</text>
+  <text x="850" y="276" class="text-sub" text-anchor="middle">Fail-Closed Block</text>
+  <text x="850" y="292" class="text-sub" text-anchor="middle">&amp; Vector Revocation</text>
+
+  <!-- Section 5: Audit & Provenance Trail -->
+  <rect x="210" y="385" width="535" height="115" class="container-audit" />
+  <text x="220" y="407" class="text-boundary-title">5. Cryptographic Audit Trail &amp; Local Provenance Store</text>
+
+  <rect x="225" y="420" width="505" height="65" class="box-step" />
+  <text x="477" y="445" class="text-main" text-anchor="middle">Tamper-Evident SHA-256 Entry Hash Chain &amp; Signed Receipt Minting</text>
+  <text x="477" y="462" class="text-sub" text-anchor="middle">Cryptographically Binds Gate Decisions, Input Hashes, Execution Outcomes, &amp; Provenance Events</text>
+
+  <!-- Flow Arrows connecting main stages -->
+  <!-- Ingress -> Governance -->
+  <path d="M 178 222 L 210 222" class="arrow" />
+
+  <!-- Governance All Passed -> Execution Boundary -->
+  <path d="M 515 318 L 530 318 L 530 137 L 550 137" class="arrow-allow" />
+
+  <!-- Execution Boundary Passed -> ALLOW -->
+  <path d="M 733 307 L 750 307 L 750 150 L 777 150" class="arrow-allow" />
+
+  <!-- Governance Fail-Closed Violation -> HALT -->
+  <path d="M 515 129 L 535 129 L 535 282 L 777 282" class="arrow-halt" />
+
+  <!-- Decision Outcomes -> Audit Trail -->
+  <path d="M 850 190 L 850 210 L 750 210 L 750 452 L 730 452" class="arrow-audit" />
+  <path d="M 850 335 L 850 452 L 730 452" class="arrow-audit" />
+
 </svg>

@@ -8,50 +8,6 @@ EpistemicOS is an experimental low-latency security middleware designed to enfor
 
 ### Control Plane Architecture Diagram
 
-```mermaid
-flowchart TD
-    subgraph Ingress ["1. Request Ingress & Normalization"]
-        A[Task Payload & Context] --> B[Input Validation & CPR Normalization]
-    end
-
-    subgraph Governance ["2. Ordered Governance Gates (Fail-Closed)"]
-        B --> C{Shower Curtain Gate}
-        C -- "Clean / Anonymized" --> D{Entropy-Aware Halting Gate}
-        C -- "PII Leakage / Policy Block" --> HALT["HALT / ROLLBACK\n(Fail-Closed Execution Block)"]
-
-        D -- "Low Surprisal / Low Entropy" --> E{Permission & Policy Gate}
-        D -- "High Surprisal / Structural Collapse" --> HALT
-
-        E -- "Authorized Scope & Resource" --> F{Triangulation Gate}
-        E -- "Unauthorized Action / Missing Resource" --> HALT
-
-        F -- "Telemetry Consistent" --> ALLOW["ALLOW / COMMIT\n(Approved Action Payload)"]
-        F -- "Data Divergence / Tampering" --> HALT
-    end
-
-    subgraph Boundary ["3. Execution Boundary & Containment"]
-        ALLOW --> G["Trusted Execution Boundary\n(execute_protected_action)"]
-        G --> H["Containment Guard\n(Command & Network Regex Guard)"]
-        H --> I["Isolated Executor / Tool Invocation"]
-    end
-
-    subgraph Audit ["4. Audit & Provenance Trail"]
-        HALT --> J["Tamper-Evident Audit Trail\n(SHA-256 Entry Hash Chain)"]
-        I --> J
-        J --> K["Local Provenance Store\n& Signed Receipt Minting"]
-    end
-
-    subgraph Egress ["5. Decision Emission"]
-        K --> L["Final System Outcome\n(ALLOWED | HALTED | DENIED)"]
-    end
-
-    style HALT fill:#421414,stroke:#f85149,stroke-width:2px,color:#fff
-    style ALLOW fill:#0d2818,stroke:#3fb950,stroke-width:2px,color:#fff
-    style Governance fill:#161b22,stroke:#30363d,stroke-width:1px
-    style Boundary fill:#161b22,stroke:#30363d,stroke-width:1px
-    style Audit fill:#161b22,stroke:#30363d,stroke-width:1px
-```
-
 ![EpistemicOS Control Plane Architecture](docs/figures/control_plane.svg)
 
 *Figure 1 — EpistemicOS Control Plane Architecture: Workloads route through ordered governance gates before reaching the trusted execution boundary. Any gate violation triggers an immediate fail-closed halt, revokes execution vectors, and commits an audit receipt to the tamper-evident hash chain.*
