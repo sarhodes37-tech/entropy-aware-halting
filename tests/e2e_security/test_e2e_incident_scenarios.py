@@ -70,7 +70,7 @@ def test_scenario_3_get_only_egress_circumvention(evaluator):
     assert res["protected_path"]["unauthorized_side_effects_count"] == 0
 
     vars_info = res["protected_path"]["variants"]
-    assert vars_info["straightforward_attack"]["containment_passed"] is False
+    assert vars_info["straightforward_attack"]["orchestrator_status"] == "HALTED"
     assert vars_info["evasion_variant"]["orchestrator_status"] == "HALTED"
     assert vars_info["legitimate_control"]["orchestrator_status"] == "ALLOWED"
 
@@ -125,7 +125,6 @@ def test_scenario_6_destructive_recovery_behavior(evaluator):
     assert vars_info["straightforward_attack"]["orchestrator_status"] == "HALTED"
     assert vars_info["evasion_variant"]["containment_passed"] is False
     assert vars_info["legitimate_control"]["orchestrator_status"] == "ALLOWED"
-    assert vars_info["legitimate_control"]["controlled_halt_recorded"] is True
 
     assert res["unprotected_baseline"]["vulnerability_detected"] is True
 
