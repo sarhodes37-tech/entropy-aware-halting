@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>EpistemicOS - Control Plane Observatory</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="app-header">
+    <div class="header-container">
+      <div class="brand">
+        <span class="logo-icon">🛡️</span>
+        <div>
+          <h1>EpistemicOS</h1>
+          <p class="subtitle">Control Plane Observatory (Read-Only Prototype)</p>
+        </div>
+      </div>
+      <div class="read-only-badge">
+        <span class="indicator green"></span> Read-Only Control Plane
+      </div>
+    </div>
+    <nav class="nav-tabs" role="tablist">
+      <button class="nav-tab active" data-tab="overview" role="tab">Overview</button>
+      <button class="nav-tab" data-tab="traces" role="tab">Execution Traces</button>
+      <button class="nav-tab" data-tab="provenance" role="tab">Provenance Explorer</button>
+      <button class="nav-tab" data-tab="benchmarks" role="tab">Benchmark Workbench</button>
+    </nav>
+  </header>
+
+  <main class="main-content">
+    <!-- View 1: Overview -->
+    <section id="view-overview" class="view-panel active">
+      <div class="panel-header">
+        <h2>System Executive Overview</h2>
+        <button id="btn-refresh-overview" class="btn-refresh">🔄 Refresh</button>
+      </div>
+
+      <div class="metrics-grid">
+        <div class="metric-card">
+          <div class="metric-label">Total Executions</div>
+          <div class="metric-value" id="metric-total-executions">--</div>
+          <div class="metric-subtext" id="subtext-total-executions">Derived from provenance correlation records</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-label">Authorization Denials</div>
+          <div class="metric-value text-danger" id="metric-denials">--</div>
+          <div class="metric-subtext">AUTHORIZATION_DENIED events</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-label">Deterministic Halts</div>
+          <div class="metric-value text-warning" id="metric-halts">--</div>
+          <div class="metric-subtext">Egress blocked / deterministic halts</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-label">Execution Failures</div>
+          <div class="metric-value text-danger" id="metric-failures">--</div>
+          <div class="metric-subtext">EXECUTION_FAILED / INTERRUPTED</div>
+        </div>
+      </div>
+
+      <div class="section-grid">
+        <div class="card">
+          <h3>Audit Log Health & Chain Integrity</h3>
+          <div id="audit-integrity-status" class="status-block">Loading...</div>
+        </div>
+        <div class="card">
+          <h3>Provenance Store Chain Integrity</h3>
+          <div id="provenance-integrity-status" class="status-block">Loading...</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- View 2: Execution Trace Explorer -->
+    <section id="view-traces" class="view-panel">
+      <div class="panel-header">
+        <h2>Execution Trace Explorer</h2>
+        <div class="filter-controls">
+          <input type="text" id="trace-search" placeholder="Search correlation / request ID..." class="input-search">
+          <select id="trace-status-filter" class="select-filter">
+            <option value="ALL">All Statuses</option>
+            <option value="COMPLETED">COMPLETED</option>
+            <option value="DENIED">DENIED</option>
+            <option value="HALTED">HALTED</option>
+            <option value="FAILED">FAILED</option>
+            <option value="OUTCOME_UNKNOWN">OUTCOME_UNKNOWN</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="trace-layout">
+        <div class="trace-list-container">
+          <div class="card-header">Execution Traces</div>
+          <ul id="trace-list" class="trace-list"></ul>
+        </div>
+        <div class="trace-detail-container">
+          <div id="trace-detail-empty" class="empty-state">Select an execution trace to inspect lifecycle, gate decisions, authorization evidence, and reconciliation report.</div>
+          <div id="trace-detail-content" class="trace-detail-content hidden">
+            <!-- Selected trace details injected via JavaScript -->
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- View 3: Provenance Explorer -->
+    <section id="view-provenance" class="view-panel">
+      <div class="panel-header">
+        <h2>Provenance Chain Explorer</h2>
+      </div>
+
+      <div class="disclaimer-banner">
+        <span class="warning-icon">⚠️</span>
+        <div>
+          <strong>Provenance Scope Disclaimer:</strong>
+          Valid local cryptographic hash chain integrity verifies append-only sequence chaining, but does NOT prove external source authenticity, non-repudiation, or trace completeness.
+        </div>
+      </div>
+
+      <div class="card mb-1">
+        <h3>Chain Status & Verification</h3>
+        <div id="provenance-chain-summary" class="status-block">Loading...</div>
+      </div>
+
+      <div class="card">
+        <h3>Provenance Event Timeline</h3>
+        <div class="table-responsive">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Seq #</th>
+                <th>Timestamp</th>
+                <th>Event Type</th>
+                <th>Source</th>
+                <th>Correlation ID</th>
+                <th>Target</th>
+                <th>Entry Hash</th>
+              </tr>
+            </thead>
+            <tbody id="provenance-events-tbody">
+              <tr><td colspan="7" class="text-center">Loading provenance events...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- View 4: Benchmark Workbench -->
+    <section id="view-benchmarks" class="view-panel">
+      <div class="panel-header">
+        <h2>Benchmark Workbench</h2>
+      </div>
+
+      <div class="card mb-1">
+        <h3>Baseline Condition Performance</h3>
+        <div class="table-responsive">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Baseline Condition</th>
+                <th>Samples</th>
+                <th>Confusion Matrix (TC/FC/TR/FR)</th>
+                <th>Accuracy (95% CI)</th>
+                <th>FP Rate</th>
+                <th>FN Rate</th>
+                <th>Avg Latency</th>
+              </tr>
+            </thead>
+            <tbody id="benchmark-baselines-tbody">
+              <tr><td colspan="7" class="text-center">Loading benchmark data...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="section-grid mb-1">
+        <div class="card">
+          <h3>Threshold Ablations</h3>
+          <div id="threshold-ablations-container">Loading...</div>
+        </div>
+        <div class="card">
+          <h3>Security & Attribution Takeaways</h3>
+          <div id="attribution-container">Loading...</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>Per-Case Evaluation Results</h3>
+        <div class="table-responsive">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Case ID</th>
+                <th>Category</th>
+                <th>Prompt / Target</th>
+                <th>Outcome Status</th>
+                <th>Gate Action</th>
+              </tr>
+            </thead>
+            <tbody id="benchmark-cases-tbody">
+              <tr><td colspan="5" class="text-center">Loading per-case outcomes...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="app-footer">
+    <p>EpistemicOS Security Governance & Control Plane Observatory • Read-Only Client Interface</p>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>
