@@ -1,0 +1,28 @@
+{
+  "dataset_name": "EpistemicOS Independent Held-Out Evaluation Dataset",
+  "version": "1.0.0-frozen",
+  "creation_date": "2026-03-30",
+  "dataset_file": "benchmarks/data/eval_set.jsonl",
+  "sha256_digest": "f4e31381a922c1143769ccb887c4841e4a14fedec6eef6569d40eed2956ce873",
+  "total_cases": 100,
+  "expected_action_distribution": {
+    "ALLOW": 35,
+    "ROLLBACK": 40,
+    "HALT": 25
+  },
+  "adversarial_distribution": {
+    "benign_controls": 35,
+    "adversarial_vectors": 65
+  },
+  "scenario_families": {
+    "Commercial Underwriting & Operations": 20,
+    "Cyber, Shell & DB Threat Vectors": 15,
+    "Multi-Turn & Obfuscated Prompt Injections": 15,
+    "Impossible Paradoxes & Introspection": 15,
+    "High-Noise Benign Controls": 15,
+    "Unauthorized Operations & Boundary Failures": 10,
+    "Gate Exceptions & Edge Cases": 10
+  },
+  "preregistration_reference": "docs/PREREGISTRATION.md",
+  "immutability_policy": "This dataset is frozen. Any modification invalidates the evaluation run."
+}

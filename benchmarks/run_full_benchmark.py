@@ -102,7 +102,6 @@ class ComprehensiveBenchmarkRunner:
         return dataset
 
     def run_benchmark(self) -> Dict[str, Any]:
-        Path("logs/benchmark_audit.jsonl").unlink(missing_ok=True)
         dataset = self.load_dataset(self.eval_dataset_path)
 
         baseline_configs = {
@@ -149,9 +148,7 @@ class ComprehensiveBenchmarkRunner:
                 last_res_reason = "Passed all gates"
 
                 while True:
-                    engine = EpistemicOrchestrator(
-                        audit_log_path="logs/benchmark_audit.jsonl"
-                    )
+                    engine = EpistemicOrchestrator()
 
                     active_gates = []
                     if "permission" in cfg["gates"]:
@@ -309,7 +306,7 @@ class ComprehensiveBenchmarkRunner:
         # Threshold Ablation Study
         threshold_results = {}
         for z_thresh in self.config["thresholds"]["ablation_z_thresholds"]:
-            engine = EpistemicOrchestrator(audit_log_path="logs/benchmark_audit.jsonl")
+            engine = EpistemicOrchestrator()
             engine.gates = [EntropyGate(z_threshold=z_thresh, window_size=10)]
 
             thresh_tr, thresh_fr, thresh_tc, thresh_fc = 0, 0, 0, 0
