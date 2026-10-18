@@ -12,18 +12,18 @@ The objective of the EpistemicOS Evidence Architecture is to establish reproduci
 
 ---
 
-## 2. Machine-Readable Status Semantics
+## 2. Machine-Readable Status Semantics & CI Policy
 
 All evaluation components, test harnesses, and evidence aggregators must emit explicit, standardized status codes defined centrally:
 
-| Status Code | Definition | Security Implication |
-|---|---|---|
-| `PASS` | Security invariant holds, expected outcome observed, zero unmediated side effects. | Fully verified under tested conditions. |
-| `FAIL` | Security invariant violated, unauthorized side effect executed, or regression threshold exceeded. | Critical security failure; blocks CI merge. |
-| `PARTIAL` | Component-level defense succeeded, but end-to-end transitive enforcement is unintegrated. | Known architectural defense gap (e.g., GAP-03). |
-| `UNTESTED` | Test path or integration unavailable in current architecture. | Execution boundary not exercised. |
-| `BLOCKED_BY_ARCHITECTURE` | Feature or path intentionally restricted or unsupported by system model. | Structural design constraint. |
-| `INCONCLUSIVE` | Trial produced ambiguous execution telemetry or stochastic variance without explicit outcome. | Requires further investigation or additional trials. |
+| Status Code | Definition | Security Implication | CI Workflow Enforcement |
+|---|---|---|---|
+| `PASS` | Security invariant holds, expected outcome observed, zero unmediated side effects. | Fully verified under tested conditions. | All CI jobs pass. |
+| `FAIL` | Security invariant violated, unauthorized side effect executed, or regression threshold exceeded. | Critical security failure. | **Blocks all CI jobs** (PR CI and Release CI). |
+| `PARTIAL` | Component-level defense succeeded, but end-to-end transitive enforcement is unintegrated (e.g. GAP-03). | Known architectural defense gap. | **Permitted on PR CI with warnings**, but **Blocks Release CI** (`--require-full-pass`). |
+| `UNTESTED` | Test path or integration unavailable in current architecture. | Execution boundary not exercised. | Permitted on PR CI with warnings; **Blocks Release CI**. |
+| `BLOCKED_BY_ARCHITECTURE` | Feature or path intentionally restricted or unsupported by system model. | Structural design constraint. | Documented constraint; requires explicit policy override. |
+| `INCONCLUSIVE` | Trial produced ambiguous execution telemetry or stochastic variance without explicit outcome. | Requires further investigation. | Permitted on PR CI with warnings; **Blocks Release CI**. |
 
 ---
 
@@ -42,8 +42,8 @@ All evaluation components, test harnesses, and evidence aggregators must emit ex
 |  - Real EpistemicOrchestrator, TrustedExecutionBoundary, LocalProvenanceStore    |
 |  - Zero manually seeded grants, full accounting of decisions vs boundary admission|
 +-----------------------------------------------------------------------------------+
-|  LAYER C: Live-Agent Red-Team                                                      |
-|  - Synthetic multi-step red-team simulator (benchmarks/run_live_agent_redteam.py)  |
+|  LAYER C: Deterministic Synthetic Adversarial Harness                              |
+|  - Synthetic multi-step adversarial harness (benchmarks/run_live_agent_redteam.py)  |
 |  - Multi-turn injections, indirect egress, credential misuse, multi-agent cascades |
 |  - Zero external network access, isolated local simulators                         |
 +-----------------------------------------------------------------------------------+
@@ -59,7 +59,7 @@ All evaluation components, test harnesses, and evidence aggregators must emit ex
 - **Scope:** Unit and property-based tests for `PermissionGate`, `EntropyGate`, `ShowerCurtainGate`, `ContainmentGuard`, `TrustedExecutionBoundary`, and `LocalProvenanceStore`.
 - **Requirements:**
   - Standard `pytest` suite execution (`tests/unit/`, `tests/e2e_security/`).
-  - Direct assertions on security invariants (e.g. rejection of scope bypasses, malformed logprobs, unauthorized token consumption).
+  - Direct assertions on security invariants.
   - Explicit machine-readable assertion outputs.
 
 ### Layer B: Actual Execution-Boundary Integration
@@ -71,21 +71,20 @@ All evaluation components, test harnesses, and evidence aggregators must emit ex
   - Measure governance decision, boundary admission, callback invocation, task completion, and audit evidence independently.
   - Distinguish component-level gating from end-to-end containment (`PARTIAL` status for GAP-03/GAP-04).
 
-### Layer C: Live-Agent Red-Team
-- **Purpose:** Evaluate multi-step, stochastic agent bypass attempts against isolated synthetic targets.
+### Layer C: Deterministic Synthetic Adversarial Harness
+- **Purpose:** Evaluate synthetic multi-step adversarial vectors against isolated local targets.
 - **Scope:** Multi-turn adversarial prompt injections, indirect egress attempts, credential misuse vectors, and multi-agent cascades (`benchmarks/run_live_agent_redteam.py`).
 - **Requirements:**
   - Strictly isolated synthetic local resources (local mock webhooks, mock DBs, synthetic credentials).
   - **Zero external network access** or real credentials.
-  - Record attempted attack vectors, blocked attempts, unauthorized actions, completed side effects, and inconclusive runs.
-  - Preserve exact test prompts, execution seeds, tool permissions, and model parameters.
+  - Record orchestrator decision, actual boundary admission, callback invocation, and observed side effects separately per trial.
 
 ### Layer D: Performance & Cost Benchmarks
 - **Purpose:** Quantify the operational overhead, latency, token consumption, and statistical reliability of security controls.
 - **Scope:** N=100 stratified held-out benchmark dataset (`benchmarks/run_full_benchmark.py`).
 - **Requirements:**
   - Measure Latency (P50, P95, Mean), Token Consumption, Accuracy, Precision, Recall, FPR, FNR, Wilson 95% Confidence Intervals, and McNemar paired statistical comparisons.
-  - Keep performance scoring strictly separated from binary Layer A/B security invariant checks (a performance improvement can never compensate for a security breach).
+  - Keep performance scoring strictly separated from binary Layer A/B security invariant checks.
 
 ---
 
@@ -98,4 +97,5 @@ Every generated evidence artifact must record:
 1. Evaluated Git commit hash.
 2. Working tree status (`CLEAN` or `DIRTY`).
 3. SHA-256 digest of the frozen evaluation dataset (`benchmarks/data/eval_set.jsonl`).
-4. Exact execution timestamp, environment parameters, and Python version.
+4. Re-verified SHA-256 digest against `benchmarks/data/dataset_manifest.json`.
+5. Exact execution timestamp, environment parameters, and Python version.

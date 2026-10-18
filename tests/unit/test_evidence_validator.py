@@ -3,10 +3,11 @@ Negative Unit Tests for Evidence Validator (`benchmarks/validate_evidence.py`).
 
 Tests rejection of synthetic invalid artifacts:
 1. Missing required evaluation layers.
-2. Unverified or missing dataset SHA-256 digest.
+2. Unverified, missing, or forged dataset SHA-256 digest.
 3. Observed unauthorized side effects or breaches in Layer B.
 4. Metric recall or FPR regressions in Layer D.
 5. Inconsistent overall status 'PASS' when required layers report PARTIAL or FAIL.
+6. Overall status 'PARTIAL' blocked under --require-full-pass flag.
 """
 
 import copy
@@ -73,16 +74,38 @@ def test_missing_layer_rejected(valid_evidence_data, tmp_path):
     assert any("Missing required evaluation layers" in err for err in errors)
 
 
-def test_unverified_dataset_digest_rejected(valid_evidence_data, tmp_path):
+def test_forged_dataset_digest_rejected(valid_evidence_data, tmp_path):
     data = copy.deepcopy(valid_evidence_data)
-    data["reproducibility_metadata"]["dataset_digest_verified"] = False
+    # Claim dataset_digest_verified is True, but pass a forged digest
+    data["reproducibility_metadata"]["dataset_sha256_digest"] = "1111111111111111111111111111111111111111111111111111111111111111"
 
-    artifact_file = tmp_path / "unverified_digest.json"
+    artifact_file = tmp_path / "forged_digest.json"
     artifact_file.write_text(json.dumps(data), encoding="utf-8")
 
     is_valid, errors = validate_evidence_artifact(str(artifact_file))
     assert is_valid is False
-    assert any("Dataset SHA-256 digest verification failed" in err for err in errors)
+    assert any("Report Metadata Tampering/Forged Claim Detected" in err for err in errors)
+
+
+def test_modified_dataset_file_rejected(valid_evidence_data, tmp_path):
+    data = copy.deepcopy(valid_evidence_data)
+
+    # Create dummy modified dataset file and manifest
+    fake_dataset = tmp_path / "fake_eval.jsonl"
+    fake_dataset.write_text("MODIFIED DATASET CONTENT", encoding="utf-8")
+
+    fake_manifest = tmp_path / "fake_manifest.json"
+    fake_manifest.write_text(json.dumps({
+        "sha256_digest": "f4e31381a922c1143769ccb887c4841e4a14fedec6eef6569d40eed2956ce873",
+        "dataset_file": str(fake_dataset)
+    }), encoding="utf-8")
+
+    artifact_file = tmp_path / "modified_dataset_artifact.json"
+    artifact_file.write_text(json.dumps(data), encoding="utf-8")
+
+    is_valid, errors = validate_evidence_artifact(str(artifact_file), manifest_path=str(fake_manifest))
+    assert is_valid is False
+    assert any("Dataset Tampering Detected" in err for err in errors)
 
 
 def test_layer_b_breach_rejected(valid_evidence_data, tmp_path):
@@ -96,7 +119,7 @@ def test_layer_b_breach_rejected(valid_evidence_data, tmp_path):
 
     is_valid, errors = validate_evidence_artifact(str(artifact_file))
     assert is_valid is False
-    assert any("observed 1 security breaches" in err for err in errors)
+    assert any("CRITICAL SECURITY FAILURE" in err for err in errors)
 
 
 def test_metric_regression_rejected(valid_evidence_data, tmp_path):
@@ -121,4 +144,22 @@ def test_inconsistent_overall_pass_rejected(valid_evidence_data, tmp_path):
 
     is_valid, errors = validate_evidence_artifact(str(artifact_file))
     assert is_valid is False
-    assert any("Overall status 'PASS' inconsistent with imperfect layers" in err for err in errors)
+    assert any("Overall status 'PASS' cannot coexist with imperfect required layers" in err for err in errors)
+
+
+def test_partial_status_rejected_under_require_full_pass(valid_evidence_data, tmp_path):
+    data = copy.deepcopy(valid_evidence_data)
+    data["layers"]["layer_b_execution_boundary"]["status"] = "PARTIAL"
+    data["overall_evaluation_status"] = "PARTIAL"
+
+    artifact_file = tmp_path / "partial_evidence.json"
+    artifact_file.write_text(json.dumps(data), encoding="utf-8")
+
+    # Should pass without require_full_pass
+    is_valid_pr, errors_pr = validate_evidence_artifact(str(artifact_file), require_full_pass=False)
+    assert is_valid_pr is True
+
+    # Should fail with require_full_pass
+    is_valid_release, errors_release = validate_evidence_artifact(str(artifact_file), require_full_pass=True)
+    assert is_valid_release is False
+    assert any("Release Workflow Policy Failure" in err for err in errors_release)
