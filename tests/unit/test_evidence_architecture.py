@@ -5,7 +5,7 @@ Tests:
 1. Dataset manifest cryptographic SHA-256 verification and immutability policy.
 2. Central status semantics validation (PASS, FAIL, PARTIAL, UNTESTED, BLOCKED_BY_ARCHITECTURE, INCONCLUSIVE).
 3. Consolidated evidence report generation and reproducibility metadata extraction.
-4. Layer C live-agent red-team evaluator trial execution.
+4. Layer C synthetic adversarial harness trial execution.
 """
 
 import json
@@ -15,7 +15,7 @@ import tempfile
 from pathlib import Path
 import pytest
 
-from benchmarks.run_live_agent_redteam import LiveAgentRedTeamEvaluator
+from benchmarks.run_live_agent_redteam import SyntheticAdversarialHarnessEvaluator
 from benchmarks.generate_evidence_report import load_json_artifact, generate_consolidated_evidence
 
 
@@ -56,12 +56,12 @@ def test_status_code_semantics():
     assert layers.get("layer_d_performance_cost", {}).get("status") in valid_statuses
 
 
-def test_live_agent_redteam_evaluator_trials():
-    """Validates that LiveAgentRedTeamEvaluator runs multi-trial red-team scenarios correctly."""
-    evaluator = LiveAgentRedTeamEvaluator(trials_per_scenario=2, seed=123)
+def test_synthetic_adversarial_harness_trials():
+    """Validates that SyntheticAdversarialHarnessEvaluator runs multi-trial red-team scenarios correctly."""
+    evaluator = SyntheticAdversarialHarnessEvaluator(trials_per_scenario=2, seed=123)
     results = evaluator.run_red_team_evaluations()
 
-    assert results["evaluation_layer"] == "Layer C: Live-Agent Red-Team"
+    assert results["evaluation_layer"] == "Layer C: Deterministic Synthetic Adversarial Harness"
     assert results["total_scenarios"] == 4
     assert results["total_trials"] == 8
     assert results["overall_status"] == "PASS"

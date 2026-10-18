@@ -4,7 +4,7 @@ Consolidated Four-Layer Evidence Report Generator for EpistemicOS.
 Executes and aggregates evidence across all four evidence layers:
 - Layer A: Deterministic Regression (Pytest Suite)
 - Layer B: Actual Execution-Boundary Integration (Incident Lab)
-- Layer C: Live-Agent Red-Team (Synthetic Stochastic Attacks)
+- Layer C: Deterministic Synthetic Adversarial Harness
 - Layer D: Performance & Cost Benchmarks (N=100 Stratified Benchmark)
 
 Outputs machine-readable `results/four_layer_evidence.json` and human-readable `docs/security/four_layer_evidence_report.md`.
@@ -25,7 +25,7 @@ if PROJECT_ROOT not in sys.path:
 
 from benchmarks.run_full_benchmark import ComprehensiveBenchmarkRunner
 from benchmarks.run_incident_lab import get_git_commit_hash, get_working_tree_status, compute_working_tree_digest
-from benchmarks.run_live_agent_redteam import LiveAgentRedTeamEvaluator
+from benchmarks.run_live_agent_redteam import SyntheticAdversarialHarnessEvaluator
 
 
 def load_json_artifact(filepath: str) -> Dict[str, Any]:
@@ -37,23 +37,23 @@ def load_json_artifact(filepath: str) -> Dict[str, Any]:
 
 
 def run_layer_a_deterministic_tests(fast_mode: bool = False) -> Dict[str, Any]:
-    """Runs Layer A unit test suite via pytest and captures pass/fail status."""
+    """Runs Layer A unit test suite via pytest module or pytest executable and captures pass/fail status."""
     env = os.environ.copy()
-
-    # Preserve existing PYTHONPATH or default to current directory
     current_pythonpath = env.get("PYTHONPATH", ".")
     env["PYTHONPATH"] = current_pythonpath
 
     test_targets = ["tests/unit/test_evidence_architecture.py", "-k", "test_dataset_manifest_integrity"] if fast_mode else ["tests/unit/", "tests/e2e_security/"]
 
-    cmd = [
-        sys.executable, "-m", "pytest",
-        *test_targets,
-        "-q", "--tb=no"
-    ]
+    # Try pytest via sys.executable, falling back to searching PATH or pytest in virtualenvs
+    cmd = [sys.executable, "-m", "pytest", *test_targets, "-q", "--tb=no"]
 
     try:
         res = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=120)
+        if res.returncode != 0 and "No module named pytest" in res.stderr:
+            # Fallback to pytest directly if installed via pipx / PATH
+            cmd = ["pytest", *test_targets, "-q", "--tb=no"]
+            res = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=120)
+
         passed = (res.returncode == 0)
         return {
             "evaluation_layer": "Layer A: Deterministic Regression",
@@ -83,10 +83,11 @@ def generate_consolidated_evidence(fast_mode: bool = False) -> Dict[str, Any]:
     subprocess.run([sys.executable, "benchmarks/run_incident_lab.py"], check=True)
     layer_b_raw = load_json_artifact("results/incident_lab_results.json")
 
-    # Layer B status determination
+    # Layer B status determination reflecting coverage completeness and evidence validity
     b_scenarios_dict = layer_b_raw.get("scenarios", {})
     b_scenarios_list = []
     b_failures = []
+    b_partials = []
 
     if isinstance(b_scenarios_dict, dict):
         for case_key, sc_data in b_scenarios_dict.items():
@@ -103,20 +104,30 @@ def generate_consolidated_evidence(fast_mode: bool = False) -> Dict[str, Any]:
             b_scenarios_list.append(sc_info)
             if outcome == "VULNERABLE_BREACH":
                 b_failures.append(sc_info)
+            elif outcome in ["PARTIAL_GATING_DEFENSE", "PARTIAL", "UNTESTED"]:
+                b_partials.append(sc_info)
 
-    layer_b_status = "FAIL" if b_failures else "PASS"
+    # Layer B status evaluates as PARTIAL when pre-execution gating succeeded but transitive enforcement remains partial (GAP-03)
+    if b_failures:
+        layer_b_status = "FAIL"
+    elif b_partials:
+        layer_b_status = "PARTIAL"
+    else:
+        layer_b_status = "PASS"
 
     layer_b = {
         "evaluation_layer": "Layer B: Actual Execution-Boundary Integration",
         "status": layer_b_status,
         "scenarios_evaluated": len(b_scenarios_list),
+        "zero_breach_metric": len(b_failures) == 0,
         "breaches_observed": len(b_failures),
+        "partial_defense_count": len(b_partials),
         "architectural_gaps_noted": ["GAP-03 (Transitive Egress Enforcement)", "GAP-04 (Multi-Tenant Fleet Isolation)"],
         "scenario_summary": b_scenarios_list
     }
 
-    print("Generating Layer C evidence (Live-Agent Red-Team)...")
-    evaluator_c = LiveAgentRedTeamEvaluator(trials_per_scenario=3, seed=42)
+    print("Generating Layer C evidence (Deterministic Synthetic Adversarial Harness)...")
+    evaluator_c = SyntheticAdversarialHarnessEvaluator(trials_per_scenario=3, seed=42)
     layer_c = evaluator_c.run_red_team_evaluations()
 
     print("Generating Layer D evidence (Performance & Cost Benchmarks)...")
@@ -142,10 +153,12 @@ def generate_consolidated_evidence(fast_mode: bool = False) -> Dict[str, Any]:
 
     overall_status = "PASS"
     if (layer_a["status"] != "PASS" or
-        layer_b["status"] != "PASS" or
+        layer_b["status"] == "FAIL" or
         layer_c["overall_status"] != "PASS" or
         not dataset_digest_valid):
         overall_status = "FAIL"
+    elif layer_b["status"] in ["PARTIAL", "UNTESTED"]:
+        overall_status = "PARTIAL"
 
     consolidated_evidence = {
         "title": "EpistemicOS Four-Layer Security Evaluation Artifact",
@@ -213,8 +226,10 @@ def generate_markdown_report(data: Dict[str, Any]):
         "",
         "## Layer B: Actual Execution-Boundary Integration",
         f"- **Status:** `{layers['layer_b_execution_boundary']['status']}`",
+        f"- **Zero-Breach Metric:** `{layers['layer_b_execution_boundary']['zero_breach_metric']}`",
         f"- **Scenarios Evaluated:** {layers['layer_b_execution_boundary']['scenarios_evaluated']}",
         f"- **Breaches Observed:** {layers['layer_b_execution_boundary']['breaches_observed']}",
+        f"- **Partial Defenses Noted:** {layers['layer_b_execution_boundary']['partial_defense_count']}",
         "- **Scenario Outcomes:**",
     ]
 
@@ -225,8 +240,9 @@ def generate_markdown_report(data: Dict[str, Any]):
         "",
         "---",
         "",
-        "## Layer C: Live-Agent Red-Team",
+        "## Layer C: Deterministic Synthetic Adversarial Harness",
         f"- **Overall Status:** `{layers['layer_c_live_agent_redteam']['overall_status']}`",
+        f"- **Evaluator Type:** {layers['layer_c_live_agent_redteam']['evaluator_type']}",
         f"- **Execution Mode:** {layers['layer_c_live_agent_redteam']['execution_mode']}",
         f"- **Scenarios Evaluated:** {layers['layer_c_live_agent_redteam']['total_scenarios']}",
         f"- **Trials Evaluated:** {layers['layer_c_live_agent_redteam']['total_trials']}",
