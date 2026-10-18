@@ -308,7 +308,7 @@ class EpistemicOrchestrator:
 
             execution_outcome = None
             if exec_func is not None:
-                # Resolve target action_name and target resource
+                # Resolve target action_name and target resource explicitly
                 action_name = context.get("action_name")
                 target = context.get("target")
 
@@ -321,8 +321,46 @@ class EpistemicOrchestrator:
                             action_name = action_name or act_inner.get("op")
                             target = target or act_inner.get("node") or act_inner.get("endpoint") or act_inner.get("policy") or act_inner.get("resource") or act_inner.get("target")
 
-                action_name = action_name or getattr(exec_func, "__name__", "protected_operation")
-                target = target or "system_resource"
+                # Strictly reject missing or ambiguous action or target identifiers
+                if not action_name or not isinstance(action_name, str) or not action_name.strip():
+                    telemetry = profiler.get_telemetry()
+                    revoked_ids = self.vector_manager.revoke_trajectory(traj_id)
+                    actual_revoked_count = len(revoked_ids)
+                    reason_msg = "TrustedExecutionBoundary Enforcement: Missing or ambiguous action_name for protected operation"
+                    self._log_pipeline_event(
+                        event_type=AuditLogLevel.HALT,
+                        gate_name="TrustedExecutionBoundary",
+                        reason=f"{reason_msg} | Vectors Revoked: {actual_revoked_count}",
+                        masked_payload=masked_payload,
+                        cpr=cpr,
+                        telemetry=telemetry
+                    )
+                    return {
+                        "status": "HALTED",
+                        "gate": "TrustedExecutionBoundary",
+                        "reason": reason_msg,
+                        "vectors_revoked": actual_revoked_count
+                    }
+
+                if not target or not isinstance(target, str) or not target.strip():
+                    telemetry = profiler.get_telemetry()
+                    revoked_ids = self.vector_manager.revoke_trajectory(traj_id)
+                    actual_revoked_count = len(revoked_ids)
+                    reason_msg = "TrustedExecutionBoundary Enforcement: Missing or ambiguous target resource for protected operation"
+                    self._log_pipeline_event(
+                        event_type=AuditLogLevel.HALT,
+                        gate_name="TrustedExecutionBoundary",
+                        reason=f"{reason_msg} | Vectors Revoked: {actual_revoked_count}",
+                        masked_payload=masked_payload,
+                        cpr=cpr,
+                        telemetry=telemetry
+                    )
+                    return {
+                        "status": "HALTED",
+                        "gate": "TrustedExecutionBoundary",
+                        "reason": reason_msg,
+                        "vectors_revoked": actual_revoked_count
+                    }
 
                 corr_id = context.get("correlation_id") or traj_id
                 req_id = context.get("request_id") or str(uuid.uuid4())
@@ -349,53 +387,45 @@ class EpistemicOrchestrator:
                         "vectors_revoked": actual_revoked_count
                     }
 
-                # Check if a caller provided an explicit authorization token or if we should issue a trusted grant from the governance path
-                caller_exec_ctx = context.get("execution_context")
-                caller_auth_token_id = getattr(caller_exec_ctx, "authorization_token_id", None) or context.get("authorization_token_id")
+                # Issue trusted grant directly from the governance control plane after all governance gates pass
+                issued_token_id = f"AUTH-GRANT-{uuid.uuid4()}"
+                now_ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
-                if not caller_auth_token_id:
-                    # Issue a trusted grant directly from the governance path because all gates passed
-                    issued_token_id = f"AUTH-GRANT-{uuid.uuid4()}"
-                    now_ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-
-                    grant_event = ProvenanceEvent(
-                        schema_version="1.0.0",
-                        event_id=str(uuid.uuid4()),
-                        event_type=ProvenanceEventType.AUTHORIZATION_GRANTED.value,
-                        provenance_source=ProvenanceSource.GOVERNANCE_GATE.value,
-                        correlation_id=corr_id,
-                        request_id=req_id,
-                        action_name=action_name,
-                        target=target,
-                        canonical_request_digest=payload_digest,
-                        timestamp=now_ts,
-                        authorization_token_id=issued_token_id,
-                        policy_version=context.get("policy_version", "1.0.0")
+                grant_event = ProvenanceEvent(
+                    schema_version="1.0.0",
+                    event_id=str(uuid.uuid4()),
+                    event_type=ProvenanceEventType.AUTHORIZATION_GRANTED.value,
+                    provenance_source=ProvenanceSource.GOVERNANCE_GATE.value,
+                    correlation_id=corr_id,
+                    request_id=req_id,
+                    action_name=action_name,
+                    target=target,
+                    canonical_request_digest=payload_digest,
+                    timestamp=now_ts,
+                    authorization_token_id=issued_token_id,
+                    policy_version=context.get("policy_version", "1.0.0")
+                )
+                try:
+                    store.record_event(grant_event)
+                except Exception as issue_err:
+                    telemetry = profiler.get_telemetry()
+                    revoked_ids = self.vector_manager.revoke_trajectory(traj_id)
+                    actual_revoked_count = len(revoked_ids)
+                    reason_msg = f"Trusted Governance Grant Issuance Failed: {str(issue_err)}"
+                    self._log_pipeline_event(
+                        event_type=AuditLogLevel.HALT,
+                        gate_name="TrustedGovernanceIssuer",
+                        reason=f"{reason_msg} | Vectors Revoked: {actual_revoked_count}",
+                        masked_payload=masked_payload,
+                        cpr=cpr,
+                        telemetry=telemetry
                     )
-                    try:
-                        store.record_event(grant_event)
-                    except Exception as issue_err:
-                        telemetry = profiler.get_telemetry()
-                        revoked_ids = self.vector_manager.revoke_trajectory(traj_id)
-                        actual_revoked_count = len(revoked_ids)
-                        reason_msg = f"Trusted Governance Grant Issuance Failed: {str(issue_err)}"
-                        self._log_pipeline_event(
-                            event_type=AuditLogLevel.HALT,
-                            gate_name="TrustedGovernanceIssuer",
-                            reason=f"{reason_msg} | Vectors Revoked: {actual_revoked_count}",
-                            masked_payload=masked_payload,
-                            cpr=cpr,
-                            telemetry=telemetry
-                        )
-                        return {
-                            "status": "HALTED",
-                            "gate": "TrustedGovernanceIssuer",
-                            "reason": reason_msg,
-                            "vectors_revoked": actual_revoked_count
-                        }
-                    auth_token_id_to_verify = issued_token_id
-                else:
-                    auth_token_id_to_verify = caller_auth_token_id
+                    return {
+                        "status": "HALTED",
+                        "gate": "TrustedGovernanceIssuer",
+                        "reason": reason_msg,
+                        "vectors_revoked": actual_revoked_count
+                    }
 
                 try:
                     events = store.get_events_for_correlation(corr_id)
@@ -421,9 +451,9 @@ class EpistemicOrchestrator:
                     }
 
                 valid_grant_event = None
-                if auth_token_id_to_verify and events:
+                if events:
                     for e in events:
-                        if e.event_type == "AUTHORIZATION_GRANTED" and e.authorization_token_id == auth_token_id_to_verify:
+                        if e.event_type == "AUTHORIZATION_GRANTED" and e.authorization_token_id == issued_token_id:
                             valid_grant_event = e
                             break
 
@@ -431,7 +461,7 @@ class EpistemicOrchestrator:
                     telemetry = profiler.get_telemetry()
                     revoked_ids = self.vector_manager.revoke_trajectory(traj_id)
                     actual_revoked_count = len(revoked_ids)
-                    reason_msg = f"TrustedExecutionBoundary Enforcement: No matching AUTHORIZATION_GRANTED record found for token {auth_token_id_to_verify} and correlation {corr_id}"
+                    reason_msg = f"TrustedExecutionBoundary Enforcement: No matching AUTHORIZATION_GRANTED record found for token {issued_token_id} and correlation {corr_id}"
                     self._log_pipeline_event(
                         event_type=AuditLogLevel.HALT,
                         gate_name="TrustedExecutionBoundary",
@@ -463,7 +493,7 @@ class EpistemicOrchestrator:
                     revoked_ids = self.vector_manager.revoke_trajectory(traj_id)
                     actual_revoked_count = len(revoked_ids)
 
-                    reason_msg = f"TrustedExecutionBoundary Enforcement Failed: Grant mismatch for token {auth_token_id_to_verify} (granted {valid_grant_event.action_name}:{valid_grant_event.target}, requested {action_name}:{target})"
+                    reason_msg = f"TrustedExecutionBoundary Enforcement Failed: Grant mismatch for token {issued_token_id} (granted {valid_grant_event.action_name}:{valid_grant_event.target}, requested {action_name}:{target})"
                     self._log_pipeline_event(
                         event_type=AuditLogLevel.HALT,
                         gate_name="TrustedExecutionBoundary",
