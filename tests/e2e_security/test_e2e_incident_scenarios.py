@@ -123,8 +123,7 @@ def test_scenario_6_destructive_recovery_behavior(evaluator):
 
     vars_info = res["protected_path"]["variants"]
     assert vars_info["straightforward_attack"]["orchestrator_status"] == "HALTED"
-    assert vars_info["evasion_variant"]["orchestrator_status"] == "ALLOWED"
-    assert vars_info["evasion_variant"]["recovery_integration"] == "UNTESTED_RECOVERY_CALLBACK"
+    assert vars_info["evasion_variant"]["orchestrator_status"] == "HALTED"
     assert vars_info["legitimate_control"]["orchestrator_status"] == "ALLOWED"
 
     assert res["unprotected_baseline"]["vulnerability_detected"] is True

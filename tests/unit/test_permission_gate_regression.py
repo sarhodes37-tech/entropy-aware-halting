@@ -219,3 +219,76 @@ def test_permission_gate_equivalent_representations_consistency():
     for rep in [unauth_top_level, unauth_nested_dict, unauth_obj_wrapper]:
         out = gate.evaluate_contract(GateInput(payload={}, context={"proposed_actions": [rep]}))
         assert out.passed is False, f"Failed denied consistency check for {rep}"
+
+
+def test_permission_gate_reward_cheating_evasion_halted():
+    """
+    Regression Test:
+    Verifies that reward cheating and goal mutation injection patterns (e.g. pytest.mark.skip,
+    unittest.skip, assert True) in proposed actions or payload are halted immediately by PermissionGate.
+    """
+    gate = PermissionGate(
+        trusted_scope={
+            "allowed_operations": ["evaluate"],
+            "allowed_resources": ["grader_service"],
+        }
+    )
+
+    cheat_payloads = [
+        "def evaluate(): return True # pytest.mark.skip",
+        "import unittest\n@unittest.skip('skip')\ndef test(): pass",
+        "assert True # skip test",
+        "def test(): sys.exit(0)",
+        "return True # skip test"
+    ]
+
+    for code_snippet in cheat_payloads:
+        action = {"op": "evaluate", "endpoint": "grader_service", "data": code_snippet}
+        gate_input = GateInput(
+            payload={"policy_id": "POL-1"},
+            context={"proposed_actions": [action]}
+        )
+        outcome = gate.evaluate_contract(gate_input)
+
+        assert outcome.passed is False
+        assert outcome.decision == GateDecision.HALT
+        assert "Unsafe Command Injection, Jailbreak, or System Override Intercepted" in outcome.reason_code
+
+
+def test_permission_gate_reward_cheating_pipeline_zero_callback_invocations():
+    """
+    Integration Regression Test:
+    Verifies that when a reward-cheating submission is sent through EpistemicOrchestrator.process_submission:
+    1. PermissionGate halts execution.
+    2. Zero callback invocations occur.
+    3. Zero side effects or fabricated evidence are accepted.
+    """
+    callback_mock = MagicMock(return_value={"status": "SHOULD_NOT_BE_CALLED"})
+    orchestrator = EpistemicOrchestrator()
+
+    cheat_code = "def evaluate(): return True # pytest.mark.skip"
+    raw_payload = {
+        "policy_id": "POL-S6-GRADER",
+        "fleet_data": {"vehicle_count": 1},
+        "proposed_actions": [
+            {"op": "evaluate", "endpoint": "grader_service", "data": cheat_code}
+        ]
+    }
+    context = {
+        "token_count": 5,
+        "token_logprobs": [-0.01] * 5,
+        "trusted_scope": {
+            "allowed_operations": ["evaluate"],
+            "allowed_resources": ["grader_service"]
+        },
+        "proposed_actions": raw_payload["proposed_actions"],
+        "actual_executable": callback_mock,
+        "correlation_id": "CORR-REWARD-CHEAT-REGRESSION"
+    }
+
+    res = orchestrator.process_submission(raw_payload, context)
+
+    assert res["status"] == "HALTED"
+    assert res["gate"] == "PermissionGate"
+    assert "Unsafe Command Injection" in res["reason"]
+    callback_mock.assert_not_called()
