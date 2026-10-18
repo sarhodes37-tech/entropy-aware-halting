@@ -3,8 +3,11 @@ name: EpistemicOS CI/CD Pipeline
 on:
   push:
     branches: [ "**" ]
+    tags: [ "v*" ]
   pull_request:
     branches: [ "main" ]
+  release:
+    types: [ published ]
 
 jobs:
   test-core-isolation:

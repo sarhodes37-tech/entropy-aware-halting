@@ -3,8 +3,11 @@ name: EpistemicOS Security Benchmark
 on:
   push:
     branches: [ "main", "dev" ]
+    tags: [ "v*" ]
   pull_request:
     branches: [ "main", "dev" ]
+  release:
+    types: [ published ]
 
 jobs:
   epistemic-validation:

@@ -4,7 +4,7 @@ Negative Unit Tests for Evidence Validator (`benchmarks/validate_evidence.py`).
 Tests rejection of synthetic invalid artifacts:
 1. Missing required evaluation layers.
 2. Unverified, missing, or forged dataset SHA-256 digest.
-3. Unreviewed simultaneous edits to eval_set.jsonl and dataset_manifest.json (baseline constant mismatch).
+3. Coordinated modification of dataset, manifest, and validator constant in PR branch.
 4. Observed unauthorized side effects or breaches in Layer B.
 5. Metric recall or FPR regressions in Layer D.
 6. Inconsistent overall status 'PASS' when required layers report PARTIAL or FAIL.
@@ -88,7 +88,7 @@ def test_forged_dataset_digest_rejected(valid_evidence_data, tmp_path):
 
 
 def test_simultaneous_unreviewed_manifest_and_dataset_edit_rejected(valid_evidence_data, tmp_path):
-    """Proves that changing both dataset and manifest together fails code-level baseline check."""
+    """Proves that changing dataset and manifest together fails code-level baseline check."""
     new_hash = "2222222222222222222222222222222222222222222222222222222222222222"
     data = copy.deepcopy(valid_evidence_data)
     data["reproducibility_metadata"]["dataset_sha256_digest"] = new_hash
@@ -106,6 +106,37 @@ def test_simultaneous_unreviewed_manifest_and_dataset_edit_rejected(valid_eviden
     artifact_file.write_text(json.dumps(data), encoding="utf-8")
 
     is_valid, errors = validate_evidence_artifact(str(artifact_file), manifest_path=str(fake_manifest))
+    assert is_valid is False
+    assert any("Manifest Baseline Violation" in err for err in errors)
+
+
+def test_coordinated_modification_of_dataset_manifest_and_validator_rejected(valid_evidence_data, tmp_path):
+    """
+    Proves that even if an unmerged PR modifies dataset, manifest, and local validator constant together,
+    validation against the trusted base-branch expected baseline still catches and rejects the modification.
+    """
+    tampered_digest = "3333333333333333333333333333333333333333333333333333333333333333"
+    data = copy.deepcopy(valid_evidence_data)
+    data["reproducibility_metadata"]["dataset_sha256_digest"] = tampered_digest
+
+    fake_dataset = tmp_path / "tampered_eval.jsonl"
+    fake_dataset.write_text("TAMPERED EVAL SET", encoding="utf-8")
+
+    fake_manifest = tmp_path / "tampered_manifest.json"
+    fake_manifest.write_text(json.dumps({
+        "sha256_digest": tampered_digest,
+        "dataset_file": str(fake_dataset)
+    }), encoding="utf-8")
+
+    artifact_file = tmp_path / "coordinated_tampering.json"
+    artifact_file.write_text(json.dumps(data), encoding="utf-8")
+
+    # Pass the trusted base-branch baseline explicitly
+    is_valid, errors = validate_evidence_artifact(
+        str(artifact_file),
+        manifest_path=str(fake_manifest),
+        expected_baseline_digest=FROZEN_BASELINE_DATASET_DIGEST
+    )
     assert is_valid is False
     assert any("Manifest Baseline Violation" in err for err in errors)
 

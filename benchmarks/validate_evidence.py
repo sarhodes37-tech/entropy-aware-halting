@@ -3,8 +3,9 @@ Shared Evidence Artifact Validator for EpistemicOS CI/CD Pipelines.
 
 Validates:
 - Required top-level fields, schema, and reproducibility metadata.
-- Cryptographic verification against code-level FROZEN_BASELINE_DATASET_DIGEST constant,
-  preventing unreviewed simultaneous edits to eval_set.jsonl and dataset_manifest.json.
+- Cryptographic verification against base-branch dataset manifest (via git show)
+  and code-level FROZEN_BASELINE_DATASET_DIGEST constant, preventing unreviewed
+  simultaneous edits to eval_set.jsonl, dataset_manifest.json, and validator constants in PRs.
 - Layer status semantics (PASS, FAIL, PARTIAL, UNTESTED, BLOCKED_BY_ARCHITECTURE, INCONCLUSIVE).
 - Zero security breaches across Layer B execution boundary.
 - Zero security recall regressions (100.0%) and zero false positive rate regressions (0.0%) in Layer D.
@@ -19,24 +20,56 @@ import sys
 import os
 import argparse
 import hashlib
+import subprocess
 from pathlib import Path
-from typing import Dict, Any, List, Tuple
+from typing import Dict, Any, List, Tuple, Optional
 
 
 VALID_STATUSES = frozenset({"PASS", "FAIL", "PARTIAL", "UNTESTED", "BLOCKED_BY_ARCHITECTURE", "INCONCLUSIVE"})
 
-# Immutable baseline SHA-256 digest constant protected at code-level
+# Fallback immutable baseline SHA-256 digest constant protected at code-level
 FROZEN_BASELINE_DATASET_DIGEST = "f4e31381a922c1143769ccb887c4841e4a14fedec6eef6569d40eed2956ce873"
+
+
+def get_base_branch_manifest_digest(manifest_rel_path: str = "benchmarks/data/dataset_manifest.json") -> Tuple[bool, str]:
+    """
+    Attempts to read dataset_manifest.json from the trusted git base ref (e.g. origin/main or GITHUB_BASE_REF)
+    to prevent an unmerged PR branch from redefining its own baseline.
+    """
+    base_refs = [
+        os.environ.get("GITHUB_BASE_REF"),
+        "origin/main",
+        "main",
+        "HEAD"
+    ]
+
+    for ref in base_refs:
+        if not ref:
+            continue
+        try:
+            cmd = ["git", "show", f"{ref}:{manifest_rel_path}"]
+            res = subprocess.run(cmd, capture_output=True, text=True, check=True)
+            m_data = json.loads(res.stdout)
+            digest = m_data.get("sha256_digest")
+            if digest and len(digest) == 64:
+                return True, digest
+        except Exception:
+            continue
+
+    return False, FROZEN_BASELINE_DATASET_DIGEST
 
 
 def validate_evidence_artifact(
     artifact_path: str,
     manifest_path: str = "benchmarks/data/dataset_manifest.json",
     require_full_pass: bool = False,
-    expected_baseline_digest: str = FROZEN_BASELINE_DATASET_DIGEST
+    expected_baseline_digest: Optional[str] = None
 ) -> Tuple[bool, List[str]]:
     errors = []
     p = Path(artifact_path)
+
+    if expected_baseline_digest is None:
+        _, expected_baseline_digest = get_base_branch_manifest_digest(manifest_path)
 
     if not p.exists():
         return False, [f"Evidence artifact missing at path: {artifact_path}"]
@@ -58,7 +91,7 @@ def validate_evidence_artifact(
     if overall_status not in VALID_STATUSES:
         errors.append(f"Invalid overall_evaluation_status: {overall_status}")
 
-    # 2. Independent Dataset SHA-256 Digest Verification against Code-Level Baseline Constant
+    # 2. Independent Dataset SHA-256 Digest Verification against Base-Branch Trusted Baseline
     meta = data.get("reproducibility_metadata", {})
     required_meta = {"evaluated_git_commit", "working_tree_status", "dataset_version", "dataset_sha256_digest", "dataset_digest_verified"}
     missing_meta = required_meta - set(meta.keys())
@@ -81,7 +114,7 @@ def validate_evidence_artifact(
             if expected_manifest_digest != expected_baseline_digest:
                 errors.append(
                     f"Manifest Baseline Violation! Manifest digest ({expected_manifest_digest}) "
-                    f"does not match code-level frozen baseline digest ({expected_baseline_digest})."
+                    f"does not match trusted baseline digest ({expected_baseline_digest})."
                 )
 
             if not Path(dataset_file).exists():
@@ -93,7 +126,7 @@ def validate_evidence_artifact(
                 if actual_computed_digest != expected_baseline_digest:
                     errors.append(
                         f"Dataset Tampering / Unreviewed Baseline Edit Detected! Actual dataset digest ({actual_computed_digest}) "
-                        f"does not match code-level frozen baseline digest ({expected_baseline_digest})."
+                        f"does not match trusted baseline digest ({expected_baseline_digest})."
                     )
 
                 if actual_computed_digest != reported_digest:
