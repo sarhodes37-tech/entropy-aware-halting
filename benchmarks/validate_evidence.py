@@ -3,7 +3,7 @@ Shared Evidence Artifact Validator for EpistemicOS CI/CD Pipelines.
 
 Validates:
 - Required top-level fields, schema, and reproducibility metadata.
-- Cryptographic verification against base-branch dataset manifest (via git show)
+- Cryptographic verification against base-branch dataset manifest/eval_set (via git show)
   and code-level FROZEN_BASELINE_DATASET_DIGEST constant, preventing unreviewed
   simultaneous edits to eval_set.jsonl, dataset_manifest.json, and validator constants in PRs.
 - Layer status semantics (PASS, FAIL, PARTIAL, UNTESTED, BLOCKED_BY_ARCHITECTURE, INCONCLUSIVE).
@@ -31,32 +31,50 @@ VALID_STATUSES = frozenset({"PASS", "FAIL", "PARTIAL", "UNTESTED", "BLOCKED_BY_A
 FROZEN_BASELINE_DATASET_DIGEST = "f4e31381a922c1143769ccb887c4841e4a14fedec6eef6569d40eed2956ce873"
 
 
-def get_base_branch_manifest_digest(manifest_rel_path: str = "benchmarks/data/dataset_manifest.json") -> Tuple[bool, str]:
+def get_base_branch_manifest_digest(
+    manifest_rel_path: str = "benchmarks/data/dataset_manifest.json",
+    eval_set_rel_path: str = "benchmarks/data/eval_set.jsonl"
+) -> Tuple[bool, str, Optional[str]]:
     """
-    Attempts to read dataset_manifest.json from the trusted git base ref (e.g. origin/main or GITHUB_BASE_REF)
-    to prevent an unmerged PR branch from redefining its own baseline.
+    Attempts to read dataset manifest or eval_set strictly from trusted git base refs (GITHUB_BASE_REF, origin/main, main).
+    EXPLICITLY EXCLUDES 'HEAD', PR working-tree refs, or merge commits to prevent PRs from redefining their own baseline.
+
+    Returns:
+        (success_flag, digest_string, resolved_ref_name_or_none)
     """
-    base_refs = [
-        os.environ.get("GITHUB_BASE_REF"),
-        "origin/main",
-        "main",
-        "HEAD"
-    ]
+    base_refs = []
+    github_base = os.environ.get("GITHUB_BASE_REF")
+    if github_base:
+        base_refs.append(f"origin/{github_base}")
+        base_refs.append(github_base)
+    base_refs.extend(["origin/main", "main"])
 
     for ref in base_refs:
         if not ref:
             continue
+        # 1. Try reading dataset_manifest.json from trusted base ref
         try:
             cmd = ["git", "show", f"{ref}:{manifest_rel_path}"]
             res = subprocess.run(cmd, capture_output=True, text=True, check=True)
             m_data = json.loads(res.stdout)
             digest = m_data.get("sha256_digest")
             if digest and len(digest) == 64:
-                return True, digest
+                return True, digest, ref
         except Exception:
-            continue
+            pass
 
-    return False, FROZEN_BASELINE_DATASET_DIGEST
+        # 2. Try computing SHA256 directly from eval_set.jsonl in trusted base ref
+        try:
+            cmd = ["git", "show", f"{ref}:{eval_set_rel_path}"]
+            res = subprocess.run(cmd, capture_output=True, check=True)
+            digest = hashlib.sha256(res.stdout).hexdigest()
+            if digest and len(digest) == 64:
+                return True, digest, ref
+        except Exception:
+            pass
+
+    # Do NOT fall back to HEAD or local untrusted files
+    return False, "", None
 
 
 def validate_evidence_artifact(
@@ -68,8 +86,17 @@ def validate_evidence_artifact(
     errors = []
     p = Path(artifact_path)
 
+    # 1. Resolve Trusted Baseline
     if expected_baseline_digest is None:
-        _, expected_baseline_digest = get_base_branch_manifest_digest(manifest_path)
+        resolved_ok, resolved_digest, resolved_ref = get_base_branch_manifest_digest(manifest_path)
+        if resolved_ok:
+            expected_baseline_digest = resolved_digest
+        else:
+            # Fall back to code-level constant only
+            expected_baseline_digest = FROZEN_BASELINE_DATASET_DIGEST
+
+    if not expected_baseline_digest or len(expected_baseline_digest) != 64:
+        return False, ["Baseline Resolution Error: Could not resolve a valid trusted baseline dataset digest."]
 
     if not p.exists():
         return False, [f"Evidence artifact missing at path: {artifact_path}"]
@@ -80,7 +107,7 @@ def validate_evidence_artifact(
     except Exception as e:
         return False, [f"Malformed JSON artifact: {e}"]
 
-    # 1. Top-Level Schema Checks
+    # 2. Top-Level Schema Checks
     required_top = {"title", "version", "reproducibility_metadata", "overall_evaluation_status", "layers"}
     missing_top = required_top - set(data.keys())
     if missing_top:
@@ -91,7 +118,7 @@ def validate_evidence_artifact(
     if overall_status not in VALID_STATUSES:
         errors.append(f"Invalid overall_evaluation_status: {overall_status}")
 
-    # 2. Independent Dataset SHA-256 Digest Verification against Base-Branch Trusted Baseline
+    # 3. Independent Dataset SHA-256 Digest Verification against Base-Branch Trusted Baseline
     meta = data.get("reproducibility_metadata", {})
     required_meta = {"evaluated_git_commit", "working_tree_status", "dataset_version", "dataset_sha256_digest", "dataset_digest_verified"}
     missing_meta = required_meta - set(meta.keys())
@@ -138,7 +165,7 @@ def validate_evidence_artifact(
         except Exception as me:
             errors.append(f"Failed to independently verify dataset manifest: {me}")
 
-    # 3. Layer Specific Integrity Checks
+    # 4. Layer Specific Integrity Checks
     layers = data.get("layers", {})
     required_layers = {"layer_a_deterministic", "layer_b_execution_boundary", "layer_c_live_agent_redteam", "layer_d_performance_cost"}
     missing_layers = required_layers - set(layers.keys())
@@ -181,7 +208,7 @@ def validate_evidence_artifact(
     if fpr is None or fpr > 0.0:
         errors.append(f"Layer D Metric Regression: Benign False Positive Rate increased to {fpr}% (Baseline: 0.0%)")
 
-    # 4. Overall Status Consistency & Release Policy Check
+    # 5. Overall Status Consistency & Release Policy Check
     imperfect_layers = [
         name for name, ldata in layers.items()
         if (ldata.get("status") or ldata.get("overall_status")) != "PASS"

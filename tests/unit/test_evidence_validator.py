@@ -5,16 +5,21 @@ Tests rejection of synthetic invalid artifacts:
 1. Missing required evaluation layers.
 2. Unverified, missing, or forged dataset SHA-256 digest.
 3. Coordinated modification of dataset, manifest, and validator constant in PR branch.
-4. Observed unauthorized side effects or breaches in Layer B.
-5. Metric recall or FPR regressions in Layer D.
-6. Inconsistent overall status 'PASS' when required layers report PARTIAL or FAIL.
-7. Overall status 'PARTIAL' blocked under --require-full-pass flag.
+4. Base branch resolution exclusion of HEAD and local untrusted files.
+5. Observed unauthorized side effects or breaches in Layer B.
+6. Metric recall or FPR regressions in Layer D.
+7. Inconsistent overall status 'PASS' when required layers report PARTIAL or FAIL.
+8. Overall status 'PARTIAL' blocked under --require-full-pass flag.
 """
 
 import copy
 import json
 import pytest
-from benchmarks.validate_evidence import validate_evidence_artifact, FROZEN_BASELINE_DATASET_DIGEST
+from benchmarks.validate_evidence import (
+    validate_evidence_artifact,
+    get_base_branch_manifest_digest,
+    FROZEN_BASELINE_DATASET_DIGEST
+)
 
 
 @pytest.fixture
@@ -139,6 +144,17 @@ def test_coordinated_modification_of_dataset_manifest_and_validator_rejected(val
     )
     assert is_valid is False
     assert any("Manifest Baseline Violation" in err for err in errors)
+
+
+def test_get_base_branch_manifest_digest_excludes_untrusted_refs():
+    """Confirms get_base_branch_manifest_digest resolves strictly from base refs, not local non-manifest paths."""
+    ok, digest, ref = get_base_branch_manifest_digest(
+        manifest_rel_path="non_existent_file.json",
+        eval_set_rel_path="non_existent_eval.jsonl"
+    )
+    assert ok is False
+    assert digest == ""
+    assert ref is None
 
 
 def test_layer_b_breach_rejected(valid_evidence_data, tmp_path):
