@@ -1,0 +1,308 @@
+"""
+Reproducible Evaluation Entry Point for the EpistemicOS Incident-Derived Security Test Lab.
+
+Executes all seven incident scenario evaluations across:
+- Protected EpistemicOS execution paths
+- Confined unprotected baselines
+- Dimension A (Security Outcome) & Dimension B (Legitimate Task Performance)
+- Provenance verification and side-effect accounting
+
+Outputs:
+- Machine-readable JSON: results/incident_lab_results.json
+- Human-readable Markdown report: docs/security/incident_lab_report.md
+"""
+
+import json
+import time
+import subprocess
+import hashlib
+import sys
+import os
+import tempfile
+from pathlib import Path
+from typing import Dict, Any, List, Optional
+
+# Ensure project root is in sys.path
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
+from tests.incident_lab.scenarios.case1_github import Case1GitHubCredentialExposureScenario
+from tests.incident_lab.scenarios.case2_government import Case2GovernmentAuthorizationBypassScenario
+from tests.incident_lab.scenarios.case3_egress import Case3IndirectEgressScenario
+from tests.incident_lab.scenarios.case4_dashboard import Case4InternalDashboardScenario
+from tests.incident_lab.scenarios.case5_crypto import Case5CryptoWalletScenario
+from tests.incident_lab.scenarios.case6_destructive import Case6DestructiveRecoveryScenario
+from tests.incident_lab.scenarios.case7_fleet import Case7FleetAmplificationScenario
+
+
+def get_git_commit_hash() -> str:
+    try:
+        res = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True, cwd=PROJECT_ROOT)
+        return res.stdout.strip()
+    except Exception:
+        return "UNKNOWN_COMMIT"
+
+
+def get_working_tree_status() -> str:
+    try:
+        res = subprocess.run(["git", "status", "--porcelain=v1", "-uall"], capture_output=True, text=True, check=True, cwd=PROJECT_ROOT)
+        return "DIRTY" if res.stdout.strip() else "CLEAN"
+    except Exception:
+        return "UNKNOWN_STATUS"
+
+
+def compute_working_tree_digest(root_dir: Optional[str] = None) -> str:
+    """
+    Computes a full 64-character SHA-256 digest covering all relevant tracked and untracked source inputs.
+
+    Algorithm Specification:
+    1. Runs `git status --porcelain=v1 -uall` to identify all staged, unstaged, modified, deleted, renamed, and untracked paths.
+    2. Filters out ignored / transient runtime directories (`logs/`, `tmp/`, `.git/`, `__pycache__`, `.pytest_cache`).
+    3. Sorts all entries deterministically by normalized POSIX relative path.
+    4. For each file entry in sorted order:
+       a. Symlinks: hashes status 'SYMLINK', path, and readlink target string.
+       b. Deletions: hashes status 'DELETED', path, and 'DELETED' marker.
+       c. Submodules / Directories: hashes status 'DIRECTORY', path, and submodule HEAD commit if available.
+       d. Regular Files (Binary & Text): hashes status ('UNTRACKED' / 'MODIFIED' / 'STAGED'), path, size, and actual raw file bytes.
+    5. Returns full 64-character SHA-256 hex digest string.
+    """
+    base = Path(root_dir) if root_dir else Path(PROJECT_ROOT)
+    hasher = hashlib.sha256()
+
+    # Track HEAD commit
+    commit_sha = get_git_commit_hash()
+    hasher.update(f"COMMIT:{commit_sha}\n".encode("utf-8"))
+
+    ignored_prefixes = ("logs/", "tmp/", ".git/", "__pycache__", ".pytest_cache", "results/")
+
+    try:
+        res = subprocess.run(["git", "status", "--porcelain=v1", "-uall"], capture_output=True, text=True, check=True, cwd=str(base))
+        lines = [line.rstrip("\r\n") for line in res.stdout.split("\n") if line.strip()]
+    except Exception:
+        lines = []
+
+    inventory: List[tuple[str, str, Path]] = []
+    for line in lines:
+        if len(line) < 4:
+            continue
+        status_code = line[:2]
+        rel_path_str = line[3:].strip()
+
+        # Handle renames e.g. "R  old -> new"
+        if " -> " in rel_path_str:
+            rel_path_str = rel_path_str.split(" -> ")[-1].strip()
+
+        # Strip surrounding quotes if present
+        if rel_path_str.startswith('"') and rel_path_str.endswith('"'):
+            rel_path_str = rel_path_str[1:-1]
+
+        norm_path = Path(rel_path_str).as_posix()
+
+        if any(norm_path.startswith(prefix) or f"/{prefix}" in norm_path for prefix in ignored_prefixes):
+            continue
+
+        full_path = base / rel_path_str
+        inventory.append((norm_path, status_code, full_path))
+
+    inventory.sort(key=lambda x: x[0])
+
+    for norm_path, status_code, full_path in inventory:
+        hasher.update(f"PATH:{norm_path}:STATUS:{status_code}\n".encode("utf-8"))
+
+        if full_path.is_symlink():
+            try:
+                target = os.readlink(full_path)
+                hasher.update(f"SYMLINK:{target}\n".encode("utf-8"))
+            except Exception:
+                hasher.update(b"SYMLINK_ERROR\n")
+        elif not full_path.exists():
+            hasher.update(b"STATUS:DELETED\n")
+        elif full_path.is_dir():
+            try:
+                sub_res = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True, cwd=str(full_path))
+                sub_sha = sub_res.stdout.strip()
+                hasher.update(f"SUBMODULE:{sub_sha}\n".encode("utf-8"))
+            except Exception:
+                hasher.update(b"DIRECTORY\n")
+        elif full_path.is_file():
+            try:
+                content = full_path.read_bytes()
+                hasher.update(f"SIZE:{len(content)}\n".encode("utf-8"))
+                hasher.update(content)
+                hasher.update(b"\n")
+            except Exception:
+                hasher.update(b"READ_ERROR\n")
+
+    return hasher.hexdigest()
+
+
+class IncidentLabRunner:
+    def __init__(self, audit_dir: Optional[str] = None):
+        self.audit_dir = Path(audit_dir) if audit_dir else Path(tempfile.gettempdir()) / "lab_benchmark_run"
+        self.audit_dir.mkdir(parents=True, exist_ok=True)
+        self.commit_sha = get_git_commit_hash()
+        self.tree_status = get_working_tree_status()
+        self.tree_digest = compute_working_tree_digest()
+
+    def run_lab_evaluation(
+        self,
+        output_json_path: str = "results/incident_lab_results.json",
+        output_md_path: str = "docs/security/incident_lab_report.md"
+    ) -> Dict[str, Any]:
+        start_time = time.time()
+
+        scenarios = [
+            Case1GitHubCredentialExposureScenario(audit_dir=str(self.audit_dir / "c1")),
+            Case2GovernmentAuthorizationBypassScenario(audit_dir=str(self.audit_dir / "c2")),
+            Case3IndirectEgressScenario(audit_dir=str(self.audit_dir / "c3")),
+            Case4InternalDashboardScenario(audit_dir=str(self.audit_dir / "c4")),
+            Case5CryptoWalletScenario(audit_dir=str(self.audit_dir / "c5")),
+            Case6DestructiveRecoveryScenario(audit_dir=str(self.audit_dir / "c6")),
+            Case7FleetAmplificationScenario(audit_dir=str(self.audit_dir / "c7"))
+        ]
+
+        results = {}
+        for sc in scenarios:
+            rep = sc.run_evaluation()
+            results[rep.scenario_id] = rep.to_dict()
+
+        total_runtime_s = round(time.time() - start_time, 3)
+
+        output_data = {
+            "metadata": {
+                "evaluation_suite_version": "2.3.0",
+                "evaluated_git_commit": self.commit_sha,
+                "working_tree_status": self.tree_status,
+                "uncommitted_tree_digest": self.tree_digest,
+                "tree_digest_algorithm": "Full 64-char SHA-256 over deterministic POSIX sorted inventory of HEAD commit, git status -uall paths, status codes, symlink targets, deletions, and actual raw file bytes.",
+                "evaluation_notes": "Evaluation executed against uncommitted working tree prior to report persistence commit.",
+                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "total_scenarios_evaluated": len(results),
+                "total_runtime_seconds": total_runtime_s,
+                "environment": "Isolated Incident-Derived Security Test Lab (Synthetic Fixtures / Local Networking Only)"
+            },
+            "scenarios": results
+        }
+
+        # Save JSON results
+        p_json = Path(output_json_path)
+        p_json.parent.mkdir(parents=True, exist_ok=True)
+        with open(p_json, "w", encoding="utf-8") as f:
+            json.dump(output_data, f, indent=2)
+
+        # Save Markdown report
+        p_md = Path(output_md_path)
+        p_md.parent.mkdir(parents=True, exist_ok=True)
+        self.generate_markdown_report(output_data, p_md)
+
+        return output_data
+
+    def generate_markdown_report(self, data: Dict[str, Any], output_path: Path):
+        meta = data["metadata"]
+        scs = data["scenarios"]
+
+        md_lines = [
+            "# EpistemicOS Incident-Derived Security Test Lab Report",
+            "",
+            f"**Evaluated Commit:** `{meta['evaluated_git_commit']}` | **Working Tree:** `{meta['working_tree_status']}` | **Suite Version:** `{meta['evaluation_suite_version']}`",
+            f"**Working Tree Digest:** `{meta['uncommitted_tree_digest']}`",
+            f"**Evaluated At:** `{meta['timestamp']}` | **Total Runtime:** `{meta['total_runtime_seconds']}s`",
+            f"**Tree Digest Algorithm:** `{meta['tree_digest_algorithm']}`",
+            f"**Evaluation Notes:** {meta['evaluation_notes']}",
+            f"**Environment:** {meta['environment']}",
+            "",
+            "## 1. Seven-Case Summary Matrix",
+            "",
+            "| Case ID & Name | Security Outcome (Dim A) | Legitimate Task (Dim B) | Unauthorized Side Effects | Baseline Vulnerable | Provenance Status | Architectural Gaps |",
+            "|---|---|---|---|---|---|---|"
+        ]
+
+        for sc_key, sc_data in scs.items():
+            sc_id = sc_data["scenario_id"]
+            dim_a = sc_data["dimension_a_security"]
+            dim_b = sc_data["dimension_b_task"]
+            sec_status = dim_a["status"]
+
+            # Display exact Enum status (including PARTIAL_GATING_DEFENSE)
+            sec_display = str(sec_status)
+
+            task_status = f"{dim_b['governance_authorization_approved']}/{dim_b['authorized_operations_attempted']} Approved (Boundary Admitted: {dim_b['boundary_admitted']})"
+            side_effects = dim_a["unauthorized_side_effects_count"]
+            base_vuln = "YES" if sc_data["unprotected_baseline"].get("vulnerability_demonstrated") else "NO"
+            prov_status = dim_a["provenance_evidence_integrity"]
+            gaps = len(sc_data["architectural_gaps"])
+
+            md_lines.append(
+                f"| **{sc_id}** | **{sec_display}** | {task_status} | {side_effects} | {base_vuln} | {prov_status} | {gaps} gap(s) |"
+            )
+
+        md_lines.extend([
+            "",
+            "## 2. Detailed Per-Case Analysis & Observable Outcomes",
+            ""
+        ])
+
+        for sc_key, sc_data in scs.items():
+            dim_a = sc_data["dimension_a_security"]
+            dim_b = sc_data["dimension_b_task"]
+
+            sec_detail = str(dim_a['status'])
+
+            md_lines.extend([
+                f"### Scenario: `{sc_data['scenario_name']}` (`{sc_data['scenario_id']}`)",
+                f"- **Invariant:** {dim_a['invariant_description']}",
+                f"- **Execution Path Exercised:** `{sc_data['execution_path_exercised']}`",
+                f"- **Dimension A Security Status:** `{sec_detail}`",
+                f"- **Dimension B Task Performance:** `{dim_b['governance_authorization_approved']}/{dim_b['authorized_operations_attempted']} approved` (Boundary Admitted: `{dim_b['boundary_admitted']}`, Callbacks Invoked: `{dim_b['callback_invoked']}`, Untested No-Grant: `{dim_b['untested_no_grant_count']}`)",
+                f"- **Observed Side Effects Count:** `{dim_a['unauthorized_side_effects_count']}`",
+                f"- **Unprotected Baseline Vulnerable:** `{sc_data['unprotected_baseline'].get('vulnerability_demonstrated')}`",
+                f"- **Provenance Integrity:** `{dim_a['provenance_evidence_integrity']}`",
+                "- **Evaluated Matrix Variants:**"
+            ])
+            for var_name, var_info in sc_data["variants_evaluated"].items():
+                md_lines.append(f"  - **`{var_name}`:** `{json.dumps(var_info)}`")
+
+            if sc_data["architectural_gaps"]:
+                md_lines.append("- **Documented Architectural Gaps:**")
+                for gap in sc_data["architectural_gaps"]:
+                    md_lines.append(f"  - {gap}")
+            md_lines.append("")
+
+        md_lines.extend([
+            "## 3. Reproduction Commands",
+            "",
+            "To reproduce the entire Incident Test Lab suite and verify all invariants independently:",
+            "",
+            "```bash",
+            "# 1. Run full incident lab benchmark runner",
+            "PYTHONPATH=\".\" python3 benchmarks/run_incident_lab.py",
+            "",
+            "# 2. Run incident lab integration and fleet concurrency tests",
+            "PYTHONPATH=\".\" python3 -m pytest tests/incident_lab/",
+            "",
+            "# 3. Execute lab verification tool",
+            "python3 /home/jules/self_created_tools/lab_verifier.py",
+            "```",
+            "",
+            "## 4. Evaluation Limitations & Non-Claims",
+            "",
+            "1. **Synthetic Isolation:** All tests run locally against synthetic, isolated, side-effect-free mock environments. No live production endpoints or real funds were accessed.",
+            "2. **Scope of Proof:** Demonstration of defense-in-depth gating under these seven incident patterns does not constitute proof of universal security against arbitrary unmodeled threats.",
+            "3. **Architectural Gaps:** Explicit gaps in multi-agent fleet gating, automatic grant provenance generation, and transitive egress filtering are documented and preserved without production workarounds."
+        ])
+
+        with open(output_path, "w", encoding="utf-8") as f:
+            f.write("\n".join(md_lines) + "\n")
+
+
+def main():
+    runner = IncidentLabRunner()
+    results = runner.run_lab_evaluation()
+    print(f"Incident Test Lab evaluation completed across {len(results['scenarios'])} scenarios!")
+    print("Machine-readable results saved to: results/incident_lab_results.json")
+    print("Human-readable evidence report saved to: docs/security/incident_lab_report.md")
+
+
+if __name__ == "__main__":
+    main()
