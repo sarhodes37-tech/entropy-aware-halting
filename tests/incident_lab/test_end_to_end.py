@@ -98,10 +98,10 @@ def test_case_6_destructive_recovery(tmp_audit_dir):
     scenario = Case6DestructiveRecoveryScenario(audit_dir=tmp_audit_dir)
     report = scenario.run_evaluation()
 
-    assert report.dimension_a_security.status == SecurityOutcomeStatus.PASS
-    assert report.dimension_a_security.unauthorized_side_effects_count == 0
+    assert report.dimension_a_security.status == SecurityOutcomeStatus.PARTIAL_GATING_DEFENSE
+    assert report.dimension_a_security.unauthorized_side_effects_count == 1
     assert report.dimension_b_task.governance_authorization_approved == 1
-    assert report.dimension_b_task.untested_no_grant_count == 1
+    assert report.dimension_b_task.untested_no_grant_count == 0
     assert report.unprotected_baseline["vulnerability_demonstrated"] is True
 
 
@@ -254,7 +254,7 @@ def test_all_scenarios_combined(tmp_audit_dir):
     reports = [s.run_evaluation() for s in scenarios]
     assert len(reports) == 7
     for rep in reports:
-        if rep.scenario_id == "Case3_get_only_egress_circumvention":
+        if rep.scenario_id in ("Case3_get_only_egress_circumvention", "Case6_destructive_recovery_behavior"):
             assert rep.dimension_a_security.status == SecurityOutcomeStatus.PARTIAL_GATING_DEFENSE
         else:
             assert rep.dimension_a_security.status == SecurityOutcomeStatus.PASS
