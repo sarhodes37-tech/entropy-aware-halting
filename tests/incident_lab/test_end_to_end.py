@@ -12,7 +12,9 @@ Verifies that EpistemicOS detects, halts, contains, and logs all seven incident 
 """
 
 import uuid
+import os
 import pytest
+from pathlib import Path
 from epistemicos.provenance import (
     LocalProvenanceStore,
     ProvenanceEvent,
@@ -20,6 +22,7 @@ from epistemicos.provenance import (
     ProvenanceSource,
     ProvenanceReconciler
 )
+from benchmarks.run_incident_lab import compute_working_tree_digest
 from tests.incident_lab.fixtures.base_fixture import SecurityOutcomeStatus
 from tests.incident_lab.scenarios.case1_github import Case1GitHubCredentialExposureScenario
 from tests.incident_lab.scenarios.case2_government import Case2GovernmentAuthorizationBypassScenario
@@ -126,7 +129,6 @@ def test_provenance_valid_control_cannot_compensate_for_missing_attack_correlati
     req_id = f"REQ-{uuid.uuid4()}"
     token_id = f"TOKEN-{uuid.uuid4()}"
 
-    # Record valid provenance sequence ONLY for legitimate control correlation
     grant_event = ProvenanceEvent(
         schema_version="1.0.0",
         event_id=str(uuid.uuid4()),
@@ -174,17 +176,14 @@ def test_provenance_valid_control_cannot_compensate_for_missing_attack_correlati
     prov_store.record_event(start_event)
     prov_store.record_event(success_event)
 
-    # Reconcile legitimate control -> valid
     events_legit = prov_store.get_events_for_correlation(legit_corr_id)
     rec_legit = reconciler.reconcile_correlation(legit_corr_id, events_legit)
     assert rec_legit.valid is True
 
-    # Reconcile attack correlation (missing events) -> invalid
     events_attack = prov_store.get_events_for_correlation(attack_corr_id)
     rec_attack = reconciler.reconcile_correlation(attack_corr_id, events_attack)
     assert rec_attack.valid is False
 
-    # Scenario provenance evaluation requiring BOTH correlations to be valid
     overall_valid = rec_legit.valid and rec_attack.valid
     overall_status = "VERIFIED" if overall_valid else "UNVERIFIED"
 
@@ -201,9 +200,44 @@ def test_scenario_report_emits_unverified_when_attack_correlation_missing_events
     scenario = Case1GitHubCredentialExposureScenario(audit_dir=str(tmp_path / "s1_unverified"))
     report = scenario.run_evaluation()
 
-    # In Case 1, governance gates halt the attack before writing execution boundary provenance events,
-    # so reconciliation produces valid: False for attack correlation IDs, yielding UNVERIFIED overall provenance status.
     assert report.dimension_a_security.provenance_evidence_integrity == "UNVERIFIED"
+
+
+def test_digest_changes_when_untracked_file_content_changes():
+    """
+    Digest Regression Test:
+    Proves that modifying only the raw binary contents of an untracked file alters the working-tree digest.
+    """
+    test_untracked = Path("test_digest_dummy.tmp")
+    try:
+        if test_untracked.exists():
+            test_untracked.unlink()
+
+        test_untracked.write_text("initial untracked content V1", encoding="utf-8")
+        digest_1 = compute_working_tree_digest()
+
+        test_untracked.write_text("modified untracked content V2 - completely different bytes", encoding="utf-8")
+        digest_2 = compute_working_tree_digest()
+
+        assert len(digest_1) == 64
+        assert len(digest_2) == 64
+        assert digest_1 != digest_2
+    finally:
+        if test_untracked.exists():
+            test_untracked.unlink()
+
+
+def test_digest_identical_working_tree_inputs_produce_same_digest():
+    """
+    Digest Regression Test:
+    Proves that identical working-tree inputs produce the exact same 64-character SHA-256 digest.
+    """
+    d1 = compute_working_tree_digest()
+    d2 = compute_working_tree_digest()
+
+    assert len(d1) == 64
+    assert len(d2) == 64
+    assert d1 == d2
 
 
 def test_all_scenarios_combined(tmp_audit_dir):

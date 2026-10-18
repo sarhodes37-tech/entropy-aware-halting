@@ -38,7 +38,7 @@ from tests.incident_lab.scenarios.case7_fleet import Case7FleetAmplificationScen
 
 def get_git_commit_hash() -> str:
     try:
-        res = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True)
+        res = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True, cwd=PROJECT_ROOT)
         return res.stdout.strip()
     except Exception:
         return "UNKNOWN_COMMIT"
@@ -46,25 +46,95 @@ def get_git_commit_hash() -> str:
 
 def get_working_tree_status() -> str:
     try:
-        res = subprocess.run(["git", "status", "--porcelain", "-uall"], capture_output=True, text=True, check=True)
+        res = subprocess.run(["git", "status", "--porcelain=v1", "-uall"], capture_output=True, text=True, check=True, cwd=PROJECT_ROOT)
         return "DIRTY" if res.stdout.strip() else "CLEAN"
     except Exception:
         return "UNKNOWN_STATUS"
 
 
-def compute_working_tree_digest() -> str:
+def compute_working_tree_digest(root_dir: Optional[str] = None) -> str:
     """
-    Computes a deterministic SHA-256 digest covering all working tree states,
-    including untracked files and modifications relative to HEAD.
-    Algorithm: SHA-256( git status --porcelain -uall + '\n---DIFF---\n' + git diff HEAD )
+    Computes a full 64-character SHA-256 digest covering all relevant tracked and untracked source inputs.
+
+    Algorithm Specification:
+    1. Runs `git status --porcelain=v1 -uall` to identify all staged, unstaged, modified, deleted, renamed, and untracked paths.
+    2. Filters out ignored / transient runtime directories (`logs/`, `tmp/`, `.git/`, `__pycache__`, `.pytest_cache`).
+    3. Sorts all entries deterministically by normalized POSIX relative path.
+    4. For each file entry in sorted order:
+       a. Symlinks: hashes status 'SYMLINK', path, and readlink target string.
+       b. Deletions: hashes status 'DELETED', path, and 'DELETED' marker.
+       c. Submodules / Directories: hashes status 'DIRECTORY', path, and submodule HEAD commit if available.
+       d. Regular Files (Binary & Text): hashes status ('UNTRACKED' / 'MODIFIED' / 'STAGED'), path, size, and actual raw file bytes.
+    5. Returns full 64-character SHA-256 hex digest string.
     """
+    base = Path(root_dir) if root_dir else Path(PROJECT_ROOT)
+    hasher = hashlib.sha256()
+
+    # Track HEAD commit
+    commit_sha = get_git_commit_hash()
+    hasher.update(f"COMMIT:{commit_sha}\n".encode("utf-8"))
+
+    ignored_prefixes = ("logs/", "tmp/", ".git/", "__pycache__", ".pytest_cache", "results/")
+
     try:
-        status_res = subprocess.run(["git", "status", "--porcelain", "-uall"], capture_output=True, text=True, check=True)
-        diff_res = subprocess.run(["git", "diff", "HEAD"], capture_output=True, text=True, check=True)
-        combined = status_res.stdout + "\n---DIFF---\n" + diff_res.stdout
-        return hashlib.sha256(combined.encode("utf-8")).hexdigest()[:16]
+        res = subprocess.run(["git", "status", "--porcelain=v1", "-uall"], capture_output=True, text=True, check=True, cwd=str(base))
+        lines = [line.rstrip("\r\n") for line in res.stdout.split("\n") if line.strip()]
     except Exception:
-        return "UNKNOWN_TREE_DIGEST"
+        lines = []
+
+    inventory: List[tuple[str, str, Path]] = []
+    for line in lines:
+        if len(line) < 4:
+            continue
+        status_code = line[:2]
+        rel_path_str = line[3:].strip()
+
+        # Handle renames e.g. "R  old -> new"
+        if " -> " in rel_path_str:
+            rel_path_str = rel_path_str.split(" -> ")[-1].strip()
+
+        # Strip surrounding quotes if present
+        if rel_path_str.startswith('"') and rel_path_str.endswith('"'):
+            rel_path_str = rel_path_str[1:-1]
+
+        norm_path = Path(rel_path_str).as_posix()
+
+        if any(norm_path.startswith(prefix) or f"/{prefix}" in norm_path for prefix in ignored_prefixes):
+            continue
+
+        full_path = base / rel_path_str
+        inventory.append((norm_path, status_code, full_path))
+
+    inventory.sort(key=lambda x: x[0])
+
+    for norm_path, status_code, full_path in inventory:
+        hasher.update(f"PATH:{norm_path}:STATUS:{status_code}\n".encode("utf-8"))
+
+        if full_path.is_symlink():
+            try:
+                target = os.readlink(full_path)
+                hasher.update(f"SYMLINK:{target}\n".encode("utf-8"))
+            except Exception:
+                hasher.update(b"SYMLINK_ERROR\n")
+        elif not full_path.exists():
+            hasher.update(b"STATUS:DELETED\n")
+        elif full_path.is_dir():
+            try:
+                sub_res = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True, cwd=str(full_path))
+                sub_sha = sub_res.stdout.strip()
+                hasher.update(f"SUBMODULE:{sub_sha}\n".encode("utf-8"))
+            except Exception:
+                hasher.update(b"DIRECTORY\n")
+        elif full_path.is_file():
+            try:
+                content = full_path.read_bytes()
+                hasher.update(f"SIZE:{len(content)}\n".encode("utf-8"))
+                hasher.update(content)
+                hasher.update(b"\n")
+            except Exception:
+                hasher.update(b"READ_ERROR\n")
+
+    return hasher.hexdigest()
 
 
 class IncidentLabRunner:
@@ -101,11 +171,11 @@ class IncidentLabRunner:
 
         output_data = {
             "metadata": {
-                "evaluation_suite_version": "2.2.0",
+                "evaluation_suite_version": "2.3.0",
                 "evaluated_git_commit": self.commit_sha,
                 "working_tree_status": self.tree_status,
                 "uncommitted_tree_digest": self.tree_digest,
-                "tree_digest_algorithm": "SHA-256(git status --porcelain -uall + '\\n---DIFF---\\n' + git diff HEAD)[:16]",
+                "tree_digest_algorithm": "Full 64-char SHA-256 over deterministic POSIX sorted inventory of HEAD commit, git status -uall paths, status codes, symlink targets, deletions, and actual raw file bytes.",
                 "evaluation_notes": "Evaluation executed against uncommitted working tree prior to report persistence commit.",
                 "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                 "total_scenarios_evaluated": len(results),
@@ -135,7 +205,8 @@ class IncidentLabRunner:
         md_lines = [
             "# EpistemicOS Incident-Derived Security Test Lab Report",
             "",
-            f"**Evaluated Commit:** `{meta['evaluated_git_commit']}` | **Working Tree:** `{meta['working_tree_status']}` (Digest: `{meta['uncommitted_tree_digest']}`) | **Suite Version:** `{meta['evaluation_suite_version']}`",
+            f"**Evaluated Commit:** `{meta['evaluated_git_commit']}` | **Working Tree:** `{meta['working_tree_status']}` | **Suite Version:** `{meta['evaluation_suite_version']}`",
+            f"**Working Tree Digest:** `{meta['uncommitted_tree_digest']}`",
             f"**Evaluated At:** `{meta['timestamp']}` | **Total Runtime:** `{meta['total_runtime_seconds']}s`",
             f"**Tree Digest Algorithm:** `{meta['tree_digest_algorithm']}`",
             f"**Evaluation Notes:** {meta['evaluation_notes']}",

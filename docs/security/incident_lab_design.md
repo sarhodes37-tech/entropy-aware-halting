@@ -103,13 +103,18 @@ In accordance with Section 1 of the specification, architectural gaps in Epistem
 To ensure exact reproducibility, benchmark reports record:
 1. `evaluated_git_commit`: The Git HEAD commit SHA evaluated.
 2. `working_tree_status`: `"CLEAN"` or `"DIRTY"`.
-3. `uncommitted_tree_digest`: A 16-character hex digest of all tracked and untracked modifications in the working tree prior to report persistence.
+3. `uncommitted_tree_digest`: Full 64-character SHA-256 digest covering all tracked and untracked source inputs.
 
 ### Working Tree Digest Algorithm
-```
-SHA-256( git status --porcelain -uall + '\n---DIFF---\n' + git diff HEAD )[:16]
-```
-This algorithm captures all uncommitted file additions, deletions, modifications, and untracked files across the working tree.
+1. Execute `git status --porcelain=v1 -uall` to obtain a complete inventory of staged, unstaged, modified, deleted, renamed, and untracked files.
+2. Exclude transient runtime directories (`logs/`, `tmp/`, `.git/`, `__pycache__`, `.pytest_cache`, `results/`).
+3. Sort file entries deterministically by normalized POSIX relative path.
+4. For each entry in sorted path order:
+   - Symlinks: feed status `'SYMLINK'`, path, and readlink target string.
+   - Deletions: feed status `'DELETED'`, path, and `'DELETED'` marker.
+   - Submodules / Directories: feed status `'DIRECTORY'`, path, and submodule HEAD commit SHA.
+   - Regular Files (Binary & Text): feed status (`'UNTRACKED'`, `'MODIFIED'`, `'STAGED'`), path, file size in bytes, and raw binary file content.
+5. Compute full 64-character SHA-256 hex digest.
 
 ---
 
