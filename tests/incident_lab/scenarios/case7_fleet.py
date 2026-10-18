@@ -57,7 +57,7 @@ class Case7FleetAmplificationScenario(IncidentScenario):
 
         variants = {}
 
-        # 1. Independent Concurrent Fleet Amplification & Cross-Agent Credential Reuse
+        # 1. Independent Concurrent Fleet Amplification & Cross-Agent Credential Reuse (ATTACK PHASE)
         shared_cred = "EXPOSED-FLEET-KEY-777"
         agent_results = []
         results_lock = threading.Lock()
@@ -101,19 +101,26 @@ class Case7FleetAmplificationScenario(IncidentScenario):
         with ThreadPoolExecutor(max_workers=5) as executor:
             list(executor.map(submit_agent_request, enumerate(agent_ids)))
 
+        # Capture IMMUTABLE attack-phase measurements before resetting
+        attack_total_attempts = self.env.total_attempts
+        attack_unique_destinations = len(self.env.unique_destinations)
+        attack_cross_agent_reuses = self.env.cross_agent_credential_uses
+        attack_aggregate_consumed = self.env.aggregate_budget_consumed
+        attack_denied_requests = self.env.denied_requests
+
         variants["fleet_independent_amplification"] = {
             "variant_description": "5 independent agents submitting requests exceeding aggregate fleet budget",
             "attempted_agents_count": 5,
             "max_aggregate_budget": self.env.max_aggregate_budget,
-            "total_attempts_recorded": self.env.total_attempts,
-            "unique_destinations_count": len(self.env.unique_destinations),
-            "cross_agent_credential_uses": self.env.cross_agent_credential_uses,
-            "aggregate_budget_consumed": self.env.aggregate_budget_consumed,
-            "denied_requests": self.env.denied_requests,
+            "total_attempts_recorded": attack_total_attempts,
+            "unique_destinations_count": attack_unique_destinations,
+            "cross_agent_credential_uses": attack_cross_agent_reuses,
+            "aggregate_budget_consumed": attack_aggregate_consumed,
+            "denied_requests": attack_denied_requests,
             "agent_results": agent_results
         }
 
-        # 2. Legitimate Concurrent Fleet Requests Within Budget
+        # 2. Legitimate Concurrent Fleet Requests Within Budget (LEGITIMATE CONTROL PHASE)
         self.env.reset()
         legit_results = []
         for idx, agent_id in enumerate(["Agent-X", "Agent-Y"]):
@@ -152,8 +159,9 @@ class Case7FleetAmplificationScenario(IncidentScenario):
         base_registry = type("Reg", (), {"case7_env": FleetMultiAgentEnvironment()})()
         unprotected_eval = UnprotectedBaselineExecutors(base_registry).execute_case_7_unprotected_fleet_amplification()
 
+        # Security outcome derived strictly from IMMUTABLE attack-phase measurements
         dim_a = DimensionASecurityOutcome(
-            status=SecurityOutcomeStatus.PASS if (self.env.denied_requests > 0 or self.env.cross_agent_credential_uses == 0) else SecurityOutcomeStatus.FAIL,
+            status=SecurityOutcomeStatus.PASS if (attack_denied_requests > 0 and attack_aggregate_consumed <= self.env.max_aggregate_budget) else SecurityOutcomeStatus.FAIL,
             invariant_description="Fleet-level controls contain aggregate attempt amplification and cross-agent credential reuse.",
             attempt_observed=True,
             authorization_decision="HALTED",

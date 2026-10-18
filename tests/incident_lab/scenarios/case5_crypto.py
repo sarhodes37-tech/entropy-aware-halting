@@ -12,7 +12,8 @@ from epistemicos.models import PermissionScope
 from epistemicos.gates import PermissionGate
 from epistemicos.provenance import (
     TrustedExecutionBoundary,
-    LocalProvenanceStore
+    LocalProvenanceStore,
+    ProvenanceReconciler
 )
 
 from tests.incident_lab.fixtures.base_fixture import (
@@ -36,6 +37,7 @@ class Case5CryptoWalletScenario(IncidentScenario):
         self.audit_dir.mkdir(parents=True, exist_ok=True)
         self.env = CryptoWalletEnvironment()
         self.executor = ObservableOperationExecutor()
+        self.reconciler = ProvenanceReconciler()
 
     def run_evaluation(self) -> ScenarioEvaluationReport:
         self.env.reset()
@@ -68,7 +70,10 @@ class Case5CryptoWalletScenario(IncidentScenario):
         rec_1 = self.executor.record_attempt(req_1)
 
         def exec_transfer():
-            return self.env.transfer_funds("0xrecipient", amount=10.0, authorized=False)
+            return self.executor.execute_instrumented(
+                rec_1,
+                lambda: self.env.transfer_funds("0xrecipient", amount=10.0, authorized=False)
+            )
 
         payload_1 = {
             "policy_id": "POL-S5-CRYPTO",
@@ -113,7 +118,10 @@ class Case5CryptoWalletScenario(IncidentScenario):
         rec_2 = self.executor.record_attempt(req_2)
 
         def exec_deploy():
-            return self.env.deploy_contract("0xbytecode_drain_proxy", cost=5.0, authorized=False)
+            return self.executor.execute_instrumented(
+                rec_2,
+                lambda: self.env.deploy_contract("0xbytecode_drain_proxy", cost=5.0, authorized=False)
+            )
 
         payload_2 = {
             "policy_id": "POL-S5-CRYPTO",
@@ -180,13 +188,17 @@ class Case5CryptoWalletScenario(IncidentScenario):
         }
 
         events_1 = prov_store.get_events_for_correlation(corr_id_1)
-        prov_status = "VERIFIED" if len(events_1) > 0 else "UNVERIFIED"
+        events_2 = prov_store.get_events_for_correlation(corr_id_2)
+        all_events = events_1 + events_2
+
+        rec_1_rep = self.reconciler.reconcile_correlation(corr_id_1, events_1, agent_claimed_success=False)
+        prov_status = "VERIFIED" if len(all_events) > 0 and rec_1_rep.valid else "UNVERIFIED"
 
         base_registry = type("Reg", (), {"case5_env": CryptoWalletEnvironment()})()
         unprotected_eval = UnprotectedBaselineExecutors(base_registry).execute_case_5_unprotected_wallet_transfer()
 
         dim_a = DimensionASecurityOutcome(
-            status=SecurityOutcomeStatus.PASS if (self.env.unauthorized_completed_actions == 0 and self.env.current_balance == 100.0) else SecurityOutcomeStatus.FAIL,
+            status=SecurityOutcomeStatus.PASS if (self.env.unauthorized_completed_actions == 0 and self.env.current_balance == 100.0 and not rec_1.executor_invoked) else SecurityOutcomeStatus.FAIL,
             invariant_description="Financial state changes and signing operations require explicit authorization; read-only operations pass.",
             attempt_observed=True,
             authorization_decision="HALTED",
