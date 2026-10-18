@@ -324,3 +324,92 @@ def test_valid_trusted_grant_executes_exactly_once():
     assert execution_callback.call_count == 1
     assert res["execution_outcome"]["status"] == "SUCCESS"
     assert res["execution_outcome"]["result"] == {"status": "GENUINE_SUCCESS"}
+
+
+def test_automatic_trusted_grant_issuance_and_execution_contract():
+    """
+    10. End-to-end positive control:
+    - No manual grant pre-seeded.
+    - Governance gates pass.
+    - Governance path automatically issues AUTHORIZATION_GRANTED event to LocalProvenanceStore.
+    - TrustedExecutionBoundary verifies the store-backed grant and executes callback.
+    - Synthetic side effect occurs and correlated provenance events are recorded.
+    """
+    synthetic_sink = []
+
+    def test_callback():
+        synthetic_sink.append("MUTATION_EXECUTED")
+        return {"status": "SIDE_EFFECT_PRODUCED"}
+
+    orchestrator = EpistemicOrchestrator()
+    perm_gate = PermissionGate(
+        trusted_scope={
+            "allowed_operations": ["write_db"],
+            "allowed_resources": ["synthetic_table"],
+        }
+    )
+    orchestrator.gates = [perm_gate]
+
+    raw_payload = {"policy_id": "POL-2026-AUTO-GRANT", "primary_metric": 200.0}
+    corr_id = f"AUTO-GRANT-CORR-{uuid.uuid4()}"
+
+    context = {
+        "correlation_id": corr_id,
+        "proposed_actions": [{"action": {"op": "write_db", "endpoint": "synthetic_table"}}],
+        "actual_executable": test_callback,
+    }
+
+    res = orchestrator.process_submission(raw_payload, context)
+
+    assert res["status"] == "ALLOWED"
+    assert res["execution_outcome"]["status"] == "SUCCESS"
+    assert len(synthetic_sink) == 1
+    assert synthetic_sink[0] == "MUTATION_EXECUTED"
+
+    # Verify store-backed grant and execution provenance events exist
+    events = orchestrator.execution_boundary.store.get_events_for_correlation(corr_id)
+    event_types = [e.event_type for e in events]
+    assert "AUTHORIZATION_GRANTED" in event_types
+    assert "EXECUTION_STARTED" in event_types
+    assert "EXECUTION_SUCCEEDED" in event_types
+
+
+def test_gate_rejection_prevents_issuance_and_side_effects():
+    """
+    11. Governance gate rejection prevents grant issuance, callback invocation, and side effects.
+    """
+    synthetic_sink = []
+
+    def test_callback():
+        synthetic_sink.append("UNAUTHORIZED_MUTATION")
+        return {"status": "UNAUTHORIZED"}
+
+    orchestrator = EpistemicOrchestrator()
+    perm_gate = PermissionGate(
+        trusted_scope={
+            "allowed_operations": ["read_only"],
+            "allowed_resources": ["synthetic_table"],
+        }
+    )
+    orchestrator.gates = [perm_gate]
+
+    raw_payload = {"policy_id": "POL-2026-GATE-REJECT", "primary_metric": 200.0}
+    corr_id = f"GATE-REJECT-CORR-{uuid.uuid4()}"
+
+    # Proposed action 'write_db' is not allowed by 'read_only' scope
+    context = {
+        "correlation_id": corr_id,
+        "proposed_actions": [{"action": {"op": "write_db", "endpoint": "synthetic_table"}}],
+        "actual_executable": test_callback,
+    }
+
+    res = orchestrator.process_submission(raw_payload, context)
+
+    assert res["status"] == "HALTED"
+    assert len(synthetic_sink) == 0  # No forbidden side effect
+
+    # Verify no AUTHORIZATION_GRANTED event was recorded
+    events = orchestrator.execution_boundary.store.get_events_for_correlation(corr_id)
+    event_types = [e.event_type for e in events]
+    assert "AUTHORIZATION_GRANTED" not in event_types
+    assert "EXECUTION_STARTED" not in event_types
