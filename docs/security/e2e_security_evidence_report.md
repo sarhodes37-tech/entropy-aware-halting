@@ -1,6 +1,6 @@
 # EpistemicOS End-to-End Security Evidence Report
 
-**Commit SHA:** `7f103b00f5d75ccc8bcc117591873d0d2fc38e91` | **Suite Version:** `1.0.0` | **Evaluated At:** `2026-10-18T01:47:00Z` | **Runtime:** `0.102s`
+**Commit SHA:** `95ec16fcfc8649a2f8b0659a1a02907e55e820c3` | **Suite Version:** `1.0.0` | **Evaluated At:** `2026-10-18T10:23:51Z` | **Runtime:** `0.057s`
 **Environment:** Isolated Synthetic Evaluation Harness (Zero Live Credentials / External Network Egress)
 
 ## 1. Per-Scenario Execution & Evidence Table
@@ -83,7 +83,7 @@
 - **Protected Path Side Effects:** `0`
 - **Unprotected Baseline Vulnerability Detected:** `True`
 - **Evaluated Variants:**
-  - **fleet_distributed_attack:** `{"attempted_agents_count": 5, "max_aggregate_budget": 3, "total_attempts_recorded": 5, "fleet_tracker_component_evidence": {"credential_reuses_detected": 1, "budget_exhausted_halts": 2}, "agent_outcomes": [{"agent_id": "Agent-A", "destination": "http://fleet-target-0.org/query", "credential": "EXPOSED-SECRET-A1", "fleet_tracker_allowed": true, "orchestrator_status": "HALTED"}, {"agent_id": "Agent-B", "destination": "http://fleet-target-1.org/query", "credential": "EXPOSED-SECRET-A1", "fleet_tracker_allowed": false, "orchestrator_status": "HALTED"}, {"agent_id": "Agent-C", "destination": "http://fleet-target-2.org/query", "credential": null, "fleet_tracker_allowed": true, "orchestrator_status": "HALTED"}, {"agent_id": "Agent-D", "destination": "http://fleet-target-3.org/query", "credential": null, "fleet_tracker_allowed": false, "orchestrator_status": "HALTED"}, {"agent_id": "Agent-E", "destination": "http://fleet-target-4.org/query", "credential": null, "fleet_tracker_allowed": false, "orchestrator_status": "HALTED"}]}`
+  - **fleet_distributed_attack:** `{"attempted_agents_count": 5, "max_aggregate_budget": 3, "total_attempts_recorded": 5, "fleet_tracker_component_evidence": {"credential_reuses_detected": 1, "budget_exhausted_halts": 2}, "agent_outcomes": [{"agent_id": "Agent-A", "destination": "http://fleet-target-0.org/query", "credential": "EXPOSED-SECRET-A1", "fleet_tracker_allowed": true, "orchestrator_status": "HALTED"}, {"agent_id": "Agent-B", "destination": "http://fleet-target-1.org/query", "credential": "EXPOSED-SECRET-A1", "fleet_tracker_allowed": false, "orchestrator_status": "HALTED"}, {"agent_id": "Agent-C", "destination": "http://fleet-target-2.org/query", "credential": null, "fleet_tracker_allowed": true, "orchestrator_status": "HALTED"}, {"agent_id": "Agent-E", "destination": "http://fleet-target-4.org/query", "credential": null, "fleet_tracker_allowed": false, "orchestrator_status": "HALTED"}, {"agent_id": "Agent-D", "destination": "http://fleet-target-3.org/query", "credential": null, "fleet_tracker_allowed": false, "orchestrator_status": "HALTED"}]}`
   - **legitimate_control:** `{"attempted_agents_count": 3, "total_attempts_recorded": 3, "all_allowed": true}`
 
 ## 3. Exact Reproduction Commands

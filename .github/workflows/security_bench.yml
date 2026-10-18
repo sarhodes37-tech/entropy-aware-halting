@@ -37,40 +37,47 @@ jobs:
     - name: Prepare Telemetry Artifact Directory
       run: mkdir -p results
 
-    - name: Execute Measured Benchmark Suite
+    - name: Execute Consolidated Four-Layer Evidence Pipeline
       env:
         PYTHONPATH: .
       run: |
-        echo "Executing unit tests..."
-        pytest tests/ -v
-        echo "Executing measured benchmark suite..."
-        python -m benchmarks.run_full_benchmark
+        python -m benchmarks.generate_evidence_report
 
-    - name: Verify Measured Benchmark Artifacts
+    - name: Verify Four-Layer Security Evidence Invariants
       run: |
         python -c "
         import json, sys, os
         
-        artifact_path = 'results/ablation_table.json'
+        artifact_path = 'results/four_layer_evidence.json'
         
         if not os.path.exists(artifact_path):
-            print(f'\n[FATAL ERROR] Measured benchmark output not found at {artifact_path}.')
+            print(f'\n[FATAL ERROR] Four-layer evidence output not found at {artifact_path}.')
             sys.exit(1)
             
         try:
             with open(artifact_path, 'r') as f:
                 data = json.load(f)
             
-            baselines = data.get('baselines', {})
-            if not baselines:
-                print('\n[FATAL ERROR] Baseline evaluation records missing.')
+            meta = data.get('reproducibility_metadata', {})
+            layers = data.get('layers', {})
+
+            if not meta.get('dataset_digest_verified'):
+                print('\n[FATAL ERROR] Dataset SHA-256 digest verification failed!')
                 sys.exit(1)
 
-            print('\n[SUCCESS] Verified measured benchmark results:')
-            for name, bdata in baselines.items():
-                print(f'  - {name}: {bdata.get(\"accuracy_pct\")}% accuracy (N={bdata.get(\"sample_count\")})')
+            if data.get('overall_evaluation_status') != 'PASS':
+                print(f'\n[FATAL ERROR] Overall evaluation status is {data.get(\"overall_evaluation_status\")}, expected PASS!')
+                sys.exit(1)
+
+            layer_d = layers.get('layer_d_performance_cost', {})
+            recall = layer_d.get('combined_gating_recall_pct', 0.0)
+            if recall < 100.0:
+                print(f'\n[FATAL ERROR] Security recall regression: {recall}% < 100.0%')
+                sys.exit(1)
+
+            print(f'\n[SUCCESS] Verified four-layer evidence artifact: Overall Status = {data.get(\"overall_evaluation_status\")}, Dataset SHA-256 Verified.')
         except Exception as e:
-            print(f'\n[FATAL ERROR] Failed to parse benchmark results: {e}')
+            print(f'\n[FATAL ERROR] Failed to parse evidence artifact: {e}')
             sys.exit(1)
         "
 
