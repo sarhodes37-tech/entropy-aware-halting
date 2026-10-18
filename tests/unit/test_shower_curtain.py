@@ -412,6 +412,38 @@ def test_scenario_20_egress_gate_fail_closed():
 # ------------------------------------------------------------------------------
 # Concurrent Access Thread Safety
 # ------------------------------------------------------------------------------
+def test_vault_rehydrate_regex_backreference_injection():
+    vault = LocalMappingVault()
+    # Test raw values containing regex backreference sequences (e.g. \g<0>, \1) and backslashes
+    raw_val_1 = r"C:\Users\admin\g<0>\test"
+    raw_val_2 = r"special\1\2\g<name>value"
+
+    det_1 = DetectionResult(
+        category=SensitivityCategory.FILE_PATH,
+        value=raw_val_1,
+        span=(0, len(raw_val_1)),
+        confidence=1.0,
+        detector_type="test"
+    )
+    det_2 = DetectionResult(
+        category=SensitivityCategory.CUSTOM_ENTITY,
+        value=raw_val_2,
+        span=(0, len(raw_val_2)),
+        confidence=1.0,
+        detector_type="test"
+    )
+
+    p1 = vault.get_or_create_pseudonym("sess_regex_inj", det_1)
+    p2 = vault.get_or_create_pseudonym("sess_regex_inj", det_2)
+
+    text = f"Path is {p1} and entity is {p2}."
+    rehydrated = vault.rehydrate("sess_regex_inj", text)
+
+    assert raw_val_1 in rehydrated
+    assert raw_val_2 in rehydrated
+    assert rehydrated == f"Path is {raw_val_1} and entity is {raw_val_2}."
+
+
 def test_vault_concurrent_access_thread_safety():
     vault = LocalMappingVault()
     det = SensitiveDataDetector().detect("alice@example.com")[0]

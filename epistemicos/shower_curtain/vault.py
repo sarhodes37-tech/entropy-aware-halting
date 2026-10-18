@@ -137,9 +137,10 @@ class LocalMappingVault:
                 continue
 
             raw_value = reverse_map[placeholder]
-            # Replace placeholder safely using regex word-boundary to prevent partial substring replacements
+            # Replace placeholder safely using regex word-boundary to prevent partial substring replacements.
+            # Uses a lambda repl function to avoid regex backreference expansion/injection (e.g., \g<0> or \1) in raw_value.
             pattern = re.compile(r"\b" + re.escape(placeholder) + r"\b")
-            rehydrated = pattern.sub(raw_value, rehydrated)
+            rehydrated = pattern.sub(lambda _: raw_value, rehydrated)
 
         return rehydrated
 
