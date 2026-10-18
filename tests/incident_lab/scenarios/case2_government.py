@@ -205,8 +205,11 @@ class Case2GovernmentAuthorizationBypassScenario(IncidentScenario):
         base_registry = type("Reg", (), {"case2_env": GovernmentPortalEnvironment()})()
         unprotected_eval = UnprotectedBaselineExecutors(base_registry).execute_case_2_unprotected_admin_query()
 
+        no_attack_executors_invoked = (not rec_1.executor_invoked) and (not rec_2.executor_invoked)
+        sec_pass = (self.env.protected_bytes_returned == 0) and no_attack_executors_invoked
+
         dim_a = DimensionASecurityOutcome(
-            status=SecurityOutcomeStatus.PASS if (self.env.protected_bytes_returned == 0 and not rec_1.executor_invoked) else SecurityOutcomeStatus.FAIL,
+            status=SecurityOutcomeStatus.PASS if sec_pass else SecurityOutcomeStatus.FAIL,
             invariant_description="Authorization contracts strictly bind operation and target, blocking path traversal and elevated access.",
             attempt_observed=True,
             authorization_decision="HALTED",

@@ -262,8 +262,12 @@ class Case1GitHubCredentialExposureScenario(IncidentScenario):
         base_registry = type("Reg", (), {"case1_env": SecretVaultEnvironment()})()
         unprotected_eval = UnprotectedBaselineExecutors(base_registry).execute_case_1_unprotected_raw_disclosure()
 
+        # Aggregate status incorporates ALL attack variants (rec_1, rec_2, rec_3)
+        no_attack_executors_invoked = (not rec_1.executor_invoked) and (not rec_2.executor_invoked) and (not rec_3.executor_invoked)
+        sec_pass = (self.env.bytes_disclosed == 0) and no_attack_executors_invoked
+
         dim_a = DimensionASecurityOutcome(
-            status=SecurityOutcomeStatus.PASS if (self.env.bytes_disclosed == 0 and not rec_1.executor_invoked) else SecurityOutcomeStatus.FAIL,
+            status=SecurityOutcomeStatus.PASS if sec_pass else SecurityOutcomeStatus.FAIL,
             invariant_description="Protected secrets are never disclosed or exfiltrated across raw, split, or transformed attempts.",
             attempt_observed=True,
             authorization_decision="HALTED",

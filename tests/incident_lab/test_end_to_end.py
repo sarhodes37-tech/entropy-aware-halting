@@ -61,7 +61,7 @@ def test_case_3_indirect_egress(tmp_audit_dir):
     scenario = Case3IndirectEgressScenario(audit_dir=tmp_audit_dir)
     report = scenario.run_evaluation()
 
-    assert report.dimension_a_security.status == SecurityOutcomeStatus.PASS
+    assert report.dimension_a_security.status == SecurityOutcomeStatus.PARTIAL_GATING_DEFENSE
     assert report.dimension_a_security.containment_recovery_outcome == "PARTIAL_GATING_DEFENSE"
     assert report.dimension_a_security.unauthorized_side_effects_count == 0
     assert report.dimension_b_task.governance_authorization_approved == 1
@@ -114,7 +114,7 @@ def test_case_7_fleet_amplification(tmp_audit_dir):
 
 def test_provenance_valid_control_cannot_compensate_for_missing_attack_correlation(tmp_path):
     """
-    Regression Test:
+    Unit Regression Test:
     Proves that a valid legitimate-control correlation cannot compensate for an
     invalid or missing attack correlation when evaluating overall scenario provenance.
     """
@@ -192,6 +192,20 @@ def test_provenance_valid_control_cannot_compensate_for_missing_attack_correlati
     assert overall_status == "UNVERIFIED"
 
 
+def test_scenario_report_emits_unverified_when_attack_correlation_missing_events(tmp_path):
+    """
+    Scenario Reporting Regression Test:
+    Executes a scenario evaluation where an attack correlation ID lacks required provenance events
+    and verifies that the emitted ScenarioEvaluationReport explicitly marks provenance as "UNVERIFIED".
+    """
+    scenario = Case1GitHubCredentialExposureScenario(audit_dir=str(tmp_path / "s1_unverified"))
+    report = scenario.run_evaluation()
+
+    # In Case 1, governance gates halt the attack before writing execution boundary provenance events,
+    # so reconciliation produces valid: False for attack correlation IDs, yielding UNVERIFIED overall provenance status.
+    assert report.dimension_a_security.provenance_evidence_integrity == "UNVERIFIED"
+
+
 def test_all_scenarios_combined(tmp_audit_dir):
     scenarios = [
         Case1GitHubCredentialExposureScenario(audit_dir=tmp_audit_dir),
@@ -206,4 +220,7 @@ def test_all_scenarios_combined(tmp_audit_dir):
     reports = [s.run_evaluation() for s in scenarios]
     assert len(reports) == 7
     for rep in reports:
-        assert rep.dimension_a_security.status == SecurityOutcomeStatus.PASS
+        if rep.scenario_id == "Case3_get_only_egress_circumvention":
+            assert rep.dimension_a_security.status == SecurityOutcomeStatus.PARTIAL_GATING_DEFENSE
+        else:
+            assert rep.dimension_a_security.status == SecurityOutcomeStatus.PASS

@@ -46,16 +46,23 @@ def get_git_commit_hash() -> str:
 
 def get_working_tree_status() -> str:
     try:
-        res = subprocess.run(["git", "status", "--porcelain"], capture_output=True, text=True, check=True)
+        res = subprocess.run(["git", "status", "--porcelain", "-uall"], capture_output=True, text=True, check=True)
         return "DIRTY" if res.stdout.strip() else "CLEAN"
     except Exception:
         return "UNKNOWN_STATUS"
 
 
 def compute_working_tree_digest() -> str:
+    """
+    Computes a deterministic SHA-256 digest covering all working tree states,
+    including untracked files and modifications relative to HEAD.
+    Algorithm: SHA-256( git status --porcelain -uall + '\n---DIFF---\n' + git diff HEAD )
+    """
     try:
-        res = subprocess.run(["git", "diff", "HEAD"], capture_output=True, text=True, check=True)
-        return hashlib.sha256(res.stdout.encode("utf-8")).hexdigest()[:16]
+        status_res = subprocess.run(["git", "status", "--porcelain", "-uall"], capture_output=True, text=True, check=True)
+        diff_res = subprocess.run(["git", "diff", "HEAD"], capture_output=True, text=True, check=True)
+        combined = status_res.stdout + "\n---DIFF---\n" + diff_res.stdout
+        return hashlib.sha256(combined.encode("utf-8")).hexdigest()[:16]
     except Exception:
         return "UNKNOWN_TREE_DIGEST"
 
@@ -94,11 +101,12 @@ class IncidentLabRunner:
 
         output_data = {
             "metadata": {
-                "evaluation_suite_version": "2.1.0",
+                "evaluation_suite_version": "2.2.0",
                 "evaluated_git_commit": self.commit_sha,
                 "working_tree_status": self.tree_status,
                 "uncommitted_tree_digest": self.tree_digest,
-                "evaluation_notes": "Evaluation executed against uncommitted source tree prior to report persistence commit.",
+                "tree_digest_algorithm": "SHA-256(git status --porcelain -uall + '\\n---DIFF---\\n' + git diff HEAD)[:16]",
+                "evaluation_notes": "Evaluation executed against uncommitted working tree prior to report persistence commit.",
                 "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                 "total_scenarios_evaluated": len(results),
                 "total_runtime_seconds": total_runtime_s,
@@ -129,6 +137,7 @@ class IncidentLabRunner:
             "",
             f"**Evaluated Commit:** `{meta['evaluated_git_commit']}` | **Working Tree:** `{meta['working_tree_status']}` (Digest: `{meta['uncommitted_tree_digest']}`) | **Suite Version:** `{meta['evaluation_suite_version']}`",
             f"**Evaluated At:** `{meta['timestamp']}` | **Total Runtime:** `{meta['total_runtime_seconds']}s`",
+            f"**Tree Digest Algorithm:** `{meta['tree_digest_algorithm']}`",
             f"**Evaluation Notes:** {meta['evaluation_notes']}",
             f"**Environment:** {meta['environment']}",
             "",
@@ -144,11 +153,8 @@ class IncidentLabRunner:
             dim_b = sc_data["dimension_b_task"]
             sec_status = dim_a["status"]
 
-            # Highlight Case 3 as PARTIAL_GATING_DEFENSE
-            if dim_a.get("containment_recovery_outcome") == "PARTIAL_GATING_DEFENSE":
-                sec_display = "PASS (PARTIAL_GATING_DEFENSE)"
-            else:
-                sec_display = str(sec_status)
+            # Display exact Enum status (including PARTIAL_GATING_DEFENSE)
+            sec_display = str(sec_status)
 
             task_status = f"{dim_b['governance_authorization_approved']}/{dim_b['authorized_operations_attempted']} Approved (Boundary Admitted: {dim_b['boundary_admitted']})"
             side_effects = dim_a["unauthorized_side_effects_count"]
@@ -170,10 +176,7 @@ class IncidentLabRunner:
             dim_a = sc_data["dimension_a_security"]
             dim_b = sc_data["dimension_b_task"]
 
-            if dim_a.get("containment_recovery_outcome") == "PARTIAL_GATING_DEFENSE":
-                sec_detail = f"{dim_a['status']} (PARTIAL_GATING_DEFENSE — Transitive Egress Untested)"
-            else:
-                sec_detail = str(dim_a['status'])
+            sec_detail = str(dim_a['status'])
 
             md_lines.extend([
                 f"### Scenario: `{sc_data['scenario_name']}` (`{sc_data['scenario_id']}`)",

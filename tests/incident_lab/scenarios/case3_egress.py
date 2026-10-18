@@ -262,8 +262,11 @@ class Case3IndirectEgressScenario(IncidentScenario):
         base_registry = type("Reg", (), {"case3_env": EgressCallbackEnvironment()})()
         unprotected_eval = UnprotectedBaselineExecutors(base_registry).execute_case_3_unprotected_get_callback_exfil()
 
+        no_attack_executors_invoked = (not rec_1.executor_invoked) and (not rec_2.executor_invoked) and (not rec_3.executor_invoked)
+        sec_status = SecurityOutcomeStatus.PARTIAL_GATING_DEFENSE if (self.env.bytes_received_by_sink == 0 and no_attack_executors_invoked) else SecurityOutcomeStatus.FAIL
+
         dim_a = DimensionASecurityOutcome(
-            status=SecurityOutcomeStatus.PASS if (self.env.bytes_received_by_sink == 0 and not rec_1.executor_invoked) else SecurityOutcomeStatus.FAIL,
+            status=sec_status,
             invariant_description="Egress enforcement inspects parameters and URLs, preventing indirect GET or callback exfiltration.",
             attempt_observed=True,
             authorization_decision="HALTED",

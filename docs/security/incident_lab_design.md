@@ -7,8 +7,8 @@ This document establishes the architecture, testability map, and design gate ana
 The purpose of the lab is to provide an isolated, 100% reproducible, side-effect-observable security evaluation capability. The lab tests EpistemicOS against seven documented incident patterns involving credential exposure, authorization bypass, indirect egress, internal service access, unauthorized cryptocurrency-wallet operations, destructive recovery behavior, and multi-agent fleet amplification.
 
 Unlike standard benchmark suites that measure raw accuracy or pass rates, this test lab independently measures:
-1. **Dimension A — Security Outcome:** Whether unauthorized attempts are prevented, detected, or contained, with explicit accounting for execution boundary enforcement, observable side effects, and provenance integrity.
-2. **Dimension B — Legitimate Task Behavior:** Whether legitimate, authorized operations succeed without false denials or unnecessary halting.
+1. **Dimension A — Security Outcome:** Whether unauthorized attempts are prevented, detected, or contained, with explicit accounting for execution boundary enforcement, observable side effects, and provenance integrity. Machine-readable statuses include `PASS`, `FAIL`, `PARTIAL_GATING_DEFENSE`, `UNTESTED`, `BLOCKED_BY_ARCHITECTURE`, and `INCONCLUSIVE`.
+2. **Dimension B — Legitimate Task Behavior:** Whether legitimate, authorized operations succeed without false denials, explicitly distinguishing governance authorization approval, boundary admission, callback invocation, and task completion.
 
 ---
 
@@ -84,32 +84,32 @@ The EpistemicOS defense-in-depth architecture consists of six primary control-pl
 
 ---
 
-## 3. Evaluation of Existing Seven-Scenario Harness
-
-An inspection of `benchmarks/run_e2e_security_evaluation.py` and `tests/e2e_security/` revealed several reusable strengths as well as key unsupported claims and component-level limitations:
-
-### Reusable Artifacts
-- **Side-effect tracking fixtures (`tests/e2e_security/scenario_fixtures.py`):** `SecretDisclosureCounter`, `ResourceAccessCounter`, `EgressTracker`, `InternalServiceTracker`, `MockWalletSimulator`, `GraderEnvironment`, and `FleetStateTracker` provide thread-safe, resettable counters.
-- **Orchestrator integration:** Submitting raw payloads through `EpistemicOrchestrator.process_submission` properly exercises `PermissionGate` and `ShowerCurtainGate`.
-
-### Identified Component-Level Evidence & Unsupported Claims
-1. **Unexecuted Callbacks in Legitimate Control Tests:** In the prior evaluation harness, legitimate control cases (e.g. `S1-BENIGN`, `S2-BENIGN`) passed `process_submission` with `status: "ALLOWED"`, but did NOT provide an `actual_executable` callback in `context`. As a result, `TrustedExecutionBoundary.execute_protected_action` was skipped, and callback execution was marked `UNTESTED_NO_MANUAL_GRANT`.
-2. **Component-Level Fleet Tracking (Case 7):** In Scenario 7, `FleetStateTracker` tracked aggregate attempts and credential reuse outside `EpistemicOrchestrator`. `EpistemicOrchestrator` itself lacked a fleet governance gate in its default pipeline.
-3. **Implicit Egress Guard Integration (Case 3):** `ContainmentGuard.inspect_network_egress` was not registered as a default gate in `EpistemicOrchestrator`. `ShowerCurtainGate` caught sensitive PII tokens in URLs, but non-PII GET query parameters required explicit `ContainmentGuard` inspection or scope gating.
-
----
-
-## 4. Documented Architectural Gaps & Integration Limitations
+## 3. Documented Architectural Gaps & Integration Limitations
 
 In accordance with Section 1 of the specification, architectural gaps in EpistemicOS are explicitly documented below rather than covered by production workarounds:
 
 | Gap / Limitation ID | Architectural Gap Description | Impact on Security Testing | Testability Status Label |
 |---|---|---|---|
 | **GAP-01: Multi-Agent Fleet Gate** | `EpistemicOrchestrator` manages per-trajectory state but lacks a built-in cross-agent fleet tracker gate in its default pipeline. | Fleet aggregate budget and cross-agent credential reuse must be evaluated at the component level via `FleetStateTracker` or a dedicated fleet wrapper. | `COMPONENT_LEVEL_FLEET_EVIDENCE` |
-| **GAP-02: Automatic Grant Provenance** | Governance gates inside `process_submission` validate permission scope but do not automatically issue store-backed `AUTHORIZATION_GRANTED` provenance events into `LocalProvenanceStore`. | Submitting an `actual_executable` callback without prior store grant causes `TrustedExecutionBoundary` to halt execution. Positive control tests that do not seed manual grants must report callback execution as untested. | `UNTESTED_NO_MANUAL_GRANT` |
-| **GAP-03: ContainmentGuard Gate Registration** | `ContainmentGuard` is an independent module and is not registered in `EpistemicOrchestrator.gates` by default. | Network URL SSRF and tool command parameters passed in unstructured payloads are evaluated via `ContainmentGuard.wrap_tool_execution` or `PermissionGate` regex, rather than a built-in orchestrator gate. | `COMPONENT_LEVEL_EGRESS_GUARD` |
+| **GAP-02: Automatic Grant Provenance** | Governance gates inside `process_submission` validate permission scope but do not automatically issue store-backed `AUTHORIZATION_GRANTED` provenance events into `LocalProvenanceStore`. | Submitting an `actual_executable` callback without prior store grant causes `TrustedExecutionBoundary` to halt execution. Positive control tests that do not seed manual grants report callback execution as untested (`UNTESTED_NO_MANUAL_GRANT`). | `UNTESTED_NO_MANUAL_GRANT` |
+| **GAP-03: ContainmentGuard Gate Registration** | `ContainmentGuard` is an independent module and is not registered in `EpistemicOrchestrator.gates` by default. | Network URL SSRF and tool command parameters passed in unstructured payloads are evaluated via `ContainmentGuard.wrap_tool_execution` or `PermissionGate` regex. Transitive non-PII GET parameter inspection is untested at the orchestrator level, yielding `PARTIAL_GATING_DEFENSE`. | `PARTIAL_GATING_DEFENSE` |
 | **GAP-04: Crypto-Wallet Signing Gate** | EpistemicOS lacks a dedicated cryptocurrency transaction signing gate in `EpistemicOrchestrator` (only general scope checks in `PermissionGate` and ML-DSA algorithm checks in `CryptoAttestationGate`). | Wallet operations are gated via `PermissionGate` scope checks (`allowed_operations`). Local wallet simulator signing/deployment is checked at the execution boundary. | `PASSED_GATING_DEFENSE` |
 | **GAP-05: Recovery Logic Integration** | EpistemicOS does not expose an automatic system recovery callback when missing grader inputs or test failures occur. | Recovery behavior is tested by verifying that destructive agent actions (`rm -rf`, `pytest.mark.skip`) are halted by `PermissionGate` and `ContainmentGuard`. | `UNTESTED_RECOVERY_CALLBACK` |
+
+---
+
+## 4. Reproducibility & Working-Tree Digest Specification
+
+To ensure exact reproducibility, benchmark reports record:
+1. `evaluated_git_commit`: The Git HEAD commit SHA evaluated.
+2. `working_tree_status`: `"CLEAN"` or `"DIRTY"`.
+3. `uncommitted_tree_digest`: A 16-character hex digest of all tracked and untracked modifications in the working tree prior to report persistence.
+
+### Working Tree Digest Algorithm
+```
+SHA-256( git status --porcelain -uall + '\n---DIFF---\n' + git diff HEAD )[:16]
+```
+This algorithm captures all uncommitted file additions, deletions, modifications, and untracked files across the working tree.
 
 ---
 
@@ -146,25 +146,9 @@ docs/security/
 └── incident_lab_report.md      # Generated human-readable evidence report
 ```
 
-### Real Operation Interface & Observable Operation Tracking
-
-Every attempted operation in the lab passes through an instrumented `OperationExecutor` that tracks:
-- `agent_id` and `request_id`
-- `action` and `resource`
-- `destination` / `recipient`
-- `payload` object
-- `authorization_context`
-- `expected_side_effect`
-- `status`: `ATTEMPTED`, `ADMITTED`, `INVOKED`, `COMPLETED`, `ROLLED_BACK`, or `HALTED`
-
-### Two Independent Evaluation Dimensions
-
-- **Dimension A — Security Outcome:** Measures whether unauthorized actions were halted or executed. Explicit statuses: `PASS`, `FAIL`, `UNTESTED`, `BLOCKED_BY_ARCHITECTURE`, `INCONCLUSIVE`.
-- **Dimension B — Legitimate Task Performance:** Measures whether authorized operations succeeded, recording false denial rates, completed tasks, and unnecessary halts.
-
 ---
 
-## 6. Safety & Non-Interference Mandate
+## 6. Safety & Non-Interference Guarantees
 
 The test lab adheres strictly to the following safety properties:
 1. **Default-Deny External Egress:** All networking is directed to isolated, local synthetic mock endpoints.

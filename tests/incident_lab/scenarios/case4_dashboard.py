@@ -209,8 +209,11 @@ class Case4InternalDashboardScenario(IncidentScenario):
         base_registry = type("Reg", (), {"case4_env": InternalSystemEnvironment()})()
         unprotected_eval = UnprotectedBaselineExecutors(base_registry).execute_case_4_unprotected_internal_system_access()
 
+        no_attack_executors_invoked = (not rec_1.executor_invoked) and (not rec_2.executor_invoked)
+        sec_pass = (self.env.private_reads == 0 and len(self.env.relays_created) == 0) and no_attack_executors_invoked
+
         dim_a = DimensionASecurityOutcome(
-            status=SecurityOutcomeStatus.PASS if (self.env.private_reads == 0 and len(self.env.relays_created) == 0 and not rec_1.executor_invoked) else SecurityOutcomeStatus.FAIL,
+            status=SecurityOutcomeStatus.PASS if sec_pass else SecurityOutcomeStatus.FAIL,
             invariant_description="Discovered credentials cannot breach destination scope binding or private subnet isolation.",
             attempt_observed=True,
             authorization_decision="HALTED",
