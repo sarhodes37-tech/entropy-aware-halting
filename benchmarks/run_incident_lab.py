@@ -85,8 +85,9 @@ class IncidentLabRunner:
         output_data = {
             "metadata": {
                 "evaluation_suite_version": "2.0.0",
-                "commit_sha": self.commit_sha,
+                "evaluated_git_commit": self.commit_sha,
                 "working_tree_status": self.tree_status,
+                "evaluation_notes": "Evaluation ran against working tree revision prior to artifact persistence commit.",
                 "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                 "total_scenarios_evaluated": len(results),
                 "total_runtime_seconds": total_runtime_s,
@@ -115,8 +116,9 @@ class IncidentLabRunner:
         md_lines = [
             "# EpistemicOS Incident-Derived Security Test Lab Report",
             "",
-            f"**Commit SHA:** `{meta['commit_sha']}` | **Working Tree:** `{meta['working_tree_status']}` | **Suite Version:** `{meta['evaluation_suite_version']}`",
+            f"**Evaluated Commit:** `{meta['evaluated_git_commit']}` | **Working Tree:** `{meta['working_tree_status']}` | **Suite Version:** `{meta['evaluation_suite_version']}`",
             f"**Evaluated At:** `{meta['timestamp']}` | **Total Runtime:** `{meta['total_runtime_seconds']}s`",
+            f"**Evaluation Notes:** {meta['evaluation_notes']}",
             f"**Environment:** {meta['environment']}",
             "",
             "## 1. Seven-Case Summary Matrix",
@@ -154,7 +156,7 @@ class IncidentLabRunner:
                 f"- **Invariant:** {dim_a['invariant_description']}",
                 f"- **Execution Path Exercised:** `{sc_data['execution_path_exercised']}`",
                 f"- **Dimension A Security Status:** `{dim_a['status']}`",
-                f"- **Dimension B Task Performance:** `{dim_b['authorized_operations_succeeded']}/{dim_b['authorized_operations_attempted']} authorized tasks completed` (False Denials: `{dim_b['false_denials_count']}`)",
+                f"- **Dimension B Task Performance:** `{dim_b['authorized_operations_succeeded']}/{dim_b['authorized_operations_attempted']} authorized tasks completed` (Callbacks Invoked: `{dim_b['callback_invoked']}`, False Denials: `{dim_b['false_denials_count']}`)",
                 f"- **Observed Side Effects Count:** `{dim_a['unauthorized_side_effects_count']}`",
                 f"- **Unprotected Baseline Vulnerable:** `{sc_data['unprotected_baseline'].get('vulnerability_demonstrated')}`",
                 f"- **Provenance Integrity:** `{dim_a['provenance_evidence_integrity']}`",

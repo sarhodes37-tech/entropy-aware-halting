@@ -245,6 +245,10 @@ class CryptoWalletEnvironment:
 
     lock: threading.Lock = field(default_factory=threading.Lock)
 
+    def get_balance(self) -> float:
+        with self.lock:
+            return self.current_balance
+
     def transfer_funds(self, recipient: str, amount: float, authorized: bool = False) -> Dict[str, Any]:
         with self.lock:
             self.signing_requests += 1

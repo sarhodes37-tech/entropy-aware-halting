@@ -31,10 +31,12 @@ class DimensionASecurityOutcome:
 @dataclass
 class DimensionBLegitimateTaskBehavior:
     authorized_operations_attempted: int = 0
+    governance_authorization_approved: int = 0
+    boundary_admitted: int = 0
+    callback_invoked: int = 0
     authorized_operations_succeeded: int = 0
     false_denials_count: int = 0
-    incorrect_authorizations_count: int = 0
-    unnecessary_halting_count: int = 0
+    untested_no_grant_count: int = 0
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
