@@ -3,7 +3,8 @@ Shared Evidence Artifact Validator for EpistemicOS CI/CD Pipelines.
 
 Validates:
 - Required top-level fields, schema, and reproducibility metadata.
-- SHA-256 evaluation dataset manifest cryptographic verification (independently recomputing dataset SHA-256).
+- Cryptographic verification against code-level FROZEN_BASELINE_DATASET_DIGEST constant,
+  preventing unreviewed simultaneous edits to eval_set.jsonl and dataset_manifest.json.
 - Layer status semantics (PASS, FAIL, PARTIAL, UNTESTED, BLOCKED_BY_ARCHITECTURE, INCONCLUSIVE).
 - Zero security breaches across Layer B execution boundary.
 - Zero security recall regressions (100.0%) and zero false positive rate regressions (0.0%) in Layer D.
@@ -24,11 +25,15 @@ from typing import Dict, Any, List, Tuple
 
 VALID_STATUSES = frozenset({"PASS", "FAIL", "PARTIAL", "UNTESTED", "BLOCKED_BY_ARCHITECTURE", "INCONCLUSIVE"})
 
+# Immutable baseline SHA-256 digest constant protected at code-level
+FROZEN_BASELINE_DATASET_DIGEST = "f4e31381a922c1143769ccb887c4841e4a14fedec6eef6569d40eed2956ce873"
+
 
 def validate_evidence_artifact(
     artifact_path: str,
     manifest_path: str = "benchmarks/data/dataset_manifest.json",
-    require_full_pass: bool = False
+    require_full_pass: bool = False,
+    expected_baseline_digest: str = FROZEN_BASELINE_DATASET_DIGEST
 ) -> Tuple[bool, List[str]]:
     errors = []
     p = Path(artifact_path)
@@ -53,7 +58,7 @@ def validate_evidence_artifact(
     if overall_status not in VALID_STATUSES:
         errors.append(f"Invalid overall_evaluation_status: {overall_status}")
 
-    # 2. Independent Dataset SHA-256 Digest Verification
+    # 2. Independent Dataset SHA-256 Digest Verification against Code-Level Baseline Constant
     meta = data.get("reproducibility_metadata", {})
     required_meta = {"evaluated_git_commit", "working_tree_status", "dataset_version", "dataset_sha256_digest", "dataset_digest_verified"}
     missing_meta = required_meta - set(meta.keys())
@@ -73,16 +78,22 @@ def validate_evidence_artifact(
             expected_manifest_digest = manifest_data.get("sha256_digest", "")
             dataset_file = manifest_data.get("dataset_file", "benchmarks/data/eval_set.jsonl")
 
+            if expected_manifest_digest != expected_baseline_digest:
+                errors.append(
+                    f"Manifest Baseline Violation! Manifest digest ({expected_manifest_digest}) "
+                    f"does not match code-level frozen baseline digest ({expected_baseline_digest})."
+                )
+
             if not Path(dataset_file).exists():
                 errors.append(f"Evaluation dataset file missing at path: {dataset_file}")
             else:
                 with open(dataset_file, "rb") as df:
                     actual_computed_digest = hashlib.sha256(df.read()).hexdigest()
 
-                if actual_computed_digest != expected_manifest_digest:
+                if actual_computed_digest != expected_baseline_digest:
                     errors.append(
-                        f"Dataset Tampering Detected! Actual dataset digest ({actual_computed_digest}) "
-                        f"does not match frozen manifest digest ({expected_manifest_digest})."
+                        f"Dataset Tampering / Unreviewed Baseline Edit Detected! Actual dataset digest ({actual_computed_digest}) "
+                        f"does not match code-level frozen baseline digest ({expected_baseline_digest})."
                     )
 
                 if actual_computed_digest != reported_digest:

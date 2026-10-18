@@ -60,11 +60,19 @@ jobs:
         run: |
           python -m benchmarks.generate_evidence_report
 
-      - name: CI Enforcement - Validate Four-Layer Security Evidence Invariants
+      - name: CI Enforcement - Validate Security Evidence Invariants (PR CI)
+        if: github.event_name == 'pull_request'
         env:
           PYTHONPATH: .
         run: |
           python -m benchmarks.validate_evidence --artifact results/four_layer_evidence.json
+
+      - name: CI Enforcement - Validate Security Evidence Invariants (Release CI - Strict Full Pass)
+        if: github.event_name != 'pull_request'
+        env:
+          PYTHONPATH: .
+        run: |
+          python -m benchmarks.validate_evidence --artifact results/four_layer_evidence.json --require-full-pass
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4

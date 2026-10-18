@@ -43,11 +43,19 @@ jobs:
       run: |
         python -m benchmarks.generate_evidence_report
 
-    - name: Validate Four-Layer Security Evidence Invariants
+    - name: Validate Four-Layer Security Evidence Invariants (PR CI)
+      if: github.event_name == 'pull_request'
       env:
         PYTHONPATH: .
       run: |
         python -m benchmarks.validate_evidence --artifact results/four_layer_evidence.json
+
+    - name: Validate Four-Layer Security Evidence Invariants (Release CI - Strict Full Pass)
+      if: github.event_name != 'pull_request'
+      env:
+        PYTHONPATH: .
+      run: |
+        python -m benchmarks.validate_evidence --artifact results/four_layer_evidence.json --require-full-pass
 
     - name: Archive Benchmark Artifacts
       if: always()

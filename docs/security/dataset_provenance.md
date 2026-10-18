@@ -49,11 +49,17 @@ Every evaluation case in `benchmarks/data/eval_set.jsonl` was constructed throug
 
 ---
 
-## 3. Cryptographic Digest & Immutability Verification
+## 3. Cryptographic Digest, Dual-Lock Baseline, & Change Control
 
-Dataset integrity is enforced through `benchmarks/data/dataset_manifest.json`.
+Dataset integrity is enforced through a **dual-lock verification model**:
+1. Manifest Verification (`benchmarks/data/dataset_manifest.json`): Records dataset metadata and SHA-256 hash.
+2. Code-Level Baseline Protection (`benchmarks/validate_evidence.py`): Hardcodes `FROZEN_BASELINE_DATASET_DIGEST = "f4e31381a922c1143769ccb887c4841e4a14fedec6eef6569d40eed2956ce873"`.
 
-During every evidence collection run (`benchmarks/generate_evidence_report.py`) and CI validation step (`benchmarks/validate_evidence.py`), the SHA-256 hash of `benchmarks/data/eval_set.jsonl` is recomputed and checked against the manifest digest. Any mismatch or mutation immediately invalidates the run and fails CI build steps.
+### Baseline Update Procedure
+If the frozen evaluation dataset must be updated or re-versioned (e.g., v1.1.0-frozen release):
+1. **Formal Review & Preregistration Amendment:** Submit a versioned amendment to `docs/PREREGISTRATION.md` documenting reasons for dataset modification or case additions.
+2. **Re-compute SHA-256 Digest:** Generate the new SHA-256 digest of `benchmarks/data/eval_set.jsonl`.
+3. **Synchronized Code & Manifest Update:** Simultaneously update `benchmarks/data/dataset_manifest.json` AND update `FROZEN_BASELINE_DATASET_DIGEST` in `benchmarks/validate_evidence.py`. Modifying `eval_set.jsonl` and `dataset_manifest.json` without updating `FROZEN_BASELINE_DATASET_DIGEST` will trigger an immediate CI baseline violation failure.
 
 ---
 

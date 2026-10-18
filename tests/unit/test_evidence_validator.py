@@ -4,16 +4,17 @@ Negative Unit Tests for Evidence Validator (`benchmarks/validate_evidence.py`).
 Tests rejection of synthetic invalid artifacts:
 1. Missing required evaluation layers.
 2. Unverified, missing, or forged dataset SHA-256 digest.
-3. Observed unauthorized side effects or breaches in Layer B.
-4. Metric recall or FPR regressions in Layer D.
-5. Inconsistent overall status 'PASS' when required layers report PARTIAL or FAIL.
-6. Overall status 'PARTIAL' blocked under --require-full-pass flag.
+3. Unreviewed simultaneous edits to eval_set.jsonl and dataset_manifest.json (baseline constant mismatch).
+4. Observed unauthorized side effects or breaches in Layer B.
+5. Metric recall or FPR regressions in Layer D.
+6. Inconsistent overall status 'PASS' when required layers report PARTIAL or FAIL.
+7. Overall status 'PARTIAL' blocked under --require-full-pass flag.
 """
 
 import copy
 import json
 import pytest
-from benchmarks.validate_evidence import validate_evidence_artifact
+from benchmarks.validate_evidence import validate_evidence_artifact, FROZEN_BASELINE_DATASET_DIGEST
 
 
 @pytest.fixture
@@ -25,7 +26,7 @@ def valid_evidence_data():
             "evaluated_git_commit": "abcdef1234567890",
             "working_tree_status": "CLEAN",
             "dataset_version": "1.0.0-frozen",
-            "dataset_sha256_digest": "f4e31381a922c1143769ccb887c4841e4a14fedec6eef6569d40eed2956ce873",
+            "dataset_sha256_digest": FROZEN_BASELINE_DATASET_DIGEST,
             "dataset_digest_verified": True
         },
         "overall_evaluation_status": "PASS",
@@ -76,7 +77,6 @@ def test_missing_layer_rejected(valid_evidence_data, tmp_path):
 
 def test_forged_dataset_digest_rejected(valid_evidence_data, tmp_path):
     data = copy.deepcopy(valid_evidence_data)
-    # Claim dataset_digest_verified is True, but pass a forged digest
     data["reproducibility_metadata"]["dataset_sha256_digest"] = "1111111111111111111111111111111111111111111111111111111111111111"
 
     artifact_file = tmp_path / "forged_digest.json"
@@ -87,25 +87,27 @@ def test_forged_dataset_digest_rejected(valid_evidence_data, tmp_path):
     assert any("Report Metadata Tampering/Forged Claim Detected" in err for err in errors)
 
 
-def test_modified_dataset_file_rejected(valid_evidence_data, tmp_path):
+def test_simultaneous_unreviewed_manifest_and_dataset_edit_rejected(valid_evidence_data, tmp_path):
+    """Proves that changing both dataset and manifest together fails code-level baseline check."""
+    new_hash = "2222222222222222222222222222222222222222222222222222222222222222"
     data = copy.deepcopy(valid_evidence_data)
+    data["reproducibility_metadata"]["dataset_sha256_digest"] = new_hash
 
-    # Create dummy modified dataset file and manifest
     fake_dataset = tmp_path / "fake_eval.jsonl"
     fake_dataset.write_text("MODIFIED DATASET CONTENT", encoding="utf-8")
 
     fake_manifest = tmp_path / "fake_manifest.json"
     fake_manifest.write_text(json.dumps({
-        "sha256_digest": "f4e31381a922c1143769ccb887c4841e4a14fedec6eef6569d40eed2956ce873",
+        "sha256_digest": new_hash,
         "dataset_file": str(fake_dataset)
     }), encoding="utf-8")
 
-    artifact_file = tmp_path / "modified_dataset_artifact.json"
+    artifact_file = tmp_path / "simultaneous_edit.json"
     artifact_file.write_text(json.dumps(data), encoding="utf-8")
 
     is_valid, errors = validate_evidence_artifact(str(artifact_file), manifest_path=str(fake_manifest))
     assert is_valid is False
-    assert any("Dataset Tampering Detected" in err for err in errors)
+    assert any("Manifest Baseline Violation" in err for err in errors)
 
 
 def test_layer_b_breach_rejected(valid_evidence_data, tmp_path):
