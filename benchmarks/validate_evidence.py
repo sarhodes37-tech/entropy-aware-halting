@@ -3,9 +3,8 @@ Shared Evidence Artifact Validator for EpistemicOS CI/CD Pipelines.
 
 Validates:
 - Required top-level fields, schema, and reproducibility metadata.
-- Cryptographic verification against base-branch dataset manifest/eval_set (via git show)
-  and code-level FROZEN_BASELINE_DATASET_DIGEST constant, preventing unreviewed
-  simultaneous edits to eval_set.jsonl, dataset_manifest.json, and validator constants in PRs.
+- Cryptographic verification strictly against base-branch dataset manifest/eval_set (via git show origin/main or GITHUB_BASE_REF).
+  FAILS CLOSED if trusted base ref cannot be resolved, unless explicit --allow-local-constant-fallback is provided for local offline testing.
 - Layer status semantics (PASS, FAIL, PARTIAL, UNTESTED, BLOCKED_BY_ARCHITECTURE, INCONCLUSIVE).
 - Zero security breaches across Layer B execution boundary.
 - Zero security recall regressions (100.0%) and zero false positive rate regressions (0.0%) in Layer D.
@@ -27,7 +26,7 @@ from typing import Dict, Any, List, Tuple, Optional
 
 VALID_STATUSES = frozenset({"PASS", "FAIL", "PARTIAL", "UNTESTED", "BLOCKED_BY_ARCHITECTURE", "INCONCLUSIVE"})
 
-# Fallback immutable baseline SHA-256 digest constant protected at code-level
+# Code-level fallback constant used strictly when explicit --allow-local-constant-fallback is set
 FROZEN_BASELINE_DATASET_DIGEST = "f4e31381a922c1143769ccb887c4841e4a14fedec6eef6569d40eed2956ce873"
 
 
@@ -73,7 +72,7 @@ def get_base_branch_manifest_digest(
         except Exception:
             pass
 
-    # Do NOT fall back to HEAD or local untrusted files
+    # Fail closed: Do NOT fall back to local constants or HEAD automatically
     return False, "", None
 
 
@@ -81,22 +80,30 @@ def validate_evidence_artifact(
     artifact_path: str,
     manifest_path: str = "benchmarks/data/dataset_manifest.json",
     require_full_pass: bool = False,
-    expected_baseline_digest: Optional[str] = None
+    expected_baseline_digest: Optional[str] = None,
+    allow_local_constant_fallback: bool = False
 ) -> Tuple[bool, List[str]]:
     errors = []
     p = Path(artifact_path)
+    resolved_ref_used = None
 
-    # 1. Resolve Trusted Baseline
+    # 1. Resolve Trusted Baseline - Fail Closed if Resolution Fails
     if expected_baseline_digest is None:
         resolved_ok, resolved_digest, resolved_ref = get_base_branch_manifest_digest(manifest_path)
         if resolved_ok:
             expected_baseline_digest = resolved_digest
-        else:
-            # Fall back to code-level constant only
+            resolved_ref_used = resolved_ref
+        elif allow_local_constant_fallback:
             expected_baseline_digest = FROZEN_BASELINE_DATASET_DIGEST
+            resolved_ref_used = "OPT_IN_LOCAL_FALLBACK_CONSTANT"
+        else:
+            return False, [
+                "Baseline Resolution Error: Could not resolve trusted base branch ref (origin/main, GITHUB_BASE_REF). "
+                "CI/Release validation fails closed. (Pass --allow-local-constant-fallback for local un-pushed offline testing)."
+            ]
 
     if not expected_baseline_digest or len(expected_baseline_digest) != 64:
-        return False, ["Baseline Resolution Error: Could not resolve a valid trusted baseline dataset digest."]
+        return False, ["Baseline Resolution Error: Resolved baseline dataset digest is empty or invalid."]
 
     if not p.exists():
         return False, [f"Evidence artifact missing at path: {artifact_path}"]
@@ -141,7 +148,7 @@ def validate_evidence_artifact(
             if expected_manifest_digest != expected_baseline_digest:
                 errors.append(
                     f"Manifest Baseline Violation! Manifest digest ({expected_manifest_digest}) "
-                    f"does not match trusted baseline digest ({expected_baseline_digest})."
+                    f"does not match trusted base-branch baseline digest ({expected_baseline_digest})."
                 )
 
             if not Path(dataset_file).exists():
@@ -153,7 +160,7 @@ def validate_evidence_artifact(
                 if actual_computed_digest != expected_baseline_digest:
                     errors.append(
                         f"Dataset Tampering / Unreviewed Baseline Edit Detected! Actual dataset digest ({actual_computed_digest}) "
-                        f"does not match trusted baseline digest ({expected_baseline_digest})."
+                        f"does not match trusted base-branch baseline digest ({expected_baseline_digest})."
                     )
 
                 if actual_computed_digest != reported_digest:
@@ -228,12 +235,14 @@ def main():
     parser.add_argument("--artifact", default="results/four_layer_evidence.json", help="Path to evidence artifact")
     parser.add_argument("--manifest", default="benchmarks/data/dataset_manifest.json", help="Path to dataset manifest")
     parser.add_argument("--require-full-pass", action="store_true", help="Enforce overall PASS status (e.g. for release workflows)")
+    parser.add_argument("--allow-local-constant-fallback", action="store_true", help="Opt-in fallback to local constant when base branch ref is missing (non-CI local testing)")
     args = parser.parse_args()
 
     valid, errors = validate_evidence_artifact(
         args.artifact,
         manifest_path=args.manifest,
-        require_full_pass=args.require_full_pass
+        require_full_pass=args.require_full_pass,
+        allow_local_constant_fallback=args.allow_local_constant_fallback
     )
 
     if valid:

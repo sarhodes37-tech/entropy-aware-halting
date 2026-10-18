@@ -6,10 +6,12 @@ Tests rejection of synthetic invalid artifacts:
 2. Unverified, missing, or forged dataset SHA-256 digest.
 3. Coordinated modification of dataset, manifest, and validator constant in PR branch.
 4. Base branch resolution exclusion of HEAD and local untrusted files.
-5. Observed unauthorized side effects or breaches in Layer B.
-6. Metric recall or FPR regressions in Layer D.
-7. Inconsistent overall status 'PASS' when required layers report PARTIAL or FAIL.
-8. Overall status 'PARTIAL' blocked under --require-full-pass flag.
+5. Fail closed when no trusted base ref is available and allow_local_constant_fallback is False.
+6. Explicit opt-in --allow-local-constant-fallback behavior.
+7. Observed unauthorized side effects or breaches in Layer B.
+8. Metric recall or FPR regressions in Layer D.
+9. Inconsistent overall status 'PASS' when required layers report PARTIAL or FAIL.
+10. Overall status 'PARTIAL' blocked under --require-full-pass flag.
 """
 
 import copy
@@ -144,6 +146,23 @@ def test_coordinated_modification_of_dataset_manifest_and_validator_rejected(val
     )
     assert is_valid is False
     assert any("Manifest Baseline Violation" in err for err in errors)
+
+
+def test_no_trusted_base_ref_fails_closed(valid_evidence_data, tmp_path, monkeypatch):
+    """Proves that when no trusted base ref can be resolved, validate_evidence_artifact fails closed."""
+    monkeypatch.setattr("benchmarks.validate_evidence.get_base_branch_manifest_digest", lambda *a, **k: (False, "", None))
+
+    artifact_file = tmp_path / "no_base_ref.json"
+    artifact_file.write_text(json.dumps(valid_evidence_data), encoding="utf-8")
+
+    # Without allow_local_constant_fallback, MUST fail closed
+    is_valid, errors = validate_evidence_artifact(str(artifact_file), allow_local_constant_fallback=False)
+    assert is_valid is False
+    assert any("Baseline Resolution Error" in err for err in errors)
+
+    # With opt-in allow_local_constant_fallback, passes
+    is_valid_optin, errors_optin = validate_evidence_artifact(str(artifact_file), allow_local_constant_fallback=True)
+    assert is_valid_optin is True
 
 
 def test_get_base_branch_manifest_digest_excludes_untrusted_refs():
