@@ -15,6 +15,7 @@ Outputs:
 import json
 import time
 import subprocess
+import hashlib
 import sys
 import os
 import tempfile
@@ -51,12 +52,21 @@ def get_working_tree_status() -> str:
         return "UNKNOWN_STATUS"
 
 
+def compute_working_tree_digest() -> str:
+    try:
+        res = subprocess.run(["git", "diff", "HEAD"], capture_output=True, text=True, check=True)
+        return hashlib.sha256(res.stdout.encode("utf-8")).hexdigest()[:16]
+    except Exception:
+        return "UNKNOWN_TREE_DIGEST"
+
+
 class IncidentLabRunner:
     def __init__(self, audit_dir: Optional[str] = None):
         self.audit_dir = Path(audit_dir) if audit_dir else Path(tempfile.gettempdir()) / "lab_benchmark_run"
         self.audit_dir.mkdir(parents=True, exist_ok=True)
         self.commit_sha = get_git_commit_hash()
         self.tree_status = get_working_tree_status()
+        self.tree_digest = compute_working_tree_digest()
 
     def run_lab_evaluation(
         self,
@@ -84,10 +94,11 @@ class IncidentLabRunner:
 
         output_data = {
             "metadata": {
-                "evaluation_suite_version": "2.0.0",
+                "evaluation_suite_version": "2.1.0",
                 "evaluated_git_commit": self.commit_sha,
                 "working_tree_status": self.tree_status,
-                "evaluation_notes": "Evaluation ran against working tree revision prior to artifact persistence commit.",
+                "uncommitted_tree_digest": self.tree_digest,
+                "evaluation_notes": "Evaluation executed against uncommitted source tree prior to report persistence commit.",
                 "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                 "total_scenarios_evaluated": len(results),
                 "total_runtime_seconds": total_runtime_s,
@@ -116,7 +127,7 @@ class IncidentLabRunner:
         md_lines = [
             "# EpistemicOS Incident-Derived Security Test Lab Report",
             "",
-            f"**Evaluated Commit:** `{meta['evaluated_git_commit']}` | **Working Tree:** `{meta['working_tree_status']}` | **Suite Version:** `{meta['evaluation_suite_version']}`",
+            f"**Evaluated Commit:** `{meta['evaluated_git_commit']}` | **Working Tree:** `{meta['working_tree_status']}` (Digest: `{meta['uncommitted_tree_digest']}`) | **Suite Version:** `{meta['evaluation_suite_version']}`",
             f"**Evaluated At:** `{meta['timestamp']}` | **Total Runtime:** `{meta['total_runtime_seconds']}s`",
             f"**Evaluation Notes:** {meta['evaluation_notes']}",
             f"**Environment:** {meta['environment']}",
@@ -132,14 +143,21 @@ class IncidentLabRunner:
             dim_a = sc_data["dimension_a_security"]
             dim_b = sc_data["dimension_b_task"]
             sec_status = dim_a["status"]
-            task_status = f"{dim_b['authorized_operations_succeeded']}/{dim_b['authorized_operations_attempted']} Succeeded"
+
+            # Highlight Case 3 as PARTIAL_GATING_DEFENSE
+            if dim_a.get("containment_recovery_outcome") == "PARTIAL_GATING_DEFENSE":
+                sec_display = "PASS (PARTIAL_GATING_DEFENSE)"
+            else:
+                sec_display = str(sec_status)
+
+            task_status = f"{dim_b['governance_authorization_approved']}/{dim_b['authorized_operations_attempted']} Approved (Boundary Admitted: {dim_b['boundary_admitted']})"
             side_effects = dim_a["unauthorized_side_effects_count"]
             base_vuln = "YES" if sc_data["unprotected_baseline"].get("vulnerability_demonstrated") else "NO"
             prov_status = dim_a["provenance_evidence_integrity"]
             gaps = len(sc_data["architectural_gaps"])
 
             md_lines.append(
-                f"| **{sc_id}** | **{sec_status}** | {task_status} | {side_effects} | {base_vuln} | {prov_status} | {gaps} gap(s) |"
+                f"| **{sc_id}** | **{sec_display}** | {task_status} | {side_effects} | {base_vuln} | {prov_status} | {gaps} gap(s) |"
             )
 
         md_lines.extend([
@@ -151,12 +169,18 @@ class IncidentLabRunner:
         for sc_key, sc_data in scs.items():
             dim_a = sc_data["dimension_a_security"]
             dim_b = sc_data["dimension_b_task"]
+
+            if dim_a.get("containment_recovery_outcome") == "PARTIAL_GATING_DEFENSE":
+                sec_detail = f"{dim_a['status']} (PARTIAL_GATING_DEFENSE — Transitive Egress Untested)"
+            else:
+                sec_detail = str(dim_a['status'])
+
             md_lines.extend([
                 f"### Scenario: `{sc_data['scenario_name']}` (`{sc_data['scenario_id']}`)",
                 f"- **Invariant:** {dim_a['invariant_description']}",
                 f"- **Execution Path Exercised:** `{sc_data['execution_path_exercised']}`",
-                f"- **Dimension A Security Status:** `{dim_a['status']}`",
-                f"- **Dimension B Task Performance:** `{dim_b['authorized_operations_succeeded']}/{dim_b['authorized_operations_attempted']} authorized tasks completed` (Callbacks Invoked: `{dim_b['callback_invoked']}`, False Denials: `{dim_b['false_denials_count']}`)",
+                f"- **Dimension A Security Status:** `{sec_detail}`",
+                f"- **Dimension B Task Performance:** `{dim_b['governance_authorization_approved']}/{dim_b['authorized_operations_attempted']} approved` (Boundary Admitted: `{dim_b['boundary_admitted']}`, Callbacks Invoked: `{dim_b['callback_invoked']}`, Untested No-Grant: `{dim_b['untested_no_grant_count']}`)",
                 f"- **Observed Side Effects Count:** `{dim_a['unauthorized_side_effects_count']}`",
                 f"- **Unprotected Baseline Vulnerable:** `{sc_data['unprotected_baseline'].get('vulnerability_demonstrated')}`",
                 f"- **Provenance Integrity:** `{dim_a['provenance_evidence_integrity']}`",
@@ -191,7 +215,7 @@ class IncidentLabRunner:
             "",
             "1. **Synthetic Isolation:** All tests run locally against synthetic, isolated, side-effect-free mock environments. No live production endpoints or real funds were accessed.",
             "2. **Scope of Proof:** Demonstration of defense-in-depth gating under these seven incident patterns does not constitute proof of universal security against arbitrary unmodeled threats.",
-            "3. **Architectural Gaps:** Explicit gaps in multi-agent fleet gating and automatic grant provenance generation are documented and preserved without production workarounds."
+            "3. **Architectural Gaps:** Explicit gaps in multi-agent fleet gating, automatic grant provenance generation, and transitive egress filtering are documented and preserved without production workarounds."
         ])
 
         with open(output_path, "w", encoding="utf-8") as f:

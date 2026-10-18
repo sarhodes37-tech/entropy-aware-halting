@@ -11,7 +11,15 @@ Verifies that EpistemicOS detects, halts, contains, and logs all seven incident 
 7. Multi-agent fleet amplification
 """
 
+import uuid
 import pytest
+from epistemicos.provenance import (
+    LocalProvenanceStore,
+    ProvenanceEvent,
+    ProvenanceEventType,
+    ProvenanceSource,
+    ProvenanceReconciler
+)
 from tests.incident_lab.fixtures.base_fixture import SecurityOutcomeStatus
 from tests.incident_lab.scenarios.case1_github import Case1GitHubCredentialExposureScenario
 from tests.incident_lab.scenarios.case2_government import Case2GovernmentAuthorizationBypassScenario
@@ -33,7 +41,8 @@ def test_case_1_github_credential_exposure(tmp_audit_dir):
 
     assert report.dimension_a_security.status == SecurityOutcomeStatus.PASS
     assert report.dimension_a_security.unauthorized_side_effects_count == 0
-    assert report.dimension_b_task.authorized_operations_succeeded == 1
+    assert report.dimension_b_task.governance_authorization_approved == 1
+    assert report.dimension_b_task.untested_no_grant_count == 1
     assert report.unprotected_baseline["vulnerability_demonstrated"] is True
 
 
@@ -43,7 +52,8 @@ def test_case_2_government_authorization_bypass(tmp_audit_dir):
 
     assert report.dimension_a_security.status == SecurityOutcomeStatus.PASS
     assert report.dimension_a_security.unauthorized_side_effects_count == 0
-    assert report.dimension_b_task.authorized_operations_succeeded == 1
+    assert report.dimension_b_task.governance_authorization_approved == 1
+    assert report.dimension_b_task.untested_no_grant_count == 1
     assert report.unprotected_baseline["vulnerability_demonstrated"] is True
 
 
@@ -52,8 +62,10 @@ def test_case_3_indirect_egress(tmp_audit_dir):
     report = scenario.run_evaluation()
 
     assert report.dimension_a_security.status == SecurityOutcomeStatus.PASS
+    assert report.dimension_a_security.containment_recovery_outcome == "PARTIAL_GATING_DEFENSE"
     assert report.dimension_a_security.unauthorized_side_effects_count == 0
-    assert report.dimension_b_task.authorized_operations_succeeded == 1
+    assert report.dimension_b_task.governance_authorization_approved == 1
+    assert report.dimension_b_task.untested_no_grant_count == 1
     assert report.unprotected_baseline["vulnerability_demonstrated"] is True
 
 
@@ -63,7 +75,8 @@ def test_case_4_internal_dashboard(tmp_audit_dir):
 
     assert report.dimension_a_security.status == SecurityOutcomeStatus.PASS
     assert report.dimension_a_security.unauthorized_side_effects_count == 0
-    assert report.dimension_b_task.authorized_operations_succeeded == 1
+    assert report.dimension_b_task.governance_authorization_approved == 1
+    assert report.dimension_b_task.untested_no_grant_count == 1
     assert report.unprotected_baseline["vulnerability_demonstrated"] is True
 
 
@@ -73,7 +86,8 @@ def test_case_5_crypto_wallet(tmp_audit_dir):
 
     assert report.dimension_a_security.status == SecurityOutcomeStatus.PASS
     assert report.dimension_a_security.unauthorized_side_effects_count == 0
-    assert report.dimension_b_task.authorized_operations_succeeded == 1
+    assert report.dimension_b_task.governance_authorization_approved == 1
+    assert report.dimension_b_task.untested_no_grant_count == 1
     assert report.unprotected_baseline["vulnerability_demonstrated"] is True
 
 
@@ -83,7 +97,8 @@ def test_case_6_destructive_recovery(tmp_audit_dir):
 
     assert report.dimension_a_security.status == SecurityOutcomeStatus.PASS
     assert report.dimension_a_security.unauthorized_side_effects_count == 0
-    assert report.dimension_b_task.authorized_operations_succeeded == 1
+    assert report.dimension_b_task.governance_authorization_approved == 1
+    assert report.dimension_b_task.untested_no_grant_count == 1
     assert report.unprotected_baseline["vulnerability_demonstrated"] is True
 
 
@@ -92,8 +107,89 @@ def test_case_7_fleet_amplification(tmp_audit_dir):
     report = scenario.run_evaluation()
 
     assert report.dimension_a_security.status == SecurityOutcomeStatus.PASS
-    assert report.dimension_b_task.authorized_operations_succeeded == 2
+    assert report.dimension_b_task.governance_authorization_approved == 2
+    assert report.dimension_b_task.untested_no_grant_count == 2
     assert report.unprotected_baseline["vulnerability_demonstrated"] is True
+
+
+def test_provenance_valid_control_cannot_compensate_for_missing_attack_correlation(tmp_path):
+    """
+    Regression Test:
+    Proves that a valid legitimate-control correlation cannot compensate for an
+    invalid or missing attack correlation when evaluating overall scenario provenance.
+    """
+    prov_store = LocalProvenanceStore(log_path=str(tmp_path / "test_prov.jsonl"))
+    reconciler = ProvenanceReconciler()
+
+    attack_corr_id = f"ATTACK-CORR-{uuid.uuid4()}"
+    legit_corr_id = f"LEGIT-CORR-{uuid.uuid4()}"
+    req_id = f"REQ-{uuid.uuid4()}"
+    token_id = f"TOKEN-{uuid.uuid4()}"
+
+    # Record valid provenance sequence ONLY for legitimate control correlation
+    grant_event = ProvenanceEvent(
+        schema_version="1.0.0",
+        event_id=str(uuid.uuid4()),
+        event_type=ProvenanceEventType.AUTHORIZATION_GRANTED.value,
+        provenance_source=ProvenanceSource.GOVERNANCE_GATE.value,
+        correlation_id=legit_corr_id,
+        request_id=req_id,
+        action_name="read",
+        target="public_repo",
+        canonical_request_digest="digest_123",
+        timestamp="2025-01-01T00:00:00Z",
+        authorization_token_id=token_id,
+        decision="ALLOW"
+    )
+    start_event = ProvenanceEvent(
+        schema_version="1.0.0",
+        event_id=str(uuid.uuid4()),
+        event_type=ProvenanceEventType.EXECUTION_STARTED.value,
+        provenance_source=ProvenanceSource.EXECUTOR.value,
+        correlation_id=legit_corr_id,
+        request_id=req_id,
+        action_name="read",
+        target="public_repo",
+        canonical_request_digest="digest_123",
+        timestamp="2025-01-01T00:00:01Z",
+        authorization_token_id=token_id,
+        execution_attempt_id="attempt_1"
+    )
+    success_event = ProvenanceEvent(
+        schema_version="1.0.0",
+        event_id=str(uuid.uuid4()),
+        event_type=ProvenanceEventType.EXECUTION_SUCCEEDED.value,
+        provenance_source=ProvenanceSource.EXECUTOR.value,
+        correlation_id=legit_corr_id,
+        request_id=req_id,
+        action_name="read",
+        target="public_repo",
+        canonical_request_digest="digest_123",
+        timestamp="2025-01-01T00:00:02Z",
+        authorization_token_id=token_id,
+        execution_attempt_id="attempt_1"
+    )
+
+    prov_store.record_event(grant_event)
+    prov_store.record_event(start_event)
+    prov_store.record_event(success_event)
+
+    # Reconcile legitimate control -> valid
+    events_legit = prov_store.get_events_for_correlation(legit_corr_id)
+    rec_legit = reconciler.reconcile_correlation(legit_corr_id, events_legit)
+    assert rec_legit.valid is True
+
+    # Reconcile attack correlation (missing events) -> invalid
+    events_attack = prov_store.get_events_for_correlation(attack_corr_id)
+    rec_attack = reconciler.reconcile_correlation(attack_corr_id, events_attack)
+    assert rec_attack.valid is False
+
+    # Scenario provenance evaluation requiring BOTH correlations to be valid
+    overall_valid = rec_legit.valid and rec_attack.valid
+    overall_status = "VERIFIED" if overall_valid else "UNVERIFIED"
+
+    assert overall_valid is False
+    assert overall_status == "UNVERIFIED"
 
 
 def test_all_scenarios_combined(tmp_audit_dir):
