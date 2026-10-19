@@ -32,6 +32,7 @@ from benchmarks.run_live_agent_redteam import SyntheticAdversarialHarnessEvaluat
 # Mandatory Layer B coverage requirement: all 7 core incident lab scenario cases
 MANDATORY_LAYER_B_SCENARIOS = frozenset({"case1", "case2", "case3", "case4", "case5", "case6", "case7"})
 VALID_CLASSIFICATIONS = frozenset({"TC", "FC", "TR", "FR"})
+CANONICAL_PER_CASE_RESULTS_PATH = "results/per_case_results.json"
 
 
 def load_json_artifact(filepath: str) -> Dict[str, Any]:
@@ -73,13 +74,19 @@ def run_layer_a_deterministic_tests(fast_mode: bool = False) -> Dict[str, Any]:
         }
 
 
-def evaluate_layer_d_evidence(layer_d_raw: Dict[str, Any], dataset_digest_valid: bool, expected_dataset_digest: str) -> Dict[str, Any]:
+def evaluate_layer_d_evidence(
+    layer_d_raw: Dict[str, Any],
+    dataset_digest_valid: bool,
+    expected_dataset_digest: str,
+    per_case_filepath: str = CANONICAL_PER_CASE_RESULTS_PATH
+) -> Dict[str, Any]:
     """
     Evaluates Layer D performance and cost benchmarks against mandatory evidence criteria:
     - Complete N=100 evaluation sample.
     - Dataset SHA-256 digest independently verified against manifest.
     - Mandatory per-case run records present and verified (never PASS if missing/incomplete/malformed).
-    - Run records explicitly bound to dataset SHA-256 digest and run metadata.
+    - Exact SHA-256 file byte digest verification matching benchmark output digest.
+    - Run records explicitly bound to run_id and dataset SHA-256 digest.
     - Every summary metric (accuracy_pct, recall_pct, false_positive_rate_pct) present, numeric, finite, and in [0.0, 100.0].
     - Recomputed recall, false-positive rate, and accuracy from run-level per-case outcomes reconciled with reported summaries.
     - Non-zero valid denominators matching evaluated sample size.
@@ -92,6 +99,14 @@ def evaluate_layer_d_evidence(layer_d_raw: Dict[str, Any], dataset_digest_valid:
     eval_sample_count = layer_d_raw.get("eval_sample_count")
     if eval_sample_count is None or not isinstance(eval_sample_count, int) or eval_sample_count < 100:
         violations.append(f"Incomplete evaluation sample: N = {eval_sample_count} (Mandatory: N >= 100)")
+
+    run_id = layer_d_raw.get("run_id")
+    if not run_id or not isinstance(run_id, str):
+        violations.append("Missing or invalid run_id in Layer D benchmark output")
+
+    reported_records_digest = layer_d_raw.get("run_records_sha256_digest")
+    if not reported_records_digest or not isinstance(reported_records_digest, str) or len(reported_records_digest) != 64:
+        violations.append("Missing or invalid run_records_sha256_digest in Layer D benchmark output")
 
     baselines = layer_d_raw.get("baselines", {})
     if not baselines or not isinstance(baselines, dict):
@@ -131,16 +146,24 @@ def evaluate_layer_d_evidence(layer_d_raw: Dict[str, Any], dataset_digest_valid:
             if val < 0.0 or val > 100.0:
                 violations.append(f"Metric '{m_name}' out of valid percentage range [0.0, 100.0]: {val}")
 
-    # MANDATORY: Load and validate per-case run-level records bound to dataset digest
-    per_case_path = "results/per_case_records.json"
-    if not os.path.exists(per_case_path):
-        per_case_path = "results/per_case_results.json"
-
-    if not os.path.exists(per_case_path):
-        violations.append(f"Mandatory run-level per-case records file missing at '{per_case_path}'")
+    # MANDATORY: Load per-case file bytes directly and compute exact SHA-256 digest
+    per_case_path = Path(per_case_filepath)
+    if not per_case_path.exists():
+        violations.append(f"Mandatory run-level per-case records file missing at '{per_case_filepath}'")
         per_case_records = None
     else:
-        per_case_records = load_json_artifact(per_case_path)
+        try:
+            with open(per_case_path, "rb") as pf:
+                record_bytes = pf.read()
+
+            actual_records_digest = hashlib.sha256(record_bytes).hexdigest()
+            if reported_records_digest and actual_records_digest != reported_records_digest:
+                violations.append(f"Run records file SHA-256 digest mismatch: file digest ({actual_records_digest}) != reported digest ({reported_records_digest})")
+
+            per_case_records = json.loads(record_bytes.decode("utf-8"))
+        except Exception as rerr:
+            violations.append(f"Failed to read or parse per-case records file: {str(rerr)}")
+            per_case_records = None
 
     if per_case_records is None or not isinstance(per_case_records, list) or len(per_case_records) == 0:
         violations.append("Mandatory run-level per-case records are missing, empty, or malformed")
@@ -149,10 +172,14 @@ def evaluate_layer_d_evidence(layer_d_raw: Dict[str, Any], dataset_digest_valid:
         if eval_sample_count is not None and len(combined_records) != eval_sample_count:
             violations.append(f"Run-level Combined Gating record count ({len(combined_records)}) does not match expected sample size ({eval_sample_count})")
         else:
-            # Bind run records to dataset digest
-            bound_digests = {r.get("dataset_sha256_digest") for r in combined_records if r.get("dataset_sha256_digest")}
-            if bound_digests and expected_dataset_digest not in bound_digests:
-                violations.append(f"Run records bound to different dataset digest ({list(bound_digests)}) than verified baseline digest ({expected_dataset_digest})")
+            # Bind records to run_id and dataset digest strictly
+            record_run_ids = {r.get("run_id") for r in combined_records}
+            if len(record_run_ids) != 1 or (run_id and run_id not in record_run_ids):
+                violations.append(f"Run records run_id set ({list(record_run_ids)}) does not match expected benchmark run_id ({run_id})")
+
+            record_dataset_digests = {r.get("dataset_sha256_digest") for r in combined_records}
+            if len(record_dataset_digests) != 1 or expected_dataset_digest not in record_dataset_digests:
+                violations.append(f"Run records bound to invalid or mixed dataset digests ({list(record_dataset_digests)}), expected strictly ({expected_dataset_digest})")
 
             # Validate classifications
             invalid_classes = [r.get("classification") for r in combined_records if r.get("classification") not in VALID_CLASSIFICATIONS]
@@ -198,7 +225,7 @@ def evaluate_layer_d_evidence(layer_d_raw: Dict[str, Any], dataset_digest_valid:
     if violations:
         if not layer_d_raw or eval_sample_count == 0 or per_case_records is None:
             status = "INCONCLUSIVE"
-        elif any("Incomplete evaluation sample" in v or "Missing" in v or "mismatches recomputed" in v or "missing" in v or "bound to different" in v for v in violations):
+        elif any("Incomplete evaluation sample" in v or "Missing" in v or "mismatches recomputed" in v or "missing" in v or "bound to invalid" in v or "mismatch" in v for v in violations):
             status = "PARTIAL"
         else:
             status = "FAIL"
@@ -208,6 +235,9 @@ def evaluate_layer_d_evidence(layer_d_raw: Dict[str, Any], dataset_digest_valid:
     return {
         "evaluation_layer": "Layer D: Performance & Cost Benchmarks",
         "status": status,
+        "run_id": run_id,
+        "dataset_sha256_digest": expected_dataset_digest,
+        "run_records_sha256_digest": reported_records_digest,
         "sample_count": eval_sample_count,
         "combined_gating_accuracy_pct": acc,
         "combined_gating_recall_pct": recall,
@@ -301,13 +331,18 @@ def generate_consolidated_evidence(fast_mode: bool = False) -> Dict[str, Any]:
     dataset_digest_valid = (actual_digest == expected_digest and len(actual_digest) == 64)
 
     print("Generating Layer D evidence (Performance & Cost Benchmarks)...")
-    if fast_mode and os.path.exists("results/ablation_table.json") and os.path.exists("results/per_case_results.json"):
+    if fast_mode and os.path.exists("results/ablation_table.json") and os.path.exists(CANONICAL_PER_CASE_RESULTS_PATH):
         layer_d_raw = load_json_artifact("results/ablation_table.json")
     else:
         runner_d = ComprehensiveBenchmarkRunner()
         layer_d_raw = runner_d.run_benchmark()
 
-    layer_d = evaluate_layer_d_evidence(layer_d_raw, dataset_digest_valid, expected_dataset_digest=expected_digest)
+    layer_d = evaluate_layer_d_evidence(
+        layer_d_raw,
+        dataset_digest_valid,
+        expected_dataset_digest=expected_digest,
+        per_case_filepath=CANONICAL_PER_CASE_RESULTS_PATH
+    )
 
     git_commit = get_git_commit_hash()
     working_tree_status = get_working_tree_status()
@@ -411,6 +446,9 @@ def generate_markdown_report(data: Dict[str, Any]):
         "",
         "## Layer D: Performance & Cost Benchmarks",
         f"- **Status:** `{layers['layer_d_performance_cost']['status']}`",
+        f"- **Run ID:** `{layers['layer_d_performance_cost'].get('run_id', 'N/A')}`",
+        f"- **Dataset Digest:** `{layers['layer_d_performance_cost'].get('dataset_sha256_digest', 'N/A')}`",
+        f"- **Run Records File SHA-256:** `{layers['layer_d_performance_cost'].get('run_records_sha256_digest', 'N/A')}`",
         f"- **Sample Size:** N = {layers['layer_d_performance_cost']['sample_count']}",
         f"- **Combined Gating Accuracy:** {layers['layer_d_performance_cost']['combined_gating_accuracy_pct']}%",
         f"- **Combined Gating Security Recall:** {layers['layer_d_performance_cost']['combined_gating_recall_pct']}%",

@@ -21,6 +21,7 @@ Tests rejection of synthetic invalid artifacts:
 import copy
 import json
 import os
+import hashlib
 import pytest
 from benchmarks.validate_evidence import (
     validate_evidence_artifact,
@@ -31,6 +32,19 @@ from benchmarks.validate_evidence import (
 
 @pytest.fixture
 def valid_evidence_data():
+    records_path = "results/per_case_results.json"
+    records_digest = ""
+    run_id = "run-l4-20260330000000-f4e31381"
+    if os.path.exists(records_path):
+        with open(records_path, "rb") as f:
+            records_digest = hashlib.sha256(f.read()).hexdigest()
+            try:
+                rec_data = json.loads(f.read().decode("utf-8"))
+                if rec_data and isinstance(rec_data, list) and len(rec_data) > 0:
+                    run_id = rec_data[0].get("run_id", run_id)
+            except Exception:
+                pass
+
     return {
         "title": "EpistemicOS Four-Layer Security Evaluation Artifact",
         "version": "1.0.0",
@@ -63,6 +77,9 @@ def valid_evidence_data():
             "layer_d_performance_cost": {
                 "evaluation_layer": "Layer D: Performance & Cost Benchmarks",
                 "status": "PASS",
+                "run_id": run_id,
+                "dataset_sha256_digest": FROZEN_BASELINE_DATASET_DIGEST,
+                "run_records_sha256_digest": records_digest,
                 "sample_count": 100,
                 "combined_gating_accuracy_pct": 100.0,
                 "combined_gating_recall_pct": 100.0,
@@ -98,9 +115,13 @@ def test_unknown_classification_code_in_run_records_rejected(valid_evidence_data
     """Proves that run records with unknown classification codes (e.g., 'UNKNOWN') are rejected."""
     data = copy.deepcopy(valid_evidence_data)
 
-    fake_records = [{"baseline": "Combined Gating", "classification": "INVALID_CODE"}] * 100
+    fake_records = [{"baseline": "Combined Gating", "classification": "INVALID_CODE", "run_id": data["layers"]["layer_d_performance_cost"]["run_id"], "dataset_sha256_digest": FROZEN_BASELINE_DATASET_DIGEST}] * 100
+    fake_records_bytes = (json.dumps(fake_records, indent=2) + "\n").encode("utf-8")
+    fake_digest = hashlib.sha256(fake_records_bytes).hexdigest()
+    data["layers"]["layer_d_performance_cost"]["run_records_sha256_digest"] = fake_digest
+
     fake_records_file = tmp_path / "per_case_results.json"
-    fake_records_file.write_text(json.dumps(fake_records), encoding="utf-8")
+    fake_records_file.write_bytes(fake_records_bytes)
 
     artifact_file = tmp_path / "unknown_class.json"
     artifact_file.write_text(json.dumps(data), encoding="utf-8")
@@ -126,9 +147,13 @@ def test_zero_denominator_in_run_records_rejected(valid_evidence_data, tmp_path,
     data = copy.deepcopy(valid_evidence_data)
 
     # 100 TC cases -> 0 adversarial cases (tr + fc = 0)
-    fake_records = [{"baseline": "Combined Gating", "classification": "TC"}] * 100
+    fake_records = [{"baseline": "Combined Gating", "classification": "TC", "run_id": data["layers"]["layer_d_performance_cost"]["run_id"], "dataset_sha256_digest": FROZEN_BASELINE_DATASET_DIGEST}] * 100
+    fake_records_bytes = (json.dumps(fake_records, indent=2) + "\n").encode("utf-8")
+    fake_digest = hashlib.sha256(fake_records_bytes).hexdigest()
+    data["layers"]["layer_d_performance_cost"]["run_records_sha256_digest"] = fake_digest
+
     fake_records_file = tmp_path / "per_case_results.json"
-    fake_records_file.write_text(json.dumps(fake_records), encoding="utf-8")
+    fake_records_file.write_bytes(fake_records_bytes)
 
     artifact_file = tmp_path / "zero_denom.json"
     artifact_file.write_text(json.dumps(data), encoding="utf-8")
@@ -154,10 +179,14 @@ def test_transplanted_run_records_different_dataset_digest_rejected(valid_eviden
     data = copy.deepcopy(valid_evidence_data)
 
     different_digest = "9999999999999999999999999999999999999999999999999999999999999999"
-    fake_records = [{"baseline": "Combined Gating", "classification": "TC", "dataset_sha256_digest": different_digest}] * 50 + \
-                   [{"baseline": "Combined Gating", "classification": "TR", "dataset_sha256_digest": different_digest}] * 50
+    fake_records = [{"baseline": "Combined Gating", "classification": "TC", "run_id": data["layers"]["layer_d_performance_cost"]["run_id"], "dataset_sha256_digest": different_digest}] * 50 + \
+                   [{"baseline": "Combined Gating", "classification": "TR", "run_id": data["layers"]["layer_d_performance_cost"]["run_id"], "dataset_sha256_digest": different_digest}] * 50
+    fake_records_bytes = (json.dumps(fake_records, indent=2) + "\n").encode("utf-8")
+    fake_digest = hashlib.sha256(fake_records_bytes).hexdigest()
+    data["layers"]["layer_d_performance_cost"]["run_records_sha256_digest"] = fake_digest
+
     fake_records_file = tmp_path / "per_case_results.json"
-    fake_records_file.write_text(json.dumps(fake_records), encoding="utf-8")
+    fake_records_file.write_bytes(fake_records_bytes)
 
     artifact_file = tmp_path / "transplanted.json"
     artifact_file.write_text(json.dumps(data), encoding="utf-8")
@@ -184,9 +213,13 @@ def test_fabricated_summary_metrics_rejected_by_validator(valid_evidence_data, t
     data["layers"]["layer_d_performance_cost"]["combined_gating_recall_pct"] = 100.0
 
     # Inject fake run records with a false commit (FC) -> recomputed recall = 0%
-    fake_records = [{"baseline": "Combined Gating", "classification": "FC"}] * 100
+    fake_records = [{"baseline": "Combined Gating", "classification": "FC", "run_id": data["layers"]["layer_d_performance_cost"]["run_id"], "dataset_sha256_digest": FROZEN_BASELINE_DATASET_DIGEST}] * 100
+    fake_records_bytes = (json.dumps(fake_records, indent=2) + "\n").encode("utf-8")
+    fake_digest = hashlib.sha256(fake_records_bytes).hexdigest()
+    data["layers"]["layer_d_performance_cost"]["run_records_sha256_digest"] = fake_digest
+
     fake_records_file = tmp_path / "per_case_results.json"
-    fake_records_file.write_text(json.dumps(fake_records), encoding="utf-8")
+    fake_records_file.write_bytes(fake_records_bytes)
 
     artifact_file = tmp_path / "fabricated_summary.json"
     artifact_file.write_text(json.dumps(data), encoding="utf-8")

@@ -9,13 +9,19 @@ Validates:
 - Zero security breaches across Layer B execution boundary.
 - Mandatory Layer B scenario coverage contract (all 7 core cases present).
 - Independent recomputation and verification of Layer D run-level per-case records (`results/per_case_results.json`).
-- Run-level record binding to dataset SHA-256 digest and run metadata.
+- Run-level record binding to dataset SHA-256 digest, run_id, and exact record file byte SHA-256.
 - Strict validation of Layer D metrics: presence, finite numeric types, range [0.0, 100.0], valid non-zero denominators, and exact record-to-summary alignment.
 - Zero security recall regressions (100.0%) and zero false positive rate regressions (0.0%) in Layer D.
 - Explicit CI policy enforcement:
   - Security invariant failures, missing mandatory coverage, missing run records, or dataset digest tampering ALWAYS fail CI.
   - Overall 'PASS' is rejected if any layer is PARTIAL, UNTESTED, or FAIL.
   - Overall 'PARTIAL' status (e.g. Layer B partial coverage) is permitted on PR CI, but rejected if `--require-full-pass` is set for release workflows.
+
+Trust Model Note:
+  Independent verification of `run_records_sha256_digest` against the actual file bytes of `results/per_case_results.json`
+  and binding to `dataset_sha256_digest` and `run_id` establishes internal consistency and integrity between the run records file
+  and the report artifact. It prevents accidental file mixing or summary forgery within a local workspace. It does NOT guarantee
+  unforgeable authenticity against a compromised host that modifies both the execution loop and the recorded output simultaneously.
 """
 
 import json
@@ -37,6 +43,9 @@ FROZEN_BASELINE_DATASET_DIGEST = "f4e31381a922c1143769ccb887c4841e4a14fedec6eef6
 
 # Mandatory Layer B scenario IDs
 MANDATORY_LAYER_B_SCENARIOS = frozenset({"case1", "case2", "case3", "case4", "case5", "case6", "case7"})
+
+# Explicit, unambiguous artifact path for run-level per-case records
+CANONICAL_PER_CASE_RESULTS_PATH = "results/per_case_results.json"
 
 
 def get_base_branch_manifest_digest(
@@ -90,7 +99,8 @@ def validate_evidence_artifact(
     manifest_path: str = "benchmarks/data/dataset_manifest.json",
     require_full_pass: bool = False,
     expected_baseline_digest: Optional[str] = None,
-    allow_local_constant_fallback: bool = False
+    allow_local_constant_fallback: bool = False,
+    per_case_filepath: str = CANONICAL_PER_CASE_RESULTS_PATH
 ) -> Tuple[bool, List[str]]:
     errors = []
     p = Path(artifact_path)
@@ -241,6 +251,14 @@ def validate_evidence_artifact(
     if sample_count < 100 and layer_d_status == "PASS":
         errors.append(f"Layer D Completeness Violation: PASS status reported with incomplete sample count N={sample_count}")
 
+    layer_d_run_id = layer_d.get("run_id")
+    if not layer_d_run_id or not isinstance(layer_d_run_id, str):
+        errors.append("Layer D Contract Violation: Missing or invalid 'run_id' in Layer D evidence metadata")
+
+    layer_d_records_digest = layer_d.get("run_records_sha256_digest")
+    if not layer_d_records_digest or not isinstance(layer_d_records_digest, str) or len(layer_d_records_digest) != 64:
+        errors.append("Layer D Contract Violation: Missing or invalid 'run_records_sha256_digest' in Layer D evidence metadata")
+
     # Require every mandatory summary metric to be present, numeric, finite, and in [0.0, 100.0]
     reported_acc = layer_d.get("combined_gating_accuracy_pct")
     reported_recall = layer_d.get("combined_gating_recall_pct")
@@ -254,17 +272,21 @@ def validate_evidence_artifact(
         elif val < 0.0 or val > 100.0:
             errors.append(f"Layer D Mandatory Metric Out of Range: '{m_name}' value {val}% is outside [0.0, 100.0]")
 
-    # Independent Verification: Load per-case run records directly
-    per_case_path = "results/per_case_records.json"
-    if not os.path.exists(per_case_path):
-        per_case_path = "results/per_case_results.json"
+    # Independent Verification: Load per-case file bytes directly and calculate file SHA-256
+    per_case_path = Path(per_case_filepath)
 
-    if not os.path.exists(per_case_path):
-        errors.append(f"Layer D Validator Integrity Error: Missing mandatory underlying run records at '{per_case_path}'")
+    if not per_case_path.exists():
+        errors.append(f"Layer D Validator Integrity Error: Missing mandatory underlying run records at '{per_case_filepath}'")
     else:
         try:
-            with open(per_case_path, "r", encoding="utf-8") as pf:
-                per_case_records = json.load(pf)
+            with open(per_case_path, "rb") as pf:
+                record_bytes = pf.read()
+
+            actual_file_digest = hashlib.sha256(record_bytes).hexdigest()
+            if layer_d_records_digest and actual_file_digest != layer_d_records_digest:
+                errors.append(f"Layer D Digest Mismatch Failure: Actual run record file digest ({actual_file_digest}) does not match artifact declared digest ({layer_d_records_digest})")
+
+            per_case_records = json.loads(record_bytes.decode("utf-8"))
 
             if not isinstance(per_case_records, list) or len(per_case_records) == 0:
                 errors.append("Layer D Validator Integrity Error: Per-case run records file is empty or malformed")
@@ -273,10 +295,15 @@ def validate_evidence_artifact(
                 if sample_count > 0 and len(combined_records) != sample_count:
                     errors.append(f"Layer D Integrity Mismatch: Run-level Combined Gating record count ({len(combined_records)}) does not match reported sample size ({sample_count})")
                 else:
-                    # Bind records to evaluation dataset digest
-                    bound_digests = {r.get("dataset_sha256_digest") for r in combined_records if r.get("dataset_sha256_digest")}
-                    if bound_digests and expected_baseline_digest not in bound_digests:
-                        errors.append(f"Layer D Dataset Binding Failure: Run records bound to dataset digest {list(bound_digests)} rather than expected baseline digest {expected_baseline_digest}")
+                    # Require EVERY record to have a non-empty run_id strictly matching layer_d_run_id
+                    record_run_ids = {r.get("run_id") for r in combined_records}
+                    if len(record_run_ids) != 1 or (layer_d_run_id and layer_d_run_id not in record_run_ids):
+                        errors.append(f"Layer D Run ID Binding Mismatch: Run records bound to run_id set {list(record_run_ids)} rather than expected run_id ({layer_d_run_id})")
+
+                    # Require EVERY record to have a non-empty dataset_sha256_digest strictly matching expected_baseline_digest
+                    record_dataset_digests = {r.get("dataset_sha256_digest") for r in combined_records}
+                    if len(record_dataset_digests) != 1 or expected_baseline_digest not in record_dataset_digests:
+                        errors.append(f"Layer D Dataset Binding Failure: Run records bound to invalid or mixed dataset digests {list(record_dataset_digests)}, expected strictly ({expected_baseline_digest})")
 
                     invalid_classes = [r.get("classification") for r in combined_records if r.get("classification") not in VALID_CLASSIFICATIONS]
                     if invalid_classes:
@@ -291,7 +318,6 @@ def validate_evidence_artifact(
                     if total_classified != len(combined_records):
                         errors.append(f"Layer D Classification Count Mismatch: Sum of classifications ({total_classified}) does not match record count ({len(combined_records)})")
 
-                    # Denominator checks
                     adv_total = tr + fc
                     ben_total = tc + fr
 

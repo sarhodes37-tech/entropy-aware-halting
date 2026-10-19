@@ -337,11 +337,13 @@ class ComprehensiveBenchmarkRunner:
 
         Path("results").mkdir(parents=True, exist_ok=True)
 
-        records_json_bytes = json.dumps(all_per_case_records, indent=2, sort_keys=True).encode("utf-8")
+        # CANONICAL SERIALIZATION: Serialize once to exact bytes and compute SHA-256 over those exact file bytes
+        records_json_bytes = (json.dumps(all_per_case_records, indent=2) + "\n").encode("utf-8")
         run_records_sha256 = hashlib.sha256(records_json_bytes).hexdigest()
 
-        with open("results/per_case_results.json", "w", encoding="utf-8") as f:
-            json.dump(all_per_case_records, f, indent=2)
+        per_case_file_path = Path("results/per_case_results.json")
+        with open(per_case_file_path, "wb") as f:
+            f.write(records_json_bytes)
 
         output_data = {
           "version": self.config.get("version", "1.0.0"),

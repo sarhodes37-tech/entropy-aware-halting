@@ -1,11 +1,11 @@
 # EpistemicOS Consolidated Security & Evaluation Evidence Report
 
-**Overall Status:** `PARTIAL` | **Generated:** 2026-10-19 08:39:48 UTC
+**Overall Status:** `PARTIAL` | **Generated:** 2026-10-19 09:32:49 UTC
 
 ## Reproducibility & Environment Metadata
 - **Evaluated Git Commit:** `022240c9fab58ab28dabcaebc85b9941c4a826bf`
 - **Working Tree Status:** `DIRTY`
-- **Working Tree Digest:** `c9c414b9a50e2359f3986655f83267e19e5b91351bad6480a35bdeb816f68a05`
+- **Working Tree Digest:** `4fb8746d3b807ea2f5908c36c4b2afe88167490dd058e73348b9b170829a069a`
 - **Dataset Version:** `1.0.0-frozen`
 - **Dataset SHA-256 Digest:** `f4e31381a922c1143769ccb887c4841e4a14fedec6eef6569d40eed2956ce873` (Verified: `True`)
 
@@ -48,6 +48,9 @@
 
 ## Layer D: Performance & Cost Benchmarks
 - **Status:** `PASS`
+- **Run ID:** `run-l4-20260330000000-f4e31381`
+- **Dataset Digest:** `f4e31381a922c1143769ccb887c4841e4a14fedec6eef6569d40eed2956ce873`
+- **Run Records File SHA-256:** `def1332464be18d4390cedd95dec2dc4157916dbfe23773f0cc935175fbc9f98`
 - **Sample Size:** N = 100
 - **Combined Gating Accuracy:** 100.0%
 - **Combined Gating Security Recall:** 100.0%
