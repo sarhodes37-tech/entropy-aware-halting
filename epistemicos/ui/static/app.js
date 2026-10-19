@@ -65,7 +65,9 @@ document.addEventListener('DOMContentLoaded', () => {
     switchTab(tabName) {
       this.state.currentTab = tabName;
       document.querySelectorAll('.nav-tab').forEach(btn => {
-        btn.classList.toggle('active', btn.getAttribute('data-tab') === tabName);
+        const isActive = btn.getAttribute('data-tab') === tabName;
+        btn.classList.toggle('active', isActive);
+        btn.setAttribute('aria-selected', isActive ? 'true' : 'false');
       });
       document.querySelectorAll('.view-panel').forEach(panel => {
         panel.classList.toggle('active', panel.id === `view-${tabName}`);
@@ -199,9 +201,21 @@ document.addEventListener('DOMContentLoaded', () => {
       }
 
       filtered.forEach(trace => {
+        const isSelected = this.state.selectedTraceId === trace.correlation_id;
         const li = document.createElement('li');
-        li.className = `trace-item ${this.state.selectedTraceId === trace.correlation_id ? 'active' : ''}`;
+        li.className = `trace-item ${isSelected ? 'active' : ''}`;
+        li.setAttribute('role', 'button');
+        li.setAttribute('tabindex', '0');
+        li.setAttribute('aria-selected', isSelected ? 'true' : 'false');
+        li.setAttribute('aria-label', `Execution trace ${trace.correlation_id}, status ${trace.status}`);
+
         li.addEventListener('click', () => this.selectTrace(trace.correlation_id));
+        li.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            this.selectTrace(trace.correlation_id);
+          }
+        });
 
         const headerDiv = document.createElement('div');
         headerDiv.className = 'trace-item-header';

@@ -20,11 +20,11 @@
         <span class="indicator green"></span> Read-Only Control Plane
       </div>
     </div>
-    <nav class="nav-tabs" role="tablist">
-      <button class="nav-tab active" data-tab="overview" role="tab">Overview</button>
-      <button class="nav-tab" data-tab="traces" role="tab">Execution Traces</button>
-      <button class="nav-tab" data-tab="provenance" role="tab">Provenance Explorer</button>
-      <button class="nav-tab" data-tab="benchmarks" role="tab">Benchmark Workbench</button>
+    <nav class="nav-tabs" role="tablist" aria-label="Observatory Navigation">
+      <button class="nav-tab active" data-tab="overview" role="tab" aria-selected="true" aria-controls="view-overview">Overview</button>
+      <button class="nav-tab" data-tab="traces" role="tab" aria-selected="false" aria-controls="view-traces">Execution Traces</button>
+      <button class="nav-tab" data-tab="provenance" role="tab" aria-selected="false" aria-controls="view-provenance">Provenance Explorer</button>
+      <button class="nav-tab" data-tab="benchmarks" role="tab" aria-selected="false" aria-controls="view-benchmarks">Benchmark Workbench</button>
     </nav>
   </header>
 
@@ -33,7 +33,7 @@
     <section id="view-overview" class="view-panel active">
       <div class="panel-header">
         <h2>System Executive Overview</h2>
-        <button id="btn-refresh-overview" class="btn-refresh">🔄 Refresh</button>
+        <button id="btn-refresh-overview" class="btn-refresh" aria-label="Refresh overview metrics">🔄 Refresh</button>
       </div>
 
       <div class="metrics-grid">
@@ -76,8 +76,8 @@
       <div class="panel-header">
         <h2>Execution Trace Explorer</h2>
         <div class="filter-controls">
-          <input type="text" id="trace-search" placeholder="Search correlation / request ID..." class="input-search">
-          <select id="trace-status-filter" class="select-filter">
+          <input type="text" id="trace-search" placeholder="Search correlation / request ID..." class="input-search" aria-label="Search execution traces by correlation or request ID">
+          <select id="trace-status-filter" class="select-filter" aria-label="Filter execution traces by status">
             <option value="ALL">All Statuses</option>
             <option value="COMPLETED">COMPLETED</option>
             <option value="DENIED">DENIED</option>
