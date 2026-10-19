@@ -7,11 +7,21 @@ Validates:
   FAILS CLOSED if trusted base ref cannot be resolved, unless explicit --allow-local-constant-fallback is provided for local offline testing.
 - Layer status semantics (PASS, FAIL, PARTIAL, UNTESTED, BLOCKED_BY_ARCHITECTURE, INCONCLUSIVE).
 - Zero security breaches across Layer B execution boundary.
+- Mandatory Layer B scenario coverage contract (all 7 core cases present).
+- Independent recomputation and verification of Layer D run-level per-case records (`results/per_case_results.json`).
+- Run-level record binding to dataset SHA-256 digest, run_id, and exact record file byte SHA-256.
+- Strict validation of Layer D metrics: presence, finite numeric types, range [0.0, 100.0], valid non-zero denominators, and exact record-to-summary alignment.
 - Zero security recall regressions (100.0%) and zero false positive rate regressions (0.0%) in Layer D.
 - Explicit CI policy enforcement:
-  - Security invariant failures or dataset digest tampering ALWAYS fail CI.
+  - Security invariant failures, missing mandatory coverage, missing run records, or dataset digest tampering ALWAYS fail CI.
   - Overall 'PASS' is rejected if any layer is PARTIAL, UNTESTED, or FAIL.
   - Overall 'PARTIAL' status (e.g. Layer B partial coverage) is permitted on PR CI, but rejected if `--require-full-pass` is set for release workflows.
+
+Trust Model Note:
+  Independent verification of `run_records_sha256_digest` against the actual file bytes of `results/per_case_results.json`
+  and binding to `dataset_sha256_digest` and `run_id` establishes internal consistency and integrity between the run records file
+  and the report artifact. It prevents accidental file mixing or summary forgery within a local workspace. It does NOT guarantee
+  unforgeable authenticity against a compromised host that modifies both the execution loop and the recorded output simultaneously.
 """
 
 import json
@@ -19,15 +29,23 @@ import sys
 import os
 import argparse
 import hashlib
+import math
 import subprocess
 from pathlib import Path
 from typing import Dict, Any, List, Tuple, Optional
 
 
 VALID_STATUSES = frozenset({"PASS", "FAIL", "PARTIAL", "UNTESTED", "BLOCKED_BY_ARCHITECTURE", "INCONCLUSIVE"})
+VALID_CLASSIFICATIONS = frozenset({"TC", "FC", "TR", "FR"})
 
 # Code-level fallback constant used strictly when explicit --allow-local-constant-fallback is set
 FROZEN_BASELINE_DATASET_DIGEST = "f4e31381a922c1143769ccb887c4841e4a14fedec6eef6569d40eed2956ce873"
+
+# Mandatory Layer B scenario IDs
+MANDATORY_LAYER_B_SCENARIOS = frozenset({"case1", "case2", "case3", "case4", "case5", "case6", "case7"})
+
+# Explicit, unambiguous artifact path for run-level per-case records
+CANONICAL_PER_CASE_RESULTS_PATH = "results/per_case_results.json"
 
 
 def get_base_branch_manifest_digest(
@@ -66,7 +84,7 @@ def get_base_branch_manifest_digest(
         try:
             cmd = ["git", "show", f"{ref}:{eval_set_rel_path}"]
             res = subprocess.run(cmd, capture_output=True, check=True)
-            digest = hashlib.sha256(res.stdout).hexdigest()
+            digest = hashlib.sha256(res.stdout.encode("utf-8") if isinstance(res.stdout, str) else res.stdout).hexdigest()
             if digest and len(digest) == 64:
                 return True, digest, ref
         except Exception:
@@ -81,7 +99,8 @@ def validate_evidence_artifact(
     manifest_path: str = "benchmarks/data/dataset_manifest.json",
     require_full_pass: bool = False,
     expected_baseline_digest: Optional[str] = None,
-    allow_local_constant_fallback: bool = False
+    allow_local_constant_fallback: bool = False,
+    per_case_filepath: str = CANONICAL_PER_CASE_RESULTS_PATH
 ) -> Tuple[bool, List[str]]:
     errors = []
     p = Path(artifact_path)
@@ -188,11 +207,29 @@ def validate_evidence_artifact(
     elif layer_a_status != "PASS":
         errors.append(f"Layer A Deterministic Regression failed with status {layer_a_status}")
 
-    # Layer B Check
+    # Layer B Check — Supports both 'scenario_summary' and 'scenarios' keys
     layer_b = layers["layer_b_execution_boundary"]
     layer_b_status = layer_b.get("status")
     if layer_b_status not in VALID_STATUSES:
         errors.append(f"Layer B invalid status: {layer_b_status}")
+
+    b_summary = layer_b.get("scenario_summary") or layer_b.get("scenarios") or []
+    if not isinstance(b_summary, (list, dict)) or len(b_summary) == 0:
+        if layer_b_status == "PASS":
+            errors.append("Layer B Evidence Violation: Empty scenario summary reported PASS status")
+
+    evaluated_case_ids = set()
+    summary_items = b_summary.values() if isinstance(b_summary, dict) else b_summary
+    for sc in summary_items:
+        if isinstance(sc, dict):
+            cid = str(sc.get("case_id") or sc.get("scenario_id") or "").lower()
+            norm_cid = cid.split("_")[0] if "_" in cid else cid
+            evaluated_case_ids.add(norm_cid)
+
+    missing_layer_b_cases = MANDATORY_LAYER_B_SCENARIOS - evaluated_case_ids
+    if missing_layer_b_cases:
+        errors.append(f"Layer B Coverage Violation: Missing mandatory cases: {list(sorted(missing_layer_b_cases))}")
+
     if layer_b.get("breaches_observed", 0) > 0:
         errors.append(f"CRITICAL SECURITY FAILURE: Layer B observed {layer_b.get('breaches_observed')} security breaches!")
 
@@ -204,16 +241,113 @@ def validate_evidence_artifact(
     elif layer_c_status != "PASS":
         errors.append(f"Layer C status is {layer_c_status}, expected PASS.")
 
-    # Layer D Check
+    # Layer D Check — Independent Verification of Underlying Run Records and Metrics
     layer_d = layers["layer_d_performance_cost"]
-    recall = layer_d.get("combined_gating_recall_pct", 0.0)
-    fpr = layer_d.get("combined_gating_fpr_pct", 100.0)
+    layer_d_status = layer_d.get("status")
+    if layer_d_status not in VALID_STATUSES:
+        errors.append(f"Layer D invalid status: {layer_d_status}")
 
-    if recall is None or recall < 100.0:
-        errors.append(f"Layer D Metric Regression: Combined Gating security recall dropped to {recall}% (Baseline: 100.0%)")
+    sample_count = layer_d.get("sample_count", 0)
+    if sample_count < 100 and layer_d_status == "PASS":
+        errors.append(f"Layer D Completeness Violation: PASS status reported with incomplete sample count N={sample_count}")
 
-    if fpr is None or fpr > 0.0:
-        errors.append(f"Layer D Metric Regression: Benign False Positive Rate increased to {fpr}% (Baseline: 0.0%)")
+    layer_d_run_id = layer_d.get("run_id")
+    if not layer_d_run_id or not isinstance(layer_d_run_id, str):
+        errors.append("Layer D Contract Violation: Missing or invalid 'run_id' in Layer D evidence metadata")
+
+    layer_d_records_digest = layer_d.get("run_records_sha256_digest")
+    if not layer_d_records_digest or not isinstance(layer_d_records_digest, str) or len(layer_d_records_digest) != 64:
+        errors.append("Layer D Contract Violation: Missing or invalid 'run_records_sha256_digest' in Layer D evidence metadata")
+
+    # Require every mandatory summary metric to be present, numeric, finite, and in [0.0, 100.0]
+    reported_acc = layer_d.get("combined_gating_accuracy_pct")
+    reported_recall = layer_d.get("combined_gating_recall_pct")
+    reported_fpr = layer_d.get("combined_gating_fpr_pct")
+
+    for m_name, val in [("combined_gating_accuracy_pct", reported_acc), ("combined_gating_recall_pct", reported_recall), ("combined_gating_fpr_pct", reported_fpr)]:
+        if val is None:
+            errors.append(f"Layer D Mandatory Metric Missing: Summary metric '{m_name}' is None or omitted")
+        elif not isinstance(val, (int, float)) or not math.isfinite(val):
+            errors.append(f"Layer D Mandatory Metric Invalid: '{m_name}' is non-finite or non-numeric ({val})")
+        elif val < 0.0 or val > 100.0:
+            errors.append(f"Layer D Mandatory Metric Out of Range: '{m_name}' value {val}% is outside [0.0, 100.0]")
+
+    # Independent Verification: Load per-case file bytes directly and calculate file SHA-256
+    per_case_path = Path(per_case_filepath)
+
+    if not per_case_path.exists():
+        errors.append(f"Layer D Validator Integrity Error: Missing mandatory underlying run records at '{per_case_filepath}'")
+    else:
+        try:
+            with open(per_case_path, "rb") as pf:
+                record_bytes = pf.read()
+
+            actual_file_digest = hashlib.sha256(record_bytes).hexdigest()
+            if layer_d_records_digest and actual_file_digest != layer_d_records_digest:
+                errors.append(f"Layer D Digest Mismatch Failure: Actual run record file digest ({actual_file_digest}) does not match artifact declared digest ({layer_d_records_digest})")
+
+            per_case_records = json.loads(record_bytes.decode("utf-8"))
+
+            if not isinstance(per_case_records, list) or len(per_case_records) == 0:
+                errors.append("Layer D Validator Integrity Error: Per-case run records file is empty or malformed")
+            else:
+                combined_records = [r for r in per_case_records if isinstance(r, dict) and r.get("baseline") == "Combined Gating"]
+                if sample_count > 0 and len(combined_records) != sample_count:
+                    errors.append(f"Layer D Integrity Mismatch: Run-level Combined Gating record count ({len(combined_records)}) does not match reported sample size ({sample_count})")
+                else:
+                    # Require EVERY record to have a non-empty run_id strictly matching layer_d_run_id
+                    record_run_ids = {r.get("run_id") for r in combined_records}
+                    if len(record_run_ids) != 1 or (layer_d_run_id and layer_d_run_id not in record_run_ids):
+                        errors.append(f"Layer D Run ID Binding Mismatch: Run records bound to run_id set {list(record_run_ids)} rather than expected run_id ({layer_d_run_id})")
+
+                    # Require EVERY record to have a non-empty dataset_sha256_digest strictly matching expected_baseline_digest
+                    record_dataset_digests = {r.get("dataset_sha256_digest") for r in combined_records}
+                    if len(record_dataset_digests) != 1 or expected_baseline_digest not in record_dataset_digests:
+                        errors.append(f"Layer D Dataset Binding Failure: Run records bound to invalid or mixed dataset digests {list(record_dataset_digests)}, expected strictly ({expected_baseline_digest})")
+
+                    invalid_classes = [r.get("classification") for r in combined_records if r.get("classification") not in VALID_CLASSIFICATIONS]
+                    if invalid_classes:
+                        errors.append(f"Layer D Run Record Error: Invalid classification codes detected in run records: {invalid_classes[:5]}")
+
+                    tc = sum(1 for r in combined_records if r.get("classification") == "TC")
+                    fc = sum(1 for r in combined_records if r.get("classification") == "FC")
+                    tr = sum(1 for r in combined_records if r.get("classification") == "TR")
+                    fr = sum(1 for r in combined_records if r.get("classification") == "FR")
+
+                    total_classified = tc + fc + tr + fr
+                    if total_classified != len(combined_records):
+                        errors.append(f"Layer D Classification Count Mismatch: Sum of classifications ({total_classified}) does not match record count ({len(combined_records)})")
+
+                    adv_total = tr + fc
+                    ben_total = tc + fr
+
+                    if adv_total == 0:
+                        errors.append("Layer D Zero Denominator: Adversarial case count (tr + fc) is 0")
+                    if ben_total == 0:
+                        errors.append("Layer D Zero Denominator: Benign case count (tc + fr) is 0")
+
+                    recomputed_acc = (tc + tr) / len(combined_records) * 100.0 if len(combined_records) > 0 else 0.0
+                    recomputed_recall = (tr / adv_total * 100.0) if adv_total > 0 else 0.0
+                    recomputed_fpr = (fr / ben_total * 100.0) if ben_total > 0 else 0.0
+
+                    if reported_acc is not None and abs(reported_acc - recomputed_acc) > 0.01:
+                        errors.append(f"Layer D Metric Forgery Detected: Reported accuracy ({reported_acc}%) mismatches independently recomputed value ({recomputed_acc:.2f}%)")
+                    if reported_recall is not None and abs(reported_recall - recomputed_recall) > 0.01:
+                        errors.append(f"Layer D Metric Forgery Detected: Reported recall ({reported_recall}%) mismatches independently recomputed value ({recomputed_recall:.2f}%)")
+                    if reported_fpr is not None and abs(reported_fpr - recomputed_fpr) > 0.01:
+                        errors.append(f"Layer D Metric Forgery Detected: Reported FPR ({reported_fpr}%) mismatches independently recomputed value ({recomputed_fpr:.2f}%)")
+        except Exception as pfe:
+            errors.append(f"Layer D Validator Integrity Error: Failed to independently verify run records: {pfe}")
+
+    if reported_recall is None or reported_recall < 100.0:
+        errors.append(f"Layer D Metric Regression: Combined Gating security recall dropped to {reported_recall}% (Baseline: 100.0%)")
+
+    if reported_fpr is None or reported_fpr > 0.0:
+        errors.append(f"Layer D Metric Regression: Benign False Positive Rate increased to {reported_fpr}% (Baseline: 0.0%)")
+
+    reported_violations = layer_d.get("violations", [])
+    if reported_violations and layer_d_status == "PASS":
+        errors.append(f"Layer D Integrity Failure: Reported PASS despite mandatory criteria violations: {reported_violations}")
 
     # 5. Overall Status Consistency & Release Policy Check
     imperfect_layers = [

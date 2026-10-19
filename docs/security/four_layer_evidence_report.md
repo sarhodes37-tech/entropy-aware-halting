@@ -1,11 +1,11 @@
 # EpistemicOS Consolidated Security & Evaluation Evidence Report
 
-**Overall Status:** `PARTIAL` | **Generated:** 2026-10-18 23:51:33 UTC
+**Overall Status:** `PARTIAL` | **Generated:** 2026-10-19 11:18:44 UTC
 
 ## Reproducibility & Environment Metadata
-- **Evaluated Git Commit:** `9cd8365a5b3f60164d83290f961830e72e4a8145`
+- **Evaluated Git Commit:** `022240c9fab58ab28dabcaebc85b9941c4a826bf`
 - **Working Tree Status:** `DIRTY`
-- **Working Tree Digest:** `5bcab07986d97cd4fcde6f15ef32a8afa8fb73de953f59d1bf6c496bc9968be8`
+- **Working Tree Digest:** `beafde57a332898111ff3f1ff253f641519db9a7fb890e8ba469d63e271c2185`
 - **Dataset Version:** `1.0.0-frozen`
 - **Dataset SHA-256 Digest:** `f4e31381a922c1143769ccb887c4841e4a14fedec6eef6569d40eed2956ce873` (Verified: `True`)
 
@@ -37,22 +37,27 @@
 
 ## Layer C: Deterministic Synthetic Adversarial Harness
 - **Overall Status:** `PASS`
-- **Evaluator Type:** Deterministic Synthetic Adversarial Harness (Non-Live Agent Loop)
+- **Evaluator Type:** Deterministic Synthetic Integration Harness (Non-Live Agent Loop)
 - **Execution Mode:** Isolated Synthetic Local Targets (Zero External Network Access)
-- **Scenarios Evaluated:** 4
-- **Trials Evaluated:** 12
-- **Trials Blocked:** 12 / 12
+- **Scenarios Evaluated:** 5
+- **Trials Evaluated:** 15
+- **Adversarial Trials Blocked:** 12 / 12
+- **Benign Controls Succeeded:** 3 / 3
 
 ---
 
 ## Layer D: Performance & Cost Benchmarks
 - **Status:** `PASS`
+- **Run ID:** `run-l4-20260330000000-f4e31381`
+- **Dataset Digest:** `f4e31381a922c1143769ccb887c4841e4a14fedec6eef6569d40eed2956ce873`
+- **Run Records File SHA-256:** `def1332464be18d4390cedd95dec2dc4157916dbfe23773f0cc935175fbc9f98`
 - **Sample Size:** N = 100
 - **Combined Gating Accuracy:** 100.0%
 - **Combined Gating Security Recall:** 100.0%
 - **Benign False Positive Rate:** 0.0%
-- **P95 Latency:** 20.574 ms
+- **P95 Latency:** 262.336 ms
 - **Total Tokens Spent:** 2000
+- **Mandatory Criteria Passed:** `True`
 
 ---
 
