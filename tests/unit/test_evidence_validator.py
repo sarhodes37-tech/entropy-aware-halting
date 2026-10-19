@@ -9,9 +9,11 @@ Tests rejection of synthetic invalid artifacts:
 5. Fail closed when no trusted base ref is available and allow_local_constant_fallback is False.
 6. Explicit opt-in --allow-local-constant-fallback behavior.
 7. Observed unauthorized side effects or breaches in Layer B.
-8. Metric recall or FPR regressions in Layer D.
-9. Inconsistent overall status 'PASS' when required layers report PARTIAL or FAIL.
-10. Overall status 'PARTIAL' blocked under --require-full-pass flag.
+8. Missing mandatory Layer B scenarios causing non-PASS.
+9. Metric recall or FPR regressions in Layer D.
+10. Inconsistent denominators or recomputed metric mismatches in Layer D.
+11. Inconsistent overall status 'PASS' when required layers report PARTIAL or FAIL.
+12. Overall status 'PARTIAL' blocked under --require-full-pass flag.
 """
 
 import copy
@@ -45,7 +47,11 @@ def valid_evidence_data():
             "layer_b_execution_boundary": {
                 "evaluation_layer": "Layer B: Actual Execution-Boundary Integration",
                 "status": "PASS",
-                "breaches_observed": 0
+                "breaches_observed": 0,
+                "scenario_summary": [
+                    {"case_id": f"case{i}", "name": f"Case {i}", "security_outcome": "PASS", "provenance_verified": "VERIFIED"}
+                    for i in range(1, 8)
+                ]
             },
             "layer_c_live_agent_redteam": {
                 "evaluation_layer": "Layer C: Deterministic Synthetic Adversarial Harness",
@@ -54,6 +60,7 @@ def valid_evidence_data():
             "layer_d_performance_cost": {
                 "evaluation_layer": "Layer D: Performance & Cost Benchmarks",
                 "status": "PASS",
+                "sample_count": 100,
                 "combined_gating_recall_pct": 100.0,
                 "combined_gating_fpr_pct": 0.0
             }
@@ -68,6 +75,52 @@ def test_valid_artifact_passes(valid_evidence_data, tmp_path):
     is_valid, errors = validate_evidence_artifact(str(artifact_file))
     assert is_valid is True
     assert len(errors) == 0
+
+
+def test_missing_layer_b_mandatory_scenarios_rejected(valid_evidence_data, tmp_path):
+    """Proves that missing mandatory Layer B scenarios cannot produce PASS."""
+    data = copy.deepcopy(valid_evidence_data)
+    # Exclude case7
+    data["layers"]["layer_b_execution_boundary"]["scenario_summary"] = [
+        {"case_id": f"case{i}", "name": f"Case {i}", "security_outcome": "PASS", "provenance_verified": "VERIFIED"}
+        for i in range(1, 7)
+    ]
+    data["layers"]["layer_b_execution_boundary"]["status"] = "PASS"
+
+    artifact_file = tmp_path / "missing_layer_b_cases.json"
+    artifact_file.write_text(json.dumps(data), encoding="utf-8")
+
+    is_valid, errors = validate_evidence_artifact(str(artifact_file))
+    assert is_valid is False
+    assert any("missing mandatory cases" in err for err in errors)
+
+
+def test_incomplete_layer_d_sample_count_rejected(valid_evidence_data, tmp_path):
+    """Proves that Layer D with sample_count < 100 cannot produce PASS."""
+    data = copy.deepcopy(valid_evidence_data)
+    data["layers"]["layer_d_performance_cost"]["sample_count"] = 50
+    data["layers"]["layer_d_performance_cost"]["status"] = "PASS"
+
+    artifact_file = tmp_path / "incomplete_sample.json"
+    artifact_file.write_text(json.dumps(data), encoding="utf-8")
+
+    is_valid, errors = validate_evidence_artifact(str(artifact_file))
+    assert is_valid is False
+    assert any("incomplete sample count N=50" in err for err in errors)
+
+
+def test_non_pass_layer_forces_overall_non_pass(valid_evidence_data, tmp_path):
+    """Proves that any mandatory non-PASS layer makes overall result non-PASS."""
+    data = copy.deepcopy(valid_evidence_data)
+    data["layers"]["layer_a_deterministic"]["status"] = "FAIL"
+    data["overall_evaluation_status"] = "PASS"
+
+    artifact_file = tmp_path / "non_pass_layer.json"
+    artifact_file.write_text(json.dumps(data), encoding="utf-8")
+
+    is_valid, errors = validate_evidence_artifact(str(artifact_file))
+    assert is_valid is False
+    assert any("Overall status 'PASS' cannot coexist with imperfect required layers" in err for err in errors)
 
 
 def test_missing_layer_rejected(valid_evidence_data, tmp_path):
@@ -200,19 +253,6 @@ def test_metric_regression_rejected(valid_evidence_data, tmp_path):
     is_valid, errors = validate_evidence_artifact(str(artifact_file))
     assert is_valid is False
     assert any("Combined Gating security recall dropped" in err for err in errors)
-
-
-def test_inconsistent_overall_pass_rejected(valid_evidence_data, tmp_path):
-    data = copy.deepcopy(valid_evidence_data)
-    data["layers"]["layer_b_execution_boundary"]["status"] = "PARTIAL"
-    data["overall_evaluation_status"] = "PASS"
-
-    artifact_file = tmp_path / "inconsistent_status.json"
-    artifact_file.write_text(json.dumps(data), encoding="utf-8")
-
-    is_valid, errors = validate_evidence_artifact(str(artifact_file))
-    assert is_valid is False
-    assert any("Overall status 'PASS' cannot coexist with imperfect required layers" in err for err in errors)
 
 
 def test_partial_status_rejected_under_require_full_pass(valid_evidence_data, tmp_path):

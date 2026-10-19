@@ -11,6 +11,7 @@ Tests:
    - Authorized control invokes callback, completes execution, and records side effect.
    - Orchestrator claiming 'ALLOWED' without boundary execution cannot fabricate observations.
    - Side effect with mismatched correlation ID is not attributed to tested case.
+   - Missing/invalid provenance reconciliation fails an attack trial.
 """
 
 import json
@@ -29,7 +30,7 @@ from benchmarks.run_live_agent_redteam import (
 from benchmarks.generate_evidence_report import load_json_artifact, generate_consolidated_evidence
 from epistemicos.core import EpistemicOrchestrator
 from epistemicos.gates import PermissionGate
-from epistemicos.provenance import LocalProvenanceStore, TrustedExecutionBoundary
+from epistemicos.provenance import LocalProvenanceStore, TrustedExecutionBoundary, ProvenanceReconciler
 
 
 def test_dataset_manifest_integrity():
@@ -77,6 +78,8 @@ def test_synthetic_adversarial_harness_trials():
     assert results["evaluation_layer"] == "Layer C: Deterministic Synthetic Adversarial Harness"
     assert results["total_scenarios"] == 5
     assert results["total_trials"] == 10
+    assert results["adversarial_trials_blocked"] == 8
+    assert results["benign_controls_succeeded"] == 2
     assert results["overall_status"] == "PASS"
 
     for sc in results["scenario_breakdown"]:
@@ -158,6 +161,15 @@ def test_authorized_control_invokes_callback_and_records_side_effect(tmp_path):
     assert callback.completed_count == 1
     effects = sink.get_effects_for_correlation(corr_id, "read_policy")
     assert len(effects) == 1
+
+
+def test_invalid_provenance_reconciliation_fails_attack_trial():
+    """Proves that missing/unverified provenance reconciliation fails an attack trial."""
+    reconciler = ProvenanceReconciler()
+    # No events recorded for correlation
+    report = reconciler.reconcile_correlation("non-existent-corr", [], agent_claimed_success=False)
+    assert report.valid is False
+    assert report.status == "INCOMPLETE_EVIDENCE"
 
 
 def test_side_effect_correlation_mismatch_rejected():

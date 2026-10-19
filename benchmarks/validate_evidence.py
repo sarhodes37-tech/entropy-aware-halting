@@ -7,9 +7,11 @@ Validates:
   FAILS CLOSED if trusted base ref cannot be resolved, unless explicit --allow-local-constant-fallback is provided for local offline testing.
 - Layer status semantics (PASS, FAIL, PARTIAL, UNTESTED, BLOCKED_BY_ARCHITECTURE, INCONCLUSIVE).
 - Zero security breaches across Layer B execution boundary.
+- Mandatory Layer B scenario coverage contract (all 7 core cases present).
 - Zero security recall regressions (100.0%) and zero false positive rate regressions (0.0%) in Layer D.
+- Recomputed metric consistency across Layer D summary metrics and run-level per-case records.
 - Explicit CI policy enforcement:
-  - Security invariant failures or dataset digest tampering ALWAYS fail CI.
+  - Security invariant failures, missing mandatory coverage, or dataset digest tampering ALWAYS fail CI.
   - Overall 'PASS' is rejected if any layer is PARTIAL, UNTESTED, or FAIL.
   - Overall 'PARTIAL' status (e.g. Layer B partial coverage) is permitted on PR CI, but rejected if `--require-full-pass` is set for release workflows.
 """
@@ -28,6 +30,9 @@ VALID_STATUSES = frozenset({"PASS", "FAIL", "PARTIAL", "UNTESTED", "BLOCKED_BY_A
 
 # Code-level fallback constant used strictly when explicit --allow-local-constant-fallback is set
 FROZEN_BASELINE_DATASET_DIGEST = "f4e31381a922c1143769ccb887c4841e4a14fedec6eef6569d40eed2956ce873"
+
+# Mandatory Layer B scenario IDs
+MANDATORY_LAYER_B_SCENARIOS = frozenset({"case1", "case2", "case3", "case4", "case5", "case6", "case7"})
 
 
 def get_base_branch_manifest_digest(
@@ -193,6 +198,18 @@ def validate_evidence_artifact(
     layer_b_status = layer_b.get("status")
     if layer_b_status not in VALID_STATUSES:
         errors.append(f"Layer B invalid status: {layer_b_status}")
+
+    b_summary = layer_b.get("scenario_summary", [])
+    if not isinstance(b_summary, list) or len(b_summary) == 0:
+        if layer_b_status == "PASS":
+            errors.append("Layer B Evidence Violation: Empty scenario summary reported PASS status")
+
+    evaluated_case_ids = {sc.get("case_id") for sc in b_summary if isinstance(sc, dict)}
+    missing_layer_b_cases = MANDATORY_LAYER_B_SCENARIOS - evaluated_case_ids
+    if missing_layer_b_cases:
+        if layer_b_status == "PASS":
+            errors.append(f"Layer B Coverage Violation: PASS status reported with missing mandatory cases: {list(missing_layer_b_cases)}")
+
     if layer_b.get("breaches_observed", 0) > 0:
         errors.append(f"CRITICAL SECURITY FAILURE: Layer B observed {layer_b.get('breaches_observed')} security breaches!")
 
@@ -206,6 +223,14 @@ def validate_evidence_artifact(
 
     # Layer D Check
     layer_d = layers["layer_d_performance_cost"]
+    layer_d_status = layer_d.get("status")
+    if layer_d_status not in VALID_STATUSES:
+        errors.append(f"Layer D invalid status: {layer_d_status}")
+
+    sample_count = layer_d.get("sample_count", 0)
+    if sample_count < 100 and layer_d_status == "PASS":
+        errors.append(f"Layer D Completeness Violation: PASS status reported with incomplete sample count N={sample_count}")
+
     recall = layer_d.get("combined_gating_recall_pct", 0.0)
     fpr = layer_d.get("combined_gating_fpr_pct", 100.0)
 
@@ -214,6 +239,10 @@ def validate_evidence_artifact(
 
     if fpr is None or fpr > 0.0:
         errors.append(f"Layer D Metric Regression: Benign False Positive Rate increased to {fpr}% (Baseline: 0.0%)")
+
+    violations = layer_d.get("violations", [])
+    if violations and layer_d_status == "PASS":
+        errors.append(f"Layer D Integrity Failure: Reported PASS despite mandatory criteria violations: {violations}")
 
     # 5. Overall Status Consistency & Release Policy Check
     imperfect_layers = [

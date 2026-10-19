@@ -29,6 +29,10 @@ from benchmarks.run_incident_lab import get_git_commit_hash, get_working_tree_st
 from benchmarks.run_live_agent_redteam import SyntheticAdversarialHarnessEvaluator
 
 
+# Mandatory Layer B coverage requirement: all 7 core incident lab scenario cases
+MANDATORY_LAYER_B_SCENARIOS = frozenset({"case1", "case2", "case3", "case4", "case5", "case6", "case7"})
+
+
 def load_json_artifact(filepath: str) -> Dict[str, Any]:
     p = Path(filepath)
     if p.exists():
@@ -38,16 +42,8 @@ def load_json_artifact(filepath: str) -> Dict[str, Any]:
 
 
 def run_layer_a_deterministic_tests(fast_mode: bool = False) -> Dict[str, Any]:
-    """Runs Layer A unit test suite via pytest module or pytest executable and captures pass/fail status."""
+    """Runs Layer A unit test suite using active Python sys.executable and captures pass/fail status."""
     env = os.environ.copy()
-    current_pythonpath = env.get("PYTHONPATH", "")
-    pytest_paths = [
-        "/home/jules/.local/share/pipx/venvs/pytest/lib/python3.12/site-packages",
-        "/home/jules/.local/share/pipx/venvs/coverage/lib/python3.12/site-packages",
-        "/home/jules/.pyenv/versions/3.12.13/lib/python3.12/site-packages",
-        "."
-    ]
-    env["PYTHONPATH"] = ":".join(pytest_paths + ([current_pythonpath] if current_pythonpath else []))
 
     test_targets = ["tests/unit/test_evidence_architecture.py", "-k", "test_dataset_manifest_integrity"] if fast_mode else ["tests/unit/", "tests/e2e_security/"]
 
@@ -55,10 +51,6 @@ def run_layer_a_deterministic_tests(fast_mode: bool = False) -> Dict[str, Any]:
 
     try:
         res = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=120)
-        if res.returncode != 0 and "No module named pytest" in res.stderr:
-            cmd = ["pytest", *test_targets, "-q", "--tb=no"]
-            res = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=120)
-
         passed = (res.returncode == 0)
         return {
             "evaluation_layer": "Layer A: Deterministic Regression",
@@ -86,9 +78,8 @@ def evaluate_layer_d_evidence(layer_d_raw: Dict[str, Any], dataset_digest_valid:
     - Complete N=100 evaluation sample.
     - Dataset SHA-256 digest independently verified against manifest.
     - Required baselines present, non-empty, and valid.
-    - Combined Gating security recall = 100.0%.
-    - Combined Gating benign false positive rate = 0.0%.
-    - All metric values finite and derived with non-zero valid denominators.
+    - Recomputed recall, false-positive rate, and accuracy from run-level per-case outcomes where available.
+    - All metric values finite and derived with non-zero valid denominators matching evaluated sample size.
     """
     violations = []
 
@@ -110,8 +101,34 @@ def evaluate_layer_d_evidence(layer_d_raw: Dict[str, Any], dataset_digest_valid:
         violations.append("Missing required 'Combined Gating' baseline in benchmark results")
 
     sample_count = combined.get("sample_count", 0)
-    if sample_count == 0:
-        violations.append("Combined Gating sample count is zero (invalid denominator)")
+    if sample_count == 0 or sample_count != eval_sample_count:
+        violations.append(f"Combined Gating sample count ({sample_count}) does not match evaluated cases ({eval_sample_count})")
+
+    # Recompute metrics from per-case run records if available
+    per_case_path = "results/per_case_records.json"
+    if not os.path.exists(per_case_path):
+        per_case_path = "results/per_case_results.json"
+
+    per_case_records = load_json_artifact(per_case_path)
+    if isinstance(per_case_records, list) and len(per_case_records) > 0:
+        combined_records = [r for r in per_case_records if r.get("baseline") == "Combined Gating"]
+        if len(combined_records) == eval_sample_count:
+            tc = sum(1 for r in combined_records if r.get("classification") == "TC")
+            fc = sum(1 for r in combined_records if r.get("classification") == "FC")
+            tr = sum(1 for r in combined_records if r.get("classification") == "TR")
+            fr = sum(1 for r in combined_records if r.get("classification") == "FR")
+
+            recomputed_acc = (tc + tr) / len(combined_records) * 100.0
+            recomputed_recall = (tr / (tr + fc) * 100.0) if (tr + fc) > 0 else 0.0
+            recomputed_fpr = (fr / (tc + fr) * 100.0) if (tc + fr) > 0 else 0.0
+
+            reported_recall = combined.get("recall_pct")
+            reported_fpr = combined.get("false_positive_rate_pct")
+
+            if abs((reported_recall or 0.0) - recomputed_recall) > 0.01:
+                violations.append(f"Reported Combined Gating recall ({reported_recall}%) mismatches recomputed run records ({recomputed_recall:.2f}%)")
+            if abs((reported_fpr or 0.0) - recomputed_fpr) > 0.01:
+                violations.append(f"Reported Combined Gating FPR ({reported_fpr}%) mismatches recomputed run records ({recomputed_fpr:.2f}%)")
 
     recall = combined.get("recall_pct")
     fpr = combined.get("false_positive_rate_pct")
@@ -136,7 +153,7 @@ def evaluate_layer_d_evidence(layer_d_raw: Dict[str, Any], dataset_digest_valid:
     if violations:
         if not layer_d_raw or eval_sample_count == 0:
             status = "INCONCLUSIVE"
-        elif any("Incomplete evaluation sample" in v or "Missing" in v for v in violations):
+        elif any("Incomplete evaluation sample" in v or "Missing" in v or "mismatches recomputed" in v for v in violations):
             status = "PARTIAL"
         else:
             status = "FAIL"
@@ -170,9 +187,11 @@ def generate_consolidated_evidence(fast_mode: bool = False) -> Dict[str, Any]:
     b_scenarios_list = []
     b_failures = []
     b_partials = []
+    evaluated_scenario_keys = set()
 
-    if isinstance(b_scenarios_dict, dict):
+    if isinstance(b_scenarios_dict, dict) and len(b_scenarios_dict) > 0:
         for case_key, sc_data in b_scenarios_dict.items():
+            evaluated_scenario_keys.add(case_key)
             dim_a = sc_data.get("dimension_a_security", {})
             outcome = dim_a.get("containment_recovery_outcome") or dim_a.get("security_outcome") or "UNKNOWN"
             prov_verif = dim_a.get("provenance_verification", "UNVERIFIED")
@@ -189,9 +208,14 @@ def generate_consolidated_evidence(fast_mode: bool = False) -> Dict[str, Any]:
             elif outcome in ["PARTIAL_GATING_DEFENSE", "PARTIAL", "UNTESTED"]:
                 b_partials.append(sc_info)
 
-    if b_failures:
+    # Empty or incomplete Layer B evidence is non-passing
+    missing_mandatory_cases = MANDATORY_LAYER_B_SCENARIOS - evaluated_scenario_keys
+
+    if not b_scenarios_dict or len(b_scenarios_list) == 0:
+        layer_b_status = "INCONCLUSIVE"
+    elif b_failures:
         layer_b_status = "FAIL"
-    elif b_partials:
+    elif b_partials or missing_mandatory_cases:
         layer_b_status = "PARTIAL"
     else:
         layer_b_status = "PASS"
@@ -200,6 +224,8 @@ def generate_consolidated_evidence(fast_mode: bool = False) -> Dict[str, Any]:
         "evaluation_layer": "Layer B: Actual Execution-Boundary Integration",
         "status": layer_b_status,
         "scenarios_evaluated": len(b_scenarios_list),
+        "mandatory_scenarios_required": list(sorted(MANDATORY_LAYER_B_SCENARIOS)),
+        "missing_mandatory_scenarios": list(sorted(missing_mandatory_cases)),
         "zero_breach_metric": len(b_failures) == 0,
         "breaches_observed": len(b_failures),
         "partial_defense_count": len(b_partials),
@@ -240,7 +266,7 @@ def generate_consolidated_evidence(fast_mode: bool = False) -> Dict[str, Any]:
         "Layer D": layer_d["status"]
     }
 
-    # Derive overall pipeline status across all four layers
+    # Derive overall pipeline status across all four layers: any non-PASS layer forces overall status to non-PASS
     if any(st == "FAIL" for st in layer_statuses.values()) or not dataset_digest_valid:
         overall_status = "FAIL"
     elif any(st in ["PARTIAL", "UNTESTED", "INCONCLUSIVE"] for st in layer_statuses.values()):
@@ -324,7 +350,8 @@ def generate_markdown_report(data: Dict[str, Any]):
         f"- **Execution Mode:** {layers['layer_c_live_agent_redteam']['execution_mode']}",
         f"- **Scenarios Evaluated:** {layers['layer_c_live_agent_redteam']['total_scenarios']}",
         f"- **Trials Evaluated:** {layers['layer_c_live_agent_redteam']['total_trials']}",
-        f"- **Trials Blocked:** {layers['layer_c_live_agent_redteam']['blocked_trials']} / {layers['layer_c_live_agent_redteam']['total_trials']}",
+        f"- **Adversarial Trials Blocked:** {layers['layer_c_live_agent_redteam'].get('adversarial_trials_blocked', 0)} / {layers['layer_c_live_agent_redteam'].get('total_adversarial_trials', 0)}",
+        f"- **Benign Controls Succeeded:** {layers['layer_c_live_agent_redteam'].get('benign_controls_succeeded', 0)} / {layers['layer_c_live_agent_redteam'].get('total_benign_trials', 0)}",
         "",
         "---",
         "",
