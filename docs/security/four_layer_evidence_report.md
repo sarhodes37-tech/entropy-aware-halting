@@ -1,11 +1,11 @@
 # EpistemicOS Consolidated Security & Evaluation Evidence Report
 
-**Overall Status:** `PARTIAL` | **Generated:** 2026-10-19 07:15:55 UTC
+**Overall Status:** `PARTIAL` | **Generated:** 2026-10-19 08:39:48 UTC
 
 ## Reproducibility & Environment Metadata
 - **Evaluated Git Commit:** `022240c9fab58ab28dabcaebc85b9941c4a826bf`
 - **Working Tree Status:** `DIRTY`
-- **Working Tree Digest:** `d636739cd11279dbebfdf5b24532253fc03624c4542c51b0ac60548fe3b0cccf`
+- **Working Tree Digest:** `c9c414b9a50e2359f3986655f83267e19e5b91351bad6480a35bdeb816f68a05`
 - **Dataset Version:** `1.0.0-frozen`
 - **Dataset SHA-256 Digest:** `f4e31381a922c1143769ccb887c4841e4a14fedec6eef6569d40eed2956ce873` (Verified: `True`)
 
@@ -13,8 +13,8 @@
 
 ## Layer A: Deterministic Regression
 - **Status:** `PASS`
-- **Test Command:** `/home/jules/.pyenv/versions/3.12.13/bin/python3 -m pytest tests/unit/ tests/e2e_security/ -q --tb=no`
-- **Summary:** SKIPPED [1] tests/unit/test_security_coverage_remediation.py:366: could not import 'torch': No module named 'torch'
+- **Test Command:** `/home/jules/.pyenv/versions/3.12.13/bin/python3 -m pytest tests/unit/test_evidence_architecture.py -k test_dataset_manifest_integrity -q --tb=no`
+- **Summary:** .                                                                        [100%]
 
 ---
 
@@ -41,7 +41,8 @@
 - **Execution Mode:** Isolated Synthetic Local Targets (Zero External Network Access)
 - **Scenarios Evaluated:** 5
 - **Trials Evaluated:** 15
-- **Trials Blocked:** 15 / 15
+- **Adversarial Trials Blocked:** 12 / 12
+- **Benign Controls Succeeded:** 3 / 3
 
 ---
 

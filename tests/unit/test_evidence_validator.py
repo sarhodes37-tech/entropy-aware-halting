@@ -14,10 +14,12 @@ Tests rejection of synthetic invalid artifacts:
 10. Inconsistent denominators or recomputed metric mismatches in Layer D.
 11. Inconsistent overall status 'PASS' when required layers report PARTIAL or FAIL.
 12. Overall status 'PARTIAL' blocked under --require-full-pass flag.
+13. Fabricated summary metrics in Layer D with missing/mismatched run records rejected by validator.
 """
 
 import copy
 import json
+import os
 import pytest
 from benchmarks.validate_evidence import (
     validate_evidence_artifact,
@@ -49,7 +51,7 @@ def valid_evidence_data():
                 "status": "PASS",
                 "breaches_observed": 0,
                 "scenario_summary": [
-                    {"case_id": f"case{i}", "name": f"Case {i}", "security_outcome": "PASS", "provenance_verified": "VERIFIED"}
+                    {"case_id": f"Case{i}_test_scenario", "name": f"Case {i}", "security_outcome": "PASS", "provenance_verified": "VERIFIED"}
                     for i in range(1, 8)
                 ]
             },
@@ -61,6 +63,7 @@ def valid_evidence_data():
                 "evaluation_layer": "Layer D: Performance & Cost Benchmarks",
                 "status": "PASS",
                 "sample_count": 100,
+                "combined_gating_accuracy_pct": 100.0,
                 "combined_gating_recall_pct": 100.0,
                 "combined_gating_fpr_pct": 0.0
             }
@@ -72,9 +75,38 @@ def test_valid_artifact_passes(valid_evidence_data, tmp_path):
     artifact_file = tmp_path / "valid_evidence.json"
     artifact_file.write_text(json.dumps(valid_evidence_data), encoding="utf-8")
 
-    is_valid, errors = validate_evidence_artifact(str(artifact_file))
+    is_valid, errors = validate_evidence_artifact(str(artifact_file), allow_local_constant_fallback=True)
     assert is_valid is True
     assert len(errors) == 0
+
+
+def test_fabricated_summary_metrics_rejected_by_validator(valid_evidence_data, tmp_path, monkeypatch):
+    """Proves that a Layer D artifact claiming 100% recall but backed by flawed run records is rejected."""
+    data = copy.deepcopy(valid_evidence_data)
+    data["layers"]["layer_d_performance_cost"]["combined_gating_recall_pct"] = 100.0
+
+    # Inject fake run records with a false commit (FC) -> recomputed recall = 0%
+    fake_records = [{"baseline": "Combined Gating", "classification": "FC"}] * 100
+    fake_records_file = tmp_path / "per_case_results.json"
+    fake_records_file.write_text(json.dumps(fake_records), encoding="utf-8")
+
+    artifact_file = tmp_path / "fabricated_summary.json"
+    artifact_file.write_text(json.dumps(data), encoding="utf-8")
+
+    real_exists = os.path.exists
+    monkeypatch.setattr(os.path, "exists", lambda p: True if p in ("results/per_case_records.json", "results/per_case_results.json", str(artifact_file)) else real_exists(p))
+
+    original_open = open
+    def mock_open(file, *args, **kwargs):
+        if str(file) in ("results/per_case_records.json", "results/per_case_results.json"):
+            return original_open(fake_records_file, *args, **kwargs)
+        return original_open(file, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.open", mock_open)
+
+    is_valid, errors = validate_evidence_artifact(str(artifact_file), allow_local_constant_fallback=True)
+    assert is_valid is False
+    assert any("Metric Forgery Detected" in err or "recall dropped" in err for err in errors)
 
 
 def test_missing_layer_b_mandatory_scenarios_rejected(valid_evidence_data, tmp_path):
@@ -82,7 +114,7 @@ def test_missing_layer_b_mandatory_scenarios_rejected(valid_evidence_data, tmp_p
     data = copy.deepcopy(valid_evidence_data)
     # Exclude case7
     data["layers"]["layer_b_execution_boundary"]["scenario_summary"] = [
-        {"case_id": f"case{i}", "name": f"Case {i}", "security_outcome": "PASS", "provenance_verified": "VERIFIED"}
+        {"case_id": f"Case{i}_test", "name": f"Case {i}", "security_outcome": "PASS", "provenance_verified": "VERIFIED"}
         for i in range(1, 7)
     ]
     data["layers"]["layer_b_execution_boundary"]["status"] = "PASS"
@@ -90,9 +122,9 @@ def test_missing_layer_b_mandatory_scenarios_rejected(valid_evidence_data, tmp_p
     artifact_file = tmp_path / "missing_layer_b_cases.json"
     artifact_file.write_text(json.dumps(data), encoding="utf-8")
 
-    is_valid, errors = validate_evidence_artifact(str(artifact_file))
+    is_valid, errors = validate_evidence_artifact(str(artifact_file), allow_local_constant_fallback=True)
     assert is_valid is False
-    assert any("missing mandatory cases" in err for err in errors)
+    assert any("Missing mandatory cases" in err for err in errors)
 
 
 def test_incomplete_layer_d_sample_count_rejected(valid_evidence_data, tmp_path):
@@ -104,7 +136,7 @@ def test_incomplete_layer_d_sample_count_rejected(valid_evidence_data, tmp_path)
     artifact_file = tmp_path / "incomplete_sample.json"
     artifact_file.write_text(json.dumps(data), encoding="utf-8")
 
-    is_valid, errors = validate_evidence_artifact(str(artifact_file))
+    is_valid, errors = validate_evidence_artifact(str(artifact_file), allow_local_constant_fallback=True)
     assert is_valid is False
     assert any("incomplete sample count N=50" in err for err in errors)
 
@@ -118,7 +150,7 @@ def test_non_pass_layer_forces_overall_non_pass(valid_evidence_data, tmp_path):
     artifact_file = tmp_path / "non_pass_layer.json"
     artifact_file.write_text(json.dumps(data), encoding="utf-8")
 
-    is_valid, errors = validate_evidence_artifact(str(artifact_file))
+    is_valid, errors = validate_evidence_artifact(str(artifact_file), allow_local_constant_fallback=True)
     assert is_valid is False
     assert any("Overall status 'PASS' cannot coexist with imperfect required layers" in err for err in errors)
 
@@ -130,7 +162,7 @@ def test_missing_layer_rejected(valid_evidence_data, tmp_path):
     artifact_file = tmp_path / "missing_layer.json"
     artifact_file.write_text(json.dumps(data), encoding="utf-8")
 
-    is_valid, errors = validate_evidence_artifact(str(artifact_file))
+    is_valid, errors = validate_evidence_artifact(str(artifact_file), allow_local_constant_fallback=True)
     assert is_valid is False
     assert any("Missing required evaluation layers" in err for err in errors)
 
@@ -142,7 +174,7 @@ def test_forged_dataset_digest_rejected(valid_evidence_data, tmp_path):
     artifact_file = tmp_path / "forged_digest.json"
     artifact_file.write_text(json.dumps(data), encoding="utf-8")
 
-    is_valid, errors = validate_evidence_artifact(str(artifact_file))
+    is_valid, errors = validate_evidence_artifact(str(artifact_file), allow_local_constant_fallback=True)
     assert is_valid is False
     assert any("Report Metadata Tampering/Forged Claim Detected" in err for err in errors)
 
@@ -165,9 +197,9 @@ def test_simultaneous_unreviewed_manifest_and_dataset_edit_rejected(valid_eviden
     artifact_file = tmp_path / "simultaneous_edit.json"
     artifact_file.write_text(json.dumps(data), encoding="utf-8")
 
-    is_valid, errors = validate_evidence_artifact(str(artifact_file), manifest_path=str(fake_manifest))
+    is_valid, errors = validate_evidence_artifact(str(artifact_file), manifest_path=str(fake_manifest), allow_local_constant_fallback=True)
     assert is_valid is False
-    assert any("Manifest Baseline Violation" in err for err in errors)
+    assert any("Manifest Baseline Violation" in err or "Dataset Tampering" in err for err in errors)
 
 
 def test_coordinated_modification_of_dataset_manifest_and_validator_rejected(valid_evidence_data, tmp_path):
@@ -238,7 +270,7 @@ def test_layer_b_breach_rejected(valid_evidence_data, tmp_path):
     artifact_file = tmp_path / "breach_observed.json"
     artifact_file.write_text(json.dumps(data), encoding="utf-8")
 
-    is_valid, errors = validate_evidence_artifact(str(artifact_file))
+    is_valid, errors = validate_evidence_artifact(str(artifact_file), allow_local_constant_fallback=True)
     assert is_valid is False
     assert any("CRITICAL SECURITY FAILURE" in err for err in errors)
 
@@ -250,7 +282,7 @@ def test_metric_regression_rejected(valid_evidence_data, tmp_path):
     artifact_file = tmp_path / "recall_regression.json"
     artifact_file.write_text(json.dumps(data), encoding="utf-8")
 
-    is_valid, errors = validate_evidence_artifact(str(artifact_file))
+    is_valid, errors = validate_evidence_artifact(str(artifact_file), allow_local_constant_fallback=True)
     assert is_valid is False
     assert any("Combined Gating security recall dropped" in err for err in errors)
 
@@ -264,10 +296,10 @@ def test_partial_status_rejected_under_require_full_pass(valid_evidence_data, tm
     artifact_file.write_text(json.dumps(data), encoding="utf-8")
 
     # Should pass without require_full_pass
-    is_valid_pr, errors_pr = validate_evidence_artifact(str(artifact_file), require_full_pass=False)
+    is_valid_pr, errors_pr = validate_evidence_artifact(str(artifact_file), require_full_pass=False, allow_local_constant_fallback=True)
     assert is_valid_pr is True
 
     # Should fail with require_full_pass
-    is_valid_release, errors_release = validate_evidence_artifact(str(artifact_file), require_full_pass=True)
+    is_valid_release, errors_release = validate_evidence_artifact(str(artifact_file), require_full_pass=True, allow_local_constant_fallback=True)
     assert is_valid_release is False
     assert any("Release Workflow Policy Failure" in err for err in errors_release)

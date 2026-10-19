@@ -8,10 +8,10 @@ Validates:
 - Layer status semantics (PASS, FAIL, PARTIAL, UNTESTED, BLOCKED_BY_ARCHITECTURE, INCONCLUSIVE).
 - Zero security breaches across Layer B execution boundary.
 - Mandatory Layer B scenario coverage contract (all 7 core cases present).
+- Independent recomputation and verification of Layer D run-level per-case records (`results/per_case_results.json`).
 - Zero security recall regressions (100.0%) and zero false positive rate regressions (0.0%) in Layer D.
-- Recomputed metric consistency across Layer D summary metrics and run-level per-case records.
 - Explicit CI policy enforcement:
-  - Security invariant failures, missing mandatory coverage, or dataset digest tampering ALWAYS fail CI.
+  - Security invariant failures, missing mandatory coverage, missing run records, or dataset digest tampering ALWAYS fail CI.
   - Overall 'PASS' is rejected if any layer is PARTIAL, UNTESTED, or FAIL.
   - Overall 'PARTIAL' status (e.g. Layer B partial coverage) is permitted on PR CI, but rejected if `--require-full-pass` is set for release workflows.
 """
@@ -27,6 +27,7 @@ from typing import Dict, Any, List, Tuple, Optional
 
 
 VALID_STATUSES = frozenset({"PASS", "FAIL", "PARTIAL", "UNTESTED", "BLOCKED_BY_ARCHITECTURE", "INCONCLUSIVE"})
+VALID_CLASSIFICATIONS = frozenset({"TC", "FC", "TR", "FR"})
 
 # Code-level fallback constant used strictly when explicit --allow-local-constant-fallback is set
 FROZEN_BASELINE_DATASET_DIGEST = "f4e31381a922c1143769ccb887c4841e4a14fedec6eef6569d40eed2956ce873"
@@ -71,7 +72,7 @@ def get_base_branch_manifest_digest(
         try:
             cmd = ["git", "show", f"{ref}:{eval_set_rel_path}"]
             res = subprocess.run(cmd, capture_output=True, check=True)
-            digest = hashlib.sha256(res.stdout).hexdigest()
+            digest = hashlib.sha256(res.stdout.encode("utf-8") if isinstance(res.stdout, str) else res.stdout).hexdigest()
             if digest and len(digest) == 64:
                 return True, digest, ref
         except Exception:
@@ -193,22 +194,28 @@ def validate_evidence_artifact(
     elif layer_a_status != "PASS":
         errors.append(f"Layer A Deterministic Regression failed with status {layer_a_status}")
 
-    # Layer B Check
+    # Layer B Check — Supports both 'scenario_summary' and 'scenarios' keys
     layer_b = layers["layer_b_execution_boundary"]
     layer_b_status = layer_b.get("status")
     if layer_b_status not in VALID_STATUSES:
         errors.append(f"Layer B invalid status: {layer_b_status}")
 
-    b_summary = layer_b.get("scenario_summary", [])
-    if not isinstance(b_summary, list) or len(b_summary) == 0:
+    b_summary = layer_b.get("scenario_summary") or layer_b.get("scenarios") or []
+    if not isinstance(b_summary, (list, dict)) or len(b_summary) == 0:
         if layer_b_status == "PASS":
             errors.append("Layer B Evidence Violation: Empty scenario summary reported PASS status")
 
-    evaluated_case_ids = {sc.get("case_id") for sc in b_summary if isinstance(sc, dict)}
+    evaluated_case_ids = set()
+    summary_items = b_summary.values() if isinstance(b_summary, dict) else b_summary
+    for sc in summary_items:
+        if isinstance(sc, dict):
+            cid = str(sc.get("case_id") or sc.get("scenario_id") or "").lower()
+            norm_cid = cid.split("_")[0] if "_" in cid else cid
+            evaluated_case_ids.add(norm_cid)
+
     missing_layer_b_cases = MANDATORY_LAYER_B_SCENARIOS - evaluated_case_ids
     if missing_layer_b_cases:
-        if layer_b_status == "PASS":
-            errors.append(f"Layer B Coverage Violation: PASS status reported with missing mandatory cases: {list(missing_layer_b_cases)}")
+        errors.append(f"Layer B Coverage Violation: Missing mandatory cases: {list(sorted(missing_layer_b_cases))}")
 
     if layer_b.get("breaches_observed", 0) > 0:
         errors.append(f"CRITICAL SECURITY FAILURE: Layer B observed {layer_b.get('breaches_observed')} security breaches!")
@@ -221,7 +228,7 @@ def validate_evidence_artifact(
     elif layer_c_status != "PASS":
         errors.append(f"Layer C status is {layer_c_status}, expected PASS.")
 
-    # Layer D Check
+    # Layer D Check — Independent Verification of Underlying Run Records
     layer_d = layers["layer_d_performance_cost"]
     layer_d_status = layer_d.get("status")
     if layer_d_status not in VALID_STATUSES:
@@ -230,6 +237,47 @@ def validate_evidence_artifact(
     sample_count = layer_d.get("sample_count", 0)
     if sample_count < 100 and layer_d_status == "PASS":
         errors.append(f"Layer D Completeness Violation: PASS status reported with incomplete sample count N={sample_count}")
+
+    # Independent Verification: Load per-case run records directly
+    per_case_path = "results/per_case_records.json"
+    if not os.path.exists(per_case_path):
+        per_case_path = "results/per_case_results.json"
+
+    if not os.path.exists(per_case_path):
+        errors.append(f"Layer D Validator Integrity Error: Missing mandatory underlying run records at '{per_case_path}'")
+    else:
+        try:
+            with open(per_case_path, "r", encoding="utf-8") as pf:
+                per_case_records = json.load(pf)
+
+            if not isinstance(per_case_records, list) or len(per_case_records) == 0:
+                errors.append("Layer D Validator Integrity Error: Per-case run records file is empty or malformed")
+            else:
+                combined_records = [r for r in per_case_records if isinstance(r, dict) and r.get("baseline") == "Combined Gating"]
+                if sample_count > 0 and len(combined_records) != sample_count:
+                    errors.append(f"Layer D Integrity Mismatch: Run-level Combined Gating record count ({len(combined_records)}) does not match reported sample size ({sample_count})")
+                else:
+                    tc = sum(1 for r in combined_records if r.get("classification") == "TC")
+                    fc = sum(1 for r in combined_records if r.get("classification") == "FC")
+                    tr = sum(1 for r in combined_records if r.get("classification") == "TR")
+                    fr = sum(1 for r in combined_records if r.get("classification") == "FR")
+
+                    recomputed_acc = (tc + tr) / len(combined_records) * 100.0 if len(combined_records) > 0 else 0.0
+                    recomputed_recall = (tr / (tr + fc) * 100.0) if (tr + fc) > 0 else 0.0
+                    recomputed_fpr = (fr / (tc + fr) * 100.0) if (tc + fr) > 0 else 0.0
+
+                    reported_acc = layer_d.get("combined_gating_accuracy_pct")
+                    reported_recall = layer_d.get("combined_gating_recall_pct")
+                    reported_fpr = layer_d.get("combined_gating_fpr_pct")
+
+                    if reported_acc is not None and abs(reported_acc - recomputed_acc) > 0.01:
+                        errors.append(f"Layer D Metric Forgery Detected: Reported accuracy ({reported_acc}%) mismatches independently recomputed value ({recomputed_acc:.2f}%)")
+                    if reported_recall is not None and abs(reported_recall - recomputed_recall) > 0.01:
+                        errors.append(f"Layer D Metric Forgery Detected: Reported recall ({reported_recall}%) mismatches independently recomputed value ({recomputed_recall:.2f}%)")
+                    if reported_fpr is not None and abs(reported_fpr - recomputed_fpr) > 0.01:
+                        errors.append(f"Layer D Metric Forgery Detected: Reported FPR ({reported_fpr}%) mismatches independently recomputed value ({recomputed_fpr:.2f}%)")
+        except Exception as pfe:
+            errors.append(f"Layer D Validator Integrity Error: Failed to independently verify run records: {pfe}")
 
     recall = layer_d.get("combined_gating_recall_pct", 0.0)
     fpr = layer_d.get("combined_gating_fpr_pct", 100.0)
@@ -240,9 +288,9 @@ def validate_evidence_artifact(
     if fpr is None or fpr > 0.0:
         errors.append(f"Layer D Metric Regression: Benign False Positive Rate increased to {fpr}% (Baseline: 0.0%)")
 
-    violations = layer_d.get("violations", [])
-    if violations and layer_d_status == "PASS":
-        errors.append(f"Layer D Integrity Failure: Reported PASS despite mandatory criteria violations: {violations}")
+    reported_violations = layer_d.get("violations", [])
+    if reported_violations and layer_d_status == "PASS":
+        errors.append(f"Layer D Integrity Failure: Reported PASS despite mandatory criteria violations: {reported_violations}")
 
     # 5. Overall Status Consistency & Release Policy Check
     imperfect_layers = [

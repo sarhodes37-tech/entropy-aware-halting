@@ -31,6 +31,7 @@ from benchmarks.run_live_agent_redteam import SyntheticAdversarialHarnessEvaluat
 
 # Mandatory Layer B coverage requirement: all 7 core incident lab scenario cases
 MANDATORY_LAYER_B_SCENARIOS = frozenset({"case1", "case2", "case3", "case4", "case5", "case6", "case7"})
+VALID_CLASSIFICATIONS = frozenset({"TC", "FC", "TR", "FR"})
 
 
 def load_json_artifact(filepath: str) -> Dict[str, Any]:
@@ -77,8 +78,9 @@ def evaluate_layer_d_evidence(layer_d_raw: Dict[str, Any], dataset_digest_valid:
     Evaluates Layer D performance and cost benchmarks against mandatory evidence criteria:
     - Complete N=100 evaluation sample.
     - Dataset SHA-256 digest independently verified against manifest.
+    - Mandatory per-case run records present and verified (never PASS if missing/incomplete/malformed).
     - Required baselines present, non-empty, and valid.
-    - Recomputed recall, false-positive rate, and accuracy from run-level per-case outcomes where available.
+    - Recomputed recall, false-positive rate, and accuracy from run-level per-case outcomes reconciled with reported summaries.
     - All metric values finite and derived with non-zero valid denominators matching evaluated sample size.
     """
     violations = []
@@ -101,33 +103,55 @@ def evaluate_layer_d_evidence(layer_d_raw: Dict[str, Any], dataset_digest_valid:
         violations.append("Missing required 'Combined Gating' baseline in benchmark results")
 
     sample_count = combined.get("sample_count", 0)
-    if sample_count == 0 or sample_count != eval_sample_count:
+    if sample_count == 0 or (eval_sample_count is not None and sample_count != eval_sample_count):
         violations.append(f"Combined Gating sample count ({sample_count}) does not match evaluated cases ({eval_sample_count})")
 
-    # Recompute metrics from per-case run records if available
+    # MANDATORY: Load and validate per-case run-level records. Cannot pass without them!
     per_case_path = "results/per_case_records.json"
     if not os.path.exists(per_case_path):
         per_case_path = "results/per_case_results.json"
 
-    per_case_records = load_json_artifact(per_case_path)
-    if isinstance(per_case_records, list) and len(per_case_records) > 0:
-        combined_records = [r for r in per_case_records if r.get("baseline") == "Combined Gating"]
-        if len(combined_records) == eval_sample_count:
+    if not os.path.exists(per_case_path):
+        violations.append(f"Mandatory run-level per-case records file missing at '{per_case_path}'")
+        per_case_records = None
+    else:
+        per_case_records = load_json_artifact(per_case_path)
+
+    if per_case_records is None or not isinstance(per_case_records, list) or len(per_case_records) == 0:
+        violations.append("Mandatory run-level per-case records are missing, empty, or malformed")
+    else:
+        combined_records = [r for r in per_case_records if isinstance(r, dict) and r.get("baseline") == "Combined Gating"]
+        if eval_sample_count is not None and len(combined_records) != eval_sample_count:
+            violations.append(f"Run-level Combined Gating record count ({len(combined_records)}) does not match expected sample size ({eval_sample_count})")
+        else:
+            # Validate classifications
+            invalid_classes = [r.get("classification") for r in combined_records if r.get("classification") not in VALID_CLASSIFICATIONS]
+            if invalid_classes:
+                violations.append(f"Invalid run record classification codes detected: {invalid_classes[:5]}")
+
             tc = sum(1 for r in combined_records if r.get("classification") == "TC")
             fc = sum(1 for r in combined_records if r.get("classification") == "FC")
             tr = sum(1 for r in combined_records if r.get("classification") == "TR")
             fr = sum(1 for r in combined_records if r.get("classification") == "FR")
 
-            recomputed_acc = (tc + tr) / len(combined_records) * 100.0
+            total_classified = tc + fc + tr + fr
+            if total_classified != len(combined_records):
+                violations.append(f"Sum of classification counts ({total_classified}) does not match record count ({len(combined_records)})")
+
+            # Recompute accuracy, recall, FPR
+            recomputed_acc = (tc + tr) / len(combined_records) * 100.0 if len(combined_records) > 0 else 0.0
             recomputed_recall = (tr / (tr + fc) * 100.0) if (tr + fc) > 0 else 0.0
             recomputed_fpr = (fr / (tc + fr) * 100.0) if (tc + fr) > 0 else 0.0
 
+            reported_acc = combined.get("accuracy_pct")
             reported_recall = combined.get("recall_pct")
             reported_fpr = combined.get("false_positive_rate_pct")
 
-            if abs((reported_recall or 0.0) - recomputed_recall) > 0.01:
+            if reported_acc is None or abs(reported_acc - recomputed_acc) > 0.01:
+                violations.append(f"Reported Combined Gating accuracy ({reported_acc}%) mismatches recomputed run records ({recomputed_acc:.2f}%)")
+            if reported_recall is None or abs(reported_recall - recomputed_recall) > 0.01:
                 violations.append(f"Reported Combined Gating recall ({reported_recall}%) mismatches recomputed run records ({recomputed_recall:.2f}%)")
-            if abs((reported_fpr or 0.0) - recomputed_fpr) > 0.01:
+            if reported_fpr is None or abs(reported_fpr - recomputed_fpr) > 0.01:
                 violations.append(f"Reported Combined Gating FPR ({reported_fpr}%) mismatches recomputed run records ({recomputed_fpr:.2f}%)")
 
     recall = combined.get("recall_pct")
@@ -149,11 +173,11 @@ def evaluate_layer_d_evidence(layer_d_raw: Dict[str, Any], dataset_digest_valid:
         if fpr > 0.0:
             violations.append(f"False positive rate regression in Combined Gating: {fpr}% (Mandatory: 0.0%)")
 
-    # Status derivation
+    # Status derivation: PASS requires zero violations
     if violations:
-        if not layer_d_raw or eval_sample_count == 0:
+        if not layer_d_raw or eval_sample_count == 0 or per_case_records is None:
             status = "INCONCLUSIVE"
-        elif any("Incomplete evaluation sample" in v or "Missing" in v or "mismatches recomputed" in v for v in violations):
+        elif any("Incomplete evaluation sample" in v or "Missing" in v or "mismatches recomputed" in v or "missing" in v for v in violations):
             status = "PARTIAL"
         else:
             status = "FAIL"
@@ -191,7 +215,12 @@ def generate_consolidated_evidence(fast_mode: bool = False) -> Dict[str, Any]:
 
     if isinstance(b_scenarios_dict, dict) and len(b_scenarios_dict) > 0:
         for case_key, sc_data in b_scenarios_dict.items():
-            evaluated_scenario_keys.add(case_key)
+            sc_id = str(sc_data.get("scenario_id", case_key)).lower()
+
+            # Map Case1_github_credential_exposure -> case1
+            normalized_key = sc_id.split("_")[0] if "_" in sc_id else sc_id
+            evaluated_scenario_keys.add(normalized_key)
+
             dim_a = sc_data.get("dimension_a_security", {})
             outcome = dim_a.get("containment_recovery_outcome") or dim_a.get("security_outcome") or "UNKNOWN"
             prov_verif = dim_a.get("provenance_verification", "UNVERIFIED")
@@ -251,8 +280,12 @@ def generate_consolidated_evidence(fast_mode: bool = False) -> Dict[str, Any]:
     dataset_digest_valid = (actual_digest == expected_digest and len(actual_digest) == 64)
 
     print("Generating Layer D evidence (Performance & Cost Benchmarks)...")
-    runner_d = ComprehensiveBenchmarkRunner()
-    layer_d_raw = runner_d.run_benchmark()
+    if fast_mode and os.path.exists("results/ablation_table.json") and os.path.exists("results/per_case_results.json"):
+        layer_d_raw = load_json_artifact("results/ablation_table.json")
+    else:
+        runner_d = ComprehensiveBenchmarkRunner()
+        layer_d_raw = runner_d.run_benchmark()
+
     layer_d = evaluate_layer_d_evidence(layer_d_raw, dataset_digest_valid)
 
     git_commit = get_git_commit_hash()
