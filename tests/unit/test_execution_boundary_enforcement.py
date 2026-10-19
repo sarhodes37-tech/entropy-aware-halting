@@ -361,3 +361,62 @@ def test_gate_rejection_prevents_issuance_and_side_effects():
     event_types = [e.event_type for e in events]
     assert "AUTHORIZATION_GRANTED" not in event_types
     assert "EXECUTION_STARTED" not in event_types
+
+
+def test_revoked_expired_replayed_grant_denied():
+    """
+    Regression Test:
+    Verifies that revoked, expired, or replayed grants cannot be consumed a second time
+    by TrustedExecutionBoundary.
+    """
+    execution_callback = MagicMock(return_value={"status": "REPLAYED"})
+    orchestrator = EpistemicOrchestrator()
+
+    raw_payload = {"policy_id": "POL-2026-REPLAY", "primary_metric": 100.0}
+    payload_digest = orchestrator.execution_boundary.compute_canonical_digest(raw_payload)
+
+    exec_ctx = ExecutionContext(
+        correlation_id="corr-replay-1",
+        request_id="req-replay-1",
+        authorization_token_id="tok-replay-1",
+        authorized_digest=payload_digest,
+        authorization_granted=True
+    )
+
+    auth_event = ProvenanceEvent(
+        schema_version="1.0.0",
+        event_id=str(uuid.uuid4()),
+        event_type=ProvenanceEventType.AUTHORIZATION_GRANTED.value,
+        provenance_source=ProvenanceSource.GOVERNANCE_GATE.value,
+        correlation_id="corr-replay-1",
+        request_id="req-replay-1",
+        action_name="execute",
+        target="grader_service",
+        canonical_request_digest=payload_digest,
+        timestamp="2026-01-01T00:00:00Z",
+        authorization_token_id="tok-replay-1",
+    )
+    orchestrator.execution_boundary.store.record_event(auth_event)
+
+    # First execution succeeds
+    res1 = orchestrator.execution_boundary.execute_protected_action(
+        action_name="execute",
+        target="grader_service",
+        request_payload=raw_payload,
+        executor_func=execution_callback,
+        context=exec_ctx
+    )
+    assert res1["status"] == "SUCCESS"
+    assert execution_callback.call_count == 1
+
+    # Second execution attempt with same single-use token raises PermissionError
+    with pytest.raises(PermissionError, match="Authorization token tok-replay-1 has already been consumed"):
+        orchestrator.execution_boundary.execute_protected_action(
+            action_name="execute",
+            target="grader_service",
+            request_payload=raw_payload,
+            executor_func=execution_callback,
+            context=exec_ctx
+        )
+
+    assert execution_callback.call_count == 1

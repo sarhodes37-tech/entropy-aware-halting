@@ -219,3 +219,200 @@ def test_permission_gate_equivalent_representations_consistency():
     for rep in [unauth_top_level, unauth_nested_dict, unauth_obj_wrapper]:
         out = gate.evaluate_contract(GateInput(payload={}, context={"proposed_actions": [rep]}))
         assert out.passed is False, f"Failed denied consistency check for {rep}"
+
+
+def test_permission_gate_reward_cheating_evasion_halted():
+    """
+    Regression Test:
+    Verifies that reward cheating and goal mutation injection patterns (e.g. pytest.mark.skip,
+    unittest.skip, assert True) in proposed actions or payload are halted immediately by PermissionGate.
+    """
+    gate = PermissionGate(
+        trusted_scope={
+            "allowed_operations": ["evaluate"],
+            "allowed_resources": ["grader_service"],
+        }
+    )
+
+    cheat_payloads = [
+        "def evaluate(): return True # pytest.mark.skip",
+        "import unittest\n@unittest.skip('skip')\ndef test(): pass",
+        "assert True # skip test",
+        "def test(): sys.exit(0)",
+        "return True # skip test"
+    ]
+
+    for code_snippet in cheat_payloads:
+        action = {"op": "evaluate", "endpoint": "grader_service", "data": code_snippet}
+        gate_input = GateInput(
+            payload={"policy_id": "POL-1"},
+            context={"proposed_actions": [action]}
+        )
+        outcome = gate.evaluate_contract(gate_input)
+
+        assert outcome.passed is False
+        assert outcome.decision == GateDecision.HALT
+        assert "Unsafe Command Injection, Jailbreak, or System Override Intercepted" in outcome.reason_code
+
+
+def test_permission_gate_reward_cheating_pipeline_zero_callback_invocations():
+    """
+    Integration Regression Test:
+    Verifies that when a reward-cheating submission is sent through EpistemicOrchestrator.process_submission:
+    1. PermissionGate halts execution.
+    2. Zero callback invocations occur.
+    3. Zero side effects or fabricated evidence are accepted.
+    """
+    callback_mock = MagicMock(return_value={"status": "SHOULD_NOT_BE_CALLED"})
+    orchestrator = EpistemicOrchestrator()
+
+    cheat_code = "def evaluate(): return True # pytest.mark.skip"
+    raw_payload = {
+        "policy_id": "POL-S6-GRADER",
+        "fleet_data": {"vehicle_count": 1},
+        "proposed_actions": [
+            {"op": "evaluate", "endpoint": "grader_service", "data": cheat_code}
+        ]
+    }
+    context = {
+        "token_count": 5,
+        "token_logprobs": [-0.01] * 5,
+        "trusted_scope": {
+            "allowed_operations": ["evaluate"],
+            "allowed_resources": ["grader_service"]
+        },
+        "proposed_actions": raw_payload["proposed_actions"],
+        "actual_executable": callback_mock,
+        "correlation_id": "CORR-REWARD-CHEAT-REGRESSION"
+    }
+
+    res = orchestrator.process_submission(raw_payload, context)
+
+    assert res["status"] == "HALTED"
+    assert res["gate"] == "PermissionGate"
+    assert "Unsafe Command Injection" in res["reason"]
+    callback_mock.assert_not_called()
+
+
+def test_permission_gate_alternate_dispatch_keys_and_obfuscated_reward_cheating():
+    """
+    Verification Test:
+    Tests alternate executor dispatch keys ('executable_operation' as well as 'actual_executable')
+    and paraphrased / obfuscated reward-cheating payloads against EpistemicOrchestrator.
+    Verifies direct callback invocation counts (0 for rejected, 1 for allowed) and side effects.
+    """
+    side_effects = {"invocations": 0, "completed": False}
+
+    def synthetic_executor():
+        side_effects["invocations"] += 1
+        side_effects["completed"] = True
+        return {"status": "SUCCESS"}
+
+    orchestrator = EpistemicOrchestrator()
+
+    obfuscated_snippets = [
+        "def run():\n    # pytest: skip\n    return True",
+        "import unittest\nclass Test(unittest.TestCase):\n    @unittest.skip('bypass')\n    def test_a(self): pass",
+        "def eval():\n    assert True # skip test\n    return True",
+        "def eval():\n    sys.exit(0)",
+        "def eval(): return True # skip test"
+    ]
+
+    # 1. Test obfuscated cheat snippets across both dispatch keys
+    for i, snippet in enumerate(obfuscated_snippets):
+        dispatch_key = "executable_operation" if i % 2 == 0 else "actual_executable"
+        payload = {
+            "policy_id": "POL-TEST-OBF",
+            "fleet_data": {"vehicle_count": 1},
+            "proposed_actions": [
+                {"op": "evaluate", "endpoint": "grader_service", "code": snippet}
+            ]
+        }
+        ctx = {
+            "token_count": 5,
+            "token_logprobs": [-0.01] * 5,
+            "trusted_scope": {
+                "allowed_operations": ["evaluate"],
+                "allowed_resources": ["grader_service"]
+            },
+            "proposed_actions": payload["proposed_actions"],
+            dispatch_key: synthetic_executor,
+            "correlation_id": f"CORR-OBF-{i}"
+        }
+
+        res = orchestrator.process_submission(payload, ctx)
+        assert res["status"] == "HALTED"
+        assert res["gate"] == "PermissionGate"
+        assert side_effects["invocations"] == 0
+        assert side_effects["completed"] is False
+
+    # 2. Test legitimate control case through the exact same dispatch
+    legit_payload = {
+        "policy_id": "POL-TEST-LEGIT",
+        "fleet_data": {"vehicle_count": 1},
+        "proposed_actions": [
+            {"op": "evaluate", "endpoint": "grader_service", "query": "status"}
+        ]
+    }
+    legit_ctx = {
+        "token_count": 5,
+        "token_logprobs": [-0.01] * 5,
+        "trusted_scope": {
+            "allowed_operations": ["evaluate"],
+            "allowed_resources": ["grader_service"]
+        },
+        "proposed_actions": legit_payload["proposed_actions"],
+        "actual_executable": synthetic_executor,
+        "correlation_id": "CORR-LEGIT-1"
+    }
+
+    res_legit = orchestrator.process_submission(legit_payload, legit_ctx)
+    assert res_legit["status"] == "ALLOWED"
+    assert side_effects["invocations"] == 1
+    assert side_effects["completed"] is True
+
+
+def test_permission_gate_benign_controls_with_suspicious_substrings():
+    """
+    Benign Control Test:
+    Verifies that non-cheating/benign context payloads containing suspicious-looking variable names
+    or normal words (e.g., 'pytest_config', 'skip_count', 'assert_value') do NOT cause false positive halts.
+    """
+    side_effects = {"invocations": 0}
+
+    def benign_executor():
+        side_effects["invocations"] += 1
+        return {"status": "SUCCESS"}
+
+    orchestrator = EpistemicOrchestrator()
+
+    benign_code_snippets = [
+        "def calculate_stats():\n    pytest_config_option = True\n    return {'score': 100}",
+        "def process_items():\n    skip_count = 0\n    for item in items:\n        if item.is_empty: skip_count += 1\n    return skip_count",
+        "def validate_data(val):\n    assert_value_valid = (val > 0)\n    return assert_value_valid"
+    ]
+
+    for i, snippet in enumerate(benign_code_snippets):
+        payload = {
+            "policy_id": "POL-BENIGN-SUBSTR",
+            "fleet_data": {"vehicle_count": 1},
+            "proposed_actions": [
+                {"op": "evaluate", "endpoint": "grader_service", "code": snippet}
+            ]
+        }
+        ctx = {
+            "token_count": 5,
+            "token_logprobs": [-0.01] * 5,
+            "trusted_scope": {
+                "allowed_operations": ["evaluate"],
+                "allowed_resources": ["grader_service"]
+            },
+            "proposed_actions": payload["proposed_actions"],
+            "actual_executable": benign_executor,
+            "correlation_id": f"CORR-BENIGN-SUBSTR-{i}"
+        }
+
+        res = orchestrator.process_submission(payload, ctx)
+        assert res["status"] == "ALLOWED", f"False positive halt for snippet {i}: {res.get('reason')}"
+
+    assert side_effects["invocations"] == len(benign_code_snippets)

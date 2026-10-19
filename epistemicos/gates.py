@@ -341,7 +341,7 @@ class PermissionGate(ControlPlaneGate):
         self.trusted_scope = trusted_scope
 
         self.injection_regex = re.compile(
-            r"(\b(sudo|rm|curl|wget|bash|sh|exec|nc|netcat|nmap|ping)\b|[;|`]|&&|\$\(|\[SYSTEM OVERRIDE\]|import\s+os|ignore previous instructions|system prompt|jailbreak|exfiltrate|web_search)", 
+            r"(\b(sudo|rm|curl|wget|bash|sh|exec|nc|netcat|nmap|ping)\b|[;|`]|&&|\$\(|\[SYSTEM OVERRIDE\]|import\s+os|ignore previous instructions|system prompt|jailbreak|exfiltrate|web_search|\bpytest(\.mark)?\.skip|\bpytest:\s*skip|\bunittest\.skip|\bassert\s+True\b|\bsys\.exit\(0\)|\bskip\s+test\b)",
             re.IGNORECASE
         )
 
