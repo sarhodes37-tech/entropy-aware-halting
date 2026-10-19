@@ -33,13 +33,14 @@ from benchmarks.validate_evidence import (
 @pytest.fixture
 def valid_evidence_data():
     records_path = "results/per_case_results.json"
-    records_digest = ""
+    records_digest = "def1332464be18d4390cedd95dec2dc4157916dbfe23773f0cc935175fbc9f98"
     run_id = "run-l4-20260330000000-f4e31381"
     if os.path.exists(records_path):
         with open(records_path, "rb") as f:
-            records_digest = hashlib.sha256(f.read()).hexdigest()
+            content = f.read()
+            records_digest = hashlib.sha256(content).hexdigest()
             try:
-                rec_data = json.loads(f.read().decode("utf-8"))
+                rec_data = json.loads(content.decode("utf-8"))
                 if rec_data and isinstance(rec_data, list) and len(rec_data) > 0:
                     run_id = rec_data[0].get("run_id", run_id)
             except Exception:
