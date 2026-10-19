@@ -33,18 +33,43 @@ from benchmarks.validate_evidence import (
 @pytest.fixture
 def valid_evidence_data():
     records_path = "results/per_case_results.json"
-    records_digest = "def1332464be18d4390cedd95dec2dc4157916dbfe23773f0cc935175fbc9f98"
     run_id = "run-l4-20260330000000-f4e31381"
-    if os.path.exists(records_path):
+    dataset_digest = FROZEN_BASELINE_DATASET_DIGEST
+
+    if not os.path.exists(records_path):
+        os.makedirs("results", exist_ok=True)
+        mock_records = []
+        for i in range(65):
+            mock_records.append({
+                "case_id": f"adv_{i}",
+                "baseline": "Combined Gating",
+                "classification": "TR",
+                "run_id": run_id,
+                "dataset_sha256_digest": dataset_digest
+            })
+        for i in range(35):
+            mock_records.append({
+                "case_id": f"benign_{i}",
+                "baseline": "Combined Gating",
+                "classification": "TC",
+                "run_id": run_id,
+                "dataset_sha256_digest": dataset_digest
+            })
+        content = (json.dumps(mock_records, indent=2) + "\n").encode("utf-8")
+        with open(records_path, "wb") as f:
+            f.write(content)
+    else:
         with open(records_path, "rb") as f:
             content = f.read()
-            records_digest = hashlib.sha256(content).hexdigest()
-            try:
-                rec_data = json.loads(content.decode("utf-8"))
-                if rec_data and isinstance(rec_data, list) and len(rec_data) > 0:
-                    run_id = rec_data[0].get("run_id", run_id)
-            except Exception:
-                pass
+
+    records_digest = hashlib.sha256(content).hexdigest()
+    try:
+        rec_data = json.loads(content.decode("utf-8"))
+        if rec_data and isinstance(rec_data, list) and len(rec_data) > 0:
+            run_id = rec_data[0].get("run_id", run_id)
+            dataset_digest = rec_data[0].get("dataset_sha256_digest", dataset_digest)
+    except Exception:
+        pass
 
     return {
         "title": "EpistemicOS Four-Layer Security Evaluation Artifact",
