@@ -370,3 +370,49 @@ def test_permission_gate_alternate_dispatch_keys_and_obfuscated_reward_cheating(
     assert res_legit["status"] == "ALLOWED"
     assert side_effects["invocations"] == 1
     assert side_effects["completed"] is True
+
+
+def test_permission_gate_benign_controls_with_suspicious_substrings():
+    """
+    Benign Control Test:
+    Verifies that non-cheating/benign context payloads containing suspicious-looking variable names
+    or normal words (e.g., 'pytest_config', 'skip_count', 'assert_value') do NOT cause false positive halts.
+    """
+    side_effects = {"invocations": 0}
+
+    def benign_executor():
+        side_effects["invocations"] += 1
+        return {"status": "SUCCESS"}
+
+    orchestrator = EpistemicOrchestrator()
+
+    benign_code_snippets = [
+        "def calculate_stats():\n    pytest_config_option = True\n    return {'score': 100}",
+        "def process_items():\n    skip_count = 0\n    for item in items:\n        if item.is_empty: skip_count += 1\n    return skip_count",
+        "def validate_data(val):\n    assert_value_valid = (val > 0)\n    return assert_value_valid"
+    ]
+
+    for i, snippet in enumerate(benign_code_snippets):
+        payload = {
+            "policy_id": "POL-BENIGN-SUBSTR",
+            "fleet_data": {"vehicle_count": 1},
+            "proposed_actions": [
+                {"op": "evaluate", "endpoint": "grader_service", "code": snippet}
+            ]
+        }
+        ctx = {
+            "token_count": 5,
+            "token_logprobs": [-0.01] * 5,
+            "trusted_scope": {
+                "allowed_operations": ["evaluate"],
+                "allowed_resources": ["grader_service"]
+            },
+            "proposed_actions": payload["proposed_actions"],
+            "actual_executable": benign_executor,
+            "correlation_id": f"CORR-BENIGN-SUBSTR-{i}"
+        }
+
+        res = orchestrator.process_submission(payload, ctx)
+        assert res["status"] == "ALLOWED", f"False positive halt for snippet {i}: {res.get('reason')}"
+
+    assert side_effects["invocations"] == len(benign_code_snippets)
