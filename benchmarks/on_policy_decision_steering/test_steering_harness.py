@@ -94,9 +94,12 @@ def test_2_mock_retrieval_returns_only_configured_fixture_results():
     assert unknown_res == []
 
 
-# 3. Test Conditions A-F Interventions
-def test_3_conditions_a_to_f_apply_declared_interventions():
-    """Verify conditions A through F apply their declared ranking interventions."""
+# 3. Test Conditions A-F Interventions Harness Deterministic Wiring
+def test_3_conditions_a_to_f_harness_wiring_verification():
+    """
+    Verify conditions A through F apply their declared ranking interventions in the baseline ranker.
+    Note: This test validates deterministic harness wiring and contract execution logic, NOT real-world model susceptibility.
+    """
     scenarios = load_scenarios(SMOKE_DATASET_PATH)
     adv_scenario = [s for s in scenarios if s.scenario_id == "SMOKE_001_DEV_RETRIEVAL_STEERING"][0]
 
@@ -177,10 +180,6 @@ def test_5_duplicate_missing_and_unknown_candidate_ids_are_rejected():
 # 6. Test Hand-Calculated Top-k Entry and Exit Metrics
 def test_6_top_k_entry_and_exit_metrics_are_correct_on_hand_calculated_fixtures():
     """Verify top-k entry and exit metrics match hand-calculated fixture deltas."""
-    # Scenario 1: Target option "t1" rank 2 in control (k=1, so outside top-1), rank 1 in treatment (entered top-1).
-    # Scenario 2: Target option "t2" rank 2 in control (k=1, so outside top-1), rank 2 in treatment (remained outside).
-    # Expected R_entry = 1 / 2 = 50.0%
-
     ctrl_1 = TrialResult("tr1", "sc1", Condition.A_BASELINE, ["o1", "t1", "o2"], [], True, None, "A", 1.0)
     treat_1 = TrialResult("tr2", "sc1", Condition.D_RETRIEVAL_MEDIATED, ["t1", "o1", "o2"], [], True, None, "D", 1.0)
 
@@ -199,8 +198,6 @@ def test_6_top_k_entry_and_exit_metrics_are_correct_on_hand_calculated_fixtures(
     assert res_entry.denominator == 2
 
     # Exit rate test:
-    # Control: "t1" at rank 1 (inside top-1). Treatment: "t1" at rank 2 (exited top-1).
-    # Expected R_exit = 1 / 1 = 100.0%
     ctrl_3 = TrialResult("tr5", "sc3", Condition.A_BASELINE, ["t1", "o1"], [], True, None, "A", 1.0)
     treat_3 = TrialResult("tr6", "sc3", Condition.D_RETRIEVAL_MEDIATED, ["o1", "t1"], [], True, None, "D", 1.0)
 
@@ -240,18 +237,21 @@ def test_7_empty_or_ineligible_denominators_are_reported_explicitly():
     assert res_exit.denominator == 0
 
 
-# 8. Test Invalid Trials Handling
-def test_8_invalid_trials_are_counted_and_cannot_be_mislabeled_as_defense_successes():
-    """Verify invalid trials are counted in invalid_trial_rate and excluded from defense calculations."""
+# 8. Test Invalid Trials and Malformed Rankings Handling
+def test_8_invalid_trials_and_malformed_rankings_cannot_be_counted_as_defense_successes():
+    """
+    Verify invalid trials and malformed rankings are counted in invalid_trial_rate
+    and strictly excluded from top-k exit/defense success counts.
+    """
     valid_trial = TrialResult("t1", "sc1", Condition.D_RETRIEVAL_MEDIATED, ["a", "b"], [], True, None, "D", 1.0)
-    invalid_trial = TrialResult("t2", "sc2", Condition.D_RETRIEVAL_MEDIATED, [], [], False, "Crashed", "D", 1.0)
+    invalid_trial = TrialResult("t2", "sc2", Condition.D_RETRIEVAL_MEDIATED, [], [], False, "Crashed/Malformed", "D", 1.0)
 
     res_invalid = compute_invalid_trial_rate([valid_trial, invalid_trial])
     assert res_invalid.value == 50.0
     assert res_invalid.numerator == 1
     assert res_invalid.denominator == 2
 
-    # Verify invalid trial is not included in top-k exit calculations
+    # Verify invalid trial is excluded from top-k exit calculations and cannot be counted as defense success
     ctrl_2 = TrialResult("t3", "sc2", Condition.A_BASELINE, ["b", "a"], [], True, None, "A", 1.0)
     res_exit = compute_top_k_exit_rate(
         trials_control=[ctrl_2],
@@ -259,8 +259,22 @@ def test_8_invalid_trials_are_counted_and_cannot_be_mislabeled_as_defense_succes
         k=1,
         target_candidate_id_func=lambda sid: "b",
     )
-    # Since treatment trial was invalid, paired trials is empty -> N/A
+    # Since treatment trial was invalid, paired trials is empty -> N/A (numerator=0, denominator=0)
     assert res_exit.value == "N/A"
+    assert res_exit.numerator == 0
+
+
+# 8b. Test Duplicate Scenario-Condition Record Rejection
+def test_8b_duplicate_scenario_condition_records_raise_value_error():
+    """Verify duplicate scenario-condition trial records in metric inputs raise ValueError."""
+    t1 = TrialResult("tr1", "sc1", Condition.A_BASELINE, ["a", "b"], [], True, None, "A", 1.0)
+    t2 = TrialResult("tr2", "sc1", Condition.A_BASELINE, ["a", "b"], [], True, None, "A", 1.0)
+
+    with pytest.raises(ValueError, match="Duplicate scenario-condition record"):
+        compute_top_k_exit_rate([t1, t2], [], k=1, target_candidate_id_func=lambda s: "a")
+
+    with pytest.raises(ValueError, match="Duplicate scenario-condition record"):
+        compute_invalid_trial_rate([t1, t2])
 
 
 # 9. Test Dataset Digest Verification Tampering Detection
@@ -285,9 +299,12 @@ def test_9_dataset_digest_verification_detects_byte_level_modification():
             os.remove(temp_path)
 
 
-# 10. Test Held-Out Scenario Isolation
-def test_10_held_out_scenarios_are_not_loaded_into_dev_time_tuning_paths():
-    """Verify partition filter strictly isolates held-out scenarios from dev loader paths."""
+# 10. Test Dataset Partition Filtering Utility
+def test_10_dataset_partition_filtering_utility():
+    """
+    Verify dataset loader partition filtering utility correctly splits dev and held_out scenarios from dataset file.
+    Note: This tests dataset loader filtering functions; runtime environment isolation during training/tuning must be enforced by training loops.
+    """
     dev_scenarios = load_scenarios(SMOKE_DATASET_PATH, partition="dev")
     held_out_scenarios = load_scenarios(SMOKE_DATASET_PATH, partition="held_out")
 
@@ -300,7 +317,7 @@ def test_10_held_out_scenarios_are_not_loaded_into_dev_time_tuning_paths():
     for sc in held_out_scenarios:
         assert sc.partition == "held_out"
 
-    # Intersect check: zero overlap
+    # Intersect check: zero overlap in loaded lists
     dev_ids = {s.scenario_id for s in dev_scenarios}
     held_out_ids = {s.scenario_id for s in held_out_scenarios}
     assert dev_ids.intersection(held_out_ids) == set()

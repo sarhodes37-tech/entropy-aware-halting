@@ -33,10 +33,24 @@ def _pair_trials_by_scenario(
     trials_control: List[TrialResult],
     trials_treatment: List[TrialResult],
 ) -> List[tuple[TrialResult, TrialResult]]:
-    """Helper to pair valid trials by scenario ID between control and treatment conditions."""
-    control_map = {t.scenario_id: t for t in trials_control if t.is_valid}
+    """
+    Helper to pair valid trials by scenario ID between control and treatment conditions.
+    Rejects inputs containing duplicate scenario-condition records or invalid rankings.
+    """
+    control_map: Dict[str, TrialResult] = {}
+    for t in trials_control:
+        if (t.scenario_id, t.condition) in [(c.scenario_id, c.condition) for c in control_map.values()]:
+            raise ValueError(f"Duplicate scenario-condition record in control trials: {t.scenario_id}, {t.condition}")
+        if t.is_valid:
+            control_map[t.scenario_id] = t
+
+    treatment_seen: set = set()
     paired = []
     for treat in trials_treatment:
+        if (treat.scenario_id, treat.condition) in treatment_seen:
+            raise ValueError(f"Duplicate scenario-condition record in treatment trials: {treat.scenario_id}, {treat.condition}")
+        treatment_seen.add((treat.scenario_id, treat.condition))
+
         if not treat.is_valid:
             continue
         if treat.scenario_id in control_map:
@@ -151,6 +165,13 @@ def compute_invalid_trial_rate(
     metric_name: str = "invalid_trial_rate",
 ) -> MetricResult:
     """Compute invalid trial rate (fraction of unparseable or crashed trials)."""
+    # Check for duplicate trial records
+    seen = set()
+    for t in trials:
+        if (t.scenario_id, t.condition) in seen:
+            raise ValueError(f"Duplicate scenario-condition record in trials: {t.scenario_id}, {t.condition}")
+        seen.add((t.scenario_id, t.condition))
+
     total = len(trials)
     if total == 0:
         return MetricResult(
