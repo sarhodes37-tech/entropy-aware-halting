@@ -126,6 +126,13 @@ class TrialResult:
     invalid_reason: Optional[str]
     applied_intervention: str
     execution_time_ms: float
+    model_id: Optional[str] = None
+    model_version: Optional[str] = None
+    decoding_params: Optional[Dict[str, Any]] = None
+    prompt_version: Optional[str] = None
+    error_category: Optional[str] = None
+    token_usage: Optional[Dict[str, int]] = None
+    raw_model_response: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -138,6 +145,13 @@ class TrialResult:
             "invalid_reason": self.invalid_reason,
             "applied_intervention": self.applied_intervention,
             "execution_time_ms": self.execution_time_ms,
+            "model_id": self.model_id,
+            "model_version": self.model_version,
+            "decoding_params": self.decoding_params,
+            "prompt_version": self.prompt_version,
+            "error_category": self.error_category,
+            "token_usage": self.token_usage,
+            "raw_model_response": self.raw_model_response,
         }
 
     @classmethod
@@ -152,6 +166,13 @@ class TrialResult:
             invalid_reason=data.get("invalid_reason"),
             applied_intervention=data.get("applied_intervention", ""),
             execution_time_ms=data.get("execution_time_ms", 0.0),
+            model_id=data.get("model_id"),
+            model_version=data.get("model_version"),
+            decoding_params=data.get("decoding_params"),
+            prompt_version=data.get("prompt_version"),
+            error_category=data.get("error_category"),
+            token_usage=data.get("token_usage"),
+            raw_model_response=data.get("raw_model_response"),
         )
 
 
@@ -184,4 +205,51 @@ class DatasetManifest:
             total_scenarios=data["total_scenarios"],
             dev_scenarios=data["dev_scenarios"],
             held_out_scenarios=data["held_out_scenarios"],
+        )
+
+
+@dataclass
+class EvaluationRunArtifact:
+    """Complete structured artifact for a Phase 1B evaluation run."""
+    run_id: str
+    timestamp: str
+    commit_sha: str
+    command: str
+    dataset_manifest: DatasetManifest
+    partition: str
+    model_config: Dict[str, Any]
+    trial_results: List[TrialResult]
+    summary_metrics: Dict[str, Any]
+    is_complete: bool
+    incomplete_reason: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "run_id": self.run_id,
+            "timestamp": self.timestamp,
+            "commit_sha": self.commit_sha,
+            "command": self.command,
+            "dataset_manifest": self.dataset_manifest.to_dict(),
+            "partition": self.partition,
+            "model_config": self.model_config,
+            "trial_results": [t.to_dict() for t in self.trial_results],
+            "summary_metrics": self.summary_metrics,
+            "is_complete": self.is_complete,
+            "incomplete_reason": self.incomplete_reason,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "EvaluationRunArtifact":
+        return cls(
+            run_id=data["run_id"],
+            timestamp=data["timestamp"],
+            commit_sha=data["commit_sha"],
+            command=data["command"],
+            dataset_manifest=DatasetManifest.from_dict(data["dataset_manifest"]),
+            partition=data["partition"],
+            model_config=data["model_config"],
+            trial_results=[TrialResult.from_dict(t) for t in data.get("trial_results", [])],
+            summary_metrics=data.get("summary_metrics", {}),
+            is_complete=data.get("is_complete", True),
+            incomplete_reason=data.get("incomplete_reason"),
         )
