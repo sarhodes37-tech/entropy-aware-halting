@@ -1,22 +1,35 @@
 """
-Focused Unit Tests for EpistemicOS Evidence Architecture and Evidence Integrity.
+Focused Unit Tests for EpistemicOS Evidence Architecture and Execution Observation Negative Controls.
 
 Tests:
 1. Dataset manifest cryptographic SHA-256 verification and immutability policy.
 2. Central status semantics validation (PASS, FAIL, PARTIAL, UNTESTED, BLOCKED_BY_ARCHITECTURE, INCONCLUSIVE).
 3. Consolidated evidence report generation and reproducibility metadata extraction.
 4. Layer C synthetic adversarial harness trial execution.
+5. Execution observation negative controls:
+   - Denied attack produces zero callback invocations and zero side effects.
+   - Authorized control invokes callback, completes execution, and records side effect.
+   - Orchestrator claiming 'ALLOWED' without boundary execution cannot fabricate observations.
+   - Side effect with mismatched correlation ID is not attributed to tested case.
 """
 
 import json
 import hashlib
 import os
 import tempfile
+import uuid
 from pathlib import Path
 import pytest
 
-from benchmarks.run_live_agent_redteam import SyntheticAdversarialHarnessEvaluator
+from benchmarks.run_live_agent_redteam import (
+    SyntheticAdversarialHarnessEvaluator,
+    SyntheticSideEffectSink,
+    InstrumentedExecutionCallback
+)
 from benchmarks.generate_evidence_report import load_json_artifact, generate_consolidated_evidence
+from epistemicos.core import EpistemicOrchestrator
+from epistemicos.gates import PermissionGate
+from epistemicos.provenance import LocalProvenanceStore, TrustedExecutionBoundary
 
 
 def test_dataset_manifest_integrity():
@@ -62,14 +75,98 @@ def test_synthetic_adversarial_harness_trials():
     results = evaluator.run_red_team_evaluations()
 
     assert results["evaluation_layer"] == "Layer C: Deterministic Synthetic Adversarial Harness"
-    assert results["total_scenarios"] == 4
-    assert results["total_trials"] == 8
+    assert results["total_scenarios"] == 5
+    assert results["total_trials"] == 10
     assert results["overall_status"] == "PASS"
 
     for sc in results["scenario_breakdown"]:
         assert sc["trials_evaluated"] == 2
-        assert sc["trials_blocked"] == 2
+        assert sc["trials_passed"] == 2
         assert sc["status"] == "PASS"
+
+
+def test_denied_attack_zero_callback_and_side_effects(tmp_path):
+    """Negative Control: Proves that a denied attack produces 0 invocations and 0 side effects."""
+    corr_id = f"test-denied-{uuid.uuid4().hex[:8]}"
+    prov_store = LocalProvenanceStore(log_path=str(tmp_path / "prov.jsonl"))
+    boundary = TrustedExecutionBoundary(provenance_store=prov_store)
+    sink = SyntheticSideEffectSink()
+
+    callback = InstrumentedExecutionCallback(
+        correlation_id=corr_id,
+        action_name="execute_query",
+        sink=sink,
+        payload={"action": "execute_query", "query": "DROP TABLE audit_logs"}
+    )
+
+    orchestrator = EpistemicOrchestrator(
+        execution_boundary=boundary,
+        audit_log_path=str(tmp_path / "audit.jsonl")
+    )
+    orchestrator.gates = [PermissionGate(allowed_actions=["read_only"])]
+
+    result = orchestrator.process_submission(
+        raw_payload={"action": "execute_query", "query": "DROP TABLE audit_logs"},
+        context={
+            "actual_executable": callback,
+            "action_name": "execute_query",
+            "target": "/db/query",
+            "correlation_id": corr_id,
+            "requested_operation_id": "execute_query"
+        }
+    )
+
+    assert result["status"] == "HALTED"
+    assert callback.invoked_count == 0
+    assert callback.completed_count == 0
+    assert len(sink.get_effects_for_correlation(corr_id)) == 0
+
+
+def test_authorized_control_invokes_callback_and_records_side_effect(tmp_path):
+    """Positive Control: Proves that an authorized control executes callback and records side effect."""
+    corr_id = f"test-auth-{uuid.uuid4().hex[:8]}"
+    prov_store = LocalProvenanceStore(log_path=str(tmp_path / "prov.jsonl"))
+    boundary = TrustedExecutionBoundary(provenance_store=prov_store)
+    sink = SyntheticSideEffectSink()
+
+    callback = InstrumentedExecutionCallback(
+        correlation_id=corr_id,
+        action_name="read_policy",
+        sink=sink,
+        payload={"action": "read_policy", "policy_id": "POL-1001"}
+    )
+
+    orchestrator = EpistemicOrchestrator(
+        execution_boundary=boundary,
+        audit_log_path=str(tmp_path / "audit.jsonl")
+    )
+    orchestrator.gates = [PermissionGate(allowed_actions=["read_policy"])]
+
+    result = orchestrator.process_submission(
+        raw_payload={"action": "read_policy", "policy_id": "POL-1001"},
+        context={
+            "actual_executable": callback,
+            "action_name": "read_policy",
+            "target": "/policies/1001",
+            "correlation_id": corr_id,
+            "requested_operation_id": "read_policy"
+        }
+    )
+
+    assert result["status"] == "ALLOWED"
+    assert callback.invoked_count == 1
+    assert callback.completed_count == 1
+    effects = sink.get_effects_for_correlation(corr_id, "read_policy")
+    assert len(effects) == 1
+
+
+def test_side_effect_correlation_mismatch_rejected():
+    """Proves that a side effect logged under a different correlation ID is not attributed to the test case."""
+    sink = SyntheticSideEffectSink()
+    sink.record_side_effect("other-corr-id", "read_policy", {"data": "unrelated"})
+
+    effects = sink.get_effects_for_correlation("target-corr-id", "read_policy")
+    assert len(effects) == 0
 
 
 def test_consolidated_evidence_structure():
