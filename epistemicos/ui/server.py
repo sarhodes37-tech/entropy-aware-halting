@@ -16,6 +16,7 @@ from pathlib import Path
 from http import HTTPStatus
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from typing import Optional, Dict, Any
+from urllib.parse import unquote
 
 from epistemicos.ui.adapters import ObservatoryDataAdapter
 
@@ -30,10 +31,18 @@ class ObservatoryRequestHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         """Handles HTTP GET requests with strict path validation and security headers."""
-        path = self.path.split("?")[0]  # Strip query string
+        raw_path = self.path.split("?")[0]  # Strip query string
 
-        # Prevent directory traversal
-        if ".." in path or "\\" in path:
+        # Iteratively unquote path to neutralize percent-encoded and double percent-encoded traversal attacks
+        path = raw_path
+        for _ in range(3):
+            unquoted_path = unquote(path)
+            if unquoted_path == path:
+                break
+            path = unquoted_path
+
+        # Prevent directory traversal and null-byte injection
+        if ".." in path or "\\" in path or "\x00" in path:
             self._send_json_response({"error": "Invalid path"}, status=HTTPStatus.BAD_REQUEST)
             return
 

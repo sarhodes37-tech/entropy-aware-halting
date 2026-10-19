@@ -101,11 +101,14 @@ def test_read_only_method_restriction(test_server):
 
 
 def test_directory_traversal_prevention(test_server):
-    """Adversarial test: verifies that directory traversal attempts are blocked."""
+    """Adversarial test: verifies that directory traversal and null-byte attempts are blocked."""
     traversal_paths = [
         "/../../../../etc/passwd",
         "/..%2f..%2f..%2fetc%2fpasswd",
-        "/api/../../epistemicos/audit.py"
+        "/%2e%2e/%2e%2e/etc/passwd",
+        "/%252e%252e/%252e%252e/etc/passwd",
+        "/api/../../epistemicos/audit.py",
+        "/index.html%00.txt"
     ]
     for path in traversal_paths:
         with pytest.raises(urllib.error.HTTPError) as exc_info:
