@@ -122,13 +122,26 @@ def test_valid_artifact_passes(valid_evidence_data, tmp_path):
 
 
 def test_malformed_json_artifact_fails_explicitly(tmp_path):
-    """Proves that supplying a malformed JSON artifact fails explicitly rather than being silently ignored."""
+    """Proves that supplying a malformed JSON artifact fails explicitly under strict validation (no fallback)."""
     malformed_file = tmp_path / "malformed_evidence.json"
     malformed_file.write_text("{malformed_json_invalid: true,", encoding="utf-8")
 
-    is_valid, errors = validate_evidence_artifact(str(malformed_file), allow_local_constant_fallback=True)
-    assert is_valid is False
-    assert any("Malformed JSON artifact" in err for err in errors)
+    # Strict mode test (no local constant fallback)
+    is_valid_strict, errors_strict = validate_evidence_artifact(
+        str(malformed_file),
+        allow_local_constant_fallback=False,
+        expected_baseline_digest=FROZEN_BASELINE_DATASET_DIGEST
+    )
+    assert is_valid_strict is False
+    assert any("Malformed JSON artifact" in err for err in errors_strict)
+
+    # Opt-in fallback mode test
+    is_valid_fallback, errors_fallback = validate_evidence_artifact(
+        str(malformed_file),
+        allow_local_constant_fallback=True
+    )
+    assert is_valid_fallback is False
+    assert any("Malformed JSON artifact" in err for err in errors_fallback)
 
 
 def test_missing_summary_metric_rejected(valid_evidence_data, tmp_path):
