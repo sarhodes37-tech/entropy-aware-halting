@@ -79,6 +79,17 @@ def test_static_asset_serving(test_server):
     assert "Observatory Test" in content
 
 
+def test_static_aria_accessibility_attributes():
+    """Verify that the production index.html contains expected ARIA accessibility attributes."""
+    import pathlib
+    index_path = pathlib.Path("epistemicos/ui/static/index.html")
+    content = index_path.read_text(encoding="utf-8")
+    assert 'aria-label="Observatory Navigation"' in content
+    assert 'aria-label="Refresh overview metrics"' in content
+    assert 'aria-label="Search execution traces by correlation or request ID"' in content
+    assert 'aria-label="Filter execution traces by status"' in content
+
+
 def test_read_only_method_restriction(test_server):
     """Verifies that non-GET methods (POST, PUT, DELETE) are rejected with 405 Method Not Allowed."""
     methods = ["POST", "PUT", "DELETE"]
