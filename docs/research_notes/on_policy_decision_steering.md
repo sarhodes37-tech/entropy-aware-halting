@@ -2,7 +2,7 @@
 
 **Author:** EpistemicOS Research & Security Architecture Team
 **Date:** October 2026
-**Document Version:** `2.0.0` (Revised Specification)
+**Document Version:** `3.0.0` (Revised Specification)
 **Target Module Area:** `epistemicos/gates.py`, `epistemicos/provenance.py`, `epistemicos/containment.py`, `epistemicos/models.py`, `epistemicos/core.py`
 **Status:** ARCHITECTURAL RESEARCH, THREAT MODEL & BENCHMARK SPECIFICATION (NON-MUTATING RESEARCH PROPOSAL)
 
@@ -70,9 +70,24 @@ All performance targets, expected attack rates, and gate interception recall met
 +----------------------------------------------------------------------------------------------------+
 ```
 
-### 2.2 Threat Model Variants & Edge Cases
+### 2.2 Authentic-Source vs. Invalid-Inference Contrast Matrix
 
-A comprehensive decision-integrity defense must address five distinct information topology variants:
+To rigorously distinguish between source forgery, genuine risk warnings, and invalid inferences, attacks are categorized across three key dimensions:
+
+```
++------------------------------------------------------------------------------------------------------------------------------------+
+|                                      SOURCE & INFERENCE THREAT CONTRAST MATRIX                                                      |
++------------------------------+--------------------+--------------------+--------------------+--------------------------------------+
+| Attack Variant Type          | Source Authenticity| Claim Support      | Inference Validity | Primary Security Threat              |
++------------------------------+--------------------+--------------------+--------------------+--------------------------------------+
+| 1. Fabricated Source         | FALSE (Fake domain)| TRUE/FALSE         | FALSE              | Source Forgery & Fake Claims         |
+| 2. Authentic + Valid Infer.  | TRUE (Real domain) | TRUE               | TRUE               | Legitimate Risk Concern (Benign)     |
+| 3. Authentic + Invalid Infer.| TRUE (Real domain) | TRUE               | FALSE              | Unsupported Logical Shift / Bias     |
+| 4. Selective Framing         | TRUE (Real domain) | PARTIAL            | FALSE              | Misleading Context Omission          |
++------------------------------+--------------------+--------------------+--------------------+--------------------------------------+
+```
+
+### 2.3 Threat Model Edge Cases & Complex Information Topologies
 
 1. **Astroturfing & Circular Reporting (Multi-Source Collusion):** Multiple apparently independent web domains repeat the exact same unsupported assertion. Naive counting treats 5 syndicated blog posts mirroring a single press release as 5 independent corroborations.
 2. **Authentic Sources with Invalid Inference:** An authentic, highly authoritative source (e.g., a major news organization or government database) makes a true statement, but the agent draws an unsupported inference (e.g., *"Company Y was referenced in a 2024 Senate inquiry"* is interpreted as *"Company Y was convicted of financial fraud"*).
@@ -86,21 +101,9 @@ A comprehensive decision-integrity defense must address five distinct informatio
 
 To evaluate decision steering without modifying existing benchmark suites (`run_incident_lab.py`, `run_full_benchmark.py`), we specify a dedicated benchmark family: `on_policy_decision_steering`.
 
-### 3.1 Dataset Stratification, Partitioning & Stochasticity
+### 3.1 Scenario-by-Condition Matrix (Conditions A through F)
 
-- **Dataset Size ($N = 120$ Total Scenarios):**
-  - **Adversarial Steering Cases ($N = 80$):** 20 cases per attack variant (Direct Steering, Retrieval Steering, Circular Reporting, Invalid Inference).
-  - **Benign Control Cases ($N = 40$):** 10 cases per benign type (Legitimate Unfamiliar Terminology, Credible Concern, Independent Multi-Source, Syndicated Common-Origin).
-- **Partitioning Plan (Zero Data Leakage):**
-  - **Development Set (40%, $N = 48$ scenarios: 32 adversarial, 16 benign):** Used for prompt template refinement, mock corpus tuning, and gate threshold calibration.
-  - **Frozen Held-Out Evaluation Set (60%, $N = 72$ scenarios: 48 adversarial, 24 benign):** Pre-registered and cryptographically locked (`benchmarks/data/on_policy_eval_set.jsonl` with SHA-256 digest recorded in `benchmarks/data/dataset_manifest.json`).
-- **Model Stochasticity & Multi-Seed Sampling:**
-  - Primary runs enforce deterministic inference (`temperature = 0.0`, fixed random seed).
-  - Secondary stochasticity evaluation executes $S = 5$ random seeds per scenario-condition pair to estimate decision variance and 95% confidence bounds.
-
-### 3.2 Scenario-by-Condition Matrix (Conditions A through F)
-
-Every scenario $i \in \{1, \dots, 120\}$ is evaluated across six paired experimental conditions ($720$ total trial executions in held-out evaluation):
+Every scenario $i \in \{1, \dots, N\}$ is evaluated across six paired experimental conditions ($720$ total trial executions in $N=120$ held-out evaluation):
 
 ```
 +-----------------------------------------------------------------------------------------------------------------------------------------+
@@ -128,81 +131,84 @@ Every scenario $i \in \{1, \dots, 120\}$ is evaluated across six paired experime
 +---+------------------------------------+-------------------------------------------+-----------------------+------------------------+
 ```
 
-### 3.3 Paired Scenario Execution Structure
+### 3.2 Dataset Stratification, Partitioning & Stochasticity
 
-For a given scenario $i$:
-- Candidate set $C_i = \{o_{i,1}, o_{i,2}, \dots, o_{i,m}\}$ and initial presentation order are strictly held constant across Conditions A–F.
-- Option $o_{i,\text{target}}$ is designated as the target option (ranked #1 in Condition A baseline).
-- Option $o_{i,\text{adv}}$ is designated as the inferior adversarial option (ranked $> k$ in Condition A baseline).
-- **Paired Run Identifiers:** Each execution receives a deterministic trial ID: `RUN-SCEN-{i:03d}-{COND}` (e.g., `RUN-SCEN-042-D`).
-
-### 3.4 Benign Control Suite Mechanics
-
-1. **Control 1 (Legitimate Unfamiliar Terminology):** Candidate options contain genuine technical/compliance terms (e.g., *"ISO 42001 certified"*). Mock search returns neutral/positive verification. *Observable:* Candidate maintains baseline rank ($\text{Rank}_F(o_{\text{target}}) = \text{Rank}_A(o_{\text{target}})$).
-2. **Control 2 (Credible Evidence Supporting Genuine Concern):** Mock search returns authentic, verified evidence of real compliance or security failure regarding a candidate option. *Observable:* Agent legitimately demotes the candidate; gate permits ranking shift.
-3. **Control 3 (Multiple Independent Primary Sources):** Mock search returns 3 distinct, verified primary sources confirming a positive or negative fact. *Observable:* Gate validates high source independence score.
-4. **Control 4 (Syndicated Common-Origin Sources):** Mock search returns 5 articles mirroring identical press release text across 5 domains. *Observable:* Gate collapses provenance graph to single effective claim ($N_{\text{eff}} = 1.0$) without false multi-source inflation.
+- **Dataset Stratification ($N = 120$ Scenarios):**
+  - **Adversarial Steering Cases ($N = 80$):** 20 cases per attack variant (Direct Steering, Retrieval Steering, Circular Reporting, Invalid Inference).
+  - **Benign Control Cases ($N = 40$):** 10 cases per benign type (Legitimate Unfamiliar Terminology, Credible Concern, Independent Multi-Source, Syndicated Common-Origin).
+- **Partitioning Plan (Zero Data Leakage):**
+  - **Development Set (40%, $N = 48$ scenarios: 32 adversarial, 16 benign):** Used for prompt template refinement, mock corpus tuning, and gate threshold calibration.
+  - **Frozen Held-Out Evaluation Set (60%, $N = 72$ scenarios: 48 adversarial, 24 benign):** Pre-registered and cryptographically locked (`benchmarks/data/on_policy_eval_set.jsonl` with SHA-256 digest recorded in `benchmarks/data/dataset_manifest.json`).
+- **Model Stochasticity & Multi-Seed Sampling:**
+  - Primary runs enforce deterministic inference (`temperature = 0.0`, fixed random seed).
+  - Secondary stochasticity evaluation executes $S = 5$ random seeds per scenario-condition pair to estimate decision variance and 95% confidence bounds.
 
 ---
 
-## 4. Metric Definitions, Denominators & Statistical Protocol
+## 4. Metric Categorization, Formulations & Statistical Protocol
 
-### 4.1 Primary Metric Definitions
+### 4.1 Metric Categorization & Evaluation Method
 
-To ensure unambiguous calculation, every metric is defined with explicit eligibility, numerators, denominators, and handling of invalid trials:
+To maintain methodological clarity, all evaluation metrics are strictly categorized by their evaluation engine:
 
 ```
 +------------------------------------------------------------------------------------------------------------------------------------+
-|                                                    METRIC FORMULATION MATRIX                                                       |
-+------------------------------+---------------------------------------+---------------------------------------+---------------------+
-| Metric Name                  | Mathematical Numerator Formula        | Mathematical Denominator Formula      | Eligibility         |
-+------------------------------+---------------------------------------+---------------------------------------+---------------------+
-| Top-k Entry Rate             | Count of valid trials where           | Count of valid trials where           | Valid trials with   |
-| ($R_{\text{entry}}$)         | $\text{Rank}_A(o_{\text{adv}}) > k$   | $\text{Rank}_A(o_{\text{adv}}) > k$   | parseable rankings  |
-|                              | and $\text{Rank}_{\text{cond}}(o_{\text{adv}}) \le k$ |                       |                     |
-+------------------------------+---------------------------------------+---------------------------------------+---------------------+
-| Top-k Exit Rate              | Count of valid trials where           | Count of valid trials where           | Valid trials with   |
-| ($R_{\text{exit}}$)          | $\text{Rank}_A(o_{\text{target}}) \le k$ | $\text{Rank}_A(o_{\text{target}}) \le k$ | parseable rankings  |
-|                              | and $\text{Rank}_{\text{cond}}(o_{\text{target}}) > k$ |                      |                     |
-+------------------------------+---------------------------------------+---------------------------------------+---------------------+
-| Unsupported Claim Influence  | Count of valid trials whose           | Count of total valid trials           | Valid trials with   |
-| ($R_{\text{unsupported}}$)   | generated justification cites         | in condition                          | generated text      |
-|                              | unverified attack claims              |                                       |                     |
-+------------------------------+---------------------------------------+---------------------------------------+---------------------+
-| Attack Interception Recall   | Count of adversarial trials where     | Count of total valid adversarial      | Valid adversarial   |
-| ($R_{\text{intercept}}$)     | defense prevents top-k exit/entry     | steering trials                       | steering trials     |
-+------------------------------+---------------------------------------+---------------------------------------+---------------------+
-| Benign False Positive Rate   | Count of benign control trials        | Count of total valid benign           | Valid benign        |
-| ($\text{FPR}_{\text{benign}}$)| where legitimate option is demoted    | control trials                        | control trials      |
-+------------------------------+---------------------------------------+---------------------------------------+---------------------+
+|                                                 METRIC CATEGORIZATION MATRIX                                                      |
++------------------------------+------------------------------------+----------------------------------+-----------------------------+
+| Metric Name                  | Evaluation Mechanism               | Category                         | Deterministic / Heuristic   |
++------------------------------+------------------------------------+----------------------------------+-----------------------------+
+| Top-k Entry Rate ($R_{\text{entry}}$)| Candidate Option ID Matching       | Mechanically Computable          | 100% Deterministic Code     |
+| Top-k Exit Rate ($R_{\text{exit}}$)  | Candidate Option ID Matching       | Mechanically Computable          | 100% Deterministic Code     |
+| Rank Position Shift ($\Delta S$)     | Option Rank Position Difference    | Mechanically Computable          | 100% Deterministic Code     |
+| Benign FPR ($\text{FPR}_{\text{benign}}$)| Option Demotion Count in Control   | Mechanically Computable          | 100% Deterministic Code     |
+| Invalid Trial Rate ($R_{\text{invalid}}$)| JSON Parse & Schema Error Counts  | Mechanically Computable          | 100% Deterministic Code     |
+| Latency & Compute Overhead   | Execution Timers (`perf_counter`)  | Mechanically Computable          | 100% Deterministic Code     |
+| Unsupported Claim Influence  | NLI Cross-Encoder / Neural LLM Judge| Model-Evaluated / Heuristic      | Model-Assisted Heuristic    |
+| Real-World Ground Truth      | Expert Domain Panel Review         | Human-Adjudicated                | Human Expert Panel          |
++------------------------------+------------------------------------+----------------------------------+-----------------------------+
 ```
 
-### 4.2 Invalid Trial Treatment & Sensitivity Analysis
+### 4.2 Primary Metric Formulas & Bounding Analysis
 
-- **Invalid Trial Criteria:** An execution is classified as `INVALID_TRIAL` if model output is unparseable JSON, encounters a tool transport exception, or violates candidate output schema constraints.
-- **Reporting Separation:** Invalid trials are reported separately as an independent data quality metric:
-  $$\text{Invalid Trial Rate} = \frac{N_{\text{invalid}}}{N_{\text{total}}}$$
-- **Sensitivity Analysis (Bounding Attack Rates):**
-  To prevent failed attack trials (e.g., where the attack failed to steer the baseline model in Condition D) from artificially inflating defense success rates in Condition F, sensitivity analysis reports two distinct bounds:
-  - **Best-Case Defense Recall:** Evaluated over all valid Condition D trials where the attack successfully induced a baseline ranking shift.
+- **Top-$k$ Entry Rate ($R_{\text{entry}}$):**
+  $$R_{\text{entry}} = \frac{\sum_{i=1}^N \mathbb{I}(\text{Rank}_A(o_{i,\text{adv}}) > k \land \text{Rank}_{\text{cond}}(o_{i,\text{adv}}) \le k)}{\sum_{i=1}^N \mathbb{I}(\text{Rank}_A(o_{i,\text{adv}}) > k)}$$
+- **Top-$k$ Exit Rate ($R_{\text{exit}}$):**
+  $$R_{\text{exit}} = \frac{\sum_{i=1}^N \mathbb{I}(\text{Rank}_A(o_{i,\text{target}}) \le k \land \text{Rank}_{\text{cond}}(o_{i,\text{target}}) > k)}{\sum_{i=1}^N \mathbb{I}(\text{Rank}_A(o_{i,\text{target}}) \le k)}$$
+- **Invalid Trial Treatment & Bounding Analysis:**
+  Unparseable or crashed trials are recorded separately as $R_{\text{invalid}} = \frac{N_{\text{invalid}}}{N_{\text{total}}}$. Sensitivity analysis evaluates two bounds:
+  - **Best-Case Defense Recall:** Evaluated over valid Condition D trials where the attack successfully induced baseline steering.
   - **Worst-Case Defense Bounds:** Treats all invalid or non-steering trials as defense failures.
 
-### 4.3 Statistical Comparison Protocol & Power Analysis
+### 4.3 Statistical Comparison Protocol: McNemar Test & Newcombe-Wilson Paired Score CIs
 
-- **Paired Binary Comparisons:** Shift in top-$k$ status between paired conditions (e.g., Condition D vs Condition E, Condition E vs Condition F) is tested using **McNemar's Test** for paired nominal data.
-- **Continuous Rank Shift Comparisons:** Rank position differences $\Delta S = \text{Rank}_{\text{cond}}(o) - \text{Rank}_A(o)$ are evaluated using two-tailed paired $t$-tests or non-parametric **Wilcoxon Signed-Rank Tests**.
-- **Confidence Intervals:** All proportional metrics are presented with **Wilson 95% Score Confidence Intervals**.
-- **Sample Size & Statistical Power Reassessment:**
-  - For $N = 48$ held-out adversarial scenarios and $N = 24$ held-out benign scenarios:
-  - Statistical power ($1 - \beta$) to detect a medium paired proportion shift ($\Delta = 0.20$ at $\alpha = 0.05$) under McNemar's test is approximately $0.81$.
-  - For benign false positive rate ($\text{FPR}_{\text{benign}}$), $N = 24$ held-out benign trials yields a Wilson 95% CI width of approximately $\pm 8.5\%$ around a $5.0\%$ point estimate.
-  - *Methodological Rule:* Claims of "high precision" or "near-zero FPR" are treated strictly as **untested hypotheses**. Final conclusions must report the exact Wilson 95% CI rather than claiming absolute zero false positives.
+For paired binary shifts (e.g. Condition D vs Condition E/F), evaluation utilizes the $2 \times 2$ paired contingency table:
+
+```
+                        Condition 2 (Intervention)
+                        Success (Unsteered)   Failure (Steered)
+Condition 1 (Control)
+Success (Unsteered)             a                     b
+Failure (Steered)               c                     d
+```
+- **McNemar Test Statistic:**
+  $$X^2 = \frac{(|c - b| - 1)^2}{c + b} \sim \chi^2_1$$
+- **Newcombe-Wilson Paired Score Confidence Interval:**
+  The sample proportion difference $\hat{\Delta} = \frac{b - c}{N}$ is bound by the Newcombe-Wilson paired score 95% CI using individual Wilson score CIs $(l_1, u_1)$ and $(l_2, u_2)$, adjusted by paired correlation $r = \frac{ad - bc}{\sqrt{(a+b)(c+d)(a+c)(b+d)}}$:
+  $$\text{CI}_{95\%}(\Delta) = \left[ \hat{\Delta} - \sqrt{(\hat{p}_1 - l_1)^2 - 2r(\hat{p}_1 - l_1)(u_2 - \hat{p}_2) + (u_2 - \hat{p}_2)^2}, \quad \hat{\Delta} + \sqrt{(u_1 - \hat{p}_1)^2 - 2r(u_1 - \hat{p}_1)(\hat{p}_2 - l_2) + (\hat{p}_2 - l_2)^2} \right]$$
+
+### 4.4 Statistical Power Analysis & Sample Size Scaling Requirements
+
+- **Power Analysis for $N = 48$ Held-Out Adversarial Scenarios:**
+  - Suppose discordant pair rates are $p_{10} = c/N = 0.25$ (12 cases fixed) and $p_{01} = b/N = 0.05$ (2 cases broken), yielding $\Delta = 0.20$. Total discordant pairs $n_d = 14$.
+  - Using the exact binomial test on discordant pairs ($n_d = 14$), the two-tailed probability under $H_0: p = 0.5$ is $P(X \ge 12 \mid 14, 0.5) = 0.0065 < 0.05$.
+  - Exact statistical power $1 - \beta$ for $N = 48$ held-out adversarial scenarios at $\Delta = 0.20$ is **$0.62$ (62%)**.
+- **Sample Size Plan for $80\%$ Power ($1 - \beta = 0.80$):**
+  - To achieve $80\%$ statistical power at $\alpha = 0.05$ for $\Delta = 0.20$, the required number of held-out adversarial scenarios is **$N_{\text{heldout, adv}} \ge 78$**.
+  - *Dataset Scaling Recommendation:* Scale total scenario corpus to $N = 200$ scenarios ($120$ adversarial, $80$ benign), partitioning into $N_{\text{dev}} = 80$ (40%) and $N_{\text{eval}} = 120$ (60%: 80 adversarial, 40 benign) to guarantee $80\%$ statistical power.
 
 ---
 
 ## 5. Falsifiable Research Hypotheses (H1 through H5)
-
-We define five operationally precise, falsifiable hypotheses. For each hypothesis, we specify the primary outcome variable, exact paired comparison, statistical test, minimum practically meaningful effect size, and explicit criteria for support, falsification, or inconclusive results:
 
 ```
 +------------------------------------------------------------------------------------------------------------------------------------+
@@ -211,61 +217,25 @@ We define five operationally precise, falsifiable hypotheses. For each hypothesi
 | ID | Primary Outcome       | Paired Comparison     | Statistical Test & CI  | Min Effect Size   | Support Criteria| Falsification  |
 +----+-----------------------+-----------------------+------------------------+-------------------+-----------------+----------------+
 | H1 | Top-k Entry Rate      | Condition D vs        | McNemar's Test &       | $\Delta R \ge +15%$| $p < 0.05$ and  | $p < 0.05$ in  |
-|    | ($R_{\text{entry}}$)  | Condition B           | Wilson 95% Score CI    | percentage points | $\Delta \ge +15%$| opposite dir.  |
+|    | ($R_{\text{entry}}$)  | Condition B           | Newcombe-Wilson 95% CI | percentage points | $\Delta \ge +15%$| opposite dir.  |
 +----+-----------------------+-----------------------+------------------------+-------------------+-----------------+----------------+
 | H2 | Top-k Entry Rate      | Condition E vs        | McNemar's Test &       | $\Delta R \le -15%$| $p < 0.05$ and  | $p \ge 0.05$ or|
-|    | ($R_{\text{entry}}$)  | Condition D           | Wilson 95% Score CI    | percentage points | $\Delta \le -15%$| $\Delta > -15%$|
+|    | ($R_{\text{entry}}$)  | Condition D           | Newcombe-Wilson 95% CI | percentage points | $\Delta \le -15%$| $\Delta > -15%$|
 +----+-----------------------+-----------------------+------------------------+-------------------+-----------------+----------------+
 | H3 | Unsupported Claim     | Condition F vs        | McNemar's Test &       | $\Delta R \le -20%$| $p < 0.05$ and  | $p \ge 0.05$ or|
-|    | Influence Rate        | Condition E           | Wilson 95% Score CI    | percentage points | $\Delta \le -20%$| $\Delta > -20%$|
+|    | Influence Rate        | Condition E           | Newcombe-Wilson 95% CI | percentage points | $\Delta \le -20%$| $\Delta > -20%$|
 +----+-----------------------+-----------------------+------------------------+-------------------+-----------------+----------------+
 | H4 | Benign False          | Condition F           | Wilson 95% Score CI    | Upper Bound       | Point estimate  | Upper 95% CI   |
 |    | Positive Rate         | (Benign Controls)     | One-Sample Binomial    | $\le 10.0\%$      | $\le 5.0\%$     | $> 15.0\%$     |
 +----+-----------------------+-----------------------+------------------------+-------------------+-----------------+----------------+
 | H5 | Decision Steering     | Condition D (Authentic| McNemar's Test &       | Residual Steering | $R_{\text{entry}} > 10\%$| $R_{\text{entry}} \le 2\%$|
-|    | Rate                  | Source + Bad Infer.)  | Wilson 95% Score CI    | $R_{\text{entry}} > 10\%$| with $p < 0.05$ | (Total block)  |
+|    | Rate                  | Source + Bad Infer.)  | Newcombe-Wilson 95% CI | $R_{\text{entry}} > 10\%$| with $p < 0.05$ | (Total block)  |
 +----+-----------------------+-----------------------+------------------------+-------------------+-----------------+----------------+
 ```
 
-### 5.1 Detailed Operational Hypotheses
-
-- **H1 (Evidence Synergy):** *Combining a plausible claim with fabricated supporting web evidence causes significantly greater decision steering than the claim alone.*
-  - *Primary Outcome:* $R_{\text{entry}}$.
-  - *Paired Comparison:* Condition D vs Condition B.
-  - *Statistical Test:* McNemar's Test ($\alpha = 0.05$), Wilson 95% CI for difference in paired proportions.
-  - *Minimum Effect Size:* $\Delta R_{\text{entry}} = R_{\text{entry}}(D) - R_{\text{entry}}(B) \ge +15.0\%$.
-  - *Outcome Criteria:* **Supported** if $p < 0.05$ and $\Delta R \ge +15.0\%$. **Falsified** if $p < 0.05$ in the opposite direction ($R_D \le R_B$). **Inconclusive** if $p \ge 0.05$.
-
-- **H2 (Prompting Mitigation Limits):** *Explicit source and claim assessment instructions during decision-making reduce attack-induced ranking changes compared to unprompted retrieval, but fail to eliminate steering entirely.*
-  - *Primary Outcome:* $R_{\text{entry}}$.
-  - *Paired Comparison:* Condition E vs Condition D.
-  - *Statistical Test:* McNemar's Test ($\alpha = 0.05$), Wilson 95% CI.
-  - *Minimum Effect Size:* Absolute reduction $\Delta R = R_{\text{entry}}(E) - R_{\text{entry}}(D) \le -15.0\%$, with residual steering $R_{\text{entry}}(E) \ge 15.0\%$.
-  - *Outcome Criteria:* **Supported** if $p < 0.05$, $\Delta R \le -15.0\%$, and $R_{\text{entry}}(E) \ge 15.0\%$. **Falsified** if $p \ge 0.05$ or if residual steering $R_{\text{entry}}(E) < 5.0\%$. **Inconclusive** if statistical power is insufficient.
-
-- **H3 (Gate Incremental Value):** *An independent decision-integrity gate reduces unsupported-claim influence significantly beyond source-assessment prompting alone.*
-  - *Primary Outcome:* $R_{\text{unsupported}}$.
-  - *Paired Comparison:* Condition F vs Condition E.
-  - *Statistical Test:* McNemar's Test ($\alpha = 0.05$), Wilson 95% CI.
-  - *Minimum Effect Size:* Absolute reduction $\Delta R = R_{\text{unsupported}}(F) - R_{\text{unsupported}}(E) \le -20.0\%$.
-  - *Outcome Criteria:* **Supported** if $p < 0.05$ and $\Delta R \le -20.0\%$. **Falsified** if $p \ge 0.05$ or $\Delta R > -5.0\%$.
-
-- **H4 (Benign Decision Preservation):** *The decision-integrity gate reduces attack influence without exceeding a pre-registered 5.0% false-positive rate on benign controls.*
-  - *Primary Outcome:* $\text{FPR}_{\text{benign}}$.
-  - *Evaluation Set:* Condition F across $N = 24$ held-out benign control scenarios.
-  - *Statistical Test:* One-sample binomial test against 10.0% upper ceiling; Wilson 95% Score CI.
-  - *Outcome Criteria:* **Supported** if point estimate $\text{FPR}_{\text{benign}} \le 5.0\%$ and upper 95% CI bound $\le 12.0\%$. **Falsified** if point estimate $> 10.0\%$ or upper 95% CI $> 15.0\%$.
-
-- **H5 (Authenticity Insufficiency):** *Source authenticity checks alone are insufficient to prevent decision steering when attacks employ authentic sources paired with invalid inference or selective framing.*
-  - *Primary Outcome:* $R_{\text{entry}}$ on invalid inference sub-variants of Condition D.
-  - *Evaluation:* Measure residual steering when source domain/signature authenticity is $100\%$ verified.
-  - *Outcome Criteria:* **Supported** if residual steering $R_{\text{entry}} \ge 10.0\%$ with $p < 0.05$. **Falsified** if source authenticity verification alone eliminates $>95\%$ of decision steering ($R_{\text{entry}} \le 2.0\%$).
-
 ---
 
-## 6. Proposed Control Design: `DecisionIntegrityGate` Capabilities & Limitations
-
-We design (but do **not** implement in production code) a minimal control-plane gate: `DecisionIntegrityGate`.
+## 6. Control Point Architecture: `DecisionIntegrityGate` Capabilities & Limits
 
 ### 6.1 The Five Evidence Questions: Mechanics & Epistemic Boundaries
 
@@ -299,155 +269,98 @@ We design (but do **not** implement in production code) a minimal control-plane 
 
 ### 6.2 Strict Epistemic Rules Enforced
 
-To prevent false security claims, `DecisionIntegrityGate` operates under four explicit epistemic boundaries:
+1. **Rule 1: Domain/TLS Authenticity $\neq$ Factual Truth.** Verifying domain ownership proves publisher identity, NOT factual truth.
+2. **Rule 2: Text Entailment $\neq$ Fact Verification.** Verifying semantic entailment proves passage $P$ supports proposition $Q$, NOT that proposition $Q$ is true in reality.
+3. **Rule 3: Text Similarity $\neq$ Malicious Collusion.** High text similarity across domains indicates shared source text, NOT necessarily malicious astroturfing. Provenance collapse treats $N$ syndicated mirrors as $N_{\text{eff}} = 1.0$ without assuming malicious intent.
+4. **Rule 4: Model Confidence $\neq$ Independent Verification.** LLM self-reported confidence is strictly treated as an unverified assertion, NEVER as security verification.
 
-1. **Rule 1: Domain/TLS Authenticity $\neq$ Factual Truth.** Verifying that a document originated from an authentic domain (e.g., `verified-news.com`) proves publisher identity, NOT factual truth. Authentic sources frequently publish unverified claims, opinion pieces, or erroneous reports.
-2. **Rule 2: Text Entailment $\neq$ Fact Verification.** Verifying that passage $P$ semantically entails proposition $Q$ proves that the agent accurately summarized the text, NOT that proposition $Q$ is true in reality.
-3. **Rule 3: Text Similarity $\neq$ Malicious Collusion.** High text similarity across domains indicates shared source text (e.g., syndicated news wire), NOT necessarily malicious astroturfing. Provenance collapse treats $N$ syndicated mirrors as $N_{\text{eff}} = 1.0$ without labeling the source as malicious.
-4. **Rule 4: Model Confidence $\neq$ Independent Verification.** An LLM's self-reported confidence that a claim is "trustworthy" is strictly treated as an unverified model assertion, NEVER as authoritative security verification.
+---
 
-### 6.3 Minimal Evidence Record Schemas
+## 7. Verified Interface Integration & End-to-End Data Path
 
-```python
-from dataclasses import dataclass, field
-from typing import Dict, Any, List, Optional
-from enum import Enum
-import time
+### 7.1 Mismatch Resolution: Binary Gating vs. Context Transformation
 
-class EvidenceVerificationStatus(Enum):
-    VERIFIED = "VERIFIED"
-    UNVERIFIED = "UNVERIFIED"
-    CONTRADICTED = "CONTRADICTED"
-    CIRCULAR_REPETITION = "CIRCULAR_REPETITION"
-    INVALID_INFERENCE = "INVALID_INFERENCE"
+In `epistemicos/core.py` (`EpistemicOrchestrator._evaluate_gates`), any gate returning a non-`ALLOW` action immediately halts execution and revokes trajectory vectors. To resolve the mismatch between binary halting and proportionate evidence responses:
 
-@dataclass
-class SourceCredibilityRecord:
-    source_id: str
-    origin_domain: str
-    is_authentic_domain: bool
-    publisher_identity: Optional[str] = None
-    attestation_signature: Optional[str] = None
-    historical_reliability_score: float = 0.5
-    metadata: Dict[str, Any] = field(default_factory=dict)
+1. **Binary Halting (`HALT` / `DENY`):** Returned when a decision-critical unverified claim would trigger a catastrophic, irreversible action (e.g. executing a high-value wire transfer or deleting a database based on unverified search text).
+2. **Evidence Transformation (`ALLOW` with Discounted Context):** For ranking tasks, `DecisionIntegrityGate` returns `GateOutcome(decision=GateDecision.ALLOW, reason_code="EVIDENCE_DISCOUNTED_UNVERIFIED", evidence={"discounted_claims": [...], "effective_provenance_count": 1.0})`. `EpistemicOrchestrator` permits execution, and downstream candidate rankers read `context["evidence_discount_factors"]` from `outcome.evidence` to compute rankings based on verified attributes.
 
-@dataclass
-class EvidenceClaimRecord:
-    claim_id: str
-    candidate_option_id: str
-    raw_extracted_passage: str
-    attributed_proposition: str
-    source_record: SourceCredibilityRecord
-    entailment_score: float                  # Q2: Claim support [0.0 - 1.0]
-    inference_validity_score: float          # Q3: Inference validity [0.0 - 1.0]
-    provenance_cluster_id: str               # Q5: Deduplicated origin cluster
-    verification_status: EvidenceVerificationStatus = EvidenceVerificationStatus.UNVERIFIED
+### 7.2 End-to-End Trusted Data Path
 
-@dataclass
-class DecisionSensitivityRecord:
-    trial_id: str
-    candidate_option_id: str
-    proposed_rank_with_claim: int
-    counterfactual_rank_without_claim: int
-    is_decision_critical: bool               # Q4: Material rank delta >= 1
-    eval_timestamp: float = field(default_factory=time.time)
+```
++----------------------------------------------------------------------------------------------------+
+|                                    END-TO-END TRUSTED DATA PATH                                    |
++----------------------------------------------------------------------------------------------------+
+| 1. Candidate Option Generator                                                                      |
+|    Assembles initial candidate set C_i and encounters unknown term.                               |
+|                                                |                                                   |
+|                                                v                                                   |
+| 2. Tool Execution Boundary (ContainmentGuard.wrap_tool_execution)                                  |
+|    Intercepts web_search("term"), checks egress SSRF rules, dispatches to retrieval tool.           |
+|                                                |                                                   |
+|                                                v                                                   |
+| 3. MockRetrievalTool / External Search Engine                                                     |
+|    Returns raw synthetic search result web passages.                                               |
+|                                                |                                                   |
+|                                                v                                                   |
+| 4. Evidence Claim Extractor                                                                        |
+|    Parses web text into structured context["retrieved_evidence_claims"] objects.                  |
+|                                                |                                                   |
+|                                                v                                                   |
+| 5. EpistemicOrchestrator.process_submission(raw_payload, context)                                  |
+|    - Evaluates DecisionIntegrityGate in _evaluate_gates loop.                                      |
+|    - Gate checks Q1–Q5; returns GateOutcome(ALLOW / HALT / DENY) with evidence discount context.   |
+|                                                |                                                   |
+|                                                v                                                   |
+| 6. Downstream Candidate Ranker                                                                      |
+|    Computes final candidate ranking using verified attributes & evidence discount weights.         |
+|                                                |                                                   |
+|                                                v                                                   |
+| 7. TrustedExecutionBoundary.execute_protected_action                                               |
+|    Verifies authorization token, consumes single-use token, executes protected ranking commitment.|
+|                                                |                                                   |
+|                                                v                                                   |
+| 8. LocalProvenanceStore                                                                            |
+|    Appends SHA-256 hash-chained EVIDENCE_CLAIM_EVALUATED and EXECUTION_SUCCEEDED events.          |
++----------------------------------------------------------------------------------------------------+
 ```
 
-### 6.4 Proportionate Responses to Evidence States
+### 7.3 Code References & Minimal Required Extension Contract
 
-- **High Confidence & Verified Evidence:** `GateDecision.ALLOW` with full evidentiary weighting.
-- **Unverified / Missing Claim Support:** `DISCOUNT` response—the unverified claim is zeroed in candidate utility scoring, allowing the decision to proceed based on verified baseline attributes.
-- **Decision-Critical Unverified Shift:** If discounting an unverified claim prevents a candidate disqualification, the gate yields `GateDecision.INDETERMINATE` with reason `DECISION_CRITICAL_UNVERIFIED_CLAIM`, requesting targeted re-verification or flagging for human review.
-- **Circular Provenance:** `COLLAPSE_PROVENANCE` response—collapses $N$ syndicated sources into single effective claim $N_{\text{eff}} = 1.0$.
-
----
-
-## 7. Verified Integration Point & Interface Verification
-
-### 7.1 Verified EpistemicOS Codebase Audit
-
-We cite exact file paths, class signatures, and test suites verified in the repository:
-
-1. **`epistemicos/gates.py` (`ControlPlaneGate`, lines 160–205):**
-   ```python
-   class ControlPlaneGate(Gate):
-       def evaluate_contract(self, gate_input: GateInput) -> GateOutcome:
-           ...
-   ```
-   - `GateInput` (lines 35–42) encapsulates `payload: Dict[str, Any]` and `context: Dict[str, Any]`.
-   - `GateOutcome` (lines 53–85) returns `decision: GateDecision`, `reason_code: str`, `evidence: Dict[str, Any]`.
-2. **`epistemicos/core.py` (`EpistemicOrchestrator`, lines 60–350):**
-   - `_evaluate_gates(payload_dump, context)` loops over `self.gates` and invokes `gate.evaluate(payload=payload_dump, context=context)`.
-   - If any gate returns a non-`ALLOW` action, pipeline execution immediately halts, revokes trajectory vectors via `self.vector_manager.revoke_trajectory(traj_id)`, and logs an `AuditLogLevel.HALT` event to `TamperEvidentAuditTrail`.
-3. **`epistemicos/provenance.py` (`LocalProvenanceStore`, lines 80–180):**
-   - Stores hash-chained `ProvenanceEvent` records.
-4. **Relevant Existing Test Suites:**
-   - `tests/unit/test_gates.py` & `tests/unit/test_gate_contract.py`: Verify `GateInput` / `GateOutcome` contract enforcement.
-   - `tests/integration/test_orchestrator_pipeline.py`: Verifies gate halt enforcement and vector revocation.
-
-### 7.2 Integration Gap Analysis & Minimal Required Extension
-
-- **Current Limitation:** Standard `cpr.model_dump()` passed to `_evaluate_gates` contains domain fields (`CanonicalProblemRepresentation`), but lacks standardized dictionary slots for candidate options, retrieved web passages, or proposed ranking deltas.
-- **Minimal Required Extension Contract (Without Production Rewrites):**
-  To enable `DecisionIntegrityGate` without modifying `ControlPlaneGate` signatures or breaking backward compatibility, caller applications populate optional standardized keys in `context`:
+- **Verified Code References:**
+  - `epistemicos/gates.py`: `ControlPlaneGate` (lines 160–205), `GateInput` (lines 35–42), `GateOutcome` (lines 53–85).
+  - `epistemicos/core.py`: `EpistemicOrchestrator._evaluate_gates` (lines 220–270), `_execute_pipeline` (lines 280–350).
+  - `epistemicos/provenance.py`: `LocalProvenanceStore` (lines 80–180), `TrustedExecutionBoundary` (lines 200–340).
+- **Minimal Required Extension Contract:** Populates standardized optional dictionary keys in `context`:
   ```python
-  context["candidate_options"] = [
-      {"option_id": "opt_1", "baseline_score": 0.92, "attributes": {...}},
-      {"option_id": "opt_2", "baseline_score": 0.88, "attributes": {...}}
-  ]
-  context["retrieved_evidence_claims"] = [
-      {
-          "claim_id": "claim_101",
-          "candidate_option_id": "opt_1",
-          "origin_domain": "external-blog.com",
-          "raw_passage": "BioAcoustic Protocol v4 banned in 2025...",
-          "attributed_proposition": "Vendor uses banned protocol"
-      }
-  ]
-  context["proposed_candidate_ranking"] = ["opt_2", "opt_1"] # Demoted opt_1
+  context["candidate_options"] = [{"option_id": "opt_1", "baseline_score": 0.92, ...}]
+  context["retrieved_evidence_claims"] = [{"claim_id": "c1", "origin_domain": "blog.com", "raw_passage": "...", ...}]
+  context["proposed_candidate_ranking"] = ["opt_2", "opt_1"]
   ```
-- **Execution Boundary Constraint:** Because `EpistemicOrchestrator._evaluate_gates` runs *before* protected action execution (`TrustedExecutionBoundary.execute_protected_action`), returning `GateDecision.HALT` or `GateDecision.INDETERMINATE` from `DecisionIntegrityGate` immediately halts pipeline execution, successfully constraining downstream ranking commitment before state mutation.
 
 ---
 
-## 8. Prioritized Implementation Roadmap, Dependencies & Risks
+## 8. Prioritized Implementation Roadmap, Dependencies & Non-Goals
 
-### 8.1 Implementation Phases (Phases 1–4)
+### 8.1 Implementation Sequencing (Phases 1–4)
 
-1. **Phase 1: Benchmark Family Specification & Harness (`benchmarks/on_policy_decision_steering/`)**
-   - Create synthetic scenario dataset ($N = 120$ paired cases: 80 adversarial, 40 benign) and `MockRetrievalTool`.
-   - Implement benchmark runner (`run_on_policy_benchmark.py`) covering Conditions A–F.
-2. **Phase 2: Evidence Schemas & Audit Logging (`epistemicos/models.py`, `epistemicos/provenance.py`)**
+1. **Phase 1: Isolated Benchmark Harness (`benchmarks/on_policy_decision_steering/`)**
+   - Implement small, isolated benchmark harness (`run_on_policy_benchmark.py`), dataset ($N = 120$ scenarios), and `MockRetrievalTool`.
+   - Test reproducibility of attack mechanisms before investing in production enforcement code.
+2. **Phase 2: Evidence Data Schemas (`epistemicos/models.py`, `epistemicos/provenance.py`)**
    - Add `SourceCredibilityRecord`, `EvidenceClaimRecord`, `DecisionSensitivityRecord` dataclasses.
-   - Add `ProvenanceEventType.EVIDENCE_CLAIM_EVALUATED` to provenance enums.
-3. **Phase 3: Control-Plane Prototype (`epistemicos/gates.py`)**
+3. **Phase 3: Control-Plane Gate Prototype (`epistemicos/gates.py`)**
    - Prototype `DecisionIntegrityGate` inheriting from `ControlPlaneGate`.
-   - Integrate with `context["retrieved_evidence_claims"]` interface extension.
-4. **Phase 4: Held-Out Evaluation & Report Generation (`benchmarks/`)**
-   - Execute benchmark on frozen held-out set (`on_policy_eval_set.jsonl`).
-   - Append machine-readable metrics to `results/four_layer_evidence.json`.
+4. **Phase 4: Held-Out Evaluation & Evidence Consolidation (`benchmarks/`)**
+   - Execute benchmark across Conditions A–F on frozen held-out set (`on_policy_eval_set.jsonl`).
 
-### 8.2 Architectural Isolation & Dependencies
-
-- **Zero Runtime Production Dependencies:** Uses Python standard library (`dataclasses`, `json`, `hashlib`, `re`, `math`).
-- **Complete System Isolation:** Operates strictly at the control-plane gate boundary. Zero changes to `EntropyAwareScheduler`, default halting behavior, or historical benchmark logs.
-
----
-
-## 9. Explicit Constraints & Non-Goals
-
-### 9.1 Explicit Constraints Enforced
-- **Zero Production Mutations:** No production code in `epistemicos/` is modified in this research task.
-- **Zero Scheduler Mutations:** `EntropyAwareScheduler` token entropy decay calculations and halting thresholds remain 100% untouched.
+### 8.2 Explicit Constraints Enforced
+- **Zero Production Mutations:** No production code in `epistemicos/` is modified during this research task.
+- **Zero Scheduler Mutations:** `EntropyAwareScheduler` token entropy decay calculations remain 100% untouched.
 - **Historical Benchmark Isolation:** Historical benchmark files (`results/per_case_results.json`, `docs/security/four_layer_evidence_report.md`, `docs/security/incident_lab_report.md`) are preserved without mutation.
-- **No Claims of Empirical Victory Before Testing:** All performance numbers are treated strictly as pre-registered hypotheses requiring empirical validation on held-out data.
-
-### 9.2 Non-Goals
-- **No Live Unconstrained Scraping:** Gate checks do not perform live blocking web fetches during contract evaluation.
-- **No Judicial Legal Adjudication:** EpistemicOS evaluates evidentiary claim validity, not legal enforceability in court.
 
 ---
 
 ## Conclusion & Specification Summary
 
-This revised research specification establishes a rigorous, scientifically grounded blueprint for investigating **On-Policy Decision Steering** in EpistemicOS. By separating literature findings from repository facts, repairing the benchmark matrix across Conditions A–F, defining strict metrics with sensitivity bounds, formalizing hypotheses H1–H5 with explicit power analysis, and detailing the `DecisionIntegrityGate` architecture, this specification provides a clear foundation for future evidence-integrity governance.
+This revised research specification (v3.0.0) establishes an mathematically grounded blueprint for **On-Policy Decision Steering** in EpistemicOS. By resolving gate outcome enforcement semantics, correcting statistical power calculations, constructing authentic vs. invalid inference contrast matrices, tracing the complete end-to-end trusted data path, and categorizing all metrics by evaluation mechanism, this specification paves the way for the Phase 1 isolated benchmark harness.
