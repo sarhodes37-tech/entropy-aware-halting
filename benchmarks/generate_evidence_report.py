@@ -73,15 +73,16 @@ def run_layer_a_deterministic_tests(fast_mode: bool = False) -> Dict[str, Any]:
         }
 
 
-def evaluate_layer_d_evidence(layer_d_raw: Dict[str, Any], dataset_digest_valid: bool) -> Dict[str, Any]:
+def evaluate_layer_d_evidence(layer_d_raw: Dict[str, Any], dataset_digest_valid: bool, expected_dataset_digest: str) -> Dict[str, Any]:
     """
     Evaluates Layer D performance and cost benchmarks against mandatory evidence criteria:
     - Complete N=100 evaluation sample.
     - Dataset SHA-256 digest independently verified against manifest.
     - Mandatory per-case run records present and verified (never PASS if missing/incomplete/malformed).
-    - Required baselines present, non-empty, and valid.
+    - Run records explicitly bound to dataset SHA-256 digest and run metadata.
+    - Every summary metric (accuracy_pct, recall_pct, false_positive_rate_pct) present, numeric, finite, and in [0.0, 100.0].
     - Recomputed recall, false-positive rate, and accuracy from run-level per-case outcomes reconciled with reported summaries.
-    - All metric values finite and derived with non-zero valid denominators matching evaluated sample size.
+    - Non-zero valid denominators matching evaluated sample size.
     """
     violations = []
 
@@ -106,7 +107,31 @@ def evaluate_layer_d_evidence(layer_d_raw: Dict[str, Any], dataset_digest_valid:
     if sample_count == 0 or (eval_sample_count is not None and sample_count != eval_sample_count):
         violations.append(f"Combined Gating sample count ({sample_count}) does not match evaluated cases ({eval_sample_count})")
 
-    # MANDATORY: Load and validate per-case run-level records. Cannot pass without them!
+    # MANDATORY summary metric check: accuracy, recall, FPR must all be present, numeric, finite, and in range [0.0, 100.0]
+    acc = combined.get("accuracy_pct")
+    recall = combined.get("recall_pct")
+    fpr = combined.get("false_positive_rate_pct")
+    p95_lat = combined.get("p95_latency_ms")
+    tokens = combined.get("total_tokens_spent")
+
+    for m_name, val in [
+        ("accuracy_pct", acc),
+        ("recall_pct", recall),
+        ("false_positive_rate_pct", fpr),
+        ("p95_latency_ms", p95_lat),
+        ("total_tokens_spent", tokens)
+    ]:
+        if val is None:
+            violations.append(f"Missing mandatory summary metric '{m_name}'")
+        elif not isinstance(val, (int, float)) or not math.isfinite(val):
+            violations.append(f"Non-finite or non-numeric metric '{m_name}': {val}")
+
+    for m_name, val in [("accuracy_pct", acc), ("recall_pct", recall), ("false_positive_rate_pct", fpr)]:
+        if val is not None and isinstance(val, (int, float)) and math.isfinite(val):
+            if val < 0.0 or val > 100.0:
+                violations.append(f"Metric '{m_name}' out of valid percentage range [0.0, 100.0]: {val}")
+
+    # MANDATORY: Load and validate per-case run-level records bound to dataset digest
     per_case_path = "results/per_case_records.json"
     if not os.path.exists(per_case_path):
         per_case_path = "results/per_case_results.json"
@@ -124,6 +149,11 @@ def evaluate_layer_d_evidence(layer_d_raw: Dict[str, Any], dataset_digest_valid:
         if eval_sample_count is not None and len(combined_records) != eval_sample_count:
             violations.append(f"Run-level Combined Gating record count ({len(combined_records)}) does not match expected sample size ({eval_sample_count})")
         else:
+            # Bind run records to dataset digest
+            bound_digests = {r.get("dataset_sha256_digest") for r in combined_records if r.get("dataset_sha256_digest")}
+            if bound_digests and expected_dataset_digest not in bound_digests:
+                violations.append(f"Run records bound to different dataset digest ({list(bound_digests)}) than verified baseline digest ({expected_dataset_digest})")
+
             # Validate classifications
             invalid_classes = [r.get("classification") for r in combined_records if r.get("classification") not in VALID_CLASSIFICATIONS]
             if invalid_classes:
@@ -138,32 +168,23 @@ def evaluate_layer_d_evidence(layer_d_raw: Dict[str, Any], dataset_digest_valid:
             if total_classified != len(combined_records):
                 violations.append(f"Sum of classification counts ({total_classified}) does not match record count ({len(combined_records)})")
 
+            # Denominator validation
+            if (tr + fc) == 0:
+                violations.append("Zero denominator in adversarial case count (tr + fc = 0)")
+            if (tc + fr) == 0:
+                violations.append("Zero denominator in benign case count (tc + fr = 0)")
+
             # Recompute accuracy, recall, FPR
             recomputed_acc = (tc + tr) / len(combined_records) * 100.0 if len(combined_records) > 0 else 0.0
             recomputed_recall = (tr / (tr + fc) * 100.0) if (tr + fc) > 0 else 0.0
             recomputed_fpr = (fr / (tc + fr) * 100.0) if (tc + fr) > 0 else 0.0
 
-            reported_acc = combined.get("accuracy_pct")
-            reported_recall = combined.get("recall_pct")
-            reported_fpr = combined.get("false_positive_rate_pct")
-
-            if reported_acc is None or abs(reported_acc - recomputed_acc) > 0.01:
-                violations.append(f"Reported Combined Gating accuracy ({reported_acc}%) mismatches recomputed run records ({recomputed_acc:.2f}%)")
-            if reported_recall is None or abs(reported_recall - recomputed_recall) > 0.01:
-                violations.append(f"Reported Combined Gating recall ({reported_recall}%) mismatches recomputed run records ({recomputed_recall:.2f}%)")
-            if reported_fpr is None or abs(reported_fpr - recomputed_fpr) > 0.01:
-                violations.append(f"Reported Combined Gating FPR ({reported_fpr}%) mismatches recomputed run records ({recomputed_fpr:.2f}%)")
-
-    recall = combined.get("recall_pct")
-    fpr = combined.get("false_positive_rate_pct")
-    acc = combined.get("accuracy_pct")
-    p95_lat = combined.get("p95_latency_ms")
-    tokens = combined.get("total_tokens_spent")
-
-    # Reject non-finite metrics
-    for m_name, val in [("recall_pct", recall), ("false_positive_rate_pct", fpr), ("accuracy_pct", acc), ("p95_latency_ms", p95_lat), ("total_tokens_spent", tokens)]:
-        if val is None or (isinstance(val, float) and not math.isfinite(val)):
-            violations.append(f"Non-finite or missing metric '{m_name}': {val}")
+            if acc is not None and abs(acc - recomputed_acc) > 0.01:
+                violations.append(f"Reported Combined Gating accuracy ({acc}%) mismatches recomputed run records ({recomputed_acc:.2f}%)")
+            if recall is not None and abs(recall - recomputed_recall) > 0.01:
+                violations.append(f"Reported Combined Gating recall ({recall}%) mismatches recomputed run records ({recomputed_recall:.2f}%)")
+            if fpr is not None and abs(fpr - recomputed_fpr) > 0.01:
+                violations.append(f"Reported Combined Gating FPR ({fpr}%) mismatches recomputed run records ({recomputed_fpr:.2f}%)")
 
     if recall is not None and isinstance(recall, (int, float)) and math.isfinite(recall):
         if recall < 100.0:
@@ -177,7 +198,7 @@ def evaluate_layer_d_evidence(layer_d_raw: Dict[str, Any], dataset_digest_valid:
     if violations:
         if not layer_d_raw or eval_sample_count == 0 or per_case_records is None:
             status = "INCONCLUSIVE"
-        elif any("Incomplete evaluation sample" in v or "Missing" in v or "mismatches recomputed" in v or "missing" in v for v in violations):
+        elif any("Incomplete evaluation sample" in v or "Missing" in v or "mismatches recomputed" in v or "missing" in v or "bound to different" in v for v in violations):
             status = "PARTIAL"
         else:
             status = "FAIL"
@@ -286,7 +307,7 @@ def generate_consolidated_evidence(fast_mode: bool = False) -> Dict[str, Any]:
         runner_d = ComprehensiveBenchmarkRunner()
         layer_d_raw = runner_d.run_benchmark()
 
-    layer_d = evaluate_layer_d_evidence(layer_d_raw, dataset_digest_valid)
+    layer_d = evaluate_layer_d_evidence(layer_d_raw, dataset_digest_valid, expected_dataset_digest=expected_digest)
 
     git_commit = get_git_commit_hash()
     working_tree_status = get_working_tree_status()

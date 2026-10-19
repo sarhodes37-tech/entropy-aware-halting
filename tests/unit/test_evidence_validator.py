@@ -15,6 +15,7 @@ Tests rejection of synthetic invalid artifacts:
 11. Inconsistent overall status 'PASS' when required layers report PARTIAL or FAIL.
 12. Overall status 'PARTIAL' blocked under --require-full-pass flag.
 13. Fabricated summary metrics in Layer D with missing/mismatched run records rejected by validator.
+14. Missing summary metrics, unknown classification codes, zero denominators, and dataset digest mismatch in run records.
 """
 
 import copy
@@ -78,6 +79,103 @@ def test_valid_artifact_passes(valid_evidence_data, tmp_path):
     is_valid, errors = validate_evidence_artifact(str(artifact_file), allow_local_constant_fallback=True)
     assert is_valid is True
     assert len(errors) == 0
+
+
+def test_missing_summary_metric_rejected(valid_evidence_data, tmp_path):
+    """Proves that missing recall_pct or accuracy_pct in Layer D summary is rejected."""
+    data = copy.deepcopy(valid_evidence_data)
+    del data["layers"]["layer_d_performance_cost"]["combined_gating_recall_pct"]
+
+    artifact_file = tmp_path / "missing_metric.json"
+    artifact_file.write_text(json.dumps(data), encoding="utf-8")
+
+    is_valid, errors = validate_evidence_artifact(str(artifact_file), allow_local_constant_fallback=True)
+    assert is_valid is False
+    assert any("Summary metric 'combined_gating_recall_pct' is None or omitted" in err for err in errors)
+
+
+def test_unknown_classification_code_in_run_records_rejected(valid_evidence_data, tmp_path, monkeypatch):
+    """Proves that run records with unknown classification codes (e.g., 'UNKNOWN') are rejected."""
+    data = copy.deepcopy(valid_evidence_data)
+
+    fake_records = [{"baseline": "Combined Gating", "classification": "INVALID_CODE"}] * 100
+    fake_records_file = tmp_path / "per_case_results.json"
+    fake_records_file.write_text(json.dumps(fake_records), encoding="utf-8")
+
+    artifact_file = tmp_path / "unknown_class.json"
+    artifact_file.write_text(json.dumps(data), encoding="utf-8")
+
+    real_exists = os.path.exists
+    monkeypatch.setattr(os.path, "exists", lambda p: True if p in ("results/per_case_records.json", "results/per_case_results.json", str(artifact_file)) else real_exists(p))
+
+    original_open = open
+    def mock_open(file, *args, **kwargs):
+        if str(file) in ("results/per_case_records.json", "results/per_case_results.json"):
+            return original_open(fake_records_file, *args, **kwargs)
+        return original_open(file, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.open", mock_open)
+
+    is_valid, errors = validate_evidence_artifact(str(artifact_file), allow_local_constant_fallback=True)
+    assert is_valid is False
+    assert any("Invalid classification codes detected" in err for err in errors)
+
+
+def test_zero_denominator_in_run_records_rejected(valid_evidence_data, tmp_path, monkeypatch):
+    """Proves that zero denominators (e.g. 0 adversarial cases) in run records are rejected."""
+    data = copy.deepcopy(valid_evidence_data)
+
+    # 100 TC cases -> 0 adversarial cases (tr + fc = 0)
+    fake_records = [{"baseline": "Combined Gating", "classification": "TC"}] * 100
+    fake_records_file = tmp_path / "per_case_results.json"
+    fake_records_file.write_text(json.dumps(fake_records), encoding="utf-8")
+
+    artifact_file = tmp_path / "zero_denom.json"
+    artifact_file.write_text(json.dumps(data), encoding="utf-8")
+
+    real_exists = os.path.exists
+    monkeypatch.setattr(os.path, "exists", lambda p: True if p in ("results/per_case_records.json", "results/per_case_results.json", str(artifact_file)) else real_exists(p))
+
+    original_open = open
+    def mock_open(file, *args, **kwargs):
+        if str(file) in ("results/per_case_records.json", "results/per_case_results.json"):
+            return original_open(fake_records_file, *args, **kwargs)
+        return original_open(file, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.open", mock_open)
+
+    is_valid, errors = validate_evidence_artifact(str(artifact_file), allow_local_constant_fallback=True)
+    assert is_valid is False
+    assert any("Adversarial case count (tr + fc) is 0" in err for err in errors)
+
+
+def test_transplanted_run_records_different_dataset_digest_rejected(valid_evidence_data, tmp_path, monkeypatch):
+    """Proves that run records bound to a different dataset digest are rejected."""
+    data = copy.deepcopy(valid_evidence_data)
+
+    different_digest = "9999999999999999999999999999999999999999999999999999999999999999"
+    fake_records = [{"baseline": "Combined Gating", "classification": "TC", "dataset_sha256_digest": different_digest}] * 50 + \
+                   [{"baseline": "Combined Gating", "classification": "TR", "dataset_sha256_digest": different_digest}] * 50
+    fake_records_file = tmp_path / "per_case_results.json"
+    fake_records_file.write_text(json.dumps(fake_records), encoding="utf-8")
+
+    artifact_file = tmp_path / "transplanted.json"
+    artifact_file.write_text(json.dumps(data), encoding="utf-8")
+
+    real_exists = os.path.exists
+    monkeypatch.setattr(os.path, "exists", lambda p: True if p in ("results/per_case_records.json", "results/per_case_results.json", str(artifact_file)) else real_exists(p))
+
+    original_open = open
+    def mock_open(file, *args, **kwargs):
+        if str(file) in ("results/per_case_records.json", "results/per_case_results.json"):
+            return original_open(fake_records_file, *args, **kwargs)
+        return original_open(file, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.open", mock_open)
+
+    is_valid, errors = validate_evidence_artifact(str(artifact_file), allow_local_constant_fallback=True)
+    assert is_valid is False
+    assert any("Dataset Binding Failure" in err for err in errors)
 
 
 def test_fabricated_summary_metrics_rejected_by_validator(valid_evidence_data, tmp_path, monkeypatch):

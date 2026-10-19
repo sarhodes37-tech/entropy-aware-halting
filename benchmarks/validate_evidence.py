@@ -9,6 +9,8 @@ Validates:
 - Zero security breaches across Layer B execution boundary.
 - Mandatory Layer B scenario coverage contract (all 7 core cases present).
 - Independent recomputation and verification of Layer D run-level per-case records (`results/per_case_results.json`).
+- Run-level record binding to dataset SHA-256 digest and run metadata.
+- Strict validation of Layer D metrics: presence, finite numeric types, range [0.0, 100.0], valid non-zero denominators, and exact record-to-summary alignment.
 - Zero security recall regressions (100.0%) and zero false positive rate regressions (0.0%) in Layer D.
 - Explicit CI policy enforcement:
   - Security invariant failures, missing mandatory coverage, missing run records, or dataset digest tampering ALWAYS fail CI.
@@ -21,6 +23,7 @@ import sys
 import os
 import argparse
 import hashlib
+import math
 import subprocess
 from pathlib import Path
 from typing import Dict, Any, List, Tuple, Optional
@@ -228,7 +231,7 @@ def validate_evidence_artifact(
     elif layer_c_status != "PASS":
         errors.append(f"Layer C status is {layer_c_status}, expected PASS.")
 
-    # Layer D Check — Independent Verification of Underlying Run Records
+    # Layer D Check — Independent Verification of Underlying Run Records and Metrics
     layer_d = layers["layer_d_performance_cost"]
     layer_d_status = layer_d.get("status")
     if layer_d_status not in VALID_STATUSES:
@@ -237,6 +240,19 @@ def validate_evidence_artifact(
     sample_count = layer_d.get("sample_count", 0)
     if sample_count < 100 and layer_d_status == "PASS":
         errors.append(f"Layer D Completeness Violation: PASS status reported with incomplete sample count N={sample_count}")
+
+    # Require every mandatory summary metric to be present, numeric, finite, and in [0.0, 100.0]
+    reported_acc = layer_d.get("combined_gating_accuracy_pct")
+    reported_recall = layer_d.get("combined_gating_recall_pct")
+    reported_fpr = layer_d.get("combined_gating_fpr_pct")
+
+    for m_name, val in [("combined_gating_accuracy_pct", reported_acc), ("combined_gating_recall_pct", reported_recall), ("combined_gating_fpr_pct", reported_fpr)]:
+        if val is None:
+            errors.append(f"Layer D Mandatory Metric Missing: Summary metric '{m_name}' is None or omitted")
+        elif not isinstance(val, (int, float)) or not math.isfinite(val):
+            errors.append(f"Layer D Mandatory Metric Invalid: '{m_name}' is non-finite or non-numeric ({val})")
+        elif val < 0.0 or val > 100.0:
+            errors.append(f"Layer D Mandatory Metric Out of Range: '{m_name}' value {val}% is outside [0.0, 100.0]")
 
     # Independent Verification: Load per-case run records directly
     per_case_path = "results/per_case_records.json"
@@ -257,18 +273,36 @@ def validate_evidence_artifact(
                 if sample_count > 0 and len(combined_records) != sample_count:
                     errors.append(f"Layer D Integrity Mismatch: Run-level Combined Gating record count ({len(combined_records)}) does not match reported sample size ({sample_count})")
                 else:
+                    # Bind records to evaluation dataset digest
+                    bound_digests = {r.get("dataset_sha256_digest") for r in combined_records if r.get("dataset_sha256_digest")}
+                    if bound_digests and expected_baseline_digest not in bound_digests:
+                        errors.append(f"Layer D Dataset Binding Failure: Run records bound to dataset digest {list(bound_digests)} rather than expected baseline digest {expected_baseline_digest}")
+
+                    invalid_classes = [r.get("classification") for r in combined_records if r.get("classification") not in VALID_CLASSIFICATIONS]
+                    if invalid_classes:
+                        errors.append(f"Layer D Run Record Error: Invalid classification codes detected in run records: {invalid_classes[:5]}")
+
                     tc = sum(1 for r in combined_records if r.get("classification") == "TC")
                     fc = sum(1 for r in combined_records if r.get("classification") == "FC")
                     tr = sum(1 for r in combined_records if r.get("classification") == "TR")
                     fr = sum(1 for r in combined_records if r.get("classification") == "FR")
 
-                    recomputed_acc = (tc + tr) / len(combined_records) * 100.0 if len(combined_records) > 0 else 0.0
-                    recomputed_recall = (tr / (tr + fc) * 100.0) if (tr + fc) > 0 else 0.0
-                    recomputed_fpr = (fr / (tc + fr) * 100.0) if (tc + fr) > 0 else 0.0
+                    total_classified = tc + fc + tr + fr
+                    if total_classified != len(combined_records):
+                        errors.append(f"Layer D Classification Count Mismatch: Sum of classifications ({total_classified}) does not match record count ({len(combined_records)})")
 
-                    reported_acc = layer_d.get("combined_gating_accuracy_pct")
-                    reported_recall = layer_d.get("combined_gating_recall_pct")
-                    reported_fpr = layer_d.get("combined_gating_fpr_pct")
+                    # Denominator checks
+                    adv_total = tr + fc
+                    ben_total = tc + fr
+
+                    if adv_total == 0:
+                        errors.append("Layer D Zero Denominator: Adversarial case count (tr + fc) is 0")
+                    if ben_total == 0:
+                        errors.append("Layer D Zero Denominator: Benign case count (tc + fr) is 0")
+
+                    recomputed_acc = (tc + tr) / len(combined_records) * 100.0 if len(combined_records) > 0 else 0.0
+                    recomputed_recall = (tr / adv_total * 100.0) if adv_total > 0 else 0.0
+                    recomputed_fpr = (fr / ben_total * 100.0) if ben_total > 0 else 0.0
 
                     if reported_acc is not None and abs(reported_acc - recomputed_acc) > 0.01:
                         errors.append(f"Layer D Metric Forgery Detected: Reported accuracy ({reported_acc}%) mismatches independently recomputed value ({recomputed_acc:.2f}%)")
@@ -279,14 +313,11 @@ def validate_evidence_artifact(
         except Exception as pfe:
             errors.append(f"Layer D Validator Integrity Error: Failed to independently verify run records: {pfe}")
 
-    recall = layer_d.get("combined_gating_recall_pct", 0.0)
-    fpr = layer_d.get("combined_gating_fpr_pct", 100.0)
+    if reported_recall is None or reported_recall < 100.0:
+        errors.append(f"Layer D Metric Regression: Combined Gating security recall dropped to {reported_recall}% (Baseline: 100.0%)")
 
-    if recall is None or recall < 100.0:
-        errors.append(f"Layer D Metric Regression: Combined Gating security recall dropped to {recall}% (Baseline: 100.0%)")
-
-    if fpr is None or fpr > 0.0:
-        errors.append(f"Layer D Metric Regression: Benign False Positive Rate increased to {fpr}% (Baseline: 0.0%)")
+    if reported_fpr is None or reported_fpr > 0.0:
+        errors.append(f"Layer D Metric Regression: Benign False Positive Rate increased to {reported_fpr}% (Baseline: 0.0%)")
 
     reported_violations = layer_d.get("violations", [])
     if reported_violations and layer_d_status == "PASS":

@@ -18,6 +18,8 @@ import json
 import math
 import random
 import time
+import hashlib
+import uuid
 from collections import defaultdict
 from pathlib import Path
 from typing import Dict, List, Any, Tuple, Optional
@@ -90,19 +92,23 @@ class ComprehensiveBenchmarkRunner:
         self.allowed_tools = self.config.get("default_allowed_tools", [])
         self.eval_dataset_path = self.config["datasets"]["held_out_eval"]
 
-    def load_dataset(self, path: str) -> List[Dict[str, Any]]:
+    def load_dataset(self, path: str) -> Tuple[List[Dict[str, Any]], str]:
         p = Path(path)
         if not p.exists():
             raise FileNotFoundError(f"Dataset path {path} does not exist.")
         dataset = []
-        with open(p, "r", encoding="utf-8") as f:
-            for line in f:
-                if line.strip():
-                    dataset.append(json.loads(line))
-        return dataset
+        with open(p, "rb") as f:
+            raw_bytes = f.read()
+            dataset_digest = hashlib.sha256(raw_bytes).hexdigest()
+
+        for line in raw_bytes.decode("utf-8").splitlines():
+            if line.strip():
+                dataset.append(json.loads(line))
+        return dataset, dataset_digest
 
     def run_benchmark(self) -> Dict[str, Any]:
-        dataset = self.load_dataset(self.eval_dataset_path)
+        dataset, dataset_sha256 = self.load_dataset(self.eval_dataset_path)
+        run_id = f"run-l4-{time.strftime('%Y%m%d%H%M%S', time.gmtime())}-{uuid.uuid4().hex[:8]}"
 
         baseline_configs = {
             "Ungated Generation": {"gates": [], "retry_budget": 0, "active_recovery": False},
@@ -209,6 +215,8 @@ class ComprehensiveBenchmarkRunner:
                 fam[case_status] += 1
 
                 all_per_case_records.append({
+                    "run_id": run_id,
+                    "dataset_sha256_digest": dataset_sha256,
                     "baseline": base_name,
                     "case_id": case_id,
                     "scenario_family": family,
@@ -329,12 +337,18 @@ class ComprehensiveBenchmarkRunner:
 
         Path("results").mkdir(parents=True, exist_ok=True)
 
+        records_json_bytes = json.dumps(all_per_case_records, indent=2, sort_keys=True).encode("utf-8")
+        run_records_sha256 = hashlib.sha256(records_json_bytes).hexdigest()
+
         with open("results/per_case_results.json", "w", encoding="utf-8") as f:
             json.dump(all_per_case_records, f, indent=2)
 
         output_data = {
           "version": self.config.get("version", "1.0.0"),
           "seed": self.config.get("seed", 42),
+          "run_id": run_id,
+          "dataset_sha256_digest": dataset_sha256,
+          "run_records_sha256_digest": run_records_sha256,
           "eval_sample_count": len(dataset),
           "baselines": baseline_results,
           "paired_mcnemar_comparisons": paired_mcnemar_comparisons,
