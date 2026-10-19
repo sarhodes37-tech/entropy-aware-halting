@@ -63,13 +63,10 @@ def valid_evidence_data():
             content = f.read()
 
     records_digest = hashlib.sha256(content).hexdigest()
-    try:
-        rec_data = json.loads(content.decode("utf-8"))
-        if rec_data and isinstance(rec_data, list) and len(rec_data) > 0:
-            run_id = rec_data[0].get("run_id", run_id)
-            dataset_digest = rec_data[0].get("dataset_sha256_digest", dataset_digest)
-    except Exception:
-        pass
+    rec_data = json.loads(content.decode("utf-8"))
+    if rec_data and isinstance(rec_data, list) and len(rec_data) > 0:
+        run_id = rec_data[0].get("run_id", run_id)
+        dataset_digest = rec_data[0].get("dataset_sha256_digest", dataset_digest)
 
     return {
         "title": "EpistemicOS Four-Layer Security Evaluation Artifact",
@@ -122,6 +119,16 @@ def test_valid_artifact_passes(valid_evidence_data, tmp_path):
     is_valid, errors = validate_evidence_artifact(str(artifact_file), allow_local_constant_fallback=True)
     assert is_valid is True
     assert len(errors) == 0
+
+
+def test_malformed_json_artifact_fails_explicitly(tmp_path):
+    """Proves that supplying a malformed JSON artifact fails explicitly rather than being silently ignored."""
+    malformed_file = tmp_path / "malformed_evidence.json"
+    malformed_file.write_text("{malformed_json_invalid: true,", encoding="utf-8")
+
+    is_valid, errors = validate_evidence_artifact(str(malformed_file), allow_local_constant_fallback=True)
+    assert is_valid is False
+    assert any("Malformed JSON artifact" in err for err in errors)
 
 
 def test_missing_summary_metric_rejected(valid_evidence_data, tmp_path):
