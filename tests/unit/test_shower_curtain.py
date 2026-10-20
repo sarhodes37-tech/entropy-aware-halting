@@ -558,6 +558,13 @@ def test_shower_curtain_gate_exception_token_authorization_and_fallbacks():
     )
     assert res_bad_tok.action == GateAction.HALT
 
+    # 3b. Non-string provided token (e.g. dict or list) -> Fail gracefully without error
+    res_type_tok = gate.evaluate(
+        payload="Outbound email: alice@example.com",
+        context={"shower_curtain_exception_token": {"invalid": "type"}}
+    )
+    assert res_type_tok.action == GateAction.HALT
+
     # 4. Non-dict / non-string payload type fallback
     res_int = gate.evaluate(payload=12345, context={})
     assert res_int.action == GateAction.ALLOW
