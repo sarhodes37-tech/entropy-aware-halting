@@ -83,6 +83,17 @@ document.addEventListener('DOMContentLoaded', () => {
     // View 1: Overview
     // -------------------------------------------------------------------------
     async loadOverview() {
+      const btnRefresh = document.getElementById('btn-refresh-overview');
+      const refreshIcon = btnRefresh ? btnRefresh.querySelector('.refresh-icon') : null;
+
+      if (btnRefresh) {
+        btnRefresh.disabled = true;
+        btnRefresh.setAttribute('aria-busy', 'true');
+      }
+      if (refreshIcon) {
+        refreshIcon.classList.add('spin');
+      }
+
       try {
         const res = await fetch('/api/overview');
         if (!res.ok) throw new Error(`HTTP error ${res.status}`);
@@ -92,6 +103,14 @@ document.addEventListener('DOMContentLoaded', () => {
       } catch (err) {
         console.error('Failed to load overview:', err);
         this.renderOverviewError(err.message);
+      } finally {
+        if (btnRefresh) {
+          btnRefresh.disabled = false;
+          btnRefresh.removeAttribute('aria-busy');
+        }
+        if (refreshIcon) {
+          refreshIcon.classList.remove('spin');
+        }
       }
     },
 
