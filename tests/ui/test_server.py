@@ -86,6 +86,7 @@ def test_static_aria_accessibility_attributes():
     content = index_path.read_text(encoding="utf-8")
     assert 'aria-label="Observatory Navigation"' in content
     assert 'aria-label="Refresh overview metrics"' in content
+    assert 'class="refresh-icon" aria-hidden="true"' in content
     assert 'aria-label="Search execution traces by correlation or request ID"' in content
     assert 'aria-label="Filter execution traces by status"' in content
 
