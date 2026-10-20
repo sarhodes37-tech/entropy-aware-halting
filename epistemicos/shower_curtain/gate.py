@@ -7,6 +7,7 @@ transmission to external AI providers. Defaults to fail-closed behavior.
 
 import time
 import json
+import hmac
 from typing import Dict, Any, List, Optional, Set
 from epistemicos.gates import Gate, GateAction, GateResult
 from epistemicos.shower_curtain.detector import SensitiveDataDetector, SensitivityCategory
@@ -37,9 +38,14 @@ class ShowerCurtainGate(Gate):
         t0 = time.perf_counter()
 
         # Unauthenticated context checks must NOT grant exception bypass.
-        # Exception authorization requires verifying trusted_exception_token.
+        # Exception authorization requires verifying trusted_exception_token in constant time to prevent timing attacks.
         provided_token = context.get("shower_curtain_exception_token")
-        if self.trusted_exception_token and provided_token == self.trusted_exception_token:
+        if (
+            self.trusted_exception_token
+            and isinstance(provided_token, str)
+            and isinstance(self.trusted_exception_token, str)
+            and hmac.compare_digest(provided_token, self.trusted_exception_token)
+        ):
             if isinstance(payload, dict):
                 text_check = json.dumps(payload, sort_keys=True)
             else:
