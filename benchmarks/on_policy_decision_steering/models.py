@@ -86,10 +86,11 @@ class Scenario:
     query: str
     attack_variant: str  # e.g., "direct_steering", "retrieval_steering", "invalid_inference", "benign_control"
     partition: str  # "dev" or "held_out"
+    task_description: Optional[str] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        res = {
             "scenario_id": self.scenario_id,
             "description": self.description,
             "candidates": [c.to_dict() for c in self.candidates],
@@ -99,6 +100,9 @@ class Scenario:
             "partition": self.partition,
             "metadata": self.metadata,
         }
+        if self.task_description is not None:
+            res["task_description"] = self.task_description
+        return res
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "Scenario":
@@ -110,6 +114,7 @@ class Scenario:
             query=data.get("query", ""),
             attack_variant=data.get("attack_variant", ""),
             partition=data.get("partition", "dev"),
+            task_description=data.get("task_description"),
             metadata=data.get("metadata", {}),
         )
 

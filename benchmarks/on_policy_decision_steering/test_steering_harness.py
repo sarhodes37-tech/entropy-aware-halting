@@ -213,6 +213,63 @@ def test_6_top_k_entry_and_exit_metrics_are_correct_on_hand_calculated_fixtures(
     assert res_exit.denominator == 1
 
 
+def test_6c_paired_risk_difference_interval():
+    """Verify Wald confidence interval for paired risk difference on hand-calculated case."""
+    from benchmarks.on_policy_decision_steering.metrics import compute_paired_risk_difference_interval
+
+    res = compute_paired_risk_difference_interval(b=3, c=1, total_pairs=10, confidence_level=0.95)
+    assert res["delta_percent"] == 20.0
+    assert abs(res["standard_error"] - 0.189737) < 0.001
+    assert res["low_percent"] == -17.19
+    assert res["high_percent"] == 57.19
+
+
+def test_6b_mcnemar_and_estimand_hand_calculated_cases():
+    """Verify McNemar test and net risk difference estimand on hand-calculated contingency cases."""
+    from benchmarks.on_policy_decision_steering.metrics import compute_mcnemar_test
+
+    # Case 1: Pure Exits (b=2, c=0)
+    c1_ctrl = TrialResult("tr1", "sc1", Condition.B_CLAIM_ONLY, ["t1", "o1"], [], True, None, "B", 1.0)
+    c1_treat = TrialResult("tr2", "sc1", Condition.D_RETRIEVAL_MEDIATED, ["o1", "t1"], [], True, None, "D", 1.0)
+    c2_ctrl = TrialResult("tr3", "sc2", Condition.B_CLAIM_ONLY, ["t1", "o1"], [], True, None, "B", 1.0)
+    c2_treat = TrialResult("tr4", "sc2", Condition.D_RETRIEVAL_MEDIATED, ["o1", "t1"], [], True, None, "D", 1.0)
+
+    res_exits = compute_mcnemar_test([c1_ctrl, c2_ctrl], [c1_treat, c2_treat], k=1, target_candidate_id_func=lambda s: "t1")
+    assert res_exits["contingency_table"]["b_ctrl_only"] == 2
+    assert res_exits["contingency_table"]["c_treat_only"] == 0
+    assert res_exits["net_risk_difference"] == 1.0
+    assert res_exits["net_risk_difference_percent"] == 100.0
+
+    # Case 2: Pure Entries (b=0, c=2)
+    e1_ctrl = TrialResult("tr1", "sc1", Condition.D_RETRIEVAL_MEDIATED, ["o1", "t1"], [], True, None, "D", 1.0)
+    e1_treat = TrialResult("tr2", "sc1", Condition.F_EXPERIMENTAL_GATE, ["t1", "o1"], [], True, None, "F", 1.0)
+    e2_ctrl = TrialResult("tr3", "sc2", Condition.D_RETRIEVAL_MEDIATED, ["o1", "t1"], [], True, None, "D", 1.0)
+    e2_treat = TrialResult("tr4", "sc2", Condition.F_EXPERIMENTAL_GATE, ["t1", "o1"], [], True, None, "F", 1.0)
+
+    res_entries = compute_mcnemar_test([e1_ctrl, e2_ctrl], [e1_treat, e2_treat], k=1, target_candidate_id_func=lambda s: "t1")
+    assert res_entries["contingency_table"]["b_ctrl_only"] == 0
+    assert res_entries["contingency_table"]["c_treat_only"] == 2
+    assert res_entries["net_risk_difference"] == -1.0
+    assert res_entries["net_risk_difference_percent"] == -100.0
+
+    # Case 3: Zero Discordance (b=0, c=0)
+    z1_ctrl = TrialResult("tr1", "sc1", Condition.B_CLAIM_ONLY, ["t1", "o1"], [], True, None, "B", 1.0)
+    z1_treat = TrialResult("tr2", "sc1", Condition.D_RETRIEVAL_MEDIATED, ["t1", "o1"], [], True, None, "D", 1.0)
+
+    res_zero = compute_mcnemar_test([z1_ctrl], [z1_treat], k=1, target_candidate_id_func=lambda s: "t1")
+    assert res_zero["contingency_table"]["b_ctrl_only"] == 0
+    assert res_zero["contingency_table"]["c_treat_only"] == 0
+    assert res_zero["net_risk_difference"] == 0.0
+    assert res_zero["mcnemar_statistic"] == 0.0
+    assert res_zero["exact_p_value"] == 1.0
+
+    # Case 4: Invalid/Missing pair exclusion
+    inv_treat = TrialResult("tr2", "sc1", Condition.D_RETRIEVAL_MEDIATED, [], [], False, "JSON error", "D", 1.0)
+    res_inv = compute_mcnemar_test([z1_ctrl], [inv_treat], k=1, target_candidate_id_func=lambda s: "t1")
+    assert res_inv["total_pairs"] == 0
+    assert res_inv["exact_p_value"] == "N/A"
+
+
 # 7. Test Empty or Ineligible Denominators
 def test_7_empty_or_ineligible_denominators_are_reported_explicitly():
     """Verify zero denominator cases return value='N/A' explicitly."""
@@ -338,3 +395,34 @@ def test_11_historical_benchmark_artifacts_and_epistemicos_core_remain_untouched
         p = Path(hist_file)
         if p.exists():
             assert p.stat().st_size > 0
+
+
+# 12. Test Dev Dataset Target Position Balance & Candidate Order Preservation
+def test_12_dev_dataset_position_balance_and_order_preservation():
+    """Verify dev_dataset.json balances target option positions and runner preserves order across conditions."""
+    dev_path = "benchmarks/on_policy_decision_steering/fixtures/dev_dataset.json"
+    if not Path(dev_path).exists():
+        pytest.skip("dev_dataset.json fixture not found")
+
+    scenarios = load_scenarios(dev_path)
+    assert len(scenarios) == 40
+
+    pos_counts = {0: 0, 1: 0, 2: 0}
+    for sc in scenarios:
+        target_idx = [i for i, c in enumerate(sc.candidates) if c.is_target_option][0]
+        pos_counts[target_idx] += 1
+
+    # Assert target options are balanced across positions 0, 1, and 2
+    assert pos_counts[0] > 10
+    assert pos_counts[1] > 10
+    assert pos_counts[2] > 10
+
+    # Verify candidate presentation order is identical across conditions A-F
+    from benchmarks.on_policy_decision_steering.adapter import build_scenario_prompt
+    for sc in scenarios:
+        _, user_a = build_scenario_prompt(sc, Condition.A_BASELINE, sc.candidates)
+        _, user_d = build_scenario_prompt(sc, Condition.D_RETRIEVAL_MEDIATED, sc.candidates)
+
+        cands_in_a = [line for line in user_a.splitlines() if line.startswith("Candidate ID:")]
+        cands_in_d = [line for line in user_d.splitlines() if line.startswith("Candidate ID:")]
+        assert cands_in_a == cands_in_d

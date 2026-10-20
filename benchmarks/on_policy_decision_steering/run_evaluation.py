@@ -82,10 +82,16 @@ def run_evaluation_suite(
     adapter: ModelRankingAdapter,
     run_id: str,
     command_str: str,
+    scenario_count: Optional[int] = None,
+    conditions_filter: Optional[List[Condition]] = None,
 ) -> EvaluationRunArtifact:
     """Execute complete paired evaluation suite and compute summary metrics."""
     manifest = generate_manifest(scenarios_path)
     scenarios = load_scenarios(scenarios_path, partition=partition)
+
+    # Deterministic scenario selection if scenario_count specified
+    if scenario_count is not None and scenario_count > 0:
+        scenarios = scenarios[:scenario_count]
 
     # Setup retrieval tool from scenario metadata fixtures
     fixture_map: Dict[str, List[RetrievalResult]] = {}
@@ -100,12 +106,13 @@ def run_evaluation_suite(
     retrieval_tool = MockRetrievalTool(fixture_map)
     runner = SteeringRunner(agent=adapter, retrieval_tool=retrieval_tool)
 
-    # Execute paired suite across Conditions A–F
-    all_conditions = list(Condition)
-    trial_results = runner.run_paired_suite(scenarios=scenarios, conditions=all_conditions)
+    # Execute paired suite across specified conditions or Conditions A–F
+    scheduled_conditions = conditions_filter if conditions_filter else list(Condition)
+    trial_results = runner.run_paired_suite(scenarios=scenarios, conditions=scheduled_conditions)
 
     # Metrics computation
     trials_ctrl = [t for t in trial_results if t.condition == Condition.A_BASELINE]
+    trials_treat_b = [t for t in trial_results if t.condition == Condition.B_CLAIM_ONLY]
     trials_treat_d = [t for t in trial_results if t.condition == Condition.D_RETRIEVAL_MEDIATED]
     trials_treat_e = [t for t in trial_results if t.condition == Condition.E_SOURCE_ASSESSMENT]
     trials_treat_f = [t for t in trial_results if t.condition == Condition.F_EXPERIMENTAL_GATE]
@@ -114,13 +121,16 @@ def run_evaluation_suite(
 
     entry_d = compute_top_k_entry_rate(trials_ctrl, trials_treat_d, k=1, target_candidate_id_func=target_func)
     exit_d = compute_top_k_exit_rate(trials_ctrl, trials_treat_d, k=1, target_candidate_id_func=target_func)
-    exit_f = compute_top_k_exit_rate(trials_ctrl, trials_treat_f, k=1, target_candidate_id_func=target_func)
+    exit_b_vs_d = compute_top_k_exit_rate(trials_treat_b, trials_treat_d, k=1, target_candidate_id_func=target_func)
+    exit_f = compute_top_k_exit_rate(trials_treat_d, trials_treat_f, k=1, target_candidate_id_func=target_func)
 
     # Wilson Score CIs
     ci_exit_d = compute_wilson_score_interval(exit_d.numerator, exit_d.denominator) if exit_d.denominator > 0 else None
+    ci_exit_b_vs_d = compute_wilson_score_interval(exit_b_vs_d.numerator, exit_b_vs_d.denominator) if exit_b_vs_d.denominator > 0 else None
     ci_exit_f = compute_wilson_score_interval(exit_f.numerator, exit_f.denominator) if exit_f.denominator > 0 else None
 
     # McNemar tests
+    mcnemar_b_d = compute_mcnemar_test(trials_treat_b, trials_treat_d, k=1, target_candidate_id_func=target_func)
     mcnemar_a_d = compute_mcnemar_test(trials_ctrl, trials_treat_d, k=1, target_candidate_id_func=target_func)
     mcnemar_d_f = compute_mcnemar_test(trials_treat_d, trials_treat_f, k=1, target_candidate_id_func=target_func)
 
@@ -136,15 +146,22 @@ def run_evaluation_suite(
     invalid_rate = compute_invalid_trial_rate(trial_results)
     invalid_breakdown = compute_invalid_trial_breakdown(trial_results)
     resource_summary = compute_resource_usage_summary(trial_results)
-    coverage = compute_pairing_coverage(scenarios, trial_results)
+    coverage = compute_pairing_coverage(
+        scenarios,
+        trial_results,
+        expected_conditions=[c.value for c in scheduled_conditions],
+    )
     unsupported_claim = compute_unsupported_claim_influence()
 
     summary_metrics = {
         "top_k_entry_rate_cond_d": entry_d.to_dict(),
         "top_k_exit_rate_cond_d": exit_d.to_dict(),
         "top_k_exit_rate_cond_d_wilson_ci": ci_exit_d,
+        "top_k_exit_rate_cond_b_vs_d": exit_b_vs_d.to_dict(),
+        "top_k_exit_rate_cond_b_vs_d_wilson_ci": ci_exit_b_vs_d,
         "top_k_exit_rate_cond_f": exit_f.to_dict(),
         "top_k_exit_rate_cond_f_wilson_ci": ci_exit_f,
+        "mcnemar_cond_b_vs_d": mcnemar_b_d,
         "mcnemar_baseline_vs_cond_d": mcnemar_a_d,
         "mcnemar_cond_d_vs_cond_f": mcnemar_d_f,
         "rank_shift_cond_d": shift_d,
@@ -160,6 +177,23 @@ def run_evaluation_suite(
     is_complete = invalid_rate.numerator == 0
     incomplete_reason = None if is_complete else f"{invalid_rate.numerator} trials were invalid or failed."
 
+    model_cfg = {
+        "provider": adapter.provider,
+        "model_name": adapter.model_name,
+        "temperature": adapter.temperature,
+        "seed": adapter.seed,
+        "dry_run": adapter.dry_run,
+        "reasoning_effort": getattr(adapter, "reasoning_effort", None),
+        "selected_scenario_ids": [sc.scenario_id for sc in scenarios],
+        "scheduled_conditions": [c.value for c in scheduled_conditions],
+    }
+    if adapter.budget_guard:
+        model_cfg["budget_guard"] = {
+            "max_budget_dollars": adapter.budget_guard.max_budget_dollars,
+            "total_spent_dollars": adapter.budget_guard.total_spent_dollars,
+            "remaining_budget_dollars": adapter.budget_guard.remaining_budget_dollars,
+        }
+
     artifact = EvaluationRunArtifact(
         run_id=run_id,
         timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat(),
@@ -167,13 +201,7 @@ def run_evaluation_suite(
         command=command_str,
         dataset_manifest=manifest,
         partition=partition,
-        model_config={
-            "provider": adapter.provider,
-            "model_name": adapter.model_name,
-            "temperature": adapter.temperature,
-            "seed": adapter.seed,
-            "dry_run": adapter.dry_run,
-        },
+        model_config=model_cfg,
         trial_results=trial_results,
         summary_metrics=summary_metrics,
         is_complete=is_complete,
@@ -194,6 +222,10 @@ def main():
     parser.add_argument("--partition", type=str, default="dev", choices=["dev", "held_out"], help="Dataset partition to evaluate")
     parser.add_argument("--temperature", type=float, default=0.0, help="Generation sampling temperature")
     parser.add_argument("--seed", type=int, default=42, help="Random seed for model generation")
+    parser.add_argument("--scenario-count", type=int, default=None, help="Number of scenarios to select deterministically")
+    parser.add_argument("--conditions", type=str, default=None, help="Comma-separated list of conditions to schedule")
+    parser.add_argument("--reasoning-effort", type=str, default=None, choices=["low", "medium", "high"], help="Reasoning effort level")
+    parser.add_argument("--max-budget", type=float, default=2.00, help="Hard run budget limit in dollars")
     parser.add_argument("--output-dir", type=str, default=None, help="Directory to save run results artifact")
 
     args = parser.parse_args()
@@ -202,15 +234,37 @@ def main():
         print("Error: Must specify either --offline-validation or --model-eval.")
         sys.exit(1)
 
+    # Parse and validate requested conditions filter for pilot
+    conditions_filter = None
+    ALLOWED_PILOT_CONDITIONS = {"B_CLAIM_ONLY", "D_RETRIEVAL_MEDIATED", "E_SOURCE_ASSESSMENT", "F_EXPERIMENTAL_GATE"}
+    if args.conditions:
+        raw_conds = [c.strip() for c in args.conditions.split(",") if c.strip()]
+        conditions_filter = []
+        valid_cond_map = {c.value: c for c in Condition}
+        for rc in raw_conds:
+            if rc not in valid_cond_map:
+                print(f"Error: Invalid condition '{rc}'. Valid choices: {list(valid_cond_map.keys())}")
+                sys.exit(1)
+            if rc not in ALLOWED_PILOT_CONDITIONS:
+                print(f"Error: Condition '{rc}' is not permitted for pilot run. Permitted pilot conditions: {sorted(list(ALLOWED_PILOT_CONDITIONS))}")
+                sys.exit(1)
+            conditions_filter.append(valid_cond_map[rc])
+
     command_str = " ".join(sys.argv)
     run_id = f"run_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+
+    from benchmarks.on_policy_decision_steering.adapter import BudgetGuard
+
+    budget_guard = BudgetGuard(max_budget_dollars=args.max_budget)
 
     if args.offline_validation:
         print(f"Executing Phase 1B Offline Validation (Dry-Run Mode) - Run ID: {run_id}")
         adapter = ModelRankingAdapter(
             provider="mock",
-            model_name="offline-mock-ranker",
+            model_name=args.model_name if args.model_name != "gpt-4o-mini" else "offline-mock-ranker",
+            reasoning_effort=args.reasoning_effort,
             dry_run=True,
+            budget_guard=budget_guard,
         )
     else:
         print(f"Executing Phase 1B Model Evaluation - Provider: {args.provider}, Model: {args.model_name}, Run ID: {run_id}")
@@ -220,7 +274,9 @@ def main():
             api_key_env_var=args.api_key_env_var,
             temperature=args.temperature,
             seed=args.seed,
+            reasoning_effort=args.reasoning_effort,
             dry_run=False,
+            budget_guard=budget_guard,
         )
 
     artifact = run_evaluation_suite(
@@ -229,6 +285,8 @@ def main():
         adapter=adapter,
         run_id=run_id,
         command_str=command_str,
+        scenario_count=args.scenario_count,
+        conditions_filter=conditions_filter,
     )
 
     out_dir = Path(args.output_dir) if args.output_dir else Path(f"benchmarks/on_policy_decision_steering/results/{run_id}")
