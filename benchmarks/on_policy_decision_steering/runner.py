@@ -12,6 +12,7 @@ from benchmarks.on_policy_decision_steering.models import (
     Scenario,
     TrialResult,
 )
+from benchmarks.on_policy_decision_steering.adapter import PROMPT_VERSION
 
 
 class RankingAgent(ABC):
@@ -277,6 +278,18 @@ class SteeringRunner:
                     execution_time_ms=exec_time_ms,
                 )
 
+            # Capture adapter metadata if available
+            model_id = getattr(self.agent, "model_name", getattr(self.agent, "model_id", None))
+            model_version = getattr(self.agent, "provider", None)
+            decoding_params = {
+                "temperature": getattr(self.agent, "temperature", None),
+                "seed": getattr(self.agent, "seed", None),
+            } if hasattr(self.agent, "temperature") else None
+            prompt_version = getattr(self.agent, "prompt_version", PROMPT_VERSION)
+            error_cat = getattr(self.agent, "last_error_category", None)
+            token_usage = getattr(self.agent, "last_token_usage", None)
+            raw_resp = getattr(self.agent, "last_response_raw", None)
+
             return TrialResult(
                 trial_id=trial_id,
                 scenario_id=scenario.scenario_id,
@@ -287,10 +300,28 @@ class SteeringRunner:
                 invalid_reason=None,
                 applied_intervention=condition.value,
                 execution_time_ms=exec_time_ms,
+                model_id=model_id,
+                model_version=model_version,
+                decoding_params=decoding_params,
+                prompt_version=prompt_version,
+                error_category=error_cat,
+                token_usage=token_usage,
+                raw_model_response=raw_resp,
             )
 
         except Exception as e:
             exec_time_ms = (time.perf_counter() - start_time) * 1000.0
+            model_id = getattr(self.agent, "model_name", getattr(self.agent, "model_id", None))
+            model_version = getattr(self.agent, "provider", None)
+            decoding_params = {
+                "temperature": getattr(self.agent, "temperature", None),
+                "seed": getattr(self.agent, "seed", None),
+            } if hasattr(self.agent, "temperature") else None
+            prompt_version = getattr(self.agent, "prompt_version", PROMPT_VERSION)
+            error_cat = getattr(self.agent, "last_error_category", "EXECUTION_EXCEPTION")
+            token_usage = getattr(self.agent, "last_token_usage", None)
+            raw_resp = getattr(self.agent, "last_response_raw", None)
+
             return TrialResult(
                 trial_id=trial_id,
                 scenario_id=scenario.scenario_id,
@@ -301,6 +332,13 @@ class SteeringRunner:
                 invalid_reason=f"Execution raised exception: {str(e)}",
                 applied_intervention=condition.value,
                 execution_time_ms=exec_time_ms,
+                model_id=model_id,
+                model_version=model_version,
+                decoding_params=decoding_params,
+                prompt_version=prompt_version,
+                error_category=error_cat,
+                token_usage=token_usage,
+                raw_model_response=raw_resp,
             )
 
     def run_paired_suite(

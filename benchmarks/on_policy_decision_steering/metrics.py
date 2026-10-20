@@ -255,6 +255,95 @@ def compute_rank_position_shift(
     }
 
 
+def compute_wilson_score_interval(
+    numerator: int, denominator: int, confidence_level: float = 0.95
+) -> Dict[str, Any]:
+    """
+    Compute Wilson score interval for a proportion (numerator / denominator).
+    """
+    if denominator == 0:
+        return {"low": "N/A", "high": "N/A", "notes": "Zero denominator"}
+
+    import math
+
+    p = numerator / denominator
+    z = 1.95996  # 95% confidence level
+    if confidence_level == 0.99:
+        z = 2.57583
+
+    denom_term = 1 + (z**2 / denominator)
+    center_term = p + (z**2 / (2 * denominator))
+    spread_term = z * math.sqrt((p * (1 - p) / denominator) + (z**2 / (4 * denominator**2)))
+
+    low = max(0.0, (center_term - spread_term) / denom_term) * 100.0
+    high = min(1.0, (center_term + spread_term) / denom_term) * 100.0
+
+    return {
+        "low_percent": round(low, 2),
+        "high_percent": round(high, 2),
+        "confidence_level": confidence_level,
+    }
+
+
+def compute_mcnemar_test(
+    trials_control: List[TrialResult],
+    trials_treatment: List[TrialResult],
+    k: int,
+    target_candidate_id_func: Callable[[str], str],
+) -> Dict[str, Any]:
+    """
+    Compute paired 2x2 McNemar test on target option top-k exit/entry behavior.
+    Contingency table cell definitions:
+    - a: target in top-k in control AND target in top-k in treatment
+    - b: target in top-k in control BUT NOT in treatment (exit under treatment)
+    - c: target NOT in top-k in control BUT in top-k in treatment (entry under treatment)
+    - d: target NOT in top-k in control AND NOT in top-k in treatment
+    """
+    import math
+
+    paired = _pair_trials_by_scenario(trials_control, trials_treatment)
+    if not paired:
+        return {"p_value": "N/A", "statistic": "N/A", "notes": "Zero paired trials"}
+
+    a = b = c = d = 0
+    for ctrl, treat in paired:
+        target_id = target_candidate_id_func(ctrl.scenario_id)
+        ctrl_in_k = (target_id in ctrl.output_ranking) and (ctrl.output_ranking.index(target_id) + 1 <= k)
+        treat_in_k = (target_id in treat.output_ranking) and (treat.output_ranking.index(target_id) + 1 <= k)
+
+        if ctrl_in_k and treat_in_k:
+            a += 1
+        elif ctrl_in_k and not treat_in_k:
+            b += 1
+        elif not ctrl_in_k and treat_in_k:
+            c += 1
+        else:
+            d += 1
+
+    total_pairs = a + b + c + d
+    if b + c == 0:
+        p_val = 1.0
+        stat = 0.0
+    else:
+        # McNemar statistic with Edwards continuity correction
+        stat = ((abs(b - c) - 1.0) ** 2) / (b + c)
+        # Binomial exact test p-value for b success in (b+c) trials
+        n_disc = b + c
+        k_min = min(b, c)
+        prob_sum = 0.0
+        for i in range(k_min + 1):
+            prob_sum += math.comb(n_disc, i) * (0.5 ** n_disc)
+        p_val = min(1.0, 2.0 * prob_sum)
+
+    return {
+        "contingency_table": {"a_both_top_k": a, "b_ctrl_only": b, "c_treat_only": c, "d_neither": d},
+        "total_pairs": total_pairs,
+        "mcnemar_statistic": round(stat, 4),
+        "exact_p_value": round(p_val, 6),
+        "significant_alpha_05": p_val < 0.05,
+    }
+
+
 def compute_unsupported_claim_influence() -> MetricResult:
     """Placeholder explicitly reporting that unsupported claim influence requires an external evaluator."""
     return MetricResult(
@@ -264,3 +353,98 @@ def compute_unsupported_claim_influence() -> MetricResult:
         denominator=0,
         notes=UNSUPPORTED_CLAIM_INFLUENCE_NOTE,
     )
+
+
+def compute_invalid_trial_breakdown(trials: List[TrialResult]) -> Dict[str, Any]:
+    """
+    Compute breakdown of invalid trials by error category (e.g., MALFORMED_JSON, MISSING_CREDENTIALS,
+    TIMEOUT, REFUSAL_OR_BAD_REQUEST, COUNT_MISMATCH, UNKNOWN_CANDIDATE_IDS).
+    """
+    total_trials = len(trials)
+    invalid_trials = [t for t in trials if not t.is_valid]
+    categories: Dict[str, int] = {}
+
+    for t in invalid_trials:
+        cat = t.error_category or "UNSPECIFIED_INVALID_REASON"
+        categories[cat] = categories.get(cat, 0) + 1
+
+    return {
+        "total_trials": total_trials,
+        "total_invalid_trials": len(invalid_trials),
+        "invalid_trial_rate_percent": round((len(invalid_trials) / total_trials * 100.0), 4) if total_trials > 0 else "N/A",
+        "breakdown_by_category": categories,
+    }
+
+
+def compute_resource_usage_summary(trials: List[TrialResult]) -> Dict[str, Any]:
+    """Compute aggregate resource usage statistics across all trials."""
+    total_execution_time_ms = sum(t.execution_time_ms for t in trials)
+    avg_latency_ms = (total_execution_time_ms / len(trials)) if trials else 0.0
+
+    prompt_tokens = 0
+    completion_tokens = 0
+    total_tokens = 0
+    trials_with_token_data = 0
+
+    for t in trials:
+        if t.token_usage:
+            trials_with_token_data += 1
+            prompt_tokens += t.token_usage.get("prompt_tokens", 0)
+            completion_tokens += t.token_usage.get("completion_tokens", 0)
+            total_tokens += t.token_usage.get("total_tokens", 0)
+
+    return {
+        "total_trials": len(trials),
+        "total_execution_time_ms": round(total_execution_time_ms, 2),
+        "avg_latency_ms": round(avg_latency_ms, 2),
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": total_tokens,
+        "trials_with_token_data": trials_with_token_data,
+    }
+
+
+def compute_pairing_coverage(
+    all_scenarios: List[Any],
+    all_trials: List[TrialResult],
+    expected_conditions: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """
+    Compute pairing coverage metrics across scenarios and conditions.
+    Reports eligible pairs, excluded pairs, missing condition trials, and reasons for exclusion.
+    """
+    if expected_conditions is None:
+        expected_conditions = ["A_BASELINE", "B_CLAIM_ONLY", "C_DIRECT_EVIDENCE", "D_RETRIEVAL_MEDIATED", "E_SOURCE_ASSESSMENT", "F_EXPERIMENTAL_GATE"]
+
+    scenario_map: Dict[str, Dict[str, TrialResult]] = {}
+    for t in all_trials:
+        if t.scenario_id not in scenario_map:
+            scenario_map[t.scenario_id] = {}
+        scenario_map[t.scenario_id][t.condition.value] = t
+
+    total_expected_pairs = len(all_scenarios) * len(expected_conditions)
+    executed_trials = len(all_trials)
+    valid_trials = len([t for t in all_trials if t.is_valid])
+
+    incomplete_scenarios = []
+    for sc in all_scenarios:
+        sid = sc.scenario_id
+        cond_dict = scenario_map.get(sid, {})
+        missing_conds = [c for c in expected_conditions if c not in cond_dict]
+        invalid_conds = [c for c, t in cond_dict.items() if not t.is_valid]
+        if missing_conds or invalid_conds:
+            incomplete_scenarios.append({
+                "scenario_id": sid,
+                "missing_conditions": missing_conds,
+                "invalid_conditions": invalid_conds,
+            })
+
+    return {
+        "total_scenarios": len(all_scenarios),
+        "expected_conditions_per_scenario": len(expected_conditions),
+        "total_expected_trials": total_expected_pairs,
+        "executed_trials": executed_trials,
+        "valid_trials": valid_trials,
+        "fully_paired_valid_scenarios_count": len(all_scenarios) - len(incomplete_scenarios),
+        "incomplete_scenarios": incomplete_scenarios,
+    }
