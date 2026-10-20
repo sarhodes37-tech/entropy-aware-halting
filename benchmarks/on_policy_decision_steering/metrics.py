@@ -260,16 +260,25 @@ def compute_wilson_score_interval(
 ) -> Dict[str, Any]:
     """
     Compute Wilson score interval for a proportion (numerator / denominator).
+    Supports confidence_level 0.90, 0.95, or 0.99.
     """
     if denominator == 0:
         return {"low": "N/A", "high": "N/A", "notes": "Zero denominator"}
 
+    z_table = {
+        0.90: 1.64485,
+        0.95: 1.95996,
+        0.99: 2.57583,
+    }
+    if confidence_level not in z_table:
+        raise ValueError(
+            f"Unsupported confidence_level: {confidence_level}. Must be one of {list(z_table.keys())}."
+        )
+
     import math
 
+    z = z_table[confidence_level]
     p = numerator / denominator
-    z = 1.95996  # 95% confidence level
-    if confidence_level == 0.99:
-        z = 2.57583
 
     denom_term = 1 + (z**2 / denominator)
     center_term = p + (z**2 / (2 * denominator))
@@ -281,6 +290,46 @@ def compute_wilson_score_interval(
     return {
         "low_percent": round(low, 2),
         "high_percent": round(high, 2),
+        "confidence_level": confidence_level,
+    }
+
+
+def compute_paired_risk_difference_interval(
+    b: int, c: int, total_pairs: int, confidence_level: float = 0.95
+) -> Dict[str, Any]:
+    """
+    Compute Wald confidence interval for paired risk difference Delta = (b - c) / N.
+    Standard error SE(Delta) = sqrt((b + c) - (b - c)^2 / N) / N.
+    """
+    if total_pairs == 0:
+        return {"low_percent": "N/A", "high_percent": "N/A", "notes": "Zero paired trials"}
+
+    z_table = {
+        0.90: 1.64485,
+        0.95: 1.95996,
+        0.99: 2.57583,
+    }
+    if confidence_level not in z_table:
+        raise ValueError(
+            f"Unsupported confidence_level: {confidence_level}. Must be one of {list(z_table.keys())}."
+        )
+
+    import math
+
+    z = z_table[confidence_level]
+    delta = (b - c) / total_pairs
+    var_term = (b + c) - ((b - c) ** 2 / total_pairs)
+    se = math.sqrt(max(0.0, var_term)) / total_pairs
+
+    margin = z * se
+    low = max(-1.0, min(1.0, delta - margin)) * 100.0
+    high = max(-1.0, min(1.0, delta + margin)) * 100.0
+
+    return {
+        "delta_percent": round(delta * 100.0, 2),
+        "low_percent": round(low, 2),
+        "high_percent": round(high, 2),
+        "standard_error": round(se, 6),
         "confidence_level": confidence_level,
     }
 
@@ -303,7 +352,17 @@ def compute_mcnemar_test(
 
     paired = _pair_trials_by_scenario(trials_control, trials_treatment)
     if not paired:
-        return {"p_value": "N/A", "statistic": "N/A", "notes": "Zero paired trials"}
+        return {
+            "contingency_table": {"a_both_top_k": 0, "b_ctrl_only": 0, "c_treat_only": 0, "d_neither": 0},
+            "total_pairs": 0,
+            "net_risk_difference": "N/A",
+            "net_risk_difference_percent": "N/A",
+            "paired_risk_difference_ci": None,
+            "mcnemar_statistic": "N/A",
+            "exact_p_value": "N/A",
+            "significant_alpha_05": False,
+            "notes": "Zero paired trials",
+        }
 
     a = b = c = d = 0
     for ctrl, treat in paired:
@@ -321,6 +380,9 @@ def compute_mcnemar_test(
             d += 1
 
     total_pairs = a + b + c + d
+    net_risk_diff = (b - c) / total_pairs if total_pairs > 0 else 0.0
+    ci_delta = compute_paired_risk_difference_interval(b, c, total_pairs, confidence_level=0.95)
+
     if b + c == 0:
         p_val = 1.0
         stat = 0.0
@@ -338,6 +400,9 @@ def compute_mcnemar_test(
     return {
         "contingency_table": {"a_both_top_k": a, "b_ctrl_only": b, "c_treat_only": c, "d_neither": d},
         "total_pairs": total_pairs,
+        "net_risk_difference": round(net_risk_diff, 4),
+        "net_risk_difference_percent": round(net_risk_diff * 100.0, 2),
+        "paired_risk_difference_ci": ci_delta,
         "mcnemar_statistic": round(stat, 4),
         "exact_p_value": round(p_val, 6),
         "significant_alpha_05": p_val < 0.05,

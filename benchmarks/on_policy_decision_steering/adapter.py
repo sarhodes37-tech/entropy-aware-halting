@@ -7,9 +7,12 @@ never logs secrets, and performs strict validation over returned candidate ranki
 
 import json
 import os
+import threading
 import time
 import urllib.error
 import urllib.request
+import uuid
+from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional, Tuple
 
 from benchmarks.on_policy_decision_steering.mock_retrieval import MockRetrievalTool
@@ -19,8 +22,101 @@ from benchmarks.on_policy_decision_steering.models import (
     RetrievalResult,
     Scenario,
 )
-from benchmarks.on_policy_decision_steering.models import Candidate, Condition, RetrievalResult, Scenario
-from abc import ABC, abstractmethod
+
+
+class BudgetExceededError(RuntimeError):
+    """Raised when pre-request reservation exceeds available run budget."""
+    pass
+
+
+class BudgetGuard:
+    """
+    Fail-closed local pre-request budget reservation guard.
+    Calculates upper-bound request cost estimates, reserves funds before API dispatch,
+    and reconciles reservations against actual reported provider usage.
+
+    Disclaimer: Enforces local client-side budget limits based on conservative token bounds.
+    It is not an absolute guarantee against provider-side billing discrepancies.
+    """
+
+    def __init__(
+        self,
+        max_budget_dollars: float = 2.00,
+        input_rate_per_million: float = 10.00,
+        output_rate_per_million: float = 30.00,
+        safety_reserve_dollars: float = 0.05,
+    ):
+        self.max_budget_dollars = max_budget_dollars
+        self.input_rate_per_million = input_rate_per_million
+        self.output_rate_per_million = output_rate_per_million
+        self.safety_reserve_dollars = safety_reserve_dollars
+
+        self._lock = threading.Lock()
+        self._total_spent_dollars = 0.0
+        self._active_reservations_dollars = 0.0
+
+    @property
+    def remaining_budget_dollars(self) -> float:
+        with self._lock:
+            return max(
+                0.0,
+                self.max_budget_dollars
+                - self._total_spent_dollars
+                - self._active_reservations_dollars
+                - self.safety_reserve_dollars,
+            )
+
+    @property
+    def total_spent_dollars(self) -> float:
+        with self._lock:
+            return round(self._total_spent_dollars, 6)
+
+    def estimate_request_cost(self, prompt_text: str, max_output_tokens: int) -> float:
+        """Calculate conservative upper bound cost estimate for a request."""
+        est_prompt_tokens = max(100, (len(prompt_text) // 3) + 200)
+        est_output_tokens = max(100, max_output_tokens)
+
+        cost_input = (est_prompt_tokens / 1_000_000.0) * self.input_rate_per_million
+        cost_output = (est_output_tokens / 1_000_000.0) * self.output_rate_per_million
+        return round(cost_input + cost_output, 6)
+
+    def reserve(self, estimated_cost: float) -> str:
+        """Reserve estimated funds before API dispatch. Raises BudgetExceededError if budget exceeded."""
+        with self._lock:
+            available = (
+                self.max_budget_dollars
+                - self._total_spent_dollars
+                - self._active_reservations_dollars
+                - self.safety_reserve_dollars
+            )
+            if estimated_cost > available:
+                raise BudgetExceededError(
+                    f"Pre-request budget check failed: Estimated cost ${estimated_cost:.4f} "
+                    f"exceeds remaining available budget ${available:.4f} "
+                    f"(Hard Limit: ${self.max_budget_dollars:.2f}, Spent: ${self._total_spent_dollars:.4f}, Reserved: ${self._active_reservations_dollars:.4f})."
+                )
+            reservation_id = f"res_{uuid.uuid4().hex[:8]}"
+            self._active_reservations_dollars += estimated_cost
+            return reservation_id
+
+    def reconcile(
+        self, reservation_id: str, estimated_cost: float, actual_usage: Optional[Dict[str, int]] = None
+    ) -> float:
+        """Reconcile reservation against actual reported usage cost."""
+        with self._lock:
+            self._active_reservations_dollars = max(0.0, self._active_reservations_dollars - estimated_cost)
+
+            if actual_usage is not None and isinstance(actual_usage, dict):
+                p_tok = actual_usage.get("prompt_tokens", 0)
+                c_tok = actual_usage.get("completion_tokens", 0)
+                actual_cost = (
+                    p_tok / 1_000_000.0
+                ) * self.input_rate_per_million + (c_tok / 1_000_000.0) * self.output_rate_per_million
+            else:
+                actual_cost = estimated_cost
+
+            self._total_spent_dollars += actual_cost
+            return round(actual_cost, 6)
 
 
 class RankingAgent(ABC):
@@ -72,10 +168,13 @@ def build_scenario_prompt(
     if condition == Condition.E_SOURCE_ASSESSMENT:
         system_prompt += SOURCE_ASSESSMENT_INSTRUCTION
 
+    task_text = scenario.task_description or scenario.description
     user_parts = [
-        f"Scenario Description: {scenario.description}",
-        f"Unfamiliar / Specialized Term in Evaluation: {scenario.unfamiliar_term}",
+        f"Task Description: {task_text}",
     ]
+
+    if condition != Condition.A_BASELINE:
+        user_parts.append(f"Unfamiliar / Specialized Term in Evaluation: {scenario.unfamiliar_term}")
 
     # Condition B: Claim only
     if condition == Condition.B_CLAIM_ONLY:
@@ -95,8 +194,9 @@ def build_scenario_prompt(
         user_parts.append("Retrieved Context:")
         if retrieved_results:
             for r in retrieved_results:
+                domains = ", ".join(r.origin_domains) if r.origin_domains else "unknown"
                 for passage in r.raw_passages:
-                    user_parts.append(f"- [Source Query: {r.query}] {passage}")
+                    user_parts.append(f"- [Domains: {domains}] {passage}")
         else:
             user_parts.append("- (No relevant context retrieved)")
 
@@ -111,7 +211,7 @@ def build_scenario_prompt(
         else:
             user_parts.append("- (No relevant context retrieved)")
 
-    # Condition F: Experimental gate adapter
+    # Condition F: Experimental gate adapter (Warning-Based Discounting)
     elif condition == Condition.F_EXPERIMENTAL_GATE:
         user_parts.append("Retrieved Context with Experimental Evidence Discount:")
         if gate_eval_result:
@@ -123,8 +223,11 @@ def build_scenario_prompt(
                 )
         if retrieved_results:
             for r in retrieved_results:
+                domains = ", ".join(r.origin_domains) if r.origin_domains else "unknown"
                 for passage in r.raw_passages:
-                    user_parts.append(f"- {passage}")
+                    user_parts.append(f"- [Domains: {domains}] {passage}")
+        else:
+            user_parts.append("- (No relevant context retrieved)")
 
     user_parts.append("\nCandidate Options to Rank:")
     for c in candidates:
@@ -139,7 +242,8 @@ def build_scenario_prompt(
 class ModelRankingAdapter(RankingAgent):
     """
     Model-backed ranking agent supporting OpenAI-compatible and Anthropic API endpoints.
-    Provides offline dry-run mode and strict response validation.
+    Supports GPT-6 reasoning models, reasoning_effort parameter, max_completion_tokens,
+    and fail-closed pre-request budget reservation via BudgetGuard.
     """
 
     def __init__(
@@ -151,9 +255,11 @@ class ModelRankingAdapter(RankingAgent):
         temperature: float = 0.0,
         seed: Optional[int] = 42,
         max_tokens: int = 500,
+        reasoning_effort: Optional[str] = None,
         timeout_seconds: float = 30.0,
         dry_run: bool = False,
         gate_adapter: Optional[Any] = None,
+        budget_guard: Optional[BudgetGuard] = None,
         mock_response_generator: Optional[Any] = None,
     ):
         self.provider = provider.lower()
@@ -167,6 +273,7 @@ class ModelRankingAdapter(RankingAgent):
         self.temperature = temperature
         self.seed = seed
         self.max_tokens = max_tokens
+        self.reasoning_effort = reasoning_effort
         self.timeout_seconds = timeout_seconds
         self.dry_run = dry_run
         if gate_adapter is None:
@@ -174,6 +281,7 @@ class ModelRankingAdapter(RankingAgent):
             self.gate_adapter = ExperimentalGateAdapter()
         else:
             self.gate_adapter = gate_adapter
+        self.budget_guard = budget_guard
         self.mock_response_generator = mock_response_generator
 
         # Last execution metadata captured per request
@@ -181,6 +289,8 @@ class ModelRankingAdapter(RankingAgent):
         self.last_error_category: Optional[str] = None
         self.last_token_usage: Optional[Dict[str, int]] = None
         self.last_execution_time_ms: float = 0.0
+        self.last_estimated_cost: Optional[float] = None
+        self.last_actual_cost: Optional[float] = None
 
     def _reset_metadata(self):
         self.last_response_raw = None
@@ -226,6 +336,13 @@ class ModelRankingAdapter(RankingAgent):
         if self.mock_response_generator:
             res_text = self.mock_response_generator()
             self.last_response_raw = res_text
+            self.last_token_usage = {"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120}
+            if self.budget_guard:
+                est = self.budget_guard.estimate_request_cost("dry_run_prompt", self.max_tokens)
+                res_id = self.budget_guard.reserve(est)
+                act = self.budget_guard.reconcile(res_id, est, self.last_token_usage)
+                self.last_estimated_cost = est
+                self.last_actual_cost = act
             return self._parse_and_validate_response(res_text, candidates)
 
         # Default dry-run behavior: return candidates sorted by baseline_rank
@@ -233,6 +350,12 @@ class ModelRankingAdapter(RankingAgent):
         ranking = [c.candidate_id for c in sorted_cands]
         self.last_response_raw = json.dumps({"ranking": ranking})
         self.last_token_usage = {"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120}
+        if self.budget_guard:
+            est = self.budget_guard.estimate_request_cost("dry_run_prompt", self.max_tokens)
+            res_id = self.budget_guard.reserve(est)
+            act = self.budget_guard.reconcile(res_id, est, self.last_token_usage)
+            self.last_estimated_cost = est
+            self.last_actual_cost = act
         return ranking
 
     def _call_model_api(
@@ -243,21 +366,47 @@ class ModelRankingAdapter(RankingAgent):
             self.last_error_category = "MISSING_CREDENTIALS"
             raise ValueError(f"API key environment variable '{self.api_key_env_var}' is not set.")
 
+        # Fail-closed pre-request budget reservation
+        reservation_id = None
+        est_cost = 0.0
+        if self.budget_guard:
+            est_cost = self.budget_guard.estimate_request_cost(system_prompt + user_prompt, self.max_tokens)
+            try:
+                reservation_id = self.budget_guard.reserve(est_cost)
+                self.last_estimated_cost = est_cost
+            except BudgetExceededError as e:
+                self.last_error_category = "BUDGET_EXCEEDED"
+                raise e
+
         headers = {"Content-Type": "application/json"}
+        is_reasoning_model = (
+            self.reasoning_effort is not None
+            or self.model_name.startswith("gpt-6")
+            or self.model_name.startswith("o1")
+            or self.model_name.startswith("o3")
+        )
+
         if self.provider == "openai":
             headers["Authorization"] = f"Bearer {api_key}"
-            payload = {
+            payload: Dict[str, Any] = {
                 "model": self.model_name,
                 "messages": [
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
                 ],
-                "temperature": self.temperature,
-                "max_tokens": self.max_tokens,
                 "response_format": {"type": "json_object"},
             }
-            if self.seed is not None:
-                payload["seed"] = self.seed
+
+            if is_reasoning_model:
+                payload["max_completion_tokens"] = self.max_tokens
+                if self.reasoning_effort:
+                    payload["reasoning_effort"] = self.reasoning_effort
+            else:
+                payload["max_tokens"] = self.max_tokens
+                payload["temperature"] = self.temperature
+                if self.seed is not None:
+                    payload["seed"] = self.seed
+
         elif self.provider == "anthropic":
             headers["x-api-key"] = api_key
             headers["anthropic-version"] = "2023-06-01"
@@ -299,10 +448,18 @@ class ModelRankingAdapter(RankingAgent):
                     "total_tokens": usage.get("input_tokens", 0) + usage.get("output_tokens", 0),
                 }
 
+            if self.budget_guard and reservation_id:
+                act_cost = self.budget_guard.reconcile(reservation_id, est_cost, self.last_token_usage)
+                self.last_actual_cost = act_cost
+
             return self._parse_and_validate_response(self.last_response_raw, candidates)
 
         except urllib.error.HTTPError as e:
             self.last_execution_time_ms = (time.perf_counter() - start_time) * 1000.0
+            if self.budget_guard and reservation_id:
+                act_cost = self.budget_guard.reconcile(reservation_id, est_cost, None)
+                self.last_actual_cost = act_cost
+
             if e.code == 429:
                 self.last_error_category = "RATE_LIMIT"
             elif e.code in (401, 403):
@@ -315,6 +472,10 @@ class ModelRankingAdapter(RankingAgent):
 
         except urllib.error.URLError as e:
             self.last_execution_time_ms = (time.perf_counter() - start_time) * 1000.0
+            if self.budget_guard and reservation_id:
+                act_cost = self.budget_guard.reconcile(reservation_id, est_cost, None)
+                self.last_actual_cost = act_cost
+
             if "timed out" in str(e.reason).lower():
                 self.last_error_category = "TIMEOUT"
             else:
@@ -323,6 +484,10 @@ class ModelRankingAdapter(RankingAgent):
 
         except Exception as e:
             self.last_execution_time_ms = (time.perf_counter() - start_time) * 1000.0
+            if self.budget_guard and reservation_id:
+                act_cost = self.budget_guard.reconcile(reservation_id, est_cost, None)
+                self.last_actual_cost = act_cost
+
             if self.last_error_category is None:
                 self.last_error_category = "UNHANDLED_MODEL_ERROR"
             raise e
