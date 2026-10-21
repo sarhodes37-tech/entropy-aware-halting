@@ -13,9 +13,16 @@ import hmac
 import hashlib
 import secrets
 import threading
+import functools
 from pathlib import Path
 from typing import Dict, Any, Optional, Set, Tuple
 from epistemicos.shower_curtain.detector import SensitivityCategory, DetectionResult
+
+
+@functools.lru_cache(maxsize=2048)
+def _get_placeholder_pattern(placeholder: str) -> re.Pattern:
+    """Compiles and caches word-boundary regex patterns for placeholders."""
+    return re.compile(r"\b" + re.escape(placeholder) + r"\b")
 
 
 class LocalMappingVault:
@@ -139,7 +146,7 @@ class LocalMappingVault:
             raw_value = reverse_map[placeholder]
             # Replace placeholder safely using regex word-boundary to prevent partial substring replacements.
             # Uses a lambda repl function to avoid regex backreference expansion/injection (e.g., \g<0> or \1) in raw_value.
-            pattern = re.compile(r"\b" + re.escape(placeholder) + r"\b")
+            pattern = _get_placeholder_pattern(placeholder)
             rehydrated = pattern.sub(lambda _: raw_value, rehydrated)
 
         return rehydrated
