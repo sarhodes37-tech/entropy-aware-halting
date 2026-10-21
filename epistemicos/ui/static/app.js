@@ -31,10 +31,32 @@ document.addEventListener('DOMContentLoaded', () => {
 
     bindEvents() {
       // Tab navigation
-      document.querySelectorAll('.nav-tab').forEach(tabBtn => {
+      const tabs = Array.from(document.querySelectorAll('.nav-tab'));
+      tabs.forEach((tabBtn, index) => {
         tabBtn.addEventListener('click', (e) => {
-          const tabName = e.target.getAttribute('data-tab');
+          const tabName = e.currentTarget.getAttribute('data-tab');
           this.switchTab(tabName);
+        });
+
+        tabBtn.addEventListener('keydown', (e) => {
+          let targetIndex = null;
+          if (e.key === 'ArrowRight') {
+            targetIndex = (index + 1) % tabs.length;
+          } else if (e.key === 'ArrowLeft') {
+            targetIndex = (index - 1 + tabs.length) % tabs.length;
+          } else if (e.key === 'Home') {
+            targetIndex = 0;
+          } else if (e.key === 'End') {
+            targetIndex = tabs.length - 1;
+          }
+
+          if (targetIndex !== null) {
+            e.preventDefault();
+            const targetTab = tabs[targetIndex];
+            const tabName = targetTab.getAttribute('data-tab');
+            this.switchTab(tabName);
+            targetTab.focus();
+          }
         });
       });
 
@@ -68,6 +90,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const isActive = btn.getAttribute('data-tab') === tabName;
         btn.classList.toggle('active', isActive);
         btn.setAttribute('aria-selected', isActive ? 'true' : 'false');
+        btn.setAttribute('tabindex', isActive ? '0' : '-1');
       });
       document.querySelectorAll('.view-panel').forEach(panel => {
         panel.classList.toggle('active', panel.id === `view-${tabName}`);
