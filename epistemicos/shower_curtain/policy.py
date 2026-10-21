@@ -7,7 +7,7 @@ models for governing how detected sensitive items are handled.
 
 from enum import Enum
 from dataclasses import dataclass, field
-from typing import Dict, Any, Optional, List, Callable
+from typing import Dict, Any, Optional, Callable
 from epistemicos.shower_curtain.detector import SensitivityCategory, DetectionResult
 
 
