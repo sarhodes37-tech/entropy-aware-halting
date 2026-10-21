@@ -21,16 +21,16 @@
       </div>
     </div>
     <nav class="nav-tabs" role="tablist" aria-label="Observatory Navigation">
-      <button class="nav-tab active" data-tab="overview" role="tab" aria-selected="true" aria-controls="view-overview">Overview</button>
-      <button class="nav-tab" data-tab="traces" role="tab" aria-selected="false" aria-controls="view-traces">Execution Traces</button>
-      <button class="nav-tab" data-tab="provenance" role="tab" aria-selected="false" aria-controls="view-provenance">Provenance Explorer</button>
-      <button class="nav-tab" data-tab="benchmarks" role="tab" aria-selected="false" aria-controls="view-benchmarks">Benchmark Workbench</button>
+      <button id="tab-overview" class="nav-tab active" data-tab="overview" role="tab" aria-selected="true" aria-controls="view-overview" tabindex="0">Overview</button>
+      <button id="tab-traces" class="nav-tab" data-tab="traces" role="tab" aria-selected="false" aria-controls="view-traces" tabindex="-1">Execution Traces</button>
+      <button id="tab-provenance" class="nav-tab" data-tab="provenance" role="tab" aria-selected="false" aria-controls="view-provenance" tabindex="-1">Provenance Explorer</button>
+      <button id="tab-benchmarks" class="nav-tab" data-tab="benchmarks" role="tab" aria-selected="false" aria-controls="view-benchmarks" tabindex="-1">Benchmark Workbench</button>
     </nav>
   </header>
 
   <main class="main-content">
     <!-- View 1: Overview -->
-    <section id="view-overview" class="view-panel active">
+    <section id="view-overview" class="view-panel active" role="tabpanel" aria-labelledby="tab-overview" tabindex="0">
       <div class="panel-header">
         <h2>System Executive Overview</h2>
         <button id="btn-refresh-overview" class="btn-refresh" aria-label="Refresh overview metrics"><span class="refresh-icon" aria-hidden="true">🔄</span> Refresh</button>
@@ -72,7 +72,7 @@
     </section>
 
     <!-- View 2: Execution Trace Explorer -->
-    <section id="view-traces" class="view-panel">
+    <section id="view-traces" class="view-panel" role="tabpanel" aria-labelledby="tab-traces" tabindex="0">
       <div class="panel-header">
         <h2>Execution Trace Explorer</h2>
         <div class="filter-controls">
@@ -103,7 +103,7 @@
     </section>
 
     <!-- View 3: Provenance Explorer -->
-    <section id="view-provenance" class="view-panel">
+    <section id="view-provenance" class="view-panel" role="tabpanel" aria-labelledby="tab-provenance" tabindex="0">
       <div class="panel-header">
         <h2>Provenance Chain Explorer</h2>
       </div>
@@ -145,7 +145,7 @@
     </section>
 
     <!-- View 4: Benchmark Workbench -->
-    <section id="view-benchmarks" class="view-panel">
+    <section id="view-benchmarks" class="view-panel" role="tabpanel" aria-labelledby="tab-benchmarks" tabindex="0">
       <div class="panel-header">
         <h2>Benchmark Workbench</h2>
       </div>
