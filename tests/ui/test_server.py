@@ -10,7 +10,7 @@ import time
 import pytest
 from http import HTTPStatus
 
-from epistemicos.ui.server import create_server
+from epistemicos.ui.server import create_server, _is_verbose_logging_enabled, ObservatoryRequestHandler
 from epistemicos.ui.adapters import ObservatoryDataAdapter
 
 
@@ -150,3 +150,45 @@ def test_static_file_error_handling_does_not_leak_exception_details(test_server,
     assert data["error"] == "Failed to read file"
     assert "/etc/shadow" not in body
     assert "Permission denied" not in body
+
+
+def test_verbose_logging_environment_variable_validation(monkeypatch):
+    """Verifies safe validation and parsing of the VERBOSE_OBSERVATORY environment variable."""
+    # Test truthy values
+    truthy_values = ["1", "true", "TRUE", " 1 ", "yes", "ON", "enabled"]
+    for val in truthy_values:
+        monkeypatch.setenv("VERBOSE_OBSERVATORY", val)
+        assert _is_verbose_logging_enabled() is True
+
+    # Test falsy / invalid values
+    falsy_values = ["0", "false", "FALSE", "", "2", "invalid", "no", "off"]
+    for val in falsy_values:
+        monkeypatch.setenv("VERBOSE_OBSERVATORY", val)
+        assert _is_verbose_logging_enabled() is False
+
+    # Test unset
+    monkeypatch.delenv("VERBOSE_OBSERVATORY", raising=False)
+    assert _is_verbose_logging_enabled() is False
+
+
+def test_log_message_behavior_with_verbose_env(monkeypatch):
+    """Verifies that log_message delegates to super class only when VERBOSE_OBSERVATORY is safely set."""
+    calls = []
+
+    def mock_super_log(self, format_str, *args):
+        calls.append((format_str, args))
+
+    monkeypatch.setattr("http.server.BaseHTTPRequestHandler.log_message", mock_super_log)
+
+    handler = ObservatoryRequestHandler.__new__(ObservatoryRequestHandler)
+
+    # When env is falsy
+    monkeypatch.setenv("VERBOSE_OBSERVATORY", "0")
+    handler.log_message("Test %s", "arg")
+    assert len(calls) == 0
+
+    # When env is truthy
+    monkeypatch.setenv("VERBOSE_OBSERVATORY", "1")
+    handler.log_message("Test %s", "arg")
+    assert len(calls) == 1
+    assert calls[0] == ("Test %s", ("arg",))

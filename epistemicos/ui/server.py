@@ -167,8 +167,20 @@ class ObservatoryRequestHandler(BaseHTTPRequestHandler):
 
     def log_message(self, format: str, *args: Any) -> None:
         """Suppress default stdout logging during tests unless running directly."""
-        if os.environ.get("VERBOSE_OBSERVATORY") == "1":
+        if _is_verbose_logging_enabled():
             super().log_message(format, *args)
+
+
+def _is_verbose_logging_enabled() -> bool:
+    """
+    Safely validate and parse the VERBOSE_OBSERVATORY environment variable.
+    Ensures input is a string, strips whitespace, normalizes case, and strictly matches allowed truthy values.
+    """
+    raw_val = os.environ.get("VERBOSE_OBSERVATORY")
+    if not isinstance(raw_val, str):
+        return False
+    clean_val = raw_val.strip().lower()
+    return clean_val in ("1", "true", "yes", "on", "enabled")
 
 
 def create_server(
