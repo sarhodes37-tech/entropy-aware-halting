@@ -119,3 +119,34 @@ def test_directory_traversal_prevention(test_server):
         with pytest.raises(urllib.error.HTTPError) as exc_info:
             urllib.request.urlopen(f"{test_server}{path}")
         assert exc_info.value.code in (HTTPStatus.BAD_REQUEST, HTTPStatus.FORBIDDEN, HTTPStatus.NOT_FOUND)
+
+
+def test_trace_lookup_sanitizes_credentials_in_error_response(test_server):
+    """Verifies that credentials in requested trace parameters are redacted in 404 responses."""
+    sensitive_param = "sk-123456789012345678901234"
+    with pytest.raises(urllib.error.HTTPError) as exc_info:
+        urllib.request.urlopen(f"{test_server}/api/trace/{sensitive_param}")
+
+    assert exc_info.value.code == HTTPStatus.NOT_FOUND
+    body = exc_info.value.read().decode("utf-8")
+    data = json.loads(body)
+    assert sensitive_param not in body
+    assert data["error"] == "Trace not found: sk-[REDACTED]"
+
+
+def test_static_file_error_handling_does_not_leak_exception_details(test_server, monkeypatch):
+    """Verifies that static file read errors return a generic message without leaking system details."""
+    def mock_open(*args, **kwargs):
+        raise PermissionError("[Errno 13] Permission denied: '/etc/shadow'")
+
+    monkeypatch.setattr("builtins.open", mock_open)
+
+    with pytest.raises(urllib.error.HTTPError) as exc_info:
+        urllib.request.urlopen(f"{test_server}/index.html")
+
+    assert exc_info.value.code == HTTPStatus.INTERNAL_SERVER_ERROR
+    body = exc_info.value.read().decode("utf-8")
+    data = json.loads(body)
+    assert data["error"] == "Failed to read file"
+    assert "/etc/shadow" not in body
+    assert "Permission denied" not in body

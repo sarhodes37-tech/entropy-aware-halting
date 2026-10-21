@@ -1,11 +1,11 @@
 # EpistemicOS Consolidated Security & Evaluation Evidence Report
 
-**Overall Status:** `PARTIAL` | **Generated:** 2026-10-19 18:11:45 UTC
+**Overall Status:** `PARTIAL` | **Generated:** 2026-10-21 02:31:37 UTC
 
 ## Reproducibility & Environment Metadata
-- **Evaluated Git Commit:** `5d2461ce4067b3616b5512ef79031005fd95600a`
+- **Evaluated Git Commit:** `4d52f458028a44bef89fb6c8fc9969127ca0d0c1`
 - **Working Tree Status:** `DIRTY`
-- **Working Tree Digest:** `c0e48f2928a0c552bebe4a89ae7e6ac09aa1a24c738762a4b53cfdd731179129`
+- **Working Tree Digest:** `5053c247739b9f2d0db9aa5245e9a5399aa19f2287e47bc64a9a6a6cff6f2f72`
 - **Dataset Version:** `1.0.0-frozen`
 - **Dataset SHA-256 Digest:** `f4e31381a922c1143769ccb887c4841e4a14fedec6eef6569d40eed2956ce873` (Verified: `True`)
 
@@ -13,7 +13,7 @@
 
 ## Layer A: Deterministic Regression
 - **Status:** `PASS`
-- **Test Command:** `/home/jules/.local/share/pipx/venvs/pytest/bin/python -m pytest tests/unit/test_evidence_architecture.py -k test_dataset_manifest_integrity -q --tb=no`
+- **Test Command:** `/home/jules/.pyenv/versions/3.12.13/bin/python3 -m pytest tests/unit/test_evidence_architecture.py -k test_dataset_manifest_integrity -q --tb=no`
 - **Summary:** .                                                                        [100%]
 
 ---
@@ -48,14 +48,14 @@
 
 ## Layer D: Performance & Cost Benchmarks
 - **Status:** `PASS`
-- **Run ID:** `run-l4-20261019181108-effc324e`
+- **Run ID:** `run-l4-20261021023057-fa401125`
 - **Dataset Digest:** `f4e31381a922c1143769ccb887c4841e4a14fedec6eef6569d40eed2956ce873`
-- **Run Records File SHA-256:** `182314bc7befd50259cd3b64ab8ae97243edfaa7ed0faf1d1a8068e85a92f1b8`
+- **Run Records File SHA-256:** `a3754fb7f7b2a7f8bb3d918be453b877ee339dc074bcb055e25c3e45869582e0`
 - **Sample Size:** N = 100
 - **Combined Gating Accuracy:** 100.0%
 - **Combined Gating Security Recall:** 100.0%
 - **Benign False Positive Rate:** 0.0%
-- **P95 Latency:** 30.257 ms
+- **P95 Latency:** 19.36 ms
 - **Total Tokens Spent:** 2000
 - **Mandatory Criteria Passed:** `True`
 

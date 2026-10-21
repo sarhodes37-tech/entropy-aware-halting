@@ -18,6 +18,7 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from typing import Optional, Dict, Any
 from urllib.parse import unquote
 
+from epistemicos.audit import _sanitize_sensitive_data
 from epistemicos.ui.adapters import ObservatoryDataAdapter
 
 
@@ -85,7 +86,9 @@ class ObservatoryRequestHandler(BaseHTTPRequestHandler):
             if trace:
                 self._send_json_response(trace)
             else:
-                self._send_json_response({"error": f"Trace not found: {corr_id}"}, status=HTTPStatus.NOT_FOUND)
+                # Sanitize requested ID to prevent leaking credentials or PII in URL parameters
+                sanitized_corr_id = _sanitize_sensitive_data(corr_id)
+                self._send_json_response({"error": f"Trace not found: {sanitized_corr_id}"}, status=HTTPStatus.NOT_FOUND)
         elif path == "/api/provenance":
             data = self.adapter.get_provenance_explorer_data()
             self._send_json_response(data)
@@ -132,8 +135,9 @@ class ObservatoryRequestHandler(BaseHTTPRequestHandler):
             self._set_security_headers(content_type, len(content))
             self.end_headers()
             self.wfile.write(content)
-        except Exception as e:
-            self._send_json_response({"error": f"Failed to read file: {str(e)}"}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+        except Exception:
+            # Do not leak internal exception details (str(e)) or filesystem paths to clients
+            self._send_json_response({"error": "Failed to read file"}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
 
     # -------------------------------------------------------------------------
     # Helper Response Methods
