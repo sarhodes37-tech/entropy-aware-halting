@@ -8,7 +8,7 @@ transmission to external AI providers. Defaults to fail-closed behavior.
 import time
 import json
 import hmac
-from typing import Dict, Any, List, Optional, Set
+from typing import Dict, Any, Optional
 from epistemicos.gates import Gate, GateAction, GateResult
 from epistemicos.shower_curtain.detector import SensitiveDataDetector, SensitivityCategory
 from epistemicos.shower_curtain.policy import PrivacyPolicy, PrivacyTreatment
