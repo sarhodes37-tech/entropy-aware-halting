@@ -57,6 +57,9 @@ def test_api_overview_route(test_server):
     assert req.status == HTTPStatus.OK
     assert req.headers.get("X-Frame-Options") == "DENY"
     assert req.headers.get("X-Content-Type-Options") == "nosniff"
+    assert req.headers.get("Referrer-Policy") == "no-referrer"
+    assert req.headers.get("Cache-Control") == "no-store, max-age=0"
+    assert req.headers.get("X-Permitted-Cross-Domain-Policies") == "none"
 
     data = json.loads(req.read().decode("utf-8"))
     assert "metrics" in data
@@ -96,8 +99,8 @@ def test_static_aria_accessibility_attributes():
 
 
 def test_read_only_method_restriction(test_server):
-    """Verifies that non-GET methods (POST, PUT, DELETE) are rejected with 405 Method Not Allowed."""
-    methods = ["POST", "PUT", "DELETE"]
+    """Verifies that non-GET methods (POST, PUT, DELETE, PATCH, HEAD, OPTIONS) are rejected with 405 Method Not Allowed."""
+    methods = ["POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"]
     for method in methods:
         req = urllib.request.Request(f"{test_server}/api/overview", method=method)
         with pytest.raises(urllib.error.HTTPError) as exc_info:
