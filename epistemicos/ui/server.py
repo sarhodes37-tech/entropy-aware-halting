@@ -67,6 +67,12 @@ class ObservatoryRequestHandler(BaseHTTPRequestHandler):
     def do_PATCH(self) -> None:
         self._send_method_not_allowed()
 
+    def do_HEAD(self) -> None:
+        self._send_method_not_allowed()
+
+    def do_OPTIONS(self) -> None:
+        self._send_method_not_allowed()
+
     # -------------------------------------------------------------------------
     # Route Handlers
     # -------------------------------------------------------------------------
@@ -160,6 +166,9 @@ class ObservatoryRequestHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(content_length))
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("Cache-Control", "no-store, max-age=0")
+        self.send_header("X-Permitted-Cross-Domain-Policies", "none")
         self.send_header(
             "Content-Security-Policy",
             "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:;"
