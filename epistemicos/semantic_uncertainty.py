@@ -21,7 +21,7 @@ import math
 import re
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, List, Optional, Sequence, Set, Tuple, Union
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 
 class SemanticUncertaintyStatus(str, Enum):
