@@ -73,6 +73,13 @@ document.addEventListener('DOMContentLoaded', () => {
           this.state.traceSearchQuery = e.target.value.toLowerCase().trim();
           this.renderTracesList();
         });
+        searchInput.addEventListener('keydown', (e) => {
+          if (e.key === 'Escape' && searchInput.value) {
+            searchInput.value = '';
+            this.state.traceSearchQuery = '';
+            this.renderTracesList();
+          }
+        });
       }
 
       const statusFilter = document.getElementById('trace-status-filter');
@@ -245,7 +252,35 @@ document.addEventListener('DOMContentLoaded', () => {
         const emptyLi = document.createElement('li');
         emptyLi.className = 'text-muted text-center';
         emptyLi.style.padding = '1rem';
-        emptyLi.textContent = 'No execution traces found.';
+
+        const hasFilters = this.state.traceSearchQuery || this.state.traceFilterStatus !== 'ALL';
+        if (hasFilters) {
+          const msgSpan = document.createElement('span');
+          msgSpan.style.display = 'block';
+          msgSpan.style.marginBottom = '0.5rem';
+          msgSpan.textContent = 'No execution traces match your active filter.';
+
+          const clearBtn = document.createElement('button');
+          clearBtn.type = 'button';
+          clearBtn.className = 'btn-refresh';
+          clearBtn.textContent = 'Clear Filters';
+          clearBtn.setAttribute('aria-label', 'Clear active search query and status filter');
+          clearBtn.addEventListener('click', () => {
+            this.state.traceSearchQuery = '';
+            this.state.traceFilterStatus = 'ALL';
+            const searchInput = document.getElementById('trace-search');
+            if (searchInput) searchInput.value = '';
+            const statusFilter = document.getElementById('trace-status-filter');
+            if (statusFilter) statusFilter.value = 'ALL';
+            this.renderTracesList();
+          });
+
+          emptyLi.appendChild(msgSpan);
+          emptyLi.appendChild(clearBtn);
+        } else {
+          emptyLi.textContent = 'No execution traces found.';
+        }
+
         traceListUl.appendChild(emptyLi);
         return;
       }
