@@ -13,11 +13,11 @@
         <span class="logo-icon" aria-hidden="true">🛡️</span>
         <div>
           <h1>EpistemicOS</h1>
-          <p class="subtitle">Control Plane Observatory (Read-Only Prototype)</p>
+          <p class="subtitle">Control Plane Observatory • Evidence & System Observability</p>
         </div>
       </div>
       <div class="read-only-badge">
-        <span class="indicator green"></span> Read-Only Control Plane
+        <span class="indicator" aria-hidden="true"></span> READ-ONLY CONTROL PLANE
       </div>
     </div>
     <nav class="nav-tabs" role="tablist" aria-label="Observatory Navigation">
@@ -39,37 +39,67 @@
         </div>
       </div>
 
+      <!-- Metrics Grid -->
       <div class="metrics-grid">
-        <div class="metric-card">
+        <div class="metric-card primary">
           <div class="metric-label">Total Executions</div>
           <div class="metric-value" id="metric-total-executions">--</div>
-          <div class="metric-subtext" id="subtext-total-executions">Derived from provenance correlation records</div>
+          <div class="metric-subtext" id="subtext-total-executions">Derived from LocalProvenanceStore correlation records</div>
         </div>
-        <div class="metric-card">
+        <div class="metric-card danger">
           <div class="metric-label">Authorization Denials</div>
           <div class="metric-value text-danger" id="metric-denials">--</div>
-          <div class="metric-subtext">AUTHORIZATION_DENIED events</div>
+          <div class="metric-subtext">Explicit AUTHORIZATION_DENIED events</div>
         </div>
-        <div class="metric-card">
+        <div class="metric-card warning">
           <div class="metric-label">Deterministic Halts</div>
           <div class="metric-value text-warning" id="metric-halts">--</div>
-          <div class="metric-subtext">Egress blocked / deterministic halts</div>
+          <div class="metric-subtext">Controlled egress blocks & gate halts</div>
         </div>
-        <div class="metric-card">
+        <div class="metric-card danger">
           <div class="metric-label">Execution Failures</div>
           <div class="metric-value text-danger" id="metric-failures">--</div>
-          <div class="metric-subtext">EXECUTION_FAILED / INTERRUPTED</div>
+          <div class="metric-subtext">EXECUTION_FAILED / INTERRUPTED states</div>
         </div>
       </div>
 
-      <div class="section-grid">
+      <!-- Verification & Integrity -->
+      <div class="section-grid mb-1">
         <div class="card">
+          <div class="card-header">Audit Trail Verification</div>
           <h3>Audit Log Health & Chain Integrity</h3>
           <div id="audit-integrity-status" class="status-block">Loading...</div>
         </div>
         <div class="card">
+          <div class="card-header">Provenance Verification</div>
           <h3>Provenance Store Chain Integrity</h3>
           <div id="provenance-integrity-status" class="status-block">Loading...</div>
+        </div>
+      </div>
+
+      <!-- Quick Investigation Navigation Shortcuts -->
+      <div class="card">
+        <div class="card-header">Investigative Shortcuts & Entry Points</div>
+        <p class="text-muted" style="font-size: 0.85rem; margin-bottom: 0.75rem;">
+          Quickly navigate to filtered evidence surfaces based on executive control plane metrics.
+        </p>
+        <div class="quick-entry-grid">
+          <button type="button" class="quick-entry-btn" data-jump-tab="traces" data-filter="DENIED">
+            <span>Inspect Denials</span>
+            <span class="arrow">➔</span>
+          </button>
+          <button type="button" class="quick-entry-btn" data-jump-tab="traces" data-filter="HALTED">
+            <span>Inspect Deterministic Halts</span>
+            <span class="arrow">➔</span>
+          </button>
+          <button type="button" class="quick-entry-btn" data-jump-tab="traces" data-filter="FAILED">
+            <span>Inspect Failures</span>
+            <span class="arrow">➔</span>
+          </button>
+          <button type="button" class="quick-entry-btn" data-jump-tab="provenance" data-filter="ALL">
+            <span>Inspect Provenance Hash Chain</span>
+            <span class="arrow">➔</span>
+          </button>
         </div>
       </div>
     </section>
@@ -79,7 +109,7 @@
       <div class="panel-header">
         <h2>Execution Trace Explorer</h2>
         <div class="filter-controls">
-          <input type="search" id="trace-search" placeholder="Search correlation / request ID..." class="input-search" aria-label="Search execution traces by correlation or request ID">
+          <input type="search" id="trace-search" placeholder="Search correlation / request ID / action..." class="input-search" aria-label="Search execution traces by correlation or request ID">
           <select id="trace-status-filter" class="select-filter" aria-label="Filter execution traces by status">
             <option value="ALL">All Statuses</option>
             <option value="COMPLETED">COMPLETED</option>
@@ -100,9 +130,12 @@
           <ul id="trace-list" class="trace-list"></ul>
         </div>
         <div class="trace-detail-container">
-          <div id="trace-detail-empty" class="empty-state">Select an execution trace to inspect lifecycle, gate decisions, authorization evidence, and reconciliation report.</div>
+          <div id="trace-detail-empty" class="empty-state">
+            <span style="font-size: 2rem;" aria-hidden="true">🔍</span>
+            <div>Select an execution trace from the list to inspect lifecycle timeline, gate decisions, authorization evidence, and reconciliation report.</div>
+          </div>
           <div id="trace-detail-content" class="trace-detail-content hidden">
-            <!-- Selected trace details injected via JavaScript -->
+            <!-- Selected trace details dynamically populated via app.js -->
           </div>
         </div>
       </div>
@@ -123,11 +156,13 @@
       </div>
 
       <div class="card mb-1">
-        <h3>Chain Status & Verification</h3>
+        <div class="card-header">Local Hash Chain Verification</div>
+        <h3>Chain Integrity Summary</h3>
         <div id="provenance-chain-summary" class="status-block">Loading...</div>
       </div>
 
       <div class="card">
+        <div class="card-header">Append-Only Audit Stream</div>
         <h3>Provenance Event Timeline</h3>
         <div class="table-responsive">
           <table class="data-table">
@@ -143,7 +178,7 @@
               </tr>
             </thead>
             <tbody id="provenance-events-tbody">
-              <tr><td colspan="7" class="text-center">Loading provenance events...</td></tr>
+              <tr><td colspan="7" class="text-center text-muted">Loading provenance events...</td></tr>
             </tbody>
           </table>
         </div>
@@ -157,6 +192,7 @@
       </div>
 
       <div class="card mb-1">
+        <div class="card-header">Baseline Evaluation Metrics</div>
         <h3>Baseline Condition Performance</h3>
         <div class="table-responsive">
           <table class="data-table">
@@ -172,7 +208,7 @@
               </tr>
             </thead>
             <tbody id="benchmark-baselines-tbody">
-              <tr><td colspan="7" class="text-center">Loading benchmark data...</td></tr>
+              <tr><td colspan="7" class="text-center text-muted">Loading benchmark baseline metrics...</td></tr>
             </tbody>
           </table>
         </div>
@@ -180,16 +216,19 @@
 
       <div class="section-grid mb-1">
         <div class="card">
+          <div class="card-header">Threshold Sensitivity Analysis</div>
           <h3>Threshold Ablations</h3>
-          <div id="threshold-ablations-container">Loading...</div>
+          <div id="threshold-ablations-container">Loading threshold ablations...</div>
         </div>
         <div class="card">
+          <div class="card-header">Security Observations</div>
           <h3>Security & Attribution Takeaways</h3>
-          <div id="attribution-container">Loading...</div>
+          <div id="attribution-container">Loading attribution takeaways...</div>
         </div>
       </div>
 
       <div class="card">
+        <div class="card-header">Case-Level Outcomes</div>
         <h3>Per-Case Evaluation Results</h3>
         <div class="table-responsive">
           <table class="data-table">
@@ -203,7 +242,7 @@
               </tr>
             </thead>
             <tbody id="benchmark-cases-tbody">
-              <tr><td colspan="5" class="text-center">Loading per-case outcomes...</td></tr>
+              <tr><td colspan="5" class="text-center text-muted">Loading per-case evaluation outcomes...</td></tr>
             </tbody>
           </table>
         </div>
