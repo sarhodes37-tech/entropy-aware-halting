@@ -240,7 +240,10 @@ class SyntheticAdversarialHarnessEvaluator:
                     audit_log_path=f"logs/test_audit_{corr_id}.jsonl"
                 )
                 orchestrator.gates = [
-                    PermissionGate(allowed_actions=sc["allowed_tools"]),
+                    PermissionGate(
+                        allowed_actions=sc["allowed_tools"],
+                        trusted_scope=sc["context"].get("trusted_scope")
+                    ),
                     EntropyGate(z_threshold=1.5, window_size=10),
                     TriangulationGate()
                 ]

@@ -75,19 +75,21 @@ def test_entropy_gate_missing_logprobs():
 # ==========================================
 
 def test_permission_gate():
-    gate = PermissionGate(contract_model=CanonicalProblemRepresentation)
-    
+    gate = PermissionGate(
+        contract_model=CanonicalProblemRepresentation,
+        trusted_scope={
+            "allowed_operations": ["update_db"],
+            "allowed_resources": ["logistics_db"]
+        }
+    )
+
     payload = {
         "policy_id": "POL-PERM-TEST"
     }
 
     valid_actions = [{"op": "update_db", "node": "logistics_db"}]
     context = {
-        "proposed_actions": valid_actions,
-        "trusted_scope": {
-            "allowed_operations": ["update_db"],
-            "allowed_resources": ["logistics_db"]
-        }
+        "proposed_actions": valid_actions
     }
     assert gate.evaluate(payload, context)["passed"] is True
 
@@ -106,28 +108,36 @@ def test_permission_gate_schema_violation():
 
 def test_permission_gate_scope_boundaries():
     """Validates rejections for unauthorized operations and resources."""
-    gate = PermissionGate(allowed_actions=["query", "read"])
+    gate_ops = PermissionGate(trusted_scope={"allowed_operations": ["query"], "allowed_resources": ["db"]})
     
     # Operation outside trusted_scope's allowed_operations
-    res_ops = gate.evaluate({}, {"trusted_scope": {"allowed_operations": ["query"]}, "proposed_actions": [{"op": "update_db", "node": "db"}]})
+    res_ops = gate_ops.evaluate({}, {"proposed_actions": [{"op": "update_db", "node": "db"}]})
     assert res_ops.passed is False
     assert "outside allowed scope operations" in res_ops.reason
 
     # Resource outside trusted_scope's allowed_resources
-    res_res = gate.evaluate({}, {"trusted_scope": {"allowed_resources": ["db1"]}, "proposed_actions": [{"op": "query", "node": "db2"}]})
+    gate_res = PermissionGate(trusted_scope={"allowed_operations": ["query"], "allowed_resources": ["db1"]})
+    res_res = gate_res.evaluate({}, {"proposed_actions": [{"op": "query", "node": "db2"}]})
     assert res_res.passed is False
     assert "outside allowed scope resources" in res_res.reason
     
     # Operation outside gate's base allowed_actions
-    res_base = gate.evaluate({}, {"trusted_scope": {}, "proposed_actions": [{"op": "drop_table", "node": "db1"}]})
+    gate_base = PermissionGate(allowed_actions=["query", "read"], trusted_scope={"allowed_operations": ["query", "read"], "allowed_resources": ["db1"]})
+    res_base = gate_base.evaluate({}, {"proposed_actions": [{"op": "drop_table", "node": "db1"}]})
     assert res_base.passed is False
-    assert "not in gate allowed_actions" in res_base.reason
+    assert "outside allowed scope operations" in res_base.reason
 
 
 def test_permission_gate_rmm_quarantine():
     """Validates state-mutating actions are blocked from RMM quarantine subnets."""
-    gate = PermissionGate()
-    context = {"trusted_scope": {"is_rmm_origin": True}, "proposed_actions": [{"op": "issue_binder", "node": "system"}]}
+    gate = PermissionGate(
+        trusted_scope={
+            "is_rmm_origin": True,
+            "allowed_operations": ["issue_binder"],
+            "allowed_resources": ["system"]
+        }
+    )
+    context = {"proposed_actions": [{"op": "issue_binder", "node": "system"}]}
     
     res = gate.evaluate({}, context)
     

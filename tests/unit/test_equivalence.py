@@ -282,6 +282,10 @@ def test_concurrency_state_isolation(tmp_path):
     """Verifies thread-safety and trajectory scheduler state isolation under concurrent workloads."""
     log_file = tmp_path / "concurrent_audit.jsonl"
     orchestrator = EpistemicOrchestrator(audit_log_path=str(log_file))
+    orchestrator.gates[0] = PermissionGate(trusted_scope={
+        "allowed_operations": ["read"],
+        "allowed_resources": ["logistics_db"]
+    })
 
     def process_thread_request(tid: int):
         payload = {
@@ -290,11 +294,7 @@ def test_concurrency_state_isolation(tmp_path):
         }
         context = {
             "token_logprobs": [-0.1] * 10,
-            "proposed_actions": [{"op": "read", "endpoint": "logistics_db"}],
-            "trusted_scope": {
-                "allowed_operations": ["read"],
-                "allowed_resources": ["logistics_db"]
-            }
+            "proposed_actions": [{"op": "read", "endpoint": "logistics_db"}]
         }
         res = orchestrator.process_submission(payload, context, trajectory_id=f"traj_{tid}")
         decision = orchestrator.process_step([0.25, 0.25, 0.25, 0.25], 1.0, f"state_{tid}", trajectory_id=f"traj_{tid}")

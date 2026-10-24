@@ -398,8 +398,10 @@ class EpistemicOrchestrator:
                 if self.authority and self.authority.default_policy is not None:
                     active_policy = self.authority.default_policy
                 else:
+                    # Policy must strictly originate from authoritative authority or server-controlled gate configuration.
+                    # Caller-supplied context["trusted_scope"] or payload overrides are strictly ignored.
                     gate_scope = getattr(self.gates[0], "trusted_scope", None) if self.gates else None
-                    raw_scope = gate_scope or context.get("trusted_scope") or {}
+                    raw_scope = gate_scope or {}
 
                     if hasattr(raw_scope, "model_dump"):
                         raw_scope_dict = raw_scope.model_dump()

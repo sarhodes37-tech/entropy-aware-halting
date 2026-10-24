@@ -953,7 +953,7 @@ def test_execute_protected_action_with_execution_context_keyword(tmp_path):
     digest = boundary.compute_canonical_digest(payload)
     corr_id = str(uuid.uuid4())
 
-    policy = Policy(policy_id="p1", allowed_operations={"UPDATE"}, allowed_resources={"policy-engine"})
+    policy = Policy(policy_id="p1", version="2.0.0", allowed_operations={"UPDATE"}, allowed_resources={"policy-engine"})
     cap, _ = boundary.authority.evaluate_and_issue_capability("UPDATE", "policy-engine", digest, correlation_id=corr_id, request_id="req-kw", executor_id="<lambda>", policy=policy)
 
     ctx = ExecutionContext(

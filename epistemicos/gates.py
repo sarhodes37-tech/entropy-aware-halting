@@ -580,15 +580,9 @@ class PermissionGate(ControlPlaneGate):
                     )
 
         # Security Hardening: Authorization Scope Resolution
-        # Priority: self.trusted_scope (gate config) > context.get("trusted_scope")
-        # Request-, payload-, or model-supplied scope fields are strictly ignored for authorization decisions.
-        trusted_scope_raw = (
-            self.trusted_scope
-            if self.trusted_scope is not None
-            else context.get("trusted_scope")
-            if context.get("trusted_scope") is not None
-            else None
-        )
+        # Scope is resolved strictly from self.trusted_scope (server-side gate configuration).
+        # Caller-, request-, payload-, or model-supplied scope fields are strictly ignored for authorization decisions.
+        trusted_scope_raw = self.trusted_scope
 
         if trusted_scope_raw is not None:
             if isinstance(trusted_scope_raw, dict):

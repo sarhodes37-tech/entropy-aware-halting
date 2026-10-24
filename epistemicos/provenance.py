@@ -343,7 +343,10 @@ class TrustedExecutionBoundary:
             action_name=action_name,
             target=target,
             canonical_request_digest=current_digest,
-            executor_id=executor_id
+            executor_id=executor_id,
+            correlation_id=corr_id,
+            request_id=req_id,
+            policy_version=pol_version
         )
         if not valid:
             raise PermissionError(f"Execution rejected: {cap_reason}")

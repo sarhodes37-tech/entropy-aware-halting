@@ -373,11 +373,16 @@ class AuthorizationAuthority:
         target: str,
         canonical_request_digest: str,
         executor_id: str,
+        principal_id: Optional[str] = None,
+        correlation_id: Optional[str] = None,
+        request_id: Optional[str] = None,
+        policy_version: Optional[str] = None,
         current_time: Optional[float] = None
     ) -> Tuple[bool, str, Optional[Capability]]:
         """
         Independently verifies a capability for the execution boundary.
-        Checks existence, signature, consumption, revocation, expiration, and strict field bindings.
+        Checks existence, signature, consumption, revocation, expiration, and strict field bindings
+        (action_name, target, canonical_request_digest, executor_id, principal_id, correlation_id, request_id, policy_version).
         Eliminates executor-binding wildcards (exact match required).
         """
         if not token_id or not isinstance(token_id, str):
@@ -414,5 +419,17 @@ class AuthorizationAuthority:
         # Strict executor binding without wildcards
         if cap.executor_id != executor_id:
             return False, f"CAPABILITY_VERIFICATION_FAILED_EXECUTOR_MISMATCH: granted '{cap.executor_id}', requested '{executor_id}'", cap
+
+        if principal_id is not None and cap.principal_id != principal_id:
+            return False, f"CAPABILITY_VERIFICATION_FAILED_PRINCIPAL_MISMATCH: granted '{cap.principal_id}', requested '{principal_id}'", cap
+
+        if correlation_id is not None and cap.correlation_id != correlation_id:
+            return False, f"CAPABILITY_VERIFICATION_FAILED_CORRELATION_ID_MISMATCH: granted '{cap.correlation_id}', requested '{correlation_id}'", cap
+
+        if request_id is not None and cap.request_id != request_id:
+            return False, f"CAPABILITY_VERIFICATION_FAILED_REQUEST_ID_MISMATCH: granted '{cap.request_id}', requested '{request_id}'", cap
+
+        if policy_version is not None and cap.policy_version != policy_version:
+            return False, f"CAPABILITY_VERIFICATION_FAILED_POLICY_VERSION_MISMATCH: granted '{cap.policy_version}', requested '{policy_version}'", cap
 
         return True, "CAPABILITY_VERIFIED", cap

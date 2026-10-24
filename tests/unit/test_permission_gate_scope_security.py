@@ -90,7 +90,7 @@ def test_untrusted_scope_conflicting_with_trusted_scope():
 
 def test_legitimate_request_authorized_by_trusted_scope():
     """
-    4. Legitimate request authorized by trusted scope (configured on gate or passed via context["trusted_scope"]).
+    4. Legitimate request authorized by trusted scope configured on gate instance.
     """
     # Legitimate authorization via gate trusted_scope
     gate = PermissionGate(trusted_scope={"allowed_operations": ["read_file"], "allowed_resources": ["doc1.txt"]})
@@ -102,10 +102,9 @@ def test_legitimate_request_authorized_by_trusted_scope():
     assert outcome.decision == GateDecision.ALLOW
     assert outcome.reason_code == "PERMISSION_SCOPE_VALIDATED"
 
-    # Legitimate authorization via context["trusted_scope"]
-    gate_dynamic = PermissionGate()
+    # Legitimate authorization via gate-configured trusted_scope
+    gate_dynamic = PermissionGate(trusted_scope={"allowed_operations": ["query_db"], "allowed_resources": ["users_table"]})
     context_dynamic = {
-        "trusted_scope": {"allowed_operations": ["query_db"], "allowed_resources": ["users_table"]},
         "proposed_actions": [{"op": "query_db", "node": "users_table"}]
     }
     outcome_dynamic = gate_dynamic.evaluate_contract(MagicMock(payload={}, context=context_dynamic))

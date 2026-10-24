@@ -314,6 +314,49 @@ def test_scenario_6_parameter_substitutions_rejected(tmp_path):
             executor_func=callback_substitute
         )
 
+    # 5. Correlation ID substitution
+    with pytest.raises(PermissionError, match="CORRELATION_ID_MISMATCH"):
+        boundary.execute_protected_action(
+            action_name="TRANSFER",
+            target="account_A",
+            request_payload=payload_orig,
+            correlation_id="corr-task-TAMPERED",
+            request_id="req-1",
+            authorization_token_id=cap.token_id,
+            authorized_digest=digest_orig,
+            authorization_granted=True,
+            executor_func=callback_original
+        )
+
+    # 6. Request ID substitution
+    with pytest.raises(PermissionError, match="REQUEST_ID_MISMATCH"):
+        boundary.execute_protected_action(
+            action_name="TRANSFER",
+            target="account_A",
+            request_payload=payload_orig,
+            correlation_id="corr-task-1",
+            request_id="req-TAMPERED",
+            authorization_token_id=cap.token_id,
+            authorized_digest=digest_orig,
+            authorization_granted=True,
+            executor_func=callback_original
+        )
+
+    # 7. Policy version substitution
+    with pytest.raises(PermissionError, match="POLICY_VERSION_MISMATCH"):
+        boundary.execute_protected_action(
+            action_name="TRANSFER",
+            target="account_A",
+            request_payload=payload_orig,
+            correlation_id="corr-task-1",
+            request_id="req-1",
+            authorization_token_id=cap.token_id,
+            authorized_digest=digest_orig,
+            authorization_granted=True,
+            executor_func=callback_original,
+            policy_version="9.9.9"
+        )
+
     assert callback_original.call_count == 0
     assert callback_substitute.call_count == 0
 

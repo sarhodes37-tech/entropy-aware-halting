@@ -22,16 +22,16 @@ def test_missing_provenance_store_fails_closed():
     """
     execution_callback = MagicMock(return_value={"status": "FORGED"})
     orchestrator = EpistemicOrchestrator()
+    orchestrator.gates[0] = PermissionGate(trusted_scope={
+        "allowed_operations": ["api_call"],
+        "allowed_resources": ["/issue_binder"]
+    })
     orchestrator.execution_boundary.store = None  # Store missing
 
     raw_payload = {"policy_id": "POL-2026-NO-STORE", "primary_metric": 100.0}
     context = {
         "proposed_actions": [{"action": {"op": "api_call", "endpoint": "/issue_binder"}}],
-        "actual_executable": execution_callback,
-        "trusted_scope": {
-            "allowed_operations": ["api_call"],
-            "allowed_resources": ["/issue_binder"]
-        }
+        "actual_executable": execution_callback
     }
 
     res = orchestrator.process_submission(raw_payload, context)
@@ -48,17 +48,17 @@ def test_unavailable_lookup_method_fails_closed():
     """
     execution_callback = MagicMock(return_value={"status": "FORGED"})
     orchestrator = EpistemicOrchestrator()
+    orchestrator.gates[0] = PermissionGate(trusted_scope={
+        "allowed_operations": ["api_call"],
+        "allowed_resources": ["/issue_binder"]
+    })
     # Mock store without get_events_for_correlation method
     orchestrator.execution_boundary.store = object()
 
     raw_payload = {"policy_id": "POL-2026-NO-METHOD", "primary_metric": 100.0}
     context = {
         "proposed_actions": [{"action": {"op": "api_call", "endpoint": "/issue_binder"}}],
-        "actual_executable": execution_callback,
-        "trusted_scope": {
-            "allowed_operations": ["api_call"],
-            "allowed_resources": ["/issue_binder"]
-        }
+        "actual_executable": execution_callback
     }
 
     res = orchestrator.process_submission(raw_payload, context)
@@ -74,17 +74,17 @@ def test_lookup_exception_fails_closed():
     """
     execution_callback = MagicMock(return_value={"status": "FORGED"})
     orchestrator = EpistemicOrchestrator()
+    orchestrator.gates[0] = PermissionGate(trusted_scope={
+        "allowed_operations": ["api_call"],
+        "allowed_resources": ["/issue_binder"]
+    })
     orchestrator.execution_boundary.store = MagicMock()
     orchestrator.execution_boundary.store.get_events_for_correlation.side_effect = RuntimeError("Database I/O error")
 
     raw_payload = {"policy_id": "POL-2026-IO-ERR", "primary_metric": 100.0}
     context = {
         "proposed_actions": [{"action": {"op": "api_call", "endpoint": "/issue_binder"}}],
-        "actual_executable": execution_callback,
-        "trusted_scope": {
-            "allowed_operations": ["api_call"],
-            "allowed_resources": ["/issue_binder"]
-        }
+        "actual_executable": execution_callback
     }
 
     res = orchestrator.process_submission(raw_payload, context)
