@@ -469,8 +469,10 @@ def test_partial_status_rejected_under_require_full_pass(valid_evidence_data, tm
     # Should pass without require_full_pass
     is_valid_pr, errors_pr = validate_evidence_artifact(str(artifact_file), require_full_pass=False, allow_local_constant_fallback=True, per_case_filepath=records_filepath)
     assert is_valid_pr is True
+    assert len(errors_pr) == 0
 
-    # Should fail with require_full_pass
-    is_valid_release, errors_release = validate_evidence_artifact(str(artifact_file), require_full_pass=True, allow_local_constant_fallback=True)
+    # Should fail specifically due to require_full_pass=True rejecting PARTIAL status
+    is_valid_release, errors_release = validate_evidence_artifact(str(artifact_file), require_full_pass=True, allow_local_constant_fallback=True, per_case_filepath=records_filepath)
     assert is_valid_release is False
-    assert any("Release Workflow Policy Failure" in err for err in errors_release)
+    assert len(errors_release) == 1
+    assert "Release Workflow Policy Failure" in errors_release[0]

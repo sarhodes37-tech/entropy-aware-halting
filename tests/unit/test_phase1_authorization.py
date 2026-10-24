@@ -702,7 +702,7 @@ def test_human_approval_signature_and_binding_validations():
 # =====================================================================
 # Resource Policy Regression Tests
 # =====================================================================
-def test_resource_policy_omitted_empty_restricted_wildcard():
+def test_resource_policy_omitted_empty_restricted_wildcard(tmp_path):
     # 1. Omitted allowed_resources (set()) -> fails closed
     p_omitted = Policy(policy_id="omitted", allowed_operations={"op1"})
     assert p_omitted.is_target_allowed("res1") is False
@@ -712,11 +712,35 @@ def test_resource_policy_omitted_empty_restricted_wildcard():
     assert p_empty.is_target_allowed("res1") is False
 
     # 3. Restricted allowed_resources -> permits exact resource, rejects others
-    p_restricted = Policy(policy_id="restricted", allowed_operations={"op1"}, allowed_resources={"res1"})
-    assert p_restricted.is_target_allowed("res1") is True
-    assert p_restricted.is_target_allowed("res2") is False
+    p_restricted = Policy(policy_id="restricted", allowed_operations={"op1"}, allowed_resources={"/specific_resource"})
+    assert p_restricted.is_target_allowed("/specific_resource") is True
+    assert p_restricted.is_target_allowed("/other_resource") is False
 
-    # 4. Explicitly wildcarded allowed_resources -> permits any resource
+    # 4. Negative Orchestrator Test: Permitted operation against unauthorized target is denied
+    auth_restricted = AuthorizationAuthority(default_policy=p_restricted)
+    orch_restricted = EpistemicOrchestrator(
+        audit_log_path=str(tmp_path / "audit.jsonl"),
+        authority=auth_restricted
+    )
+    orch_restricted.gates[0] = PermissionGate(
+        trusted_scope={
+            "allowed_operations": ["op1"],
+            "allowed_resources": ["/specific_resource"]
+        }
+    )
+    raw_payload = {"policy_id": "POL-RESTRICTED", "primary_metric": 100.0}
+    context_unauthorized_target = {
+        "action_name": "op1",
+        "target": "/other_resource",
+        "proposed_actions": [{"op": "op1", "endpoint": "/other_resource"}],
+        "actual_executable": lambda: {"status": "SUCCESS"}
+    }
+    res_unauth = orch_restricted.process_submission(raw_payload, context_unauthorized_target)
+    assert res_unauth["status"] == "HALTED"
+    assert res_unauth["gate"] == "PermissionGate"
+    assert "outside allowed scope resources" in res_unauth["reason"]
+
+    # 5. Explicitly wildcarded allowed_resources -> permits any resource
     p_wildcard = Policy(policy_id="wildcard", allowed_operations={"op1"}, allowed_resources={"*"})
     assert p_wildcard.is_target_allowed("res1") is True
     assert p_wildcard.is_target_allowed("res2") is True

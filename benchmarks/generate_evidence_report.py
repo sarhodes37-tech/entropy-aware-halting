@@ -51,7 +51,7 @@ def run_layer_a_deterministic_tests(fast_mode: bool = False) -> Dict[str, Any]:
 
     pytest_bin = "pytest"
     if not env.get("PYTHONPATH"):
-        env["PYTHONPATH"] = f"{PROJECT_ROOT}:/home/jules/.pyenv/versions/3.12.13/lib/python3.12/site-packages"
+        env["PYTHONPATH"] = os.pathsep.join([PROJECT_ROOT] + [p for p in sys.path if p])
 
     cmd = [sys.executable, "-m", "pytest", *test_targets, "-q", "--tb=no"]
 
