@@ -100,6 +100,8 @@ def test_static_aria_accessibility_attributes():
     assert 'aria-labelledby="tab-overview"' in content
     assert 'id="tab-overview"' in content
     assert 'tabindex="0"' in content
+    assert 'id="overview-last-updated"' in content
+    assert 'aria-live="polite"' in content
 
 
 def test_read_only_method_restriction(test_server):

@@ -392,6 +392,18 @@ h2 {
   font-family: monospace;
 }
 
+/* Header Actions & Last Updated */
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.last-updated-text {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
 /* Form inputs */
 .btn-refresh {
   background-color: var(--bg-hover);

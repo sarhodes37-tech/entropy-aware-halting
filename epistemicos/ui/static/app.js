@@ -148,6 +148,12 @@ document.addEventListener('DOMContentLoaded', () => {
       const data = this.state.overviewData;
       if (!data) return;
 
+      const updatedEl = document.getElementById('overview-last-updated');
+      if (updatedEl) {
+        const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        updatedEl.textContent = `Updated at ${timeStr}`;
+      }
+
       const m = data.metrics || {};
       this.setText('metric-total-executions', m.total_executions !== null ? m.total_executions : 'UNAVAILABLE');
       this.setText('metric-denials', m.authorization_denials !== null ? m.authorization_denials : 'UNAVAILABLE');
@@ -204,6 +210,11 @@ document.addEventListener('DOMContentLoaded', () => {
       this.setText('metric-denials', 'ERROR');
       this.setText('metric-halts', 'ERROR');
       this.setText('metric-failures', 'ERROR');
+
+      const updatedEl = document.getElementById('overview-last-updated');
+      if (updatedEl) {
+        updatedEl.textContent = 'Update failed';
+      }
     },
 
     // -------------------------------------------------------------------------
