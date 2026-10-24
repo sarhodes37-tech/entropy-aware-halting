@@ -92,6 +92,9 @@ def test_static_aria_accessibility_attributes():
     assert 'class="refresh-icon" aria-hidden="true"' in content
     assert 'aria-label="Search execution traces by correlation or request ID"' in content
     assert 'aria-label="Filter execution traces by status"' in content
+    assert 'id="trace-count"' in content
+    assert 'aria-live="polite"' in content
+    assert 'aria-atomic="true"' in content
     assert 'role="tabpanel"' in content
     assert 'aria-labelledby="tab-overview"' in content
     assert 'id="tab-overview"' in content

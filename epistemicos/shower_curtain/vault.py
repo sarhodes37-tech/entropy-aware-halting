@@ -14,6 +14,7 @@ import threading
 import functools
 from pathlib import Path
 from typing import Dict, Optional, Set
+from typing import Dict, Any, Optional, Set
 from epistemicos.shower_curtain.detector import SensitivityCategory, DetectionResult
 
 
