@@ -1,11 +1,11 @@
 # EpistemicOS Consolidated Security & Evaluation Evidence Report
 
-**Overall Status:** `PARTIAL` | **Generated:** 2026-10-24 10:34:24 UTC
+**Overall Status:** `PARTIAL` | **Generated:** 2026-10-24 15:09:40 UTC
 
 ## Reproducibility & Environment Metadata
-- **Evaluated Git Commit:** `78b6ddbfadc22dbddf41e00f6e073e7214eceeef`
+- **Evaluated Git Commit:** `ed1f275d8587e8b532368a879ffcc8a4f65fd184`
 - **Working Tree Status:** `DIRTY`
-- **Working Tree Digest:** `866eab77fba80e6353a6df6fef20a9074c0b0a13b2a75dba4548fbc73ab61372`
+- **Working Tree Digest:** `8dd40609166073245d944f46b2ac7ab5d13a404483096bb9995e249e1b0379d8`
 - **Dataset Version:** `1.0.0-frozen`
 - **Dataset SHA-256 Digest:** `f4e31381a922c1143769ccb887c4841e4a14fedec6eef6569d40eed2956ce873` (Verified: `True`)
 
@@ -13,7 +13,7 @@
 
 ## Layer A: Deterministic Regression
 - **Status:** `PASS`
-- **Test Command:** `pytest tests/unit/test_evidence_architecture.py -k test_dataset_manifest_integrity -q --tb=no`
+- **Test Command:** `/home/jules/.local/share/pipx/venvs/pytest/bin/python -m pytest tests/unit/test_evidence_architecture.py -k test_dataset_manifest_integrity -q --tb=no`
 - **Summary:** .                                                                        [100%]
 
 ---
@@ -48,14 +48,14 @@
 
 ## Layer D: Performance & Cost Benchmarks
 - **Status:** `PASS`
-- **Run ID:** `run-l4-20261024082217-96ec4360`
+- **Run ID:** `run-l4-20261024150859-ac80752f`
 - **Dataset Digest:** `f4e31381a922c1143769ccb887c4841e4a14fedec6eef6569d40eed2956ce873`
-- **Run Records File SHA-256:** `7206ce3c48ccb0daba2ceef511fc0d72b74114e5e81da069305e1a897462a7a2`
+- **Run Records File SHA-256:** `cae7fe7858fa11386b34ccd434857c14fb5373534c54b8e80ef641309ea23eec`
 - **Sample Size:** N = 100
 - **Combined Gating Accuracy:** 100.0%
 - **Combined Gating Security Recall:** 100.0%
 - **Benign False Positive Rate:** 0.0%
-- **P95 Latency:** 864.743 ms
+- **P95 Latency:** 29.208 ms
 - **Total Tokens Spent:** 2000
 - **Mandatory Criteria Passed:** `True`
 
