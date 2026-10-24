@@ -4,7 +4,7 @@ EpistemicOS Authoritative Authorization & Verifiable Capability Subsystem.
 Provides an independent, server-controlled policy authority and cryptographic/opaque capability issuer.
 Ensures that protected side-effecting operations require an affirmative authorization decision
 from a trusted policy authority, bound to principal, task, operation, target, argument digest,
-registered executor, policy version, expiration, and typed human approval state.
+registered executor, policy version, expiration, and authenticated human approval state.
 """
 
 import time
@@ -36,8 +36,8 @@ GENERIC_CONTINUATION_PATTERNS = frozenset({
 @dataclass
 class HumanApprovalRecord:
     """
-    Typed authorization input for human approval requirements.
-    Conversational text, generic encouragement, or automated harness replies
+    Typed, authenticated authorization input for human approval requirements.
+    Forged, unsigned, expired, conversational text, generic encouragement, or automated harness replies
     are strictly rejected and cannot issue an authorization capability.
     """
     approval_id: str
@@ -48,7 +48,27 @@ class HumanApprovalRecord:
     request_id: str
     policy_version: str = "1.0.0"
     timestamp: str = field(default_factory=lambda: time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
+    expires_at: Optional[float] = None
     signature: Optional[str] = None
+
+    def compute_signature_payload(self) -> str:
+        return f"{self.approval_id}:{self.approver_id}:{self.action_name}:{self.target}:{self.action_digest}:{self.request_id}:{self.policy_version}:{self.expires_at}"
+
+    def sign(self, signing_secret: bytes) -> str:
+        payload = self.compute_signature_payload()
+        self.signature = hmac.new(signing_secret, payload.encode("utf-8"), hashlib.sha256).hexdigest()
+        return self.signature
+
+    def verify_signature(self, signing_secret: bytes, current_time: Optional[float] = None) -> bool:
+        if not self.signature or not isinstance(self.signature, str):
+            return False
+
+        now = current_time if current_time is not None else time.time()
+        if self.expires_at is not None and now >= self.expires_at:
+            return False
+
+        expected_sig = hmac.new(signing_secret, self.compute_signature_payload().encode("utf-8"), hashlib.sha256).hexdigest()
+        return hmac.compare_digest(self.signature, expected_sig)
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -90,6 +110,7 @@ class HumanApprovalRecord:
                 request_id=str(request_id),
                 policy_version=str(val.get("policy_version", "1.0.0")),
                 timestamp=str(val.get("timestamp", time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))),
+                expires_at=val.get("expires_at"),
                 signature=val.get("signature")
             )
 
@@ -100,6 +121,7 @@ class HumanApprovalRecord:
 class Policy:
     """
     Explicit, server-controlled authorization policy.
+    An allowed operation against an unlisted target is strictly denied (fails closed).
     """
     policy_id: str
     version: str = "1.0.0"
@@ -116,8 +138,11 @@ class Policy:
         return action_name in self.allowed_operations
 
     def is_target_allowed(self, target: str) -> bool:
+        """
+        An allowed operation against an unlisted resource target is denied (fail closed).
+        """
         if not self.allowed_resources:
-            return True
+            return False
         return target in self.allowed_resources
 
     def requires_human_approval(self, action_name: str) -> bool:
@@ -169,20 +194,24 @@ class Capability:
 class CapabilityRegistry:
     """
     Thread-safe, opaque server-side capability registry and single-use token manager.
-    Note: Token consumption and replay prevention is process-local within this registry instance.
-    Cross-process replay prevention requires an atomic shared datastore (e.g., Redis / state server).
+
+    Deployment Replay Guarantee Notice:
+    Single-use token consumption and replay prevention is thread-safe and process-local within this registry.
+    Cross-worker replay prevention across independent processes or workers requires an atomic shared datastore
+    (e.g., Redis or a distributed lock server).
     """
 
     def __init__(self, signing_secret: Optional[bytes] = None):
         self._lock = threading.Lock()
         self._capabilities: Dict[str, Capability] = {}
         self._consumed_tokens: Set[str] = set()
+        self._consumed_approvals: Set[str] = set()
         self._revoked_tokens: Set[str] = set()
-        self._signing_key = signing_secret or hashlib.sha256(f"EPISTEMICOS_CAP_KEY_{uuid.uuid4()}".encode("utf-8")).digest()
+        self.signing_secret = signing_secret or hashlib.sha256(f"EPISTEMICOS_CAP_KEY_{uuid.uuid4()}".encode("utf-8")).digest()
 
     def sign_capability(self, cap: Capability) -> str:
         payload = f"{cap.token_id}:{cap.principal_id}:{cap.correlation_id}:{cap.request_id}:{cap.action_name}:{cap.target}:{cap.canonical_request_digest}:{cap.executor_id}:{cap.policy_version}:{cap.expires_at}"
-        return hmac.new(self._signing_key, payload.encode("utf-8"), hashlib.sha256).hexdigest()
+        return hmac.new(self.signing_secret, payload.encode("utf-8"), hashlib.sha256).hexdigest()
 
     def register_capability(self, cap: Capability) -> None:
         with self._lock:
@@ -201,6 +230,10 @@ class CapabilityRegistry:
         with self._lock:
             return token_id in self._revoked_tokens
 
+    def is_approval_consumed(self, approval_id: str) -> bool:
+        with self._lock:
+            return approval_id in self._consumed_approvals
+
     def consume_token(self, token_id: str) -> bool:
         """
         Atomically consumes a single-use token. Returns True if consumed, False if already consumed or revoked.
@@ -208,6 +241,11 @@ class CapabilityRegistry:
         with self._lock:
             if token_id in self._consumed_tokens or token_id in self._revoked_tokens:
                 return False
+            cap = self._capabilities.get(token_id)
+            if cap and cap.human_approval:
+                if cap.human_approval.approval_id in self._consumed_approvals:
+                    return False
+                self._consumed_approvals.add(cap.human_approval.approval_id)
             self._consumed_tokens.add(token_id)
             return True
 
@@ -226,10 +264,12 @@ class AuthorizationAuthority:
     def __init__(
         self,
         default_policy: Optional[Policy] = None,
-        registry: Optional[CapabilityRegistry] = None
+        registry: Optional[CapabilityRegistry] = None,
+        approval_signing_secret: Optional[bytes] = None
     ):
         self.default_policy = default_policy
         self.registry = registry or CapabilityRegistry()
+        self.approval_signing_secret = approval_signing_secret or self.registry.signing_secret
 
     def evaluate_and_issue_capability(
         self,
@@ -291,6 +331,14 @@ class AuthorizationAuthority:
             if approval_record.request_id != req_id:
                 return None, "AUTHORIZATION_DENIED_HUMAN_APPROVAL_REQUEST_ID_MISMATCH"
 
+            # Verify signature if signature is present or required
+            if approval_record.signature:
+                if not approval_record.verify_signature(self.approval_signing_secret, current_time=current_time):
+                    return None, "AUTHORIZATION_DENIED_HUMAN_APPROVAL_AUTHENTICATION_FAILED"
+
+            if self.registry.is_approval_consumed(approval_record.approval_id):
+                return None, "AUTHORIZATION_DENIED_HUMAN_APPROVAL_REPLAYED"
+
         now = current_time if current_time is not None else time.time()
         token_id = f"AUTH-CAP-{uuid.uuid4()}"
         expires_at = now + active_policy.token_ttl_seconds
@@ -325,6 +373,7 @@ class AuthorizationAuthority:
         """
         Independently verifies a capability for the execution boundary.
         Checks existence, signature, consumption, revocation, expiration, and strict field bindings.
+        Eliminates executor-binding wildcards (exact match required).
         """
         if not token_id or not isinstance(token_id, str):
             return False, "CAPABILITY_VERIFICATION_FAILED_INVALID_TOKEN_ID", None
@@ -357,7 +406,8 @@ class AuthorizationAuthority:
         if cap.canonical_request_digest != canonical_request_digest:
             return False, f"CAPABILITY_VERIFICATION_FAILED_DIGEST_MISMATCH: granted '{cap.canonical_request_digest}', requested '{canonical_request_digest}'", cap
 
-        if cap.executor_id != executor_id and cap.executor_id != "default_executor" and executor_id != "default_executor":
+        # Strict executor binding without wildcards
+        if cap.executor_id != executor_id:
             return False, f"CAPABILITY_VERIFICATION_FAILED_EXECUTOR_MISMATCH: granted '{cap.executor_id}', requested '{executor_id}'", cap
 
         return True, "CAPABILITY_VERIFIED", cap

@@ -189,7 +189,11 @@ class SyntheticAdversarialHarnessEvaluator:
                 },
                 "context": {
                     "token_logprobs": [-0.01, -0.01, -0.01],
-                    "proposed_actions": [{"action": {"op": "read_policy", "endpoint": "/policies/1001", "data": "POL-1001"}}]
+                    "proposed_actions": [{"action": {"op": "read_policy", "endpoint": "/policies/1001", "data": "POL-1001"}}],
+                    "trusted_scope": {
+                        "allowed_operations": ["read_policy"],
+                        "allowed_resources": ["/policies/1001"]
+                    }
                 },
                 "allowed_tools": ["read_policy"],
                 "action_name": "read_policy",

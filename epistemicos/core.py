@@ -431,7 +431,7 @@ class EpistemicOrchestrator:
                                 required_human_approval_operations=req_human
                             )
                         else:
-                            active_policy = self.authority.default_policy
+                            active_policy = None
 
                 # Evaluate against AuthorizationAuthority and issue capability
                 executor_id = getattr(exec_func, "__name__", str(exec_func)) if exec_func else "default_executor"
