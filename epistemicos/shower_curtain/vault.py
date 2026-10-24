@@ -6,15 +6,14 @@ entity substitution and authorized rehydration while strictly prohibiting
 credentials and preventing cross-session correlation.
 """
 
-import os
 import re
-import json
 import hmac
 import hashlib
 import secrets
 import threading
 import functools
 from pathlib import Path
+from typing import Dict, Optional, Set
 from typing import Dict, Any, Optional, Set
 from epistemicos.shower_curtain.detector import SensitivityCategory, DetectionResult
 
