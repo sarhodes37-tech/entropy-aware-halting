@@ -34,7 +34,7 @@ class RegisteredActionDefinition:
     category: ActionCategory
     description: str
     requires_human_approval: bool = False
-    allowed_resources: Set[str] = field(default_factory=set)
+    allowed_resources: Set[str] = field(default_factory=lambda: {"*"})
     is_externally_consequential: bool = False
 
 
@@ -63,6 +63,7 @@ class ActionRegistry:
             category=ActionCategory.READ_ONLY_LOCAL,
             description="Read-only operations on an expressly in-scope local/test resource",
             requires_human_approval=False,
+            allowed_resources={"*"},
             is_externally_consequential=False
         ),
         "network_read": RegisteredActionDefinition(
@@ -70,6 +71,7 @@ class ActionRegistry:
             category=ActionCategory.NETWORK_READ,
             description="Network reads against explicitly approved hosts",
             requires_human_approval=False,
+            allowed_resources={"*"},
             is_externally_consequential=False
         ),
         "external_recon": RegisteredActionDefinition(
@@ -77,6 +79,7 @@ class ActionRegistry:
             category=ActionCategory.EXTERNAL_RECONNAISSANCE,
             description="Reconnaissance or access against a newly discovered external target",
             requires_human_approval=True,
+            allowed_resources={"*"},
             is_externally_consequential=True
         ),
         "account_creation": RegisteredActionDefinition(
@@ -84,6 +87,7 @@ class ActionRegistry:
             category=ActionCategory.ACCOUNT_CREATION,
             description="Account creation or identity changes on an external service",
             requires_human_approval=True,
+            allowed_resources={"*"},
             is_externally_consequential=True
         ),
         "send_message": RegisteredActionDefinition(
@@ -91,6 +95,7 @@ class ActionRegistry:
             category=ActionCategory.MESSAGING_CONTACT,
             description="Sending email, messaging, or contacting a human",
             requires_human_approval=True,
+            allowed_resources={"*"},
             is_externally_consequential=True
         ),
         "public_repo_mutation": RegisteredActionDefinition(
@@ -98,6 +103,7 @@ class ActionRegistry:
             category=ActionCategory.PUBLIC_REPOSITORY_MUTATION,
             description="Opening or modifying a public issue, pull request, branch, release, or repository",
             requires_human_approval=True,
+            allowed_resources={"*"},
             is_externally_consequential=True
         ),
         "package_publish": RegisteredActionDefinition(
@@ -105,6 +111,7 @@ class ActionRegistry:
             category=ActionCategory.PACKAGE_PUBLISHING,
             description="Publishing a package, artifact, or executable",
             requires_human_approval=True,
+            allowed_resources={"*"},
             is_externally_consequential=True
         ),
         "credential_use": RegisteredActionDefinition(
@@ -112,6 +119,7 @@ class ActionRegistry:
             category=ActionCategory.CREDENTIAL_USAGE,
             description="Using discovered credentials, another agent's account, or cross-agent resources",
             requires_human_approval=True,
+            allowed_resources={"*"},
             is_externally_consequential=True
         ),
         "destructive_shell": RegisteredActionDefinition(
@@ -119,6 +127,7 @@ class ActionRegistry:
             category=ActionCategory.DESTRUCTIVE_COMMAND,
             description="Destructive shell or filesystem operations",
             requires_human_approval=True,
+            allowed_resources={"*"},
             is_externally_consequential=True
         ),
         "financial_state_mutation": RegisteredActionDefinition(
@@ -126,6 +135,7 @@ class ActionRegistry:
             category=ActionCategory.STATE_MUTATION,
             description="Persistent financial, account, or other state-changing operations",
             requires_human_approval=True,
+            allowed_resources={"*"},
             is_externally_consequential=True
         ),
     }
@@ -150,7 +160,7 @@ class ActionRegistry:
 
 class SideEffectPolicyEngine:
     """
-    Enforces side-effect policies, required typed approvals, and route-change tracking.
+    Enforces side-effect policies, required typed approvals, resource allowlists, and route-change tracking.
     """
 
     def __init__(
@@ -264,12 +274,22 @@ class SideEffectPolicyEngine:
         policy_version: str = "1.0.0"
     ) -> Tuple[bool, str]:
         """
-        Evaluates whether an action with external side effects is authorized.
+        Evaluates whether an action with external side effects is authorized,
+        enforcing resource allowlists and required typed human approvals.
         """
         act = self.registry.lookup_action(operation_id)
         if not act:
             count = self.record_scope_violation(correlation_id)
             return False, f"Authorization denied: Operation '{operation_id}' is unregistered. (Violation count: {count})"
+
+        # Enforce action resource allowlist
+        if not act.allowed_resources:
+            count = self.record_scope_violation(correlation_id)
+            return False, f"Authorization denied: Resource allowlist is empty for operation '{operation_id}'. (Violation count: {count})"
+
+        if "*" not in act.allowed_resources and target_resource not in act.allowed_resources:
+            count = self.record_scope_violation(correlation_id)
+            return False, f"Authorization denied: Target resource '{target_resource}' is not in allowed resources for operation '{operation_id}'. (Violation count: {count})"
 
         if act.requires_human_approval or act.is_externally_consequential:
             if not approval_record:

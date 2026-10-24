@@ -294,6 +294,102 @@ def test_15_newly_discovered_target_requires_fresh_grant():
     assert "not in approved egress policy" in reason2
 
 
+# Focused tests for RegisteredActionDefinition allowed_resources enforcement
+def test_action_allowed_resources_enforcement():
+    registry = ActionRegistry()
+
+    # 1. Action with explicit resource allowlist
+    custom_action_allowed = RegisteredActionDefinition(
+        operation_id="custom_scoped_op",
+        category=ActionCategory.PUBLIC_REPOSITORY_MUTATION,
+        description="Scoped repo mutation",
+        requires_human_approval=True,
+        allowed_resources={"https://github.com/my-org/allowed-repo"},
+        is_externally_consequential=True
+    )
+    registry.register_action(custom_action_allowed)
+
+    engine = SideEffectPolicyEngine(registry=registry, signing_secret="TEST_SECRET")
+
+    payload = {"commit_id": "def5678"}
+    digest = engine.compute_canonical_digest(payload)
+
+    # Valid approval for allowed target resource
+    record_allowed = TypedHumanApprovalRecord(
+        approval_id="APP-RES-1",
+        operation_id="custom_scoped_op",
+        target_resource="https://github.com/my-org/allowed-repo",
+        canonical_args_digest=digest,
+        task_id="TASK-RES",
+        policy_version="1.0.0",
+        approved_by_principal="admin",
+        timestamp="2026-10-24T00:00:00Z",
+        signature=engine.compute_approval_signature((
+            "APP-RES-1", "custom_scoped_op", "https://github.com/my-org/allowed-repo",
+            digest, "TASK-RES", "1.0.0", "admin"
+        ))
+    )
+
+    # Test allowed target -> Allowed
+    ok_target, msg_target = engine.evaluate_side_effect_authorization(
+        operation_id="custom_scoped_op",
+        target_resource="https://github.com/my-org/allowed-repo",
+        payload=payload,
+        task_id="TASK-RES",
+        correlation_id="CORR-RES-1",
+        approval_record=record_allowed
+    )
+    assert ok_target is True
+
+    # Valid approval for disallowed target resource outside allowlist -> Denied
+    record_disallowed = TypedHumanApprovalRecord(
+        approval_id="APP-RES-2",
+        operation_id="custom_scoped_op",
+        target_resource="https://github.com/my-org/disallowed-repo",
+        canonical_args_digest=digest,
+        task_id="TASK-RES",
+        policy_version="1.0.0",
+        approved_by_principal="admin",
+        timestamp="2026-10-24T00:00:00Z",
+        signature=engine.compute_approval_signature((
+            "APP-RES-2", "custom_scoped_op", "https://github.com/my-org/disallowed-repo",
+            digest, "TASK-RES", "1.0.0", "admin"
+        ))
+    )
+
+    ok_disallowed, msg_disallowed = engine.evaluate_side_effect_authorization(
+        operation_id="custom_scoped_op",
+        target_resource="https://github.com/my-org/disallowed-repo",
+        payload=payload,
+        task_id="TASK-RES",
+        correlation_id="CORR-RES-2",
+        approval_record=record_disallowed
+    )
+    assert ok_disallowed is False
+    assert "not in allowed resources" in msg_disallowed
+
+    # 2. Action with empty resource allowlist -> Fails closed
+    empty_res_action = RegisteredActionDefinition(
+        operation_id="empty_res_op",
+        category=ActionCategory.PUBLIC_REPOSITORY_MUTATION,
+        description="Op with empty allowlist",
+        requires_human_approval=False,
+        allowed_resources=set(),
+        is_externally_consequential=False
+    )
+    registry.register_action(empty_res_action)
+
+    ok_empty, msg_empty = engine.evaluate_side_effect_authorization(
+        operation_id="empty_res_op",
+        target_resource="https://github.com/my-org/repo",
+        payload=payload,
+        task_id="TASK-RES",
+        correlation_id="CORR-RES-3"
+    )
+    assert ok_empty is False
+    assert "Resource allowlist is empty" in msg_empty
+
+
 # 16. A destination or operation changed after grant issuance invalidates the capability.
 def test_16_destination_or_operation_change_invalidates_capability():
     engine = SideEffectPolicyEngine(signing_secret="TEST_SECRET")
