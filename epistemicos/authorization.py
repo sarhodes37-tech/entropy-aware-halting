@@ -334,10 +334,12 @@ class AuthorizationAuthority:
             if approval_record.request_id != req_id:
                 return None, "AUTHORIZATION_DENIED_HUMAN_APPROVAL_REQUEST_ID_MISMATCH"
 
-            # Verify signature if signature is present or required
-            if approval_record.signature:
-                if not approval_record.verify_signature(self.approval_signing_secret, current_time=current_time):
-                    return None, "AUTHORIZATION_DENIED_HUMAN_APPROVAL_AUTHENTICATION_FAILED"
+            # Mandatory signature verification against trusted approval signing key
+            if not approval_record.signature:
+                return None, "AUTHORIZATION_DENIED_HUMAN_APPROVAL_MISSING_SIGNATURE"
+
+            if not approval_record.verify_signature(self.approval_signing_secret, current_time=current_time):
+                return None, "AUTHORIZATION_DENIED_HUMAN_APPROVAL_AUTHENTICATION_FAILED"
 
             if self.registry.is_approval_consumed(approval_record.approval_id):
                 return None, "AUTHORIZATION_DENIED_HUMAN_APPROVAL_REPLAYED"

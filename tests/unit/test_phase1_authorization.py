@@ -567,6 +567,7 @@ def test_scenario_13_generic_continuation_text_cannot_issue_authorization(tmp_pa
         action_digest=payload_digest,
         request_id=req_id
     )
+    typed_record.sign(authority.approval_signing_secret)
 
     context_genuine = {
         "request_id": req_id,
@@ -581,6 +582,175 @@ def test_scenario_13_generic_continuation_text_cannot_issue_authorization(tmp_pa
     res_genuine = orchestrator.process_submission(raw_payload, context_genuine)
     assert res_genuine["status"] == "ALLOWED"
     assert callback.call_count == 1
+
+
+# =====================================================================
+# Additional Human Approval Signature & Binding Unit Tests
+# =====================================================================
+def test_human_approval_signature_and_binding_validations():
+    policy = Policy(
+        policy_id="human_approval_policy",
+        allowed_operations={"critical_action"},
+        allowed_resources={"resource_1"},
+        required_human_approval_operations={"critical_action"}
+    )
+    authority = AuthorizationAuthority(default_policy=policy)
+    digest = "d" * 64
+    req_id = "req-123"
+
+    # 1. Complete but unsigned approval record
+    unsigned_record = HumanApprovalRecord(
+        approval_id="app-1",
+        approver_id="approver_alice",
+        action_name="critical_action",
+        target="resource_1",
+        action_digest=digest,
+        request_id=req_id
+    )
+    cap, reason = authority.evaluate_and_issue_capability(
+        action_name="critical_action",
+        target="resource_1",
+        canonical_request_digest=digest,
+        request_id=req_id,
+        human_approval_input=unsigned_record
+    )
+    assert cap is None
+    assert reason == "AUTHORIZATION_DENIED_HUMAN_APPROVAL_MISSING_SIGNATURE"
+
+    # 2. Forged / invalid signature
+    forged_record = HumanApprovalRecord(
+        approval_id="app-2",
+        approver_id="approver_alice",
+        action_name="critical_action",
+        target="resource_1",
+        action_digest=digest,
+        request_id=req_id,
+        signature="invalid_signature_hex"
+    )
+    cap_forged, reason_forged = authority.evaluate_and_issue_capability(
+        action_name="critical_action",
+        target="resource_1",
+        canonical_request_digest=digest,
+        request_id=req_id,
+        human_approval_input=forged_record
+    )
+    assert cap_forged is None
+    assert reason_forged == "AUTHORIZATION_DENIED_HUMAN_APPROVAL_AUTHENTICATION_FAILED"
+
+    # 3. Expired approval record
+    expired_record = HumanApprovalRecord(
+        approval_id="app-3",
+        approver_id="approver_alice",
+        action_name="critical_action",
+        target="resource_1",
+        action_digest=digest,
+        request_id=req_id,
+        expires_at=time.time() - 100.0
+    )
+    expired_record.sign(authority.approval_signing_secret)
+    cap_expired, reason_expired = authority.evaluate_and_issue_capability(
+        action_name="critical_action",
+        target="resource_1",
+        canonical_request_digest=digest,
+        request_id=req_id,
+        human_approval_input=expired_record
+    )
+    assert cap_expired is None
+    assert reason_expired == "AUTHORIZATION_DENIED_HUMAN_APPROVAL_AUTHENTICATION_FAILED"
+
+    # 4. Mismatched field (different target)
+    mismatched_record = HumanApprovalRecord(
+        approval_id="app-4",
+        approver_id="approver_alice",
+        action_name="critical_action",
+        target="different_resource",
+        action_digest=digest,
+        request_id=req_id
+    )
+    mismatched_record.sign(authority.approval_signing_secret)
+    cap_mismatched, reason_mismatched = authority.evaluate_and_issue_capability(
+        action_name="critical_action",
+        target="resource_1",
+        canonical_request_digest=digest,
+        request_id=req_id,
+        human_approval_input=mismatched_record
+    )
+    assert cap_mismatched is None
+    assert reason_mismatched == "AUTHORIZATION_DENIED_HUMAN_APPROVAL_BINDING_MISMATCH"
+
+    # 5. Valid, correctly signed approval
+    valid_record = HumanApprovalRecord(
+        approval_id="app-5",
+        approver_id="approver_alice",
+        action_name="critical_action",
+        target="resource_1",
+        action_digest=digest,
+        request_id=req_id
+    )
+    valid_record.sign(authority.approval_signing_secret)
+    cap_valid, reason_valid = authority.evaluate_and_issue_capability(
+        action_name="critical_action",
+        target="resource_1",
+        canonical_request_digest=digest,
+        request_id=req_id,
+        human_approval_input=valid_record
+    )
+    assert cap_valid is not None
+    assert reason_valid == "AUTHORIZATION_GRANTED"
+
+
+# =====================================================================
+# Resource Policy Regression Tests
+# =====================================================================
+def test_resource_policy_omitted_empty_restricted_wildcard():
+    # 1. Omitted allowed_resources (set()) -> fails closed
+    p_omitted = Policy(policy_id="omitted", allowed_operations={"op1"})
+    assert p_omitted.is_target_allowed("res1") is False
+
+    # 2. Empty allowed_resources -> fails closed
+    p_empty = Policy(policy_id="empty", allowed_operations={"op1"}, allowed_resources=set())
+    assert p_empty.is_target_allowed("res1") is False
+
+    # 3. Restricted allowed_resources -> permits exact resource, rejects others
+    p_restricted = Policy(policy_id="restricted", allowed_operations={"op1"}, allowed_resources={"res1"})
+    assert p_restricted.is_target_allowed("res1") is True
+    assert p_restricted.is_target_allowed("res2") is False
+
+    # 4. Explicitly wildcarded allowed_resources -> permits any resource
+    p_wildcard = Policy(policy_id="wildcard", allowed_operations={"op1"}, allowed_resources={"*"})
+    assert p_wildcard.is_target_allowed("res1") is True
+    assert p_wildcard.is_target_allowed("res2") is True
+
+
+# =====================================================================
+# Trusted Policy Provenance Test
+# =====================================================================
+def test_caller_supplied_permissive_policy_ignored(tmp_path):
+    """Proves that a caller supplying a permissive Policy in context cannot override server policy."""
+    callback = MagicMock()
+    server_policy = Policy(policy_id="server", allowed_operations={"read_only"}, allowed_resources={"public_doc"})
+    authority = AuthorizationAuthority(default_policy=server_policy)
+    orchestrator = EpistemicOrchestrator(
+        audit_log_path=str(tmp_path / "audit.jsonl"),
+        authority=authority
+    )
+
+    caller_permissive_policy = Policy(policy_id="permissive", allowed_operations={"delete_all"}, allowed_resources={"*"})
+
+    raw_payload = {"policy_id": "POL-OVERRIDE", "primary_metric": 100.0}
+    context = {
+        "action_name": "delete_all",
+        "target": "database",
+        "proposed_actions": [{"op": "delete_all", "endpoint": "database"}],
+        "actual_executable": callback,
+        "policy": caller_permissive_policy  # Caller attempting to inject permissive policy
+    }
+
+    res = orchestrator.process_submission(raw_payload, context)
+
+    assert res["status"] == "HALTED"
+    assert res["gate"] == "PermissionGate"
+    assert callback.call_count == 0
 
 
 # =====================================================================

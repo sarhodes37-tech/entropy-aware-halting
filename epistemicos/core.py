@@ -393,49 +393,48 @@ class EpistemicOrchestrator:
                         "vectors_revoked": actual_revoked_count
                     }
 
-                # Construct/resolve active Policy
-                active_policy = context.get("policy")
-                if not isinstance(active_policy, Policy):
-                    if self.authority and self.authority.default_policy is not None:
-                        active_policy = self.authority.default_policy
+                # Construct/resolve active Policy from server-controlled authority or server gate configuration strictly
+                # Ignore untrusted caller-supplied context["policy"] or payload["policy"]
+                if self.authority and self.authority.default_policy is not None:
+                    active_policy = self.authority.default_policy
+                else:
+                    gate_scope = getattr(self.gates[0], "trusted_scope", None) if self.gates else None
+                    raw_scope = gate_scope or context.get("trusted_scope") or {}
+
+                    if hasattr(raw_scope, "model_dump"):
+                        raw_scope_dict = raw_scope.model_dump()
+                    elif hasattr(raw_scope, "to_dict"):
+                        raw_scope_dict = raw_scope.to_dict()
+                    elif hasattr(raw_scope, "__dict__"):
+                        raw_scope_dict = raw_scope.__dict__
+                    elif isinstance(raw_scope, dict):
+                        raw_scope_dict = raw_scope
                     else:
-                        gate_scope = getattr(self.gates[0], "trusted_scope", None) if self.gates else None
-                        raw_scope = gate_scope or context.get("trusted_scope") or {}
+                        raw_scope_dict = {}
 
-                        if hasattr(raw_scope, "model_dump"):
-                            raw_scope_dict = raw_scope.model_dump()
-                        elif hasattr(raw_scope, "to_dict"):
-                            raw_scope_dict = raw_scope.to_dict()
-                        elif hasattr(raw_scope, "__dict__"):
-                            raw_scope_dict = raw_scope.__dict__
-                        elif isinstance(raw_scope, dict):
-                            raw_scope_dict = raw_scope
-                        else:
-                            raw_scope_dict = {}
+                    allowed_ops = set(raw_scope_dict.get("allowed_operations", []) or [])
+                    allowed_res_raw = raw_scope_dict.get("allowed_resources")
+                    if allowed_res_raw is not None:
+                        allowed_res = set(allowed_res_raw)
+                    else:
+                        allowed_res = set()
+                    req_human = set(raw_scope_dict.get("required_human_approval_operations", []) or [])
 
-                        allowed_ops = set(raw_scope_dict.get("allowed_operations", []) or [])
-                        allowed_res_raw = raw_scope_dict.get("allowed_resources")
-                        if allowed_res_raw is not None:
-                            allowed_res = set(allowed_res_raw)
-                        else:
-                            allowed_res = {"*"}
-                        req_human = set(raw_scope_dict.get("required_human_approval_operations", []) or [])
+                    for g in (self.gates or []):
+                        if hasattr(g, "allowed_actions") and g.allowed_actions:
+                            allowed_ops.update(g.allowed_actions)
+                        if hasattr(g, "trusted_operations") and g.trusted_operations:
+                            allowed_ops.update(g.trusted_operations.keys())
 
-                        for g in (self.gates or []):
-                            if hasattr(g, "allowed_actions") and g.allowed_actions:
-                                allowed_ops.update(g.allowed_actions)
-                            if hasattr(g, "trusted_operations") and g.trusted_operations:
-                                allowed_ops.update(g.trusted_operations.keys())
-
-                        if allowed_ops or (allowed_res_raw is not None and len(allowed_res) > 0):
-                            active_policy = Policy(
-                                policy_id="context_trusted_scope",
-                                allowed_operations=allowed_ops,
-                                allowed_resources=allowed_res,
-                                required_human_approval_operations=req_human
-                            )
-                        else:
-                            active_policy = None
+                    if allowed_ops or allowed_res:
+                        active_policy = Policy(
+                            policy_id="server_trusted_scope",
+                            allowed_operations=allowed_ops,
+                            allowed_resources=allowed_res,
+                            required_human_approval_operations=req_human
+                        )
+                    else:
+                        active_policy = None
 
                 # Evaluate against AuthorizationAuthority and issue capability
                 executor_id = getattr(exec_func, "__name__", str(exec_func)) if exec_func else "default_executor"
