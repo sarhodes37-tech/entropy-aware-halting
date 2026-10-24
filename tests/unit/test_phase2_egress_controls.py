@@ -301,8 +301,16 @@ def test_16_destination_or_operation_change_invalidates_capability():
     payload = {"commit_id": "abc1234"}
     digest = engine.compute_canonical_digest(payload)
 
-    sig_data = f"APP-16:public_repo_mutation:https://github.com/target/repo:{digest}:TASK-16:1.0.0:human_admin"
-    valid_sig = hashlib.sha256(f"TEST_SECRET:{sig_data}".encode("utf-8")).hexdigest()
+    record_tuple = (
+        "APP-16",
+        "public_repo_mutation",
+        "https://github.com/target/repo",
+        digest,
+        "TASK-16",
+        "1.0.0",
+        "human_admin"
+    )
+    valid_sig = engine.compute_approval_signature(record_tuple)
 
     record = TypedHumanApprovalRecord(
         approval_id="APP-16",
@@ -316,7 +324,18 @@ def test_16_destination_or_operation_change_invalidates_capability():
         signature=valid_sig
     )
 
-    # Target changed to different repo
+    # Valid approval passes
+    ok_valid, msg_valid = engine.evaluate_side_effect_authorization(
+        operation_id="public_repo_mutation",
+        target_resource="https://github.com/target/repo",
+        payload=payload,
+        task_id="TASK-16",
+        correlation_id="CORR-16-VALID",
+        approval_record=record
+    )
+    assert ok_valid is True
+
+    # Target changed to different repo -> denied
     allowed, reason = engine.evaluate_side_effect_authorization(
         operation_id="public_repo_mutation",
         target_resource="https://github.com/target/OTHER-REPO",

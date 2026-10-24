@@ -5,8 +5,10 @@ Defines trusted action classifications, action registry, typed approval requirem
 and side-effect policy enforcement for protected operations.
 """
 
+import os
 import time
 import uuid
+import hmac
 import hashlib
 from dataclasses import dataclass, field
 from enum import Enum
@@ -154,10 +156,10 @@ class SideEffectPolicyEngine:
     def __init__(
         self,
         registry: Optional[ActionRegistry] = None,
-        signing_secret: str = "EPISTEMICOS_APPROVAL_SECRET"
+        signing_secret: Optional[str] = None
     ):
         self.registry = registry or ActionRegistry()
-        self.signing_secret = signing_secret
+        self.signing_secret = signing_secret or os.getenv("EPISTEMICOS_APPROVAL_SECRET")
         self._violation_counts: Dict[str, int] = {}  # Map correlation_id / session_id to attempt count
 
     def compute_canonical_digest(self, payload: Any) -> str:
@@ -172,6 +174,17 @@ class SideEffectPolicyEngine:
             except Exception:
                 cb = str(payload).encode("utf-8")
         return hashlib.sha256(cb).hexdigest()
+
+    def compute_approval_signature(self, record_data: Tuple[str, str, str, str, str, str, str]) -> str:
+        """Computes standard HMAC-SHA256 signature for approval record fields."""
+        if not self.signing_secret:
+            raise ValueError("No signing secret configured for approval signature computation")
+        sig_data = ":".join(record_data)
+        return hmac.new(
+            self.signing_secret.encode("utf-8"),
+            sig_data.encode("utf-8"),
+            hashlib.sha256
+        ).hexdigest()
 
     def record_scope_violation(self, correlation_id: str) -> int:
         count = self._violation_counts.get(correlation_id, 0) + 1
@@ -193,10 +206,14 @@ class SideEffectPolicyEngine:
         """
         Validates typed human approval record against Phase 1 criteria:
         Binds specific operation, destination/resource, canonical arguments digest, task, and policy version.
+        Uses HMAC-SHA256 and constant-time signature comparison.
         Generic automated responses ("continue", "best judgement") are rejected.
         """
         if not record or not isinstance(record, TypedHumanApprovalRecord):
             return False, "Invalid or missing approval record"
+
+        if not self.signing_secret:
+            return False, "No signing secret configured for approval verification"
 
         if record.operation_id != expected_operation_id:
             return False, f"Approval operation mismatch: expected '{expected_operation_id}', got '{record.operation_id}'"
@@ -214,11 +231,24 @@ class SideEffectPolicyEngine:
         if record.policy_version != expected_policy_version:
             return False, f"Approval policy version mismatch: expected '{expected_policy_version}', got '{record.policy_version}'"
 
-        # Verify signature
-        sig_data = f"{record.approval_id}:{record.operation_id}:{record.target_resource}:{record.canonical_args_digest}:{record.task_id}:{record.policy_version}:{record.approved_by_principal}"
-        expected_sig = hashlib.sha256(f"{self.signing_secret}:{sig_data}".encode("utf-8")).hexdigest()
+        # Verify signature using HMAC-SHA256 and constant-time comparison
+        sig_tuple = (
+            record.approval_id,
+            record.operation_id,
+            record.target_resource,
+            record.canonical_args_digest,
+            record.task_id,
+            record.policy_version,
+            record.approved_by_principal
+        )
+        sig_data = ":".join(sig_tuple)
+        expected_sig = hmac.new(
+            self.signing_secret.encode("utf-8"),
+            sig_data.encode("utf-8"),
+            hashlib.sha256
+        ).hexdigest()
 
-        if record.signature != expected_sig:
+        if not isinstance(record.signature, str) or not hmac.compare_digest(record.signature, expected_sig):
             return False, "Approval signature verification failed"
 
         return True, "Approval record validated"
