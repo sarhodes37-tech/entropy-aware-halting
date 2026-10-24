@@ -18,6 +18,7 @@ from dataclasses import dataclass, field, asdict
 from typing import Dict, Any, List, Optional, Tuple, Set
 
 from epistemicos.audit import _sanitize_sensitive_data, ReceiptGenerator
+from epistemicos.authorization import AuthorizationAuthority, CapabilityRegistry, Capability
 
 try:
     import fcntl
@@ -246,8 +247,15 @@ class TrustedExecutionBoundary:
     and authoritative provenance event generation directly from executor activity.
     """
 
-    def __init__(self, provenance_store: Optional[ProvenanceStore] = None):
+    def __init__(
+        self,
+        provenance_store: Optional[ProvenanceStore] = None,
+        authority: Optional[AuthorizationAuthority] = None,
+        capability_registry: Optional[CapabilityRegistry] = None
+    ):
         self.store = provenance_store or LocalProvenanceStore()
+        self.authority = authority or AuthorizationAuthority(registry=capability_registry)
+        self.registry = self.authority.registry
         self._consumed_tokens: Set[str] = set()
         self._consumed_attempts: Set[str] = set()
         self._lock = threading.Lock()
@@ -324,16 +332,29 @@ class TrustedExecutionBoundary:
         current_digest = self.compute_canonical_digest(request_payload)
         now_ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
+        if current_digest != auth_digest:
+            raise ValueError("Request payload digest changed between authorization and execution")
+
+        executor_id = getattr(executor_func, "__name__", str(executor_func))
+
+        # Verify capability via trusted AuthorizationAuthority / CapabilityRegistry
+        valid, cap_reason, cap = self.authority.verify_capability(
+            token_id=auth_token_id,
+            action_name=action_name,
+            target=target,
+            canonical_request_digest=current_digest,
+            executor_id=executor_id
+        )
+        if not valid:
+            raise PermissionError(f"Execution rejected: {cap_reason}")
+
         # Atomic token consumption and retry check
         with self._lock:
-            if auth_token_id in self._consumed_tokens:
+            if not self.registry.consume_token(auth_token_id):
                 raise PermissionError(f"Authorization token {auth_token_id} has already been consumed (replay attempt)")
 
             if attempt_id in self._consumed_attempts:
                 raise ValueError(f"Execution attempt ID {attempt_id} has already been processed")
-
-            if current_digest != auth_digest:
-                raise ValueError("Request payload digest changed between authorization and execution")
 
             self._consumed_tokens.add(auth_token_id)
             self._consumed_attempts.add(attempt_id)
@@ -426,7 +447,14 @@ class TrustedExecutionBoundary:
         try:
             self.store.record_event(success_event)
         except Exception as audit_err:
-            raise RuntimeError(f"Execution completed but terminal audit event recording failed: {str(audit_err)}") from audit_err
+            return {
+                "status": "EXECUTION_OUTCOME_UNKNOWN",
+                "result": result,
+                "attempt_id": attempt_id,
+                "audit_recording_failed": True,
+                "recovery_required": True,
+                "reason": f"Execution completed but terminal audit logging failed: {str(audit_err)}"
+            }
 
         return {"status": "SUCCESS", "result": result, "attempt_id": attempt_id}
 

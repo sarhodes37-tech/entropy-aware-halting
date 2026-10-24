@@ -190,13 +190,17 @@ def test_non_callable_executor_rejected_before_side_effects(tmp_path):
 
 
 def test_concurrent_competing_attempts_barrier(tmp_path):
+    from epistemicos.authorization import Policy
     log_file = str(tmp_path / "prov_concurrent.jsonl")
     store = LocalProvenanceStore(log_path=log_file)
     boundary = TrustedExecutionBoundary(provenance_store=store)
 
     payload = {"op": "UNIQUE_TRANSACTION"}
     digest = boundary.compute_canonical_digest(payload)
-    token_id = "single-use-concurrent-token"
+
+    policy = Policy(policy_id="p1", allowed_operations={"PAYMENT"}, allowed_resources={"gateway"})
+    cap, _ = boundary.authority.evaluate_and_issue_capability("PAYMENT", "gateway", digest, correlation_id="corr-conc", request_id="req-conc", executor_id="<lambda>", policy=policy)
+    token_id = cap.token_id
 
     num_threads = 5
     barrier = threading.Barrier(num_threads)
@@ -232,10 +236,11 @@ def test_concurrent_competing_attempts_barrier(tmp_path):
     assert len(executions) == 1
     assert len(results) == 1
     assert len(errors) == num_threads - 1
-    assert all(isinstance(err, PermissionError) and "already been consumed" in str(err) for err in errors)
+    assert all(isinstance(err, PermissionError) and ("already been consumed" in str(err) or "REPLAY" in str(err)) for err in errors)
 
 
 def test_failure_to_record_execution_started_prevents_executor(tmp_path):
+    from epistemicos.authorization import Policy
     mock_store = MagicMock()
     mock_store.record_event.side_effect = RuntimeError("Disk I/O error during EXECUTION_STARTED")
     boundary = TrustedExecutionBoundary(provenance_store=mock_store)
@@ -248,12 +253,15 @@ def test_failure_to_record_execution_started_prevents_executor(tmp_path):
         executed.append(True)
         return "mutated"
 
+    policy = Policy(policy_id="p1", allowed_operations={"MUTATE"}, allowed_resources={"db"})
+    cap, _ = boundary.authority.evaluate_and_issue_capability("MUTATE", "db", digest, executor_id="executor", policy=policy)
+
     with pytest.raises(RuntimeError, match="Disk I/O error during EXECUTION_STARTED"):
         boundary.execute_protected_action(
             action_name="MUTATE",
             target="db",
             request_payload=payload,
-            authorization_token_id="tok-start-fail",
+            authorization_token_id=cap.token_id,
             authorized_digest=digest,
             authorization_granted=True,
             executor_func=executor
@@ -264,6 +272,7 @@ def test_failure_to_record_execution_started_prevents_executor(tmp_path):
 
 
 def test_failure_to_record_terminal_outcome(tmp_path):
+    from epistemicos.authorization import Policy
     mock_store = MagicMock()
     # First call (EXECUTION_STARTED) succeeds; second call (EXECUTION_SUCCEEDED) fails
     mock_store.record_event.side_effect = [{"status": "OK"}, RuntimeError("Disk full during EXECUTION_SUCCEEDED")]
@@ -277,29 +286,37 @@ def test_failure_to_record_terminal_outcome(tmp_path):
         executed.append(True)
         return "transferred_500_usd"
 
-    with pytest.raises(RuntimeError, match="Execution completed but terminal audit event recording failed"):
-        boundary.execute_protected_action(
-            action_name="TRANSFER",
-            target="bank",
-            request_payload=payload,
-            authorization_token_id="tok-term-fail",
-            authorized_digest=digest,
-            authorization_granted=True,
-            executor_func=executor
-        )
+    policy = Policy(policy_id="p1", allowed_operations={"TRANSFER"}, allowed_resources={"bank"})
+    cap, _ = boundary.authority.evaluate_and_issue_capability("TRANSFER", "bank", digest, executor_id="executor", policy=policy)
 
-    # Executor DID run and complete
+    res = boundary.execute_protected_action(
+        action_name="TRANSFER",
+        target="bank",
+        request_payload=payload,
+        authorization_token_id=cap.token_id,
+        authorized_digest=digest,
+        authorization_granted=True,
+        executor_func=executor
+    )
+
+    # Execution completed but terminal audit event recording failed -> EXECUTION_OUTCOME_UNKNOWN reported
+    assert res["status"] == "EXECUTION_OUTCOME_UNKNOWN"
+    assert res["recovery_required"] is True
     assert len(executed) == 1
 
 
 def test_replay_attempt_after_successful_token_consumption(tmp_path):
+    from epistemicos.authorization import Policy
     log_file = str(tmp_path / "prov_replay.jsonl")
     store = LocalProvenanceStore(log_path=log_file)
     boundary = TrustedExecutionBoundary(provenance_store=store)
 
     payload = {"action": "withdraw"}
     digest = boundary.compute_canonical_digest(payload)
-    token_id = "tok-replay-test"
+
+    policy = Policy(policy_id="p1", allowed_operations={"WITHDRAW"}, allowed_resources={"atm"})
+    cap, _ = boundary.authority.evaluate_and_issue_capability("WITHDRAW", "atm", digest, executor_id="<lambda>", policy=policy)
+    token_id = cap.token_id
 
     # First attempt succeeds
     res1 = boundary.execute_protected_action(
@@ -314,7 +331,7 @@ def test_replay_attempt_after_successful_token_consumption(tmp_path):
     assert res1["status"] == "SUCCESS"
 
     # Replay attempt fails closed with PermissionError
-    with pytest.raises(PermissionError, match="has already been consumed"):
+    with pytest.raises(PermissionError, match="already been consumed"):
         boundary.execute_protected_action(
             action_name="WITHDRAW",
             target="atm",

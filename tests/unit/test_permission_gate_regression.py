@@ -57,7 +57,7 @@ def test_permission_gate_nested_endpoint_execution_reached():
             "allowed_resources": ["/issue_binder"],
         }
     )
-    orchestrator.register_gate(perm_gate)
+    orchestrator.gates[0] = perm_gate
 
     raw_payload = {
         "policy_id": "POL-2026-WATT-9011",

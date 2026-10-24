@@ -78,15 +78,18 @@ def test_permission_gate():
     gate = PermissionGate(contract_model=CanonicalProblemRepresentation)
     
     payload = {
-        "policy_id": "POL-PERM-TEST",
-        "scope": {
+        "policy_id": "POL-PERM-TEST"
+    }
+
+    valid_actions = [{"op": "update_db", "node": "logistics_db"}]
+    context = {
+        "proposed_actions": valid_actions,
+        "trusted_scope": {
             "allowed_operations": ["update_db"],
             "allowed_resources": ["logistics_db"]
         }
     }
-
-    valid_actions = [{"op": "update_db", "node": "logistics_db"}]
-    assert gate.evaluate(payload, {"proposed_actions": valid_actions})["passed"] is True
+    assert gate.evaluate(payload, context)["passed"] is True
 
 
 def test_permission_gate_schema_violation():

@@ -379,7 +379,8 @@ def test_legitimate_authorized_workflow_passes():
     context = {
         "token_count": 5,
         "token_logprobs": [-0.01] * 5,
-        "proposed_actions": [{"op": "update_db", "node": "logistics_db"}]
+        "proposed_actions": [{"op": "update_db", "node": "logistics_db"}],
+        "trusted_scope": scope.model_dump()
     }
 
     result = orchestrator.process_submission(cpr.model_dump(), context)

@@ -219,7 +219,11 @@ def test_orchestrator_noisy_surprisal_halt_and_rollback(tmp_path):
         "proposed_actions": [
             {"op": "update_db", "node": "logistics_db"},
             {"op": "issue_binder", "policy": "POL-2026-N99"}
-        ]
+        ],
+        "trusted_scope": {
+            "allowed_operations": ["update_db", "issue_binder"],
+            "allowed_resources": ["logistics_db", "POL-2026-N99"]
+        }
     }
 
     result = orchestrator.process_submission(mock_commercial_payload, context)
@@ -544,7 +548,11 @@ def test_governance_os_stateful_key_revocation(tmp_path):
         "likelihoods": mock_likelihoods,
         "token_logprobs": safe_logprobs,
         "proposed_actions": proposed_actions,
-        "cryptography": valid_crypto_meta 
+        "cryptography": valid_crypto_meta,
+        "trusted_scope": {
+            "allowed_operations": ["update_db", "revert"],
+            "allowed_resources": ["logistics_db"]
+        }
     }
     valid_result = orchestrator.process_submission(
         raw_payload=mock_payload,
@@ -559,7 +567,11 @@ def test_governance_os_stateful_key_revocation(tmp_path):
         "likelihoods": mock_likelihoods,
         "token_logprobs": safe_logprobs,
         "proposed_actions": proposed_actions,
-        "cryptography": compromised_crypto_meta
+        "cryptography": compromised_crypto_meta,
+        "trusted_scope": {
+            "allowed_operations": ["update_db", "revert"],
+            "allowed_resources": ["logistics_db"]
+        }
     }
     compromised_result = orchestrator.process_submission(
         raw_payload=mock_payload,

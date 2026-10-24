@@ -290,7 +290,11 @@ def test_concurrency_state_isolation(tmp_path):
         }
         context = {
             "token_logprobs": [-0.1] * 10,
-            "proposed_actions": [{"op": "read", "endpoint": "logistics_db"}]
+            "proposed_actions": [{"op": "read", "endpoint": "logistics_db"}],
+            "trusted_scope": {
+                "allowed_operations": ["read"],
+                "allowed_resources": ["logistics_db"]
+            }
         }
         res = orchestrator.process_submission(payload, context, trajectory_id=f"traj_{tid}")
         decision = orchestrator.process_step([0.25, 0.25, 0.25, 0.25], 1.0, f"state_{tid}", trajectory_id=f"traj_{tid}")
@@ -318,7 +322,11 @@ def test_rejected_action_execution_suppression(tmp_path):
     }
     context = {
         "token_logprobs": [-0.1] * 5,
-        "proposed_actions": [{"op": "api_call", "endpoint": "/bind_policy"}]
+            "proposed_actions": [{"op": "api_call", "endpoint": "/bind_policy"}],
+            "trusted_scope": {
+                "allowed_operations": ["api_call"],
+                "allowed_resources": ["/bind_policy"]
+            }
     }
 
     result = orchestrator.process_submission(adversarial_payload, context, trajectory_id="traj_malicious")
