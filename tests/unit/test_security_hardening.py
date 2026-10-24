@@ -371,6 +371,7 @@ def test_legitimate_authorized_workflow_passes():
         allowed_resources=["logistics_db"],
         allowed_operations=["read", "update_db"]
     )
+    orchestrator.gates[0] = PermissionGate(trusted_scope=scope.model_dump())
     cpr = CanonicalProblemRepresentation(
         policy_id="POL-LEGIT-1",
         fleet_data={"vehicle_count": 5},

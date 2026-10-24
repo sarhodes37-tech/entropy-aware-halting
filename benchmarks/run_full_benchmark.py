@@ -26,6 +26,7 @@ from typing import Dict, List, Any, Tuple, Optional
 
 from epistemicos.core import EpistemicOrchestrator
 from epistemicos.gates import EntropyGate, PermissionGate, TriangulationGate, GateAction
+from epistemicos.authorization import AuthorizationAuthority, Policy
 
 
 def compute_wilson_ci(k: int, n: int, confidence: float = 0.95) -> Tuple[float, float]:
@@ -123,6 +124,17 @@ class ComprehensiveBenchmarkRunner:
         all_per_case_records = []
         condition_correctness_vector: Dict[str, List[bool]] = defaultdict(list)
 
+        # Benchmark Evaluation Policy Scope Rationale:
+        # The benchmark evaluates operation-level surprisal, permission gating, and active recovery across N=100
+        # synthetic cases with diverse target resources (e.g. /bind_policy, /db/query, /user_table).
+        # allowed_resources={"*"} allows the benchmark harness to test operation-level gating and surprisal
+        # without hardcoding synthetic resource targets into production defaults.
+        benchmark_policy = Policy(
+            policy_id="benchmark_default_policy",
+            allowed_operations=set(self.allowed_tools),
+            allowed_resources={"*"}
+        )
+
         for base_name, cfg in baseline_configs.items():
             metrics = {
                 "total_cases": len(dataset),
@@ -153,17 +165,21 @@ class ComprehensiveBenchmarkRunner:
                 tokens_used = context.get("token_count", 20)
                 last_res_reason = "Passed all gates"
 
-                while True:
-                    engine = EpistemicOrchestrator()
+                # Instantiate authority and orchestrator once per task execution (outside retry loop)
+                # to preserve single-use token consumption and security state across retries.
+                authority = AuthorizationAuthority(default_policy=benchmark_policy)
+                engine = EpistemicOrchestrator(authority=authority)
 
-                    active_gates = []
-                    if "permission" in cfg["gates"]:
-                        active_gates.append(PermissionGate(allowed_actions=self.allowed_tools))
-                    if "entropy" in cfg["gates"]:
-                        active_gates.append(EntropyGate(z_threshold=1.5, window_size=10))
-                    if "triangulation" in cfg["gates"]:
-                        active_gates.append(TriangulationGate())
-                    engine.gates = active_gates
+                active_gates = []
+                if "permission" in cfg["gates"]:
+                    active_gates.append(PermissionGate(allowed_actions=self.allowed_tools))
+                if "entropy" in cfg["gates"]:
+                    active_gates.append(EntropyGate(z_threshold=1.5, window_size=10))
+                if "triangulation" in cfg["gates"]:
+                    active_gates.append(TriangulationGate())
+                engine.gates = active_gates
+
+                while True:
 
                     res = engine.process_submission(raw_payload=payload, context=context)
                     last_res_reason = res.get("reason", "Allowed")

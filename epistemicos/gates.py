@@ -406,31 +406,57 @@ class PermissionGate(ControlPlaneGate):
         allowed_res = scope.get("allowed_resources")
         is_rmm_origin = scope.get("is_rmm_origin", False)
 
-        if allowed_ops is None and allowed_res is None and not self.allowed_actions and not is_rmm_origin:
-            return None
+        # Fail closed: Protected actions require explicit, non-empty trusted authorization policy
+        has_allowed_ops = allowed_ops is not None and len(allowed_ops) > 0
+        has_allowed_res = allowed_res is not None and len(allowed_res) > 0
+        has_allowed_actions = bool(self.allowed_actions)
+        has_trusted_ops = bool(self.trusted_operations)
+
+        if proposed_actions and not (has_allowed_ops or has_allowed_res or has_allowed_actions or has_trusted_ops or is_rmm_origin):
+            return GateOutcome(
+                decision=GateDecision.HALT,
+                reason_code="Missing or empty trusted authorization policy for proposed action(s)",
+                gate_name=self.gate_name,
+                gate_version=self.config.version,
+                evidence={"status": "HALTED", "confidence": 0.0, "vectors_revoked": 1},
+                latency_ms=(time.perf_counter() - t0) * 1000
+            )
 
         for action in proposed_actions:
             op, node = self._extract_action_details(action)
 
-            if allowed_ops is not None and op not in allowed_ops:
+            # Check operation permission
+            if allowed_ops is not None:
+                if op not in allowed_ops:
+                    return GateOutcome(
+                        decision=GateDecision.HALT,
+                        reason_code=f"Operation '{op}' outside allowed scope operations: {allowed_ops}",
+                        gate_name=self.gate_name,
+                        gate_version=self.config.version,
+                        evidence={"status": "HALTED", "confidence": 0.0, "vectors_revoked": 1},
+                        latency_ms=(time.perf_counter() - t0) * 1000
+                    )
+            elif not self.allowed_actions and not self.trusted_operations and not is_rmm_origin:
                 return GateOutcome(
                     decision=GateDecision.HALT,
-                    reason_code=f"Operation '{op}' outside allowed scope operations: {allowed_ops}",
+                    reason_code=f"Operation '{op}' has no explicit authorization policy in scope",
                     gate_name=self.gate_name,
                     gate_version=self.config.version,
-                    evidence={"status": "HALTED", "confidence": 0.0},
+                    evidence={"status": "HALTED", "confidence": 0.0, "vectors_revoked": 1},
                     latency_ms=(time.perf_counter() - t0) * 1000
                 )
 
-            if allowed_res is not None and node is not None and node not in allowed_res:
-                return GateOutcome(
-                    decision=GateDecision.HALT,
-                    reason_code=f"Resource node '{node}' outside allowed scope resources: {allowed_res}",
-                    gate_name=self.gate_name,
-                    gate_version=self.config.version,
-                    evidence={"status": "HALTED", "confidence": 0.0},
-                    latency_ms=(time.perf_counter() - t0) * 1000
-                )
+            # Check resource target permission
+            if allowed_res is not None:
+                if node is None or node not in allowed_res:
+                    return GateOutcome(
+                        decision=GateDecision.HALT,
+                        reason_code=f"Resource node '{node}' outside allowed scope resources: {allowed_res}",
+                        gate_name=self.gate_name,
+                        gate_version=self.config.version,
+                        evidence={"status": "HALTED", "confidence": 0.0, "vectors_revoked": 1},
+                        latency_ms=(time.perf_counter() - t0) * 1000
+                    )
 
             if self.allowed_actions and op not in self.allowed_actions:
                 return GateOutcome(
@@ -554,15 +580,9 @@ class PermissionGate(ControlPlaneGate):
                     )
 
         # Security Hardening: Authorization Scope Resolution
-        # Priority: self.trusted_scope (gate config) > context.get("trusted_scope")
-        # Request-, payload-, or model-supplied scope fields are strictly ignored for authorization decisions.
-        trusted_scope_raw = (
-            self.trusted_scope
-            if self.trusted_scope is not None
-            else context.get("trusted_scope")
-            if context.get("trusted_scope") is not None
-            else None
-        )
+        # Scope is resolved strictly from self.trusted_scope (server-side gate configuration).
+        # Caller-, request-, payload-, or model-supplied scope fields are strictly ignored for authorization decisions.
+        trusted_scope_raw = self.trusted_scope
 
         if trusted_scope_raw is not None:
             if isinstance(trusted_scope_raw, dict):

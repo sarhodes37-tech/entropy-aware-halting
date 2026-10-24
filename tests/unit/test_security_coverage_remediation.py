@@ -262,8 +262,11 @@ def test_permission_gate_model_validate_dict_traversal_and_trusted_scope():
     class ScopeDict:
         def __init__(self): self.allowed_operations = ["op2"]; self.allowed_resources = ["r2"]
 
-    assert pg.evaluate({"scope": {}}, {"trusted_scope": ScopeDump(), "proposed_actions": [{"op": "op1", "node": "r1"}]}).passed is True
-    assert pg.evaluate({"scope": {}}, {"trusted_scope": ScopeDict(), "proposed_actions": [{"op": "op2", "node": "r2"}]}).passed is True
+    pg_dump = PermissionGate(contract_model=ModelVal, trusted_scope=ScopeDump())
+    assert pg_dump.evaluate({"scope": {}}, {"proposed_actions": [{"op": "op1", "node": "r1"}]}).passed is True
+
+    pg_dict = PermissionGate(contract_model=ModelVal, trusted_scope=ScopeDict())
+    assert pg_dict.evaluate({"scope": {}}, {"proposed_actions": [{"op": "op2", "node": "r2"}]}).passed is True
 
 
 # 6. MODELS.PY REMEDIATION

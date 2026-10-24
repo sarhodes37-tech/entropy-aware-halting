@@ -57,7 +57,7 @@ def test_permission_gate_nested_endpoint_execution_reached():
             "allowed_resources": ["/issue_binder"],
         }
     )
-    orchestrator.register_gate(perm_gate)
+    orchestrator.gates[0] = perm_gate
 
     raw_payload = {
         "policy_id": "POL-2026-WATT-9011",
@@ -265,6 +265,10 @@ def test_permission_gate_reward_cheating_pipeline_zero_callback_invocations():
     """
     callback_mock = MagicMock(return_value={"status": "SHOULD_NOT_BE_CALLED"})
     orchestrator = EpistemicOrchestrator()
+    orchestrator.gates[0] = PermissionGate(trusted_scope={
+        "allowed_operations": ["evaluate"],
+        "allowed_resources": ["grader_service"]
+    })
 
     cheat_code = "def evaluate(): return True # pytest.mark.skip"
     raw_payload = {
@@ -277,10 +281,6 @@ def test_permission_gate_reward_cheating_pipeline_zero_callback_invocations():
     context = {
         "token_count": 5,
         "token_logprobs": [-0.01] * 5,
-        "trusted_scope": {
-            "allowed_operations": ["evaluate"],
-            "allowed_resources": ["grader_service"]
-        },
         "proposed_actions": raw_payload["proposed_actions"],
         "actual_executable": callback_mock,
         "correlation_id": "CORR-REWARD-CHEAT-REGRESSION"
@@ -346,7 +346,11 @@ def test_permission_gate_alternate_dispatch_keys_and_obfuscated_reward_cheating(
         assert side_effects["invocations"] == 0
         assert side_effects["completed"] is False
 
-    # 2. Test legitimate control case through the exact same dispatch
+    # 2. Test legitimate control case through the exact same dispatch with server-configured scope
+    orchestrator.gates[0] = PermissionGate(trusted_scope={
+        "allowed_operations": ["evaluate"],
+        "allowed_resources": ["grader_service"]
+    })
     legit_payload = {
         "policy_id": "POL-TEST-LEGIT",
         "fleet_data": {"vehicle_count": 1},
@@ -357,10 +361,6 @@ def test_permission_gate_alternate_dispatch_keys_and_obfuscated_reward_cheating(
     legit_ctx = {
         "token_count": 5,
         "token_logprobs": [-0.01] * 5,
-        "trusted_scope": {
-            "allowed_operations": ["evaluate"],
-            "allowed_resources": ["grader_service"]
-        },
         "proposed_actions": legit_payload["proposed_actions"],
         "actual_executable": synthetic_executor,
         "correlation_id": "CORR-LEGIT-1"
@@ -392,6 +392,11 @@ def test_permission_gate_benign_controls_with_suspicious_substrings():
         "def validate_data(val):\n    assert_value_valid = (val > 0)\n    return assert_value_valid"
     ]
 
+    orchestrator.gates[0] = PermissionGate(trusted_scope={
+        "allowed_operations": ["evaluate"],
+        "allowed_resources": ["grader_service"]
+    })
+
     for i, snippet in enumerate(benign_code_snippets):
         payload = {
             "policy_id": "POL-BENIGN-SUBSTR",
@@ -403,10 +408,6 @@ def test_permission_gate_benign_controls_with_suspicious_substrings():
         ctx = {
             "token_count": 5,
             "token_logprobs": [-0.01] * 5,
-            "trusted_scope": {
-                "allowed_operations": ["evaluate"],
-                "allowed_resources": ["grader_service"]
-            },
             "proposed_actions": payload["proposed_actions"],
             "actual_executable": benign_executor,
             "correlation_id": f"CORR-BENIGN-SUBSTR-{i}"

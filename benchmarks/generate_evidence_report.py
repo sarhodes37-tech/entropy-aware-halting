@@ -44,12 +44,24 @@ def load_json_artifact(filepath: str) -> Dict[str, Any]:
 
 
 def run_layer_a_deterministic_tests(fast_mode: bool = False) -> Dict[str, Any]:
-    """Runs Layer A unit test suite using active Python sys.executable and captures pass/fail status."""
+    """Runs Layer A unit test suite using active Python sys.executable or pytest binary and captures pass/fail status."""
     env = os.environ.copy()
 
     test_targets = ["tests/unit/test_evidence_architecture.py", "-k", "test_dataset_manifest_integrity"] if fast_mode else ["tests/unit/", "tests/e2e_security/"]
 
+    pytest_bin = "pytest"
+    if not env.get("PYTHONPATH"):
+        env["PYTHONPATH"] = os.pathsep.join([PROJECT_ROOT] + [p for p in sys.path if p])
+
     cmd = [sys.executable, "-m", "pytest", *test_targets, "-q", "--tb=no"]
+
+    # If sys.executable doesn't have pytest module in local env, fall back to pytest binary directly
+    try:
+        check_res = subprocess.run([sys.executable, "-m", "pytest", "--version"], capture_output=True)
+        if check_res.returncode != 0:
+            cmd = [pytest_bin, *test_targets, "-q", "--tb=no"]
+    except Exception:
+        cmd = [pytest_bin, *test_targets, "-q", "--tb=no"]
 
     try:
         res = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=120)

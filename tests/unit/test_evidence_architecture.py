@@ -143,7 +143,15 @@ def test_authorized_control_invokes_callback_and_records_side_effect(tmp_path):
         execution_boundary=boundary,
         audit_log_path=str(tmp_path / "audit.jsonl")
     )
-    orchestrator.gates = [PermissionGate(allowed_actions=["read_policy"])]
+    orchestrator.gates = [
+        PermissionGate(
+            allowed_actions=["read_policy"],
+            trusted_scope={
+                "allowed_operations": ["read_policy"],
+                "allowed_resources": ["/policies/1001"]
+            }
+        )
+    ]
 
     result = orchestrator.process_submission(
         raw_payload={"action": "read_policy", "policy_id": "POL-1001"},
@@ -152,7 +160,11 @@ def test_authorized_control_invokes_callback_and_records_side_effect(tmp_path):
             "action_name": "read_policy",
             "target": "/policies/1001",
             "correlation_id": corr_id,
-            "requested_operation_id": "read_policy"
+            "requested_operation_id": "read_policy",
+            "trusted_scope": {
+                "allowed_operations": ["read_policy"],
+                "allowed_resources": ["/policies/1001"]
+            }
         }
     )
 

@@ -6,6 +6,7 @@ import json
 import uuid
 import pytest
 import threading
+from epistemicos.authorization import Policy, Capability
 from epistemicos.provenance import (
     ExecutionContext,
     ProvenanceEvent,
@@ -186,8 +187,19 @@ def test_concurrent_single_use_token_consumption(tmp_path):
 
     payload = {"amount": 100, "recipient": "user-A"}
     digest = boundary.compute_canonical_digest(payload)
-    token_id = "single-use-token-999"
     corr_id = str(uuid.uuid4())
+
+    policy = Policy(policy_id="p1", allowed_operations={"PAYMENT"}, allowed_resources={"stripe-api"})
+    cap, _ = boundary.authority.evaluate_and_issue_capability(
+        action_name="PAYMENT",
+        target="stripe-api",
+        canonical_request_digest=digest,
+        correlation_id=corr_id,
+        request_id="req-p",
+        executor_id="<lambda>",
+        policy=policy
+    )
+    token_id = cap.token_id
 
     results = []
     errors = []
@@ -233,6 +245,17 @@ def test_executor_exception_recording(tmp_path):
     def failing_executor():
         raise ZeroDivisionError("division by zero in executor")
 
+    policy = Policy(policy_id="p1", allowed_operations={"CALCULATE"}, allowed_resources={"math-engine"})
+    cap, _ = boundary.authority.evaluate_and_issue_capability(
+        action_name="CALCULATE",
+        target="math-engine",
+        canonical_request_digest=digest,
+        correlation_id=corr_id,
+        request_id="req-div",
+        executor_id="failing_executor",
+        policy=policy
+    )
+
     with pytest.raises(ZeroDivisionError):
         boundary.execute_protected_action(
             action_name="CALCULATE",
@@ -240,7 +263,7 @@ def test_executor_exception_recording(tmp_path):
             request_payload=payload,
             correlation_id=corr_id,
             request_id="req-div",
-            authorization_token_id="tok-div",
+            authorization_token_id=cap.token_id,
             authorized_digest=digest,
             authorization_granted=True,
             executor_func=failing_executor
@@ -268,6 +291,17 @@ def test_keyboard_interrupt_propagation_and_recording(tmp_path):
     def interrupting_executor():
         raise KeyboardInterrupt("task interrupted by SIGINT")
 
+    policy = Policy(policy_id="p1", allowed_operations={"COMPUTE"}, allowed_resources={"cpu-worker"})
+    cap, _ = boundary.authority.evaluate_and_issue_capability(
+        action_name="COMPUTE",
+        target="cpu-worker",
+        canonical_request_digest=digest,
+        correlation_id=corr_id,
+        request_id="req-int",
+        executor_id="interrupting_executor",
+        policy=policy
+    )
+
     with pytest.raises(KeyboardInterrupt):
         boundary.execute_protected_action(
             action_name="COMPUTE",
@@ -275,7 +309,7 @@ def test_keyboard_interrupt_propagation_and_recording(tmp_path):
             request_payload=payload,
             correlation_id=corr_id,
             request_id="req-int",
-            authorization_token_id="tok-int",
+            authorization_token_id=cap.token_id,
             authorized_digest=digest,
             authorization_granted=True,
             executor_func=interrupting_executor
@@ -417,13 +451,24 @@ def test_privacy_and_sensitive_payload_redaction(tmp_path):
     digest = boundary.compute_canonical_digest(sensitive_payload)
     corr_id = str(uuid.uuid4())
 
+    policy = Policy(policy_id="p1", allowed_operations={"USER_AUTH"}, allowed_resources={"auth-service"})
+    cap, _ = boundary.authority.evaluate_and_issue_capability(
+        action_name="USER_AUTH",
+        target="auth-service",
+        canonical_request_digest=digest,
+        correlation_id=corr_id,
+        request_id="req-sec",
+        executor_id="<lambda>",
+        policy=policy
+    )
+
     boundary.execute_protected_action(
         action_name="USER_AUTH",
         target="auth-service",
         request_payload=sensitive_payload,
         correlation_id=corr_id,
         request_id="req-sec",
-        authorization_token_id="tok-sec",
+        authorization_token_id=cap.token_id,
         authorized_digest=digest,
         authorization_granted=True,
         executor_func=lambda: {"api_key": "sk-returned-secret-key-12345678901234567890"}
@@ -561,6 +606,10 @@ def test_trusted_execution_boundary_validation(tmp_path):
     payload = {"data": "test"}
     digest = boundary.compute_canonical_digest(payload)
 
+    policy = Policy(policy_id="p1", allowed_operations={"ACT"}, allowed_resources={"TGT"})
+    cap3, _ = boundary.authority.evaluate_and_issue_capability("ACT", "TGT", digest, correlation_id="c1", request_id="r1", executor_id="<lambda>", policy=policy)
+    cap4, _ = boundary.authority.evaluate_and_issue_capability("ACT", "TGT", digest, correlation_id="c1", request_id="r1", executor_id="<lambda>", policy=policy)
+
     # Reject authorization not granted
     with pytest.raises(PermissionError, match="Authorization was not granted"):
         boundary.execute_protected_action(
@@ -597,7 +646,7 @@ def test_trusted_execution_boundary_validation(tmp_path):
         request_payload=payload,
         correlation_id="c1",
         request_id="r1",
-        authorization_token_id="tok3",
+        authorization_token_id=cap3.token_id,
         authorized_digest=digest,
         authorization_granted=True,
         execution_attempt_id=attempt_id,
@@ -610,7 +659,7 @@ def test_trusted_execution_boundary_validation(tmp_path):
             request_payload=payload,
             correlation_id="c1",
             request_id="r1",
-            authorization_token_id="tok4",
+            authorization_token_id=cap4.token_id,
             authorized_digest=digest,
             authorization_granted=True,
             execution_attempt_id=attempt_id,
@@ -904,10 +953,13 @@ def test_execute_protected_action_with_execution_context_keyword(tmp_path):
     digest = boundary.compute_canonical_digest(payload)
     corr_id = str(uuid.uuid4())
 
+    policy = Policy(policy_id="p1", version="2.0.0", allowed_operations={"UPDATE"}, allowed_resources={"policy-engine"})
+    cap, _ = boundary.authority.evaluate_and_issue_capability("UPDATE", "policy-engine", digest, correlation_id=corr_id, request_id="req-kw", executor_id="<lambda>", policy=policy)
+
     ctx = ExecutionContext(
         correlation_id=corr_id,
         request_id="req-kw",
-        authorization_token_id="tok-kw",
+        authorization_token_id=cap.token_id,
         authorized_digest=digest,
         authorization_granted=True,
         policy_version="2.0.0"
@@ -926,7 +978,7 @@ def test_execute_protected_action_with_execution_context_keyword(tmp_path):
 
     events = store.get_events_for_correlation(corr_id)
     assert len(events) == 2
-    assert events[0].authorization_token_id == "tok-kw"
+    assert events[0].authorization_token_id == cap.token_id
     assert events[0].policy_version == "2.0.0"
 
 
@@ -939,10 +991,13 @@ def test_execute_protected_action_with_execution_context_positional(tmp_path):
     digest = boundary.compute_canonical_digest(payload)
     corr_id = str(uuid.uuid4())
 
+    policy = Policy(policy_id="p1", allowed_operations={"CACHE_RESET"}, allowed_resources={"redis-cluster"})
+    cap, _ = boundary.authority.evaluate_and_issue_capability("CACHE_RESET", "redis-cluster", digest, correlation_id=corr_id, request_id="req-pos", executor_id="<lambda>", policy=policy)
+
     ctx = ExecutionContext(
         correlation_id=corr_id,
         request_id="req-pos",
-        authorization_token_id="tok-pos",
+        authorization_token_id=cap.token_id,
         authorized_digest=digest,
         authorization_granted=True
     )
@@ -960,4 +1015,4 @@ def test_execute_protected_action_with_execution_context_positional(tmp_path):
 
     events = store.get_events_for_correlation(corr_id)
     assert len(events) == 2
-    assert events[0].authorization_token_id == "tok-pos"
+    assert events[0].authorization_token_id == cap.token_id

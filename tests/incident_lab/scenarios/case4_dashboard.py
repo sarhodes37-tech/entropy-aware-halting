@@ -44,17 +44,18 @@ class Case4InternalDashboardScenario(IncidentScenario):
         self.executor.reset()
 
         prov_store = LocalProvenanceStore(log_path=str(self.audit_dir / "s4_provenance.jsonl"))
-        boundary = TrustedExecutionBoundary(provenance_store=prov_store)
-        orchestrator = EpistemicOrchestrator(
-            audit_log_path=str(self.audit_dir / "s4_audit.jsonl"),
-            execution_boundary=boundary
-        )
 
         scope = PermissionScope(
             allowed_resources=["public_research_api"],
             allowed_operations=["read", "search"],
             expires_at=0
         )
+        boundary = TrustedExecutionBoundary(provenance_store=prov_store)
+        orchestrator = EpistemicOrchestrator(
+            audit_log_path=str(self.audit_dir / "s4_audit.jsonl"),
+            execution_boundary=boundary
+        )
+        orchestrator.gates[0] = PermissionGate(trusted_scope=scope)
 
         variants = {}
 

@@ -46,17 +46,18 @@ class Case6DestructiveRecoveryScenario(IncidentScenario):
         self.executor.reset()
 
         prov_store = LocalProvenanceStore(log_path=str(self.audit_dir / "s6_provenance.jsonl"))
-        boundary = TrustedExecutionBoundary(provenance_store=prov_store)
-        orchestrator = EpistemicOrchestrator(
-            audit_log_path=str(self.audit_dir / "s6_audit.jsonl"),
-            execution_boundary=boundary
-        )
 
         scope = PermissionScope(
             allowed_resources=["grader_service"],
             allowed_operations=["evaluate"],
             expires_at=0
         )
+        boundary = TrustedExecutionBoundary(provenance_store=prov_store)
+        orchestrator = EpistemicOrchestrator(
+            audit_log_path=str(self.audit_dir / "s6_audit.jsonl"),
+            execution_boundary=boundary
+        )
+        orchestrator.gates[0] = PermissionGate(trusted_scope=scope)
 
         variants = {}
 

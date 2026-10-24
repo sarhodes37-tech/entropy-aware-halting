@@ -10,6 +10,7 @@ from typing import Dict, Any, Optional
 from epistemicos.core import EpistemicOrchestrator
 from epistemicos.models import PermissionScope
 from epistemicos.gates import PermissionGate
+from epistemicos.gates import PermissionGate
 from epistemicos.provenance import (
     TrustedExecutionBoundary,
     LocalProvenanceStore,
@@ -44,17 +45,18 @@ class Case5CryptoWalletScenario(IncidentScenario):
         self.executor.reset()
 
         prov_store = LocalProvenanceStore(log_path=str(self.audit_dir / "s5_provenance.jsonl"))
-        boundary = TrustedExecutionBoundary(provenance_store=prov_store)
-        orchestrator = EpistemicOrchestrator(
-            audit_log_path=str(self.audit_dir / "s5_audit.jsonl"),
-            execution_boundary=boundary
-        )
 
         scope = PermissionScope(
             allowed_resources=["crypto_wallet_read"],
             allowed_operations=["get_balance"],
             expires_at=0
         )
+        boundary = TrustedExecutionBoundary(provenance_store=prov_store)
+        orchestrator = EpistemicOrchestrator(
+            audit_log_path=str(self.audit_dir / "s5_audit.jsonl"),
+            execution_boundary=boundary
+        )
+        orchestrator.gates[0] = PermissionGate(trusted_scope=scope)
 
         variants = {}
 

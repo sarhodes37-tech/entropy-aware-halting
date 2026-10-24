@@ -12,6 +12,7 @@ from concurrent.futures import ThreadPoolExecutor
 from tests.incident_lab.fixtures.scenario_fixtures import FleetMultiAgentEnvironment
 from epistemicos.core import EpistemicOrchestrator
 from epistemicos.models import PermissionScope
+from epistemicos.gates import PermissionGate
 
 
 def test_concurrent_fleet_aggregate_budget_containment():
@@ -90,6 +91,8 @@ def test_orchestrator_concurrent_trajectory_isolation(tmp_path):
     barrier = threading.Barrier(5)
     orchestrator_statuses = []
     lock = threading.Lock()
+
+    orchestrator.gates[0] = PermissionGate(trusted_scope=scope)
 
     def submit_worker(worker_idx):
         traj_id = f"traj-concurrent-{worker_idx}-{uuid.uuid4()}"

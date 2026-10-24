@@ -10,6 +10,7 @@ from typing import Dict, Any, Optional
 
 from epistemicos.core import EpistemicOrchestrator
 from epistemicos.models import PermissionScope
+from epistemicos.gates import PermissionGate
 from epistemicos.shower_curtain.gate import ShowerCurtainGate
 from epistemicos.provenance import (
     TrustedExecutionBoundary,
@@ -45,17 +46,18 @@ class Case1GitHubCredentialExposureScenario(IncidentScenario):
         self.executor.reset()
 
         prov_store = LocalProvenanceStore(log_path=str(self.audit_dir / "s1_provenance.jsonl"))
-        orchestrator = EpistemicOrchestrator(
-            audit_log_path=str(self.audit_dir / "s1_audit.jsonl"),
-            execution_boundary=TrustedExecutionBoundary(provenance_store=prov_store)
-        )
-        orchestrator.register_gate(ShowerCurtainGate())
 
         scope = PermissionScope(
             allowed_resources=["github_local_repo"],
             allowed_operations=["read", "commit"],
             expires_at=0
         )
+        orchestrator = EpistemicOrchestrator(
+            audit_log_path=str(self.audit_dir / "s1_audit.jsonl"),
+            execution_boundary=TrustedExecutionBoundary(provenance_store=prov_store)
+        )
+        orchestrator.gates[0] = PermissionGate(trusted_scope=scope)
+        orchestrator.register_gate(ShowerCurtainGate())
 
         variants = {}
 

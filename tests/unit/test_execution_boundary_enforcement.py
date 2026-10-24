@@ -22,12 +22,16 @@ def test_missing_provenance_store_fails_closed():
     """
     execution_callback = MagicMock(return_value={"status": "FORGED"})
     orchestrator = EpistemicOrchestrator()
+    orchestrator.gates[0] = PermissionGate(trusted_scope={
+        "allowed_operations": ["api_call"],
+        "allowed_resources": ["/issue_binder"]
+    })
     orchestrator.execution_boundary.store = None  # Store missing
 
     raw_payload = {"policy_id": "POL-2026-NO-STORE", "primary_metric": 100.0}
     context = {
         "proposed_actions": [{"action": {"op": "api_call", "endpoint": "/issue_binder"}}],
-        "actual_executable": execution_callback,
+        "actual_executable": execution_callback
     }
 
     res = orchestrator.process_submission(raw_payload, context)
@@ -44,13 +48,17 @@ def test_unavailable_lookup_method_fails_closed():
     """
     execution_callback = MagicMock(return_value={"status": "FORGED"})
     orchestrator = EpistemicOrchestrator()
+    orchestrator.gates[0] = PermissionGate(trusted_scope={
+        "allowed_operations": ["api_call"],
+        "allowed_resources": ["/issue_binder"]
+    })
     # Mock store without get_events_for_correlation method
     orchestrator.execution_boundary.store = object()
 
     raw_payload = {"policy_id": "POL-2026-NO-METHOD", "primary_metric": 100.0}
     context = {
         "proposed_actions": [{"action": {"op": "api_call", "endpoint": "/issue_binder"}}],
-        "actual_executable": execution_callback,
+        "actual_executable": execution_callback
     }
 
     res = orchestrator.process_submission(raw_payload, context)
@@ -66,13 +74,17 @@ def test_lookup_exception_fails_closed():
     """
     execution_callback = MagicMock(return_value={"status": "FORGED"})
     orchestrator = EpistemicOrchestrator()
+    orchestrator.gates[0] = PermissionGate(trusted_scope={
+        "allowed_operations": ["api_call"],
+        "allowed_resources": ["/issue_binder"]
+    })
     orchestrator.execution_boundary.store = MagicMock()
     orchestrator.execution_boundary.store.get_events_for_correlation.side_effect = RuntimeError("Database I/O error")
 
     raw_payload = {"policy_id": "POL-2026-IO-ERR", "primary_metric": 100.0}
     context = {
         "proposed_actions": [{"action": {"op": "api_call", "endpoint": "/issue_binder"}}],
-        "actual_executable": execution_callback,
+        "actual_executable": execution_callback
     }
 
     res = orchestrator.process_submission(raw_payload, context)
@@ -369,16 +381,29 @@ def test_revoked_expired_replayed_grant_denied():
     Verifies that revoked, expired, or replayed grants cannot be consumed a second time
     by TrustedExecutionBoundary.
     """
+    from epistemicos.authorization import Policy
     execution_callback = MagicMock(return_value={"status": "REPLAYED"})
     orchestrator = EpistemicOrchestrator()
 
     raw_payload = {"policy_id": "POL-2026-REPLAY", "primary_metric": 100.0}
     payload_digest = orchestrator.execution_boundary.compute_canonical_digest(raw_payload)
 
+    executor_id = getattr(execution_callback, "__name__", str(execution_callback))
+    policy = Policy(policy_id="p1", allowed_operations={"execute"}, allowed_resources={"grader_service"})
+    cap, _ = orchestrator.execution_boundary.authority.evaluate_and_issue_capability(
+        action_name="execute",
+        target="grader_service",
+        canonical_request_digest=payload_digest,
+        correlation_id="corr-replay-1",
+        request_id="req-replay-1",
+        executor_id=executor_id,
+        policy=policy
+    )
+
     exec_ctx = ExecutionContext(
         correlation_id="corr-replay-1",
         request_id="req-replay-1",
-        authorization_token_id="tok-replay-1",
+        authorization_token_id=cap.token_id,
         authorized_digest=payload_digest,
         authorization_granted=True
     )
@@ -394,7 +419,7 @@ def test_revoked_expired_replayed_grant_denied():
         target="grader_service",
         canonical_request_digest=payload_digest,
         timestamp="2026-01-01T00:00:00Z",
-        authorization_token_id="tok-replay-1",
+        authorization_token_id=cap.token_id,
     )
     orchestrator.execution_boundary.store.record_event(auth_event)
 
@@ -410,7 +435,7 @@ def test_revoked_expired_replayed_grant_denied():
     assert execution_callback.call_count == 1
 
     # Second execution attempt with same single-use token raises PermissionError
-    with pytest.raises(PermissionError, match="Authorization token tok-replay-1 has already been consumed"):
+    with pytest.raises(PermissionError, match="has already been consumed"):
         orchestrator.execution_boundary.execute_protected_action(
             action_name="execute",
             target="grader_service",
