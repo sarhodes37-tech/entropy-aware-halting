@@ -389,6 +389,43 @@ def test_action_allowed_resources_enforcement():
     assert ok_empty is False
     assert "Resource allowlist is empty" in msg_empty
 
+    # 3. Action registered with omitted allowed_resources -> Defaults to set(), fails closed
+    omitted_res_action = RegisteredActionDefinition(
+        operation_id="omitted_res_op",
+        category=ActionCategory.NETWORK_READ,
+        description="Op with omitted allowlist"
+    )
+    assert omitted_res_action.allowed_resources == set()
+    registry.register_action(omitted_res_action)
+
+    ok_omitted, msg_omitted = engine.evaluate_side_effect_authorization(
+        operation_id="omitted_res_op",
+        target_resource="https://api.github.com/data",
+        payload=payload,
+        task_id="TASK-RES",
+        correlation_id="CORR-RES-4"
+    )
+    assert ok_omitted is False
+    assert "Resource allowlist is empty" in msg_omitted
+
+    # 4. Action with explicit wildcard allowed_resources -> Permits any target resource
+    wildcard_action = RegisteredActionDefinition(
+        operation_id="wildcard_res_op",
+        category=ActionCategory.NETWORK_READ,
+        description="Op with explicit wildcard allowlist",
+        allowed_resources={"*"}
+    )
+    registry.register_action(wildcard_action)
+
+    ok_wildcard, msg_wildcard = engine.evaluate_side_effect_authorization(
+        operation_id="wildcard_res_op",
+        target_resource="https://any-external-domain.org/endpoint",
+        payload=payload,
+        task_id="TASK-RES",
+        correlation_id="CORR-RES-5"
+    )
+    assert ok_wildcard is True
+
 
 # 16. A destination or operation changed after grant issuance invalidates the capability.
 def test_16_destination_or_operation_change_invalidates_capability():

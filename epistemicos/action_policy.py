@@ -34,7 +34,7 @@ class RegisteredActionDefinition:
     category: ActionCategory
     description: str
     requires_human_approval: bool = False
-    allowed_resources: Set[str] = field(default_factory=lambda: {"*"})
+    allowed_resources: Set[str] = field(default_factory=set)
     is_externally_consequential: bool = False
 
 
