@@ -201,3 +201,28 @@ def test_log_message_behavior_with_verbose_env(monkeypatch):
     handler.log_message("Test %s", "arg")
     assert len(calls) == 1
     assert calls[0] == ("Test %s", ("arg",))
+
+
+def test_observatory_concept_image_and_readme_integration():
+    """Verifies that docs/figures/observatory-concept.png exists and is referenced in README.md with appropriate disclaimer."""
+    import pathlib
+    concept_img_path = pathlib.Path("docs/figures/observatory-concept.png")
+    assert concept_img_path.exists(), "observatory-concept.png image asset missing"
+
+    readme_path = pathlib.Path("README.md")
+    content = readme_path.read_text(encoding="utf-8")
+    assert "docs/figures/observatory-concept.png" in content
+    assert "illustrative design concept" in content.lower()
+    assert "do not represent live system telemetry" in content.lower()
+
+
+def test_observatory_css_design_foundation_tokens():
+    """Verifies that style.css contains the expected dark graphite and cyan design foundation tokens."""
+    import pathlib
+    css_path = pathlib.Path("epistemicos/ui/static/style.css")
+    css_content = css_path.read_text(encoding="utf-8")
+    assert "--bg-base: #0d1117;" in css_content
+    assert "--bg-surface: #161b22;" in css_content
+    assert "--accent-primary: #38bdf8;" in css_content
+    assert "--status-verified-fg: #2dd4bf;" in css_content
+    assert "--status-failed-fg: #fb7185;" in css_content
