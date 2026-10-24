@@ -69,6 +69,24 @@ from epistemicos.shower_curtain import (
     LocalMappingVault
 )
 
+# Expose Action Policy & Egress Subsystems
+from epistemicos.containment import (
+    ContainmentGuard,
+    ContainmentReceipt,
+    ContainmentViolationType,
+    EgressPolicy,
+    EgressTransportBroker,
+    normalize_destination_host
+)
+
+from epistemicos.action_policy import (
+    ActionCategory,
+    ActionRegistry,
+    RegisteredActionDefinition,
+    SideEffectPolicyEngine,
+    TypedHumanApprovalRecord
+)
+
 # Expose Execution Provenance subsystem
 from epistemicos.provenance import (
     ExecutionContext,
@@ -115,5 +133,16 @@ __all__.extend([
     "SemanticResolver",
     "ExactAndNormalizedResolver",
     "Candidate",
-    "ClusterInfo"
+    "ClusterInfo",
+    "ContainmentGuard",
+    "ContainmentReceipt",
+    "ContainmentViolationType",
+    "EgressPolicy",
+    "EgressTransportBroker",
+    "normalize_destination_host",
+    "ActionCategory",
+    "ActionRegistry",
+    "RegisteredActionDefinition",
+    "SideEffectPolicyEngine",
+    "TypedHumanApprovalRecord"
 ])

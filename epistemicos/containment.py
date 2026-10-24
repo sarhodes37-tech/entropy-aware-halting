@@ -1,10 +1,12 @@
 """
-EpistemicOS V1 - ContainmentGuard Module
-----------------------------------------
-Provides active ingress, egress, and tool-execution guardrails to prevent:
+EpistemicOS V1 - ContainmentGuard & Controlled Egress Transport Subsystem
+------------------------------------------------------------------------
+Provides active ingress, egress, action classification, and tool-execution guardrails to prevent:
 1. Prompt Injections & Jailbreaks (Ingress)
-2. Unauthorized Network Egress & Unsafe Tool Parameters (Egress)
-3. Agent Containment Escape / Goal Mutation (Agentic Integrity)
+2. Unauthorized Network Egress & Unsafe Tool Parameters (Egress Policy & Normalization)
+3. Controlled Egress Transport Broker at transport establishment time with IP pinning and re-validation
+4. Action Classification & Externally Consequential Side Effect Controls
+5. Agent Containment Escape / Goal Mutation (Agentic Integrity)
 """
 
 import ipaddress
@@ -12,23 +14,32 @@ import re
 import socket
 import contextlib
 import contextvars
+import time
+import uuid
+import hashlib
 from urllib.parse import urlsplit, unquote
 from functools import lru_cache
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union
 
 
 _enforce_safe_dns = contextvars.ContextVar("enforce_safe_dns", default=False)
 _original_getaddrinfo = socket.getaddrinfo
 
 def _patched_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
+    """
+    Optional process-wide compatibility wrapper for legacy code.
+    Note: Transport-boundary egress enforcement is performed directly by ControlledEgressTransport / EgressTransportBroker.
+    """
     results = _original_getaddrinfo(host, port, family, type, proto, flags)
     if _enforce_safe_dns.get():
         for res in results:
             ip_str = res[4][0]
             try:
                 ip = ipaddress.ip_address(ip_str)
+                if getattr(ip, "ipv4_mapped", None):
+                    ip = ip.ipv4_mapped
                 if (
                     ip.is_loopback
                     or ip.is_private
@@ -52,6 +63,7 @@ class ContainmentViolationType(Enum):
     FORBIDDEN_COMMAND_EXECUTION = "forbidden_command_execution"
     GOAL_MUTATION_REWARD_CHEATING = "goal_mutation_reward_cheating"
     EXFILTRATION_PATTERN_MATCH = "exfiltration_pattern_match"
+    UNAUTHORIZED_SIDE_EFFECT = "unauthorized_side_effect"
 
 
 @dataclass
@@ -62,6 +74,203 @@ class ContainmentReceipt:
     sanitized_payload: Optional[Any] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
 
+
+class ActionCategory(Enum):
+    READ_ONLY_LOCAL = "READ_ONLY_LOCAL"
+    NETWORK_READ = "NETWORK_READ"
+    EXTERNAL_RECONNAISSANCE = "EXTERNAL_RECONNAISSANCE"
+    ACCOUNT_CREATION = "ACCOUNT_CREATION"
+    MESSAGING_CONTACT = "MESSAGING_CONTACT"
+    PUBLIC_REPOSITORY_MUTATION = "PUBLIC_REPOSITORY_MUTATION"
+    PACKAGE_PUBLISHING = "PACKAGE_PUBLISHING"
+    CREDENTIAL_USAGE = "CREDENTIAL_USAGE"
+    DESTRUCTIVE_COMMAND = "DESTRUCTIVE_COMMAND"
+    STATE_MUTATION = "STATE_MUTATION"
+
+
+@dataclass
+class EgressPolicy:
+    """
+    Explicit, default-deny network egress policy binding allowed destinations,
+    protocols, ports, and action categories.
+    """
+    allowed_destinations: Set[str] = field(default_factory=set)  # Exact hostnames or normalized IP strings
+    allowed_wildcards: Set[str] = field(default_factory=set)     # Fully-qualified wildcard patterns, e.g. "*.api.github.com"
+    allowed_protocols: Set[str] = field(default_factory=lambda: {"http", "https"})
+    allowed_ports: Set[int] = field(default_factory=lambda: {80, 443})
+    allowed_categories: Set[ActionCategory] = field(default_factory=lambda: {ActionCategory.READ_ONLY_LOCAL, ActionCategory.NETWORK_READ})
+    allow_loopback: bool = False
+    allow_private: bool = False
+
+    def is_destination_allowed(self, hostname: str, protocol: str = "https", port: int = 443, category: Optional[ActionCategory] = None) -> Tuple[bool, str]:
+        if category is not None and category not in self.allowed_categories:
+            return False, f"Egress blocked: Action category '{category.value}' is not authorized by egress policy."
+
+        if not self.allowed_destinations and not self.allowed_wildcards:
+            return False, "Egress blocked: Absent or empty approved-egress policy."
+
+        if protocol.lower() not in self.allowed_protocols:
+            return False, f"Egress blocked: Protocol '{protocol}' is not authorized."
+
+        if port not in self.allowed_ports:
+            return False, f"Egress blocked: Port '{port}' is not authorized."
+
+        norm_host = normalize_destination_host(hostname)
+        if not norm_host:
+            return False, f"Egress blocked: Destination host '{hostname}' could not be normalized."
+
+        if norm_host in self.allowed_destinations:
+            return True, "Allowed by explicit destination match."
+
+        for wildcard in self.allowed_wildcards:
+            if wildcard.startswith("*."):
+                suffix = wildcard[1:]  # e.g., ".api.github.com"
+                if norm_host.endswith(suffix) and norm_host != suffix[1:]:
+                    return True, f"Allowed by wildcard match '{wildcard}'."
+
+        return False, f"Egress blocked: Destination host '{norm_host}' is not in approved egress policy."
+
+
+def parse_ip_numeric(host_str: str) -> Optional[ipaddress.IPv4Address]:
+    """
+    Attempts to parse alternate numeric address encodings for IPv4
+    (decimal integer, hex, octal, dotted octal).
+    """
+    clean = host_str.strip()
+    if not clean:
+        return None
+
+    # Handle single integer or hex or octal value
+    if re.match(r'^(0x[0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)$', clean):
+        try:
+            val = int(clean, 0) if (clean.startswith("0x") or (clean.startswith("0") and len(clean) > 1)) else int(clean)
+            if 0 <= val <= 0xFFFFFFFF:
+                return ipaddress.IPv4Address(val)
+        except Exception:
+            pass
+
+    # Handle dotted representations with non-standard base encodings (e.g., 0177.0.0.1)
+    parts = clean.split(".")
+    if len(parts) == 4:
+        num_parts = []
+        for p in parts:
+            p_strip = p.strip()
+            if not p_strip:
+                return None
+            try:
+                if p_strip.startswith("0x") or p_strip.startswith("0X"):
+                    v = int(p_strip, 16)
+                elif p_strip.startswith("0") and len(p_strip) > 1 and p_strip.isdigit():
+                    v = int(p_strip, 8)
+                elif p_strip.isdigit():
+                    v = int(p_strip, 10)
+                else:
+                    return None
+                if 0 <= v <= 255:
+                    num_parts.append(v)
+                else:
+                    return None
+            except Exception:
+                return None
+        if len(num_parts) == 4:
+            return ipaddress.IPv4Address(bytes(num_parts))
+
+    return None
+
+
+def normalize_destination_host(target_url_or_host: str) -> str:
+    """
+    Strictly normalizes a target host/URL string into a canonical host representation.
+    Handles userinfo, userinfo with `#` or `%23` bypass tricks, IPv6 brackets,
+    percent-encoded delimiters, alternate numeric IP encodings, trailing dots,
+    and converts scheme-rest to lower case.
+    Returns empty string if invalid or malformed authority.
+    """
+    if not isinstance(target_url_or_host, str):
+        return ""
+
+    raw = target_url_or_host.strip()
+    if not raw:
+        return ""
+
+    # Replace backslashes with forward slashes before parsing
+    norm = raw.replace('\\', '/')
+
+    # Handle scheme or schemeless URL structure
+    if "://" in norm:
+        scheme_rest = norm.split("://", 1)[1]
+    elif norm.startswith("//"):
+        scheme_rest = norm[2:]
+    else:
+        scheme_rest = norm
+
+    # Extract authority part before path or query
+    authority_part = scheme_rest.split("/", 1)[0].split("?", 1)[0]
+    if not authority_part:
+        return ""
+
+    # Reject URLs containing '#' or '%23' in authority part before path or query
+    if "#" in authority_part or "%23" in authority_part.lower():
+        return ""
+
+    # Unquote percent-encoded characters in authority part
+    unquoted_auth = unquote(authority_part)
+    if "#" in unquoted_auth:
+        return ""
+
+    # Handle userinfo (e.g. user:pass@hostname)
+    if "@" in unquoted_auth:
+        host_port = unquoted_auth.rsplit("@", 1)[1]
+    else:
+        host_port = unquoted_auth
+
+    # Strip port if present
+    if host_port.startswith("["):
+        # Bracketed IPv6
+        if "]" not in host_port:
+            return ""
+        host_part = host_port.split("]", 1)[0] + "]"
+    else:
+        host_part = host_port.split(":", 1)[0]
+
+    host_clean = host_part.strip().lower()
+
+    # Strip trailing dot if present (DNS FQDN dot)
+    if host_clean.endswith(".") and len(host_clean) > 1:
+        host_clean = host_clean[:-1]
+
+    if not host_clean:
+        return ""
+
+    # Reject whitespace
+    if any(c.isspace() for c in host_clean):
+        return ""
+
+    # IPv6 bracketed handling
+    if host_clean.startswith("[") and host_clean.endswith("]"):
+        inner = host_clean[1:-1]
+        try:
+            ip = ipaddress.ip_address(inner)
+            if getattr(ip, "ipv4_mapped", None):
+                return str(ip.ipv4_mapped)
+            return str(ip)
+        except ValueError:
+            return ""
+
+    # Check for direct IPv4 / IPv6 or alternate numeric IP encodings
+    try:
+        ip = ipaddress.ip_address(host_clean)
+        return str(ip)
+    except ValueError:
+        alt_ip = parse_ip_numeric(host_clean)
+        if alt_ip:
+            return str(alt_ip)
+
+    # Validate standard domain name character set
+    if not re.match(r'^[a-z0-9\-\.]+$', host_clean):
+        return ""
+
+    return host_clean
 
 
 class ContainmentGuard:
@@ -128,11 +337,16 @@ class ContainmentGuard:
     def __init__(
         self,
         allowed_egress_domains: Optional[List[str]] = None,
+        egress_policy: Optional[EgressPolicy] = None,
         blocked_hosts: Optional[Set[str]] = None,
         custom_forbidden_commands: Optional[List[str]] = None,
         strict_mode: bool = True,
     ):
         self.allowed_domains = set(allowed_egress_domains or [])
+        self.egress_policy = egress_policy
+        if self.egress_policy is None and allowed_egress_domains is not None:
+            self.egress_policy = EgressPolicy(allowed_destinations=set(allowed_egress_domains))
+
         self.blocked_hosts = blocked_hosts or self.DEFAULT_BLOCKED_HOSTS
         self.forbidden_commands_compiled = self.DEFAULT_FORBIDDEN_COMMANDS_COMPILED
 
@@ -149,8 +363,15 @@ class ContainmentGuard:
         if not hostname:
             return True
 
+        norm_host = normalize_destination_host(hostname)
+        if not norm_host:
+            return True
+
+        # Try parsing as IP address directly (including IPv4 mapped)
         try:
-            ip = ipaddress.ip_address(hostname)
+            ip = ipaddress.ip_address(norm_host)
+            if getattr(ip, "ipv4_mapped", None):
+                ip = ip.ipv4_mapped
             return (
                 ip.is_loopback
                 or ip.is_private
@@ -161,8 +382,12 @@ class ContainmentGuard:
         except ValueError:
             pass
 
+        # Perform DNS resolution and verify ALL returned answers
         try:
-            addr_info = socket.getaddrinfo(hostname, None)
+            addr_info = socket.getaddrinfo(norm_host, None)
+            if not addr_info:
+                return True
+
             seen = set()
             for res in addr_info:
                 ip_str = res[4][0]
@@ -171,6 +396,9 @@ class ContainmentGuard:
                 seen.add(ip_str)
 
                 resolved_ip = ipaddress.ip_address(ip_str)
+                if getattr(resolved_ip, "ipv4_mapped", None):
+                    resolved_ip = resolved_ip.ipv4_mapped
+
                 if (
                     resolved_ip.is_loopback
                     or resolved_ip.is_private
@@ -212,49 +440,8 @@ class ContainmentGuard:
     # =========================================================================
 
     def _extract_hostname_secure(self, url: str) -> str:
-        """Extracts the hostname securely using urllib.parse to prevent SSRF bypasses via URL parsing inconsistencies."""
-        if not isinstance(url, str):
-            return ""
-        try:
-            url = url.strip()
-            if not url:
-                return ""
-
-            url_norm = url.replace('\\', '/')
-
-            # Reject URLs containing '#' or '%23' in the authority portion before path or query
-            if "://" in url_norm:
-                scheme_rest = url_norm.split("://", 1)[1]
-            elif url_norm.startswith("//"):
-                scheme_rest = url_norm[2:]
-            else:
-                scheme_rest = url_norm
-
-            authority_part = scheme_rest.split("/", 1)[0].split("?", 1)[0]
-            if "#" in authority_part or "%23" in authority_part.lower():
-                return ""
-
-            parsed = urlsplit(url_norm)
-
-            # urllib.parse.urlsplit parsed.hostname extracts hostname, strips userinfo and port,
-            # strips brackets from IPv6, and handles lowercase.
-            hostname = parsed.hostname
-            if not hostname:
-                return ""
-
-            hostname = hostname.lower().strip()
-
-            # Reject whitespace inside hostname
-            if any(c.isspace() for c in hostname):
-                return ""
-
-            # Validate character set (alphanumeric, hyphens, dots, and colons for unbracketed IPv6)
-            if not re.match(r'^[a-zA-Z0-9\-\.\:]+$', hostname):
-                return ""
-
-            return hostname
-        except Exception:
-            return ""
+        """Extracts the hostname securely using normalize_destination_host."""
+        return normalize_destination_host(url)
 
     def inspect_network_egress(self, target_url: str) -> ContainmentReceipt:
         """Inspects outbound network attempts from agentic tools to prevent exfiltration or internal SSRF."""
@@ -275,7 +462,17 @@ class ContainmentGuard:
                     reason=f"Egress blocked: Attempted access to internal/isolated host '{hostname}'.",
                 )
 
-            if self.allowed_domains and hostname not in self.allowed_domains:
+            # Check explicit egress_policy if present
+            if self.egress_policy is not None:
+                allowed, msg = self.egress_policy.is_destination_allowed(hostname)
+                if not allowed:
+                    return ContainmentReceipt(
+                        passed=False,
+                        violation_type=ContainmentViolationType.UNAUTHORIZED_EGRESS_ATTEMPT,
+                        reason=msg,
+                    )
+
+            elif self.allowed_domains and hostname not in self.allowed_domains:
                 return ContainmentReceipt(
                     passed=False,
                     violation_type=ContainmentViolationType.UNAUTHORIZED_EGRESS_ATTEMPT,
@@ -415,3 +612,190 @@ class ContainmentGuard:
                     reason=f"Tool transport error: {str(e)}",
                 ),
             )
+
+
+# =========================================================================
+# CONTROLLED EGRESS TRANSPORT & RESOLVER ABSTRACTION
+# =========================================================================
+
+@dataclass
+class EgressConnectionRecord:
+    connection_id: str
+    target_url: str
+    normalized_host: str
+    resolved_ip: Optional[str]
+    allowed: bool
+    reason: str
+    timestamp: str
+
+
+class EgressTransportBroker:
+    """
+    Registered transport abstraction enforcing egress policy at connection establishment time.
+    Revalidates DNS resolution, performs IP pinning, checks redirects, and records egress events.
+    """
+
+    def __init__(
+        self,
+        policy: Optional[EgressPolicy] = None,
+        resolver_func: Optional[Callable[[str], List[str]]] = None,
+        provenance_store: Optional[Any] = None,
+        require_infrastructure_enforcement: bool = False,
+        infrastructure_enforced: bool = False
+    ):
+        self.policy = policy or EgressPolicy()
+        self.resolver_func = resolver_func or self._default_resolver
+        self.provenance_store = provenance_store
+        self.require_infrastructure_enforcement = require_infrastructure_enforcement
+        self.infrastructure_enforced = infrastructure_enforced
+        self.connection_history: List[EgressConnectionRecord] = []
+
+        if self.require_infrastructure_enforcement and not self.infrastructure_enforced:
+            raise RuntimeError(
+                "EgressTransportBroker initialization failed: Mandatory infrastructure-level network enforcement is missing."
+            )
+
+    def _default_resolver(self, hostname: str) -> List[str]:
+        try:
+            results = socket.getaddrinfo(hostname, None)
+            ips = []
+            for res in results:
+                ip_str = res[4][0]
+                if ip_str not in ips:
+                    ips.append(ip_str)
+            return ips
+        except Exception as e:
+            raise socket.gaierror(f"DNS resolution failed for '{hostname}': {str(e)}")
+
+    def _record_egress_event(
+        self,
+        correlation_id: str,
+        request_id: str,
+        action_name: str,
+        target_url: str,
+        normalized_host: str,
+        resolved_ip: Optional[str],
+        allowed: bool,
+        reason: str
+    ) -> None:
+        rec = EgressConnectionRecord(
+            connection_id=str(uuid.uuid4()),
+            target_url=target_url,
+            normalized_host=normalized_host,
+            resolved_ip=resolved_ip,
+            allowed=allowed,
+            reason=reason,
+            timestamp=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        )
+        self.connection_history.append(rec)
+
+        if not allowed and self.provenance_store is not None:
+            from epistemicos.provenance import ProvenanceEvent, ProvenanceEventType, ProvenanceSource
+            event = ProvenanceEvent(
+                schema_version="1.0.0",
+                event_id=str(uuid.uuid4()),
+                event_type=ProvenanceEventType.EGRESS_BLOCKED.value,
+                provenance_source=ProvenanceSource.EGRESS_GATE.value,
+                correlation_id=correlation_id,
+                request_id=request_id,
+                action_name=action_name,
+                target=target_url,
+                canonical_request_digest=hashlib.sha256(target_url.encode("utf-8")).hexdigest(),
+                timestamp=rec.timestamp,
+                outcome={"status": "EGRESS_BLOCKED", "reason": reason, "normalized_host": normalized_host, "resolved_ip": resolved_ip}
+            )
+            try:
+                self.provenance_store.record_event(event)
+            except Exception:
+                pass
+
+    def establish_connection(
+        self,
+        target_url: str,
+        action_name: str = "network_request",
+        correlation_id: str = "DEFAULT-CORR",
+        request_id: str = "DEFAULT-REQ",
+        category: Optional[ActionCategory] = None
+    ) -> Tuple[bool, str, Optional[str]]:
+        """
+        Validates egress policy at connection time:
+        1. Normalizes destination host
+        2. Resolves DNS strictly via registered resolver
+        3. Revalidates all resolved IPs against restricted IP ranges
+        4. Validates normalized host against egress policy
+        5. Returns (allowed, reason, pinned_ip)
+        """
+        norm_host = normalize_destination_host(target_url)
+        if not norm_host:
+            reason = "Egress blocked: Missing or invalid target destination."
+            self._record_egress_event(correlation_id, request_id, action_name, target_url, "", None, False, reason)
+            return False, reason, None
+
+        # Resolve DNS via trusted resolver
+        try:
+            resolved_ips = self.resolver_func(norm_host)
+        except Exception as resolver_err:
+            reason = f"Egress blocked: Resolver error: {str(resolver_err)}"
+            self._record_egress_event(correlation_id, request_id, action_name, target_url, norm_host, None, False, reason)
+            return False, reason, None
+
+        if not resolved_ips:
+            reason = f"Egress blocked: Resolver returned zero IP addresses for host '{norm_host}'."
+            self._record_egress_event(correlation_id, request_id, action_name, target_url, norm_host, None, False, reason)
+            return False, reason, None
+
+        # Check ALL returned IPs for restricted/private ranges
+        restricted_found = []
+        valid_ips = []
+        for ip_str in resolved_ips:
+            try:
+                ip_obj = ipaddress.ip_address(ip_str)
+                if getattr(ip_obj, "ipv4_mapped", None):
+                    ip_obj = ip_obj.ipv4_mapped
+
+                if (
+                    ip_obj.is_loopback
+                    or ip_obj.is_private
+                    or ip_obj.is_link_local
+                    or ip_obj.is_reserved
+                    or ip_obj.is_unspecified
+                ):
+                    restricted_found.append(ip_str)
+                else:
+                    valid_ips.append(ip_str)
+            except ValueError:
+                restricted_found.append(ip_str)
+
+        if restricted_found:
+            reason = f"Egress blocked: DNS resolution for '{norm_host}' returned restricted IP(s) '{restricted_found}'."
+            self._record_egress_event(correlation_id, request_id, action_name, target_url, norm_host, restricted_found[0], False, reason)
+            return False, reason, None
+
+        # Check policy
+        allowed, pol_reason = self.policy.is_destination_allowed(norm_host, category=category)
+        if not allowed:
+            self._record_egress_event(correlation_id, request_id, action_name, target_url, norm_host, valid_ips[0], False, pol_reason)
+            return False, pol_reason, None
+
+        # Pin first valid IP for connection
+        pinned_ip = valid_ips[0]
+        self._record_egress_event(correlation_id, request_id, action_name, target_url, norm_host, pinned_ip, True, pol_reason)
+        return True, pol_reason, pinned_ip
+
+    def revalidate_redirect(
+        self,
+        original_url: str,
+        redirect_url: str,
+        action_name: str = "network_redirect",
+        correlation_id: str = "DEFAULT-CORR",
+        request_id: str = "DEFAULT-REQ",
+        category: Optional[ActionCategory] = None
+    ) -> Tuple[bool, str, Optional[str]]:
+        """Re-validates a redirect target URL strictly before the redirected request is made."""
+        return self.establish_connection(
+            target_url=redirect_url,
+            action_name=f"{action_name}_redirect",
+            correlation_id=correlation_id,
+            request_id=request_id,
+            category=category
+        )

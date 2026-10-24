@@ -99,3 +99,9 @@ The behavior is verified in `tests/unit/test_permission_gate_regression.py`:
 - `test_permission_gate_unauthorized_endpoint_denied`: Confirms that unauthorized nested endpoints remain strictly blocked (`HALT`).
 - `test_permission_gate_missing_malformed_structures_fail_closed`: Verifies that truly missing or empty operation/resource fields fail closed without false passes.
 - `test_permission_gate_equivalent_representations_consistency`: Ensures top-level dicts, nested dicts, and custom object wrappers evaluate consistently.
+
+---
+
+## 4. Phase 2 — Default-Deny Network Egress and Side-Effect Control Invariants
+
+For complete details on Phase 2 egress policies, destination normalization, transport-boundary brokers, action classification taxonomies, typed human approvals, and deployment boundary isolation rules, see [docs/security/egress_and_side_effect_controls.md](security/egress_and_side_effect_controls.md).

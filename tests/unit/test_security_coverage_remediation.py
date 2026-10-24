@@ -145,7 +145,7 @@ def test_containment_extract_hostname_and_scalar_traversal():
 
     # Lines 228-231: Schemeless / Protocol-relative URLs
     assert guard._extract_hostname_secure("//example.com/path") == "example.com"
-    assert guard._extract_hostname_secure("example.com/path") == ""
+    assert guard._extract_hostname_secure("example.com/path") == "example.com"
 
     # Line 243: Empty hostname
     assert guard._extract_hostname_secure("http:///path") == ""
