@@ -233,6 +233,14 @@ document.addEventListener('DOMContentLoaded', () => {
         return true;
       });
 
+      const countBadge = document.getElementById('trace-count');
+      if (countBadge) {
+        const total = this.state.tracesData.length;
+        const visible = filtered.length;
+        countBadge.textContent = total === visible ? `${total}` : `${visible} of ${total}`;
+        countBadge.setAttribute('aria-label', total === visible ? `${total} traces` : `${visible} of ${total} traces shown`);
+      }
+
       if (filtered.length === 0) {
         const emptyLi = document.createElement('li');
         emptyLi.className = 'text-muted text-center';
