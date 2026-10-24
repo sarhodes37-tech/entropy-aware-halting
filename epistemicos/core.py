@@ -414,7 +414,11 @@ class EpistemicOrchestrator:
                             raw_scope_dict = {}
 
                         allowed_ops = set(raw_scope_dict.get("allowed_operations", []) or [])
-                        allowed_res = set(raw_scope_dict.get("allowed_resources", []) or [])
+                        allowed_res_raw = raw_scope_dict.get("allowed_resources")
+                        if allowed_res_raw is not None:
+                            allowed_res = set(allowed_res_raw)
+                        else:
+                            allowed_res = {"*"}
                         req_human = set(raw_scope_dict.get("required_human_approval_operations", []) or [])
 
                         for g in (self.gates or []):
@@ -423,7 +427,7 @@ class EpistemicOrchestrator:
                             if hasattr(g, "trusted_operations") and g.trusted_operations:
                                 allowed_ops.update(g.trusted_operations.keys())
 
-                        if allowed_ops or allowed_res:
+                        if allowed_ops or (allowed_res_raw is not None and len(allowed_res) > 0):
                             active_policy = Policy(
                                 policy_id="context_trusted_scope",
                                 allowed_operations=allowed_ops,

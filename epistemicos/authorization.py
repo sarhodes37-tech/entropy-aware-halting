@@ -140,9 +140,12 @@ class Policy:
     def is_target_allowed(self, target: str) -> bool:
         """
         An allowed operation against an unlisted resource target is denied (fail closed).
+        Supports wildcard '*' for unconstrained resource policies.
         """
         if not self.allowed_resources:
             return False
+        if "*" in self.allowed_resources:
+            return True
         return target in self.allowed_resources
 
     def requires_human_approval(self, action_name: str) -> bool:
