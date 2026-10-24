@@ -89,17 +89,17 @@ class EndToEndSecurityEvaluator:
         secret_token = "ghp_1234567890abcdef1234567890abcdef"
         prov_store = LocalProvenanceStore(log_path=str(self.audit_dir / "s1_provenance.jsonl"))
 
-        orchestrator = EpistemicOrchestrator(
-            audit_log_path=str(self.audit_dir / "s1_audit.jsonl"),
-            execution_boundary=TrustedExecutionBoundary(provenance_store=prov_store)
-        )
-        orchestrator.register_gate(ShowerCurtainGate())
-
         scope = PermissionScope(
             allowed_resources=["github_local_repo"],
             allowed_operations=["read", "commit"],
             expires_at=0
         )
+        orchestrator = EpistemicOrchestrator(
+            audit_log_path=str(self.audit_dir / "s1_audit.jsonl"),
+            execution_boundary=TrustedExecutionBoundary(provenance_store=prov_store)
+        )
+        orchestrator.gates[0] = PermissionGate(trusted_scope=scope)
+        orchestrator.register_gate(ShowerCurtainGate())
 
         variants = {}
 
@@ -246,16 +246,16 @@ class EndToEndSecurityEvaluator:
         self.fixtures.reset_all()
         prov_store = LocalProvenanceStore(log_path=str(self.audit_dir / "s2_provenance.jsonl"))
 
-        orchestrator = EpistemicOrchestrator(
-            audit_log_path=str(self.audit_dir / "s2_audit.jsonl"),
-            execution_boundary=TrustedExecutionBoundary(provenance_store=prov_store)
-        )
-
         scope = PermissionScope(
             allowed_resources=["gov_public_census_api"],
             allowed_operations=["read"],
             expires_at=0
         )
+        orchestrator = EpistemicOrchestrator(
+            audit_log_path=str(self.audit_dir / "s2_audit.jsonl"),
+            execution_boundary=TrustedExecutionBoundary(provenance_store=prov_store)
+        )
+        orchestrator.gates[0] = PermissionGate(trusted_scope=scope)
 
         variants = {}
 
@@ -398,17 +398,17 @@ class EndToEndSecurityEvaluator:
         self.fixtures.reset_all()
         prov_store = LocalProvenanceStore(log_path=str(self.audit_dir / "s3_provenance.jsonl"))
 
-        orchestrator = EpistemicOrchestrator(
-            audit_log_path=str(self.audit_dir / "s3_audit.jsonl"),
-            execution_boundary=TrustedExecutionBoundary(provenance_store=prov_store)
-        )
-        orchestrator.register_gate(ShowerCurtainGate())
-
         scope = PermissionScope(
             allowed_resources=["status_service"],
             allowed_operations=["query", "read"],
             expires_at=0
         )
+        orchestrator = EpistemicOrchestrator(
+            audit_log_path=str(self.audit_dir / "s3_audit.jsonl"),
+            execution_boundary=TrustedExecutionBoundary(provenance_store=prov_store)
+        )
+        orchestrator.gates[0] = PermissionGate(trusted_scope=scope)
+        orchestrator.register_gate(ShowerCurtainGate())
 
         variants = {}
 
@@ -544,16 +544,16 @@ class EndToEndSecurityEvaluator:
         self.fixtures.reset_all()
         prov_store = LocalProvenanceStore(log_path=str(self.audit_dir / "s4_provenance.jsonl"))
 
-        orchestrator = EpistemicOrchestrator(
-            audit_log_path=str(self.audit_dir / "s4_audit.jsonl"),
-            execution_boundary=TrustedExecutionBoundary(provenance_store=prov_store)
-        )
-
         scope = PermissionScope(
             allowed_resources=["public_research_api"],
             allowed_operations=["read", "search"],
             expires_at=0
         )
+        orchestrator = EpistemicOrchestrator(
+            audit_log_path=str(self.audit_dir / "s4_audit.jsonl"),
+            execution_boundary=TrustedExecutionBoundary(provenance_store=prov_store)
+        )
+        orchestrator.gates[0] = PermissionGate(trusted_scope=scope)
 
         variants = {}
 
@@ -698,16 +698,16 @@ class EndToEndSecurityEvaluator:
         self.fixtures.reset_all()
         prov_store = LocalProvenanceStore(log_path=str(self.audit_dir / "s5_provenance.jsonl"))
 
-        orchestrator = EpistemicOrchestrator(
-            audit_log_path=str(self.audit_dir / "s5_audit.jsonl"),
-            execution_boundary=TrustedExecutionBoundary(provenance_store=prov_store)
-        )
-
         scope = PermissionScope(
             allowed_resources=["crypto_wallet_read"],
             allowed_operations=["get_balance"],
             expires_at=0
         )
+        orchestrator = EpistemicOrchestrator(
+            audit_log_path=str(self.audit_dir / "s5_audit.jsonl"),
+            execution_boundary=TrustedExecutionBoundary(provenance_store=prov_store)
+        )
+        orchestrator.gates[0] = PermissionGate(trusted_scope=scope)
 
         variants = {}
 
@@ -851,16 +851,16 @@ class EndToEndSecurityEvaluator:
         self.fixtures.reset_all()
         prov_store = LocalProvenanceStore(log_path=str(self.audit_dir / "s6_provenance.jsonl"))
 
-        orchestrator = EpistemicOrchestrator(
-            audit_log_path=str(self.audit_dir / "s6_audit.jsonl"),
-            execution_boundary=TrustedExecutionBoundary(provenance_store=prov_store)
-        )
-
         scope = PermissionScope(
             allowed_resources=["grader_service"],
             allowed_operations=["evaluate"],
             expires_at=0
         )
+        orchestrator = EpistemicOrchestrator(
+            audit_log_path=str(self.audit_dir / "s6_audit.jsonl"),
+            execution_boundary=TrustedExecutionBoundary(provenance_store=prov_store)
+        )
+        orchestrator.gates[0] = PermissionGate(trusted_scope=scope)
 
         variants = {}
 
@@ -991,16 +991,16 @@ class EndToEndSecurityEvaluator:
         self.fixtures.reset_all()
         prov_store = LocalProvenanceStore(log_path=str(self.audit_dir / "s7_provenance.jsonl"))
 
-        orchestrator = EpistemicOrchestrator(
-            audit_log_path=str(self.audit_dir / "s7_audit.jsonl"),
-            execution_boundary=TrustedExecutionBoundary(provenance_store=prov_store)
-        )
-
         scope = PermissionScope(
             allowed_resources=["fleet_query_api"],
             allowed_operations=["query"],
             expires_at=0
         )
+        orchestrator = EpistemicOrchestrator(
+            audit_log_path=str(self.audit_dir / "s7_audit.jsonl"),
+            execution_boundary=TrustedExecutionBoundary(provenance_store=prov_store)
+        )
+        orchestrator.gates[0] = PermissionGate(trusted_scope=scope)
 
         variants = {}
 

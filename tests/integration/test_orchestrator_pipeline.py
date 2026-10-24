@@ -19,6 +19,7 @@ from epistemicos.core import EpistemicOrchestrator
 from epistemicos.models import CanonicalProblemRepresentation, PermissionScope
 from epistemicos.gates import CryptoAttestationGate, EntropyGate, PermissionGate
 from epistemicos.audit import TamperEvidentAuditTrail, AuditEvent, AuditLogLevel
+from epistemicos.authorization import AuthorizationAuthority, Policy
 
 
 # =====================================================================
@@ -87,7 +88,6 @@ def test_internal_subnet_mutating_action_permitted(tmp_path):
     trusted internal subnets pass scope checks and commit successfully.
     """
     log_path = str(tmp_path / "test_audit.jsonl")
-    orchestrator = EpistemicOrchestrator(audit_log_path=log_path)
 
     scope = PermissionScope(
         origin_subnet="192.168.1.50",
@@ -95,6 +95,15 @@ def test_internal_subnet_mutating_action_permitted(tmp_path):
         allowed_resources=["logistics_db"],
         allowed_operations=["read", "query", "update_db"]
     )
+    orchestrator = EpistemicOrchestrator(
+        audit_log_path=log_path,
+        authority=AuthorizationAuthority(default_policy=Policy(
+            policy_id="test_scope",
+            allowed_operations={"read", "query", "update_db"},
+            allowed_resources={"logistics_db"}
+        ))
+    )
+    orchestrator.gates[0] = PermissionGate(trusted_scope=scope)
 
     cpr = CanonicalProblemRepresentation(
         policy_id="POL-101-VA",
@@ -157,7 +166,6 @@ def test_rmm_quarantine_subnet_read_only_permitted(tmp_path):
     an RMM quarantine subnet remain permitted under the degraded privilege profile.
     """
     log_path = str(tmp_path / "test_audit.jsonl")
-    orchestrator = EpistemicOrchestrator(audit_log_path=log_path)
 
     scope = PermissionScope(
         origin_subnet="10.240.1.100",
@@ -166,6 +174,15 @@ def test_rmm_quarantine_subnet_read_only_permitted(tmp_path):
         allowed_resources=["logistics_db"],
         allowed_operations=["read", "query", "update_db"]
     )
+    orchestrator = EpistemicOrchestrator(
+        audit_log_path=log_path,
+        authority=AuthorizationAuthority(default_policy=Policy(
+            policy_id="test_scope",
+            allowed_operations={"read", "query", "update_db"},
+            allowed_resources={"logistics_db"}
+        ))
+    )
+    orchestrator.gates[0] = PermissionGate(trusted_scope=scope)
 
     cpr = CanonicalProblemRepresentation(
         policy_id="POL-101-VA",
@@ -196,7 +213,19 @@ def test_orchestrator_noisy_surprisal_halt_and_rollback(tmp_path):
     and stops execution safely within the unified orchestrator.
     """
     log_path = str(tmp_path / "test_audit.jsonl")
-    orchestrator = EpistemicOrchestrator(audit_log_path=log_path)
+    scope = {
+        "allowed_operations": ["update_db", "issue_binder"],
+        "allowed_resources": ["logistics_db", "POL-2026-N99"]
+    }
+    orchestrator = EpistemicOrchestrator(
+        audit_log_path=log_path,
+        authority=AuthorizationAuthority(default_policy=Policy(
+            policy_id="test_scope",
+            allowed_operations={"update_db", "issue_binder"},
+            allowed_resources={"logistics_db", "POL-2026-N99"}
+        ))
+    )
+    orchestrator.gates[0] = PermissionGate(trusted_scope=scope)
 
     mock_commercial_payload = {
         "policy_id": "POL-2026-N99",
@@ -296,6 +325,14 @@ def test_spoofed_client_attempt_counter_neutralized(orchestrator, base_spoof_pay
     clean_logprobs = [-0.01] * 10
     noisy_logprobs = [-0.01] * 5 + [-12.0]
 
+    scope = base_spoof_payload["scope"]
+    orchestrator.authority.default_policy = Policy(
+        policy_id="test_scope",
+        allowed_operations=set(scope["allowed_operations"]),
+        allowed_resources=set(scope["allowed_resources"])
+    )
+    orchestrator.gates[0] = PermissionGate(trusted_scope=scope)
+
     actions = [{"op": "update_db", "node": "logistics_db"}]
     context_clean = {"token_count": 10, "token_logprobs": clean_logprobs, "proposed_actions": actions, "trusted_scope": base_spoof_payload["scope"]}
     context_noisy = {"token_count": 6, "token_logprobs": noisy_logprobs, "proposed_actions": actions, "trusted_scope": base_spoof_payload["scope"]}
@@ -327,6 +364,13 @@ def test_spoofed_client_attempt_counter_neutralized(orchestrator, base_spoof_pay
             "allowed_operations": ["read"]
         }
     }
+    exhausted_scope = context_exhausted["trusted_scope"]
+    orchestrator.authority.default_policy = Policy(
+        policy_id="exhausted_scope",
+        allowed_operations=set(exhausted_scope["allowed_operations"]),
+        allowed_resources=set(exhausted_scope["allowed_resources"])
+    )
+    orchestrator.gates[0] = PermissionGate(trusted_scope=exhausted_scope)
 
     res4 = orchestrator.process_submission(breached_payload, context_exhausted, trajectory_id=session_id)
     assert res4["status"] == "HALTED"
@@ -527,9 +571,20 @@ def test_governance_os_stateful_key_revocation(tmp_path):
     priors = {"preferred": 0.5, "standard": 0.3, "substandard": 0.2}
     orchestrator = EpistemicOrchestrator(audit_log_path=log_path, prior_probabilities=priors)
 
-    orchestrator.register_gate(EntropyGate(z_threshold=2.85))
-    orchestrator.register_gate(PermissionGate(contract_model=CanonicalProblemRepresentation))
-    orchestrator.register_gate(CryptoAttestationGate(required_algorithm="ML-DSA", expiry_year=2030, revoked_keys=frozenset({"KEY-000-COMPROMISED", "KEY-999-STOLEN", "KEY-2026-COMPROMISED"})))
+    q_scope = {
+        "allowed_operations": ["update_db", "revert"],
+        "allowed_resources": ["logistics_db"]
+    }
+    orchestrator.authority.default_policy = Policy(
+        policy_id="q_scope",
+        allowed_operations={"update_db", "revert"},
+        allowed_resources={"logistics_db"}
+    )
+    orchestrator.gates = [
+        EntropyGate(z_threshold=2.85),
+        PermissionGate(contract_model=CanonicalProblemRepresentation, trusted_scope=q_scope),
+        CryptoAttestationGate(required_algorithm="ML-DSA", expiry_year=2030, revoked_keys=frozenset({"KEY-000-COMPROMISED", "KEY-999-STOLEN", "KEY-2026-COMPROMISED"}))
+    ]
 
     mock_payload = {
         "policy_id": "POL-2026-QUANTUM",
@@ -544,15 +599,13 @@ def test_governance_os_stateful_key_revocation(tmp_path):
 
     # Scenario 1: Valid PQC Key -> ALLOWED
     valid_crypto_meta = {"algorithm": "ML-DSA", "key_id": "KEY-123-SECURE"}
+
     valid_context = {
         "likelihoods": mock_likelihoods,
         "token_logprobs": safe_logprobs,
         "proposed_actions": proposed_actions,
         "cryptography": valid_crypto_meta,
-        "trusted_scope": {
-            "allowed_operations": ["update_db", "revert"],
-            "allowed_resources": ["logistics_db"]
-        }
+        "trusted_scope": q_scope
     }
     valid_result = orchestrator.process_submission(
         raw_payload=mock_payload,
