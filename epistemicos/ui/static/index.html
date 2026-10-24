@@ -10,7 +10,7 @@
   <header class="app-header">
     <div class="header-container">
       <div class="brand">
-        <span class="logo-icon">🛡️</span>
+        <span class="logo-icon" aria-hidden="true">🛡️</span>
         <div>
           <h1>EpistemicOS</h1>
           <p class="subtitle">Control Plane Observatory (Read-Only Prototype)</p>
@@ -33,7 +33,10 @@
     <section id="view-overview" class="view-panel active" role="tabpanel" aria-labelledby="tab-overview" tabindex="0">
       <div class="panel-header">
         <h2>System Executive Overview</h2>
-        <button id="btn-refresh-overview" class="btn-refresh" aria-label="Refresh overview metrics"><span class="refresh-icon" aria-hidden="true">🔄</span> Refresh</button>
+        <div class="header-actions">
+          <span id="overview-last-updated" class="last-updated-text" aria-live="polite"></span>
+          <button id="btn-refresh-overview" class="btn-refresh" aria-label="Refresh overview metrics"><span class="refresh-icon" aria-hidden="true">🔄</span> Refresh</button>
+        </div>
       </div>
 
       <div class="metrics-grid">
@@ -112,7 +115,7 @@
       </div>
 
       <div class="disclaimer-banner">
-        <span class="warning-icon">⚠️</span>
+        <span class="warning-icon" aria-hidden="true">⚠️</span>
         <div>
           <strong>Provenance Scope Disclaimer:</strong>
           Valid local cryptographic hash chain integrity verifies append-only sequence chaining, but does NOT prove external source authenticity, non-repudiation, or trace completeness.
