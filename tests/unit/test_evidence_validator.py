@@ -31,44 +31,35 @@ from benchmarks.validate_evidence import (
 
 
 @pytest.fixture
-def valid_evidence_data():
-    records_path = "results/per_case_results.json"
+def valid_evidence_data(tmp_path):
+    records_file = tmp_path / "per_case_results.json"
     run_id = "run-l4-20260330000000-f4e31381"
     dataset_digest = FROZEN_BASELINE_DATASET_DIGEST
 
-    if not os.path.exists(records_path):
-        os.makedirs("results", exist_ok=True)
-        mock_records = []
-        for i in range(65):
-            mock_records.append({
-                "case_id": f"adv_{i}",
-                "baseline": "Combined Gating",
-                "classification": "TR",
-                "run_id": run_id,
-                "dataset_sha256_digest": dataset_digest
-            })
-        for i in range(35):
-            mock_records.append({
-                "case_id": f"benign_{i}",
-                "baseline": "Combined Gating",
-                "classification": "TC",
-                "run_id": run_id,
-                "dataset_sha256_digest": dataset_digest
-            })
-        content = (json.dumps(mock_records, indent=2) + "\n").encode("utf-8")
-        with open(records_path, "wb") as f:
-            f.write(content)
-    else:
-        with open(records_path, "rb") as f:
-            content = f.read()
+    mock_records = []
+    for i in range(65):
+        mock_records.append({
+            "case_id": f"adv_{i}",
+            "baseline": "Combined Gating",
+            "classification": "TR",
+            "run_id": run_id,
+            "dataset_sha256_digest": dataset_digest
+        })
+    for i in range(35):
+        mock_records.append({
+            "case_id": f"benign_{i}",
+            "baseline": "Combined Gating",
+            "classification": "TC",
+            "run_id": run_id,
+            "dataset_sha256_digest": dataset_digest
+        })
+    content = (json.dumps(mock_records, indent=2) + "\n").encode("utf-8")
+    records_file.write_bytes(content)
 
     records_digest = hashlib.sha256(content).hexdigest()
-    rec_data = json.loads(content.decode("utf-8"))
-    if rec_data and isinstance(rec_data, list) and len(rec_data) > 0:
-        run_id = rec_data[0].get("run_id", run_id)
-        dataset_digest = rec_data[0].get("dataset_sha256_digest", dataset_digest)
 
     return {
+        "_records_filepath": str(records_file),
         "title": "EpistemicOS Four-Layer Security Evaluation Artifact",
         "version": "1.0.0",
         "reproducibility_metadata": {
@@ -113,10 +104,11 @@ def valid_evidence_data():
 
 
 def test_valid_artifact_passes(valid_evidence_data, tmp_path):
+    records_filepath = valid_evidence_data.pop("_records_filepath")
     artifact_file = tmp_path / "valid_evidence.json"
     artifact_file.write_text(json.dumps(valid_evidence_data), encoding="utf-8")
 
-    is_valid, errors = validate_evidence_artifact(str(artifact_file), allow_local_constant_fallback=True)
+    is_valid, errors = validate_evidence_artifact(str(artifact_file), allow_local_constant_fallback=True, per_case_filepath=records_filepath)
     assert is_valid is True
     assert len(errors) == 0
 
@@ -412,18 +404,19 @@ def test_coordinated_modification_of_dataset_manifest_and_validator_rejected(val
 
 def test_no_trusted_base_ref_fails_closed(valid_evidence_data, tmp_path, monkeypatch):
     """Proves that when no trusted base ref can be resolved, validate_evidence_artifact fails closed."""
+    records_filepath = valid_evidence_data.pop("_records_filepath")
     monkeypatch.setattr("benchmarks.validate_evidence.get_base_branch_manifest_digest", lambda *a, **k: (False, "", None))
 
     artifact_file = tmp_path / "no_base_ref.json"
     artifact_file.write_text(json.dumps(valid_evidence_data), encoding="utf-8")
 
     # Without allow_local_constant_fallback, MUST fail closed
-    is_valid, errors = validate_evidence_artifact(str(artifact_file), allow_local_constant_fallback=False)
+    is_valid, errors = validate_evidence_artifact(str(artifact_file), allow_local_constant_fallback=False, per_case_filepath=records_filepath)
     assert is_valid is False
     assert any("Baseline Resolution Error" in err for err in errors)
 
     # With opt-in allow_local_constant_fallback, passes
-    is_valid_optin, errors_optin = validate_evidence_artifact(str(artifact_file), allow_local_constant_fallback=True)
+    is_valid_optin, errors_optin = validate_evidence_artifact(str(artifact_file), allow_local_constant_fallback=True, per_case_filepath=records_filepath)
     assert is_valid_optin is True
 
 
@@ -465,6 +458,7 @@ def test_metric_regression_rejected(valid_evidence_data, tmp_path):
 
 
 def test_partial_status_rejected_under_require_full_pass(valid_evidence_data, tmp_path):
+    records_filepath = valid_evidence_data.pop("_records_filepath")
     data = copy.deepcopy(valid_evidence_data)
     data["layers"]["layer_b_execution_boundary"]["status"] = "PARTIAL"
     data["overall_evaluation_status"] = "PARTIAL"
@@ -473,7 +467,7 @@ def test_partial_status_rejected_under_require_full_pass(valid_evidence_data, tm
     artifact_file.write_text(json.dumps(data), encoding="utf-8")
 
     # Should pass without require_full_pass
-    is_valid_pr, errors_pr = validate_evidence_artifact(str(artifact_file), require_full_pass=False, allow_local_constant_fallback=True)
+    is_valid_pr, errors_pr = validate_evidence_artifact(str(artifact_file), require_full_pass=False, allow_local_constant_fallback=True, per_case_filepath=records_filepath)
     assert is_valid_pr is True
 
     # Should fail with require_full_pass

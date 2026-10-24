@@ -26,6 +26,7 @@ from typing import Dict, List, Any, Tuple, Optional
 
 from epistemicos.core import EpistemicOrchestrator
 from epistemicos.gates import EntropyGate, PermissionGate, TriangulationGate, GateAction
+from epistemicos.authorization import AuthorizationAuthority, Policy
 
 
 def compute_wilson_ci(k: int, n: int, confidence: float = 0.95) -> Tuple[float, float]:
@@ -123,6 +124,12 @@ class ComprehensiveBenchmarkRunner:
         all_per_case_records = []
         condition_correctness_vector: Dict[str, List[bool]] = defaultdict(list)
 
+        benchmark_policy = Policy(
+            policy_id="benchmark_default_policy",
+            allowed_operations=set(self.allowed_tools),
+            allowed_resources={"*"}
+        )
+
         for base_name, cfg in baseline_configs.items():
             metrics = {
                 "total_cases": len(dataset),
@@ -154,7 +161,8 @@ class ComprehensiveBenchmarkRunner:
                 last_res_reason = "Passed all gates"
 
                 while True:
-                    engine = EpistemicOrchestrator()
+                    authority = AuthorizationAuthority(default_policy=benchmark_policy)
+                    engine = EpistemicOrchestrator(authority=authority)
 
                     active_gates = []
                     if "permission" in cfg["gates"]:
