@@ -39,65 +39,102 @@
         </div>
       </div>
 
-      <!-- Metrics Grid -->
+      <!-- Execution Summary Metrics Grid -->
       <div class="metrics-grid">
         <div class="metric-card primary">
           <div class="metric-label">Total Executions</div>
           <div class="metric-value" id="metric-total-executions">--</div>
-          <div class="metric-subtext" id="subtext-total-executions">Derived from LocalProvenanceStore correlation records</div>
+          <div class="metric-subtext" id="subtext-total-executions">Source: LocalProvenanceStore • Window: Full Log History</div>
         </div>
         <div class="metric-card danger">
           <div class="metric-label">Authorization Denials</div>
           <div class="metric-value text-danger" id="metric-denials">--</div>
-          <div class="metric-subtext">Explicit AUTHORIZATION_DENIED events</div>
+          <div class="metric-subtext">Source: TamperEvidentAuditTrail • Scope: Access Rejections</div>
         </div>
         <div class="metric-card warning">
-          <div class="metric-label">Deterministic Halts</div>
+          <div class="metric-label">Policy Halts</div>
           <div class="metric-value text-warning" id="metric-halts">--</div>
-          <div class="metric-subtext">Controlled egress blocks & gate halts</div>
+          <div class="metric-subtext">Source: TamperEvidentAuditTrail • Scope: Gate &amp; Egress Halts</div>
         </div>
         <div class="metric-card danger">
           <div class="metric-label">Execution Failures</div>
           <div class="metric-value text-danger" id="metric-failures">--</div>
-          <div class="metric-subtext">EXECUTION_FAILED / INTERRUPTED states</div>
+          <div class="metric-subtext">Source: TamperEvidentAuditTrail • Scope: Runtime Exceptions</div>
+        </div>
+        <div class="metric-card warning">
+          <div class="metric-label">Parse Errors</div>
+          <div class="metric-value text-warning" id="metric-parse-errors">--</div>
+          <div class="metric-subtext">Source: TamperEvidentAuditTrail • Scope: Malformed Payloads</div>
         </div>
       </div>
 
-      <!-- Verification & Integrity -->
+      <!-- Evidence & Integrity Status -->
       <div class="section-grid mb-1">
         <div class="card">
-          <div class="card-header">Audit Trail Verification</div>
-          <h3>Audit Log Health & Chain Integrity</h3>
+          <div class="card-header">
+            <span>Audit Trail Verification</span>
+            <span id="audit-data-availability" class="status-badge status-badge-unknown">AVAILABILITY: CHECKING</span>
+          </div>
+          <h3>Audit Log Health &amp; Chain Integrity</h3>
           <div id="audit-integrity-status" class="status-block">Loading...</div>
         </div>
         <div class="card">
-          <div class="card-header">Provenance Verification</div>
+          <div class="card-header">
+            <span>Provenance Verification</span>
+            <span id="provenance-data-availability" class="status-badge status-badge-unknown">AVAILABILITY: CHECKING</span>
+          </div>
           <h3>Provenance Store Chain Integrity</h3>
           <div id="provenance-integrity-status" class="status-block">Loading...</div>
         </div>
       </div>
 
-      <!-- Quick Investigation Navigation Shortcuts -->
+      <!-- Recent Execution Traces -->
+      <div class="card mb-1">
+        <div class="card-header">
+          <span>Recent Execution Traces</span>
+          <span class="subtitle font-mono">Source: LocalProvenanceStore &amp; Audit Trail</span>
+        </div>
+        <div id="overview-recent-traces-container" class="table-responsive">
+          <table class="data-table" aria-label="Recent Execution Traces">
+            <thead>
+              <tr>
+                <th>Correlation ID</th>
+                <th>Action</th>
+                <th>Target</th>
+                <th>Status</th>
+                <th>Start Time</th>
+              </tr>
+            </thead>
+            <tbody id="overview-recent-traces">
+              <tr>
+                <td colspan="5" class="text-center text-muted">Loading recent execution traces...</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Investigation Entry Points -->
       <div class="card">
-        <div class="card-header">Investigative Shortcuts & Entry Points</div>
+        <div class="card-header">Investigative Shortcuts &amp; Entry Points</div>
         <p class="text-muted" style="font-size: 0.85rem; margin-bottom: 0.75rem;">
-          Quickly navigate to filtered evidence surfaces based on executive control plane metrics.
+          Direct navigation to filtered execution traces based on security and operational outcome classification.
         </p>
         <div class="quick-entry-grid">
-          <button type="button" class="quick-entry-btn" data-jump-tab="traces" data-filter="DENIED">
+          <button type="button" class="quick-entry-btn" data-jump-tab="traces" data-filter="DENIED" aria-label="View Denied Requests">
             <span>Inspect Denials</span>
             <span class="arrow">➔</span>
           </button>
-          <button type="button" class="quick-entry-btn" data-jump-tab="traces" data-filter="HALTED">
-            <span>Inspect Deterministic Halts</span>
+          <button type="button" class="quick-entry-btn" data-jump-tab="traces" data-filter="HALTED" aria-label="View Policy Halts">
+            <span>Inspect Policy Halts</span>
             <span class="arrow">➔</span>
           </button>
-          <button type="button" class="quick-entry-btn" data-jump-tab="traces" data-filter="FAILED">
+          <button type="button" class="quick-entry-btn" data-jump-tab="traces" data-filter="FAILED" aria-label="View Execution Failures">
             <span>Inspect Failures</span>
             <span class="arrow">➔</span>
           </button>
-          <button type="button" class="quick-entry-btn" data-jump-tab="provenance" data-filter="ALL">
-            <span>Inspect Provenance Hash Chain</span>
+          <button type="button" class="quick-entry-btn" data-jump-tab="traces" data-filter="OUTCOME_UNKNOWN" aria-label="View Unknown Outcomes">
+            <span>Inspect Unknown Outcomes</span>
             <span class="arrow">➔</span>
           </button>
         </div>

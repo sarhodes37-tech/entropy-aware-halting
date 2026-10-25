@@ -83,7 +83,7 @@ def test_static_asset_serving(test_server):
 
 
 def test_static_aria_accessibility_attributes():
-    """Verify that the production index.html contains expected ARIA accessibility attributes."""
+    """Verify that the production index.html contains expected ARIA accessibility attributes and Overview elements."""
     import pathlib
     index_path = pathlib.Path("epistemicos/ui/static/index.html")
     content = index_path.read_text(encoding="utf-8")
@@ -102,6 +102,14 @@ def test_static_aria_accessibility_attributes():
     assert 'tabindex="0"' in content
     assert 'id="overview-last-updated"' in content
     assert 'aria-live="polite"' in content
+    assert 'id="metric-total-executions"' in content
+    assert 'id="metric-parse-errors"' in content
+    assert 'id="audit-data-availability"' in content
+    assert 'id="provenance-data-availability"' in content
+    assert 'id="overview-recent-traces"' in content
+    assert 'aria-label="Recent Execution Traces"' in content
+    assert 'aria-label="View Denied Requests"' in content
+    assert 'aria-label="View Policy Halts"' in content
 
 
 def test_read_only_method_restriction(test_server):
