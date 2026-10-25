@@ -220,3 +220,78 @@ def test_benchmark_data_loading(mock_logs):
     assert "Permission-Only Gating" in data["ablation_table"]["data"]["baselines"]
     assert data["per_case_results"]["available"] is True
     assert len(data["per_case_results"]["data"]) == 1
+
+
+def test_provenance_explorer_summary_panels_and_findings(mock_logs):
+    """Verifies provenance explorer returns 4 verification summary panels and actionable findings."""
+    adapter = ObservatoryDataAdapter(
+        audit_log_path=mock_logs["audit"],
+        provenance_log_path=mock_logs["provenance"]
+    )
+
+    # Test missing file case
+    data_missing = adapter.get_provenance_explorer_data()
+    assert "summary_panels" in data_missing
+    panels = data_missing["summary_panels"]
+    assert panels["availability"]["status"] == "UNAVAILABLE"
+    assert panels["integrity"]["status"] == "UNAVAILABLE"
+    assert panels["coverage"]["status"] == "UNAVAILABLE"
+    assert panels["authenticity"]["status"] == "NOT ESTABLISHED"
+    assert any(f["code"] == "LOG_FILE_MISSING" for f in data_missing["findings"])
+
+    # Test valid provenance events case recorded via store
+    from epistemicos.provenance import LocalProvenanceStore, ProvenanceEvent
+    store = LocalProvenanceStore(log_path=mock_logs["provenance"])
+    event_valid = ProvenanceEvent(
+        schema_version="1.0.0",
+        event_id="prov_ev_1",
+        event_type="ACTION_PROPOSED",
+        provenance_source="AGENT_ADAPTER",
+        correlation_id="corr_test_1",
+        request_id="req_test_1",
+        action_name="read_file",
+        target="data.txt",
+        canonical_request_digest="digest_123",
+        timestamp="2025-01-01T00:00:00Z"
+    )
+    store.record_event(event_valid)
+
+    data_valid = adapter.get_provenance_explorer_data()
+    panels_valid = data_valid["summary_panels"]
+    assert panels_valid["availability"]["status"] == "AVAILABLE"
+    assert panels_valid["availability"]["record_count"] == 1
+    assert panels_valid["integrity"]["status"] == "VERIFIED"
+    assert panels_valid["authenticity"]["status"] == "NOT ESTABLISHED"
+    assert len(data_valid["events"]) == 1
+    assert data_valid["events"][0]["event_id"] == "prov_ev_1"
+
+
+def test_provenance_explorer_corrupted_hash_chain_finding(mock_logs):
+    """Verifies critical finding generation when hash chain is broken."""
+    adapter = ObservatoryDataAdapter(
+        audit_log_path=mock_logs["audit"],
+        provenance_log_path=mock_logs["provenance"]
+    )
+
+    corrupt_event = {
+        "schema_version": "1.0.0",
+        "event_id": "prov_corrupt",
+        "event_type": "ACTION_PROPOSED",
+        "provenance_source": "AGENT_ADAPTER",
+        "correlation_id": "corr_corrupt",
+        "request_id": "req_corrupt",
+        "action_name": "run",
+        "target": "target",
+        "canonical_request_digest": "digest",
+        "timestamp": "2025-01-01T00:00:00Z",
+        "sequence_number": 5,  # Mismatched sequence number (expected 1)
+        "prev_hash": "wrong_prev_hash",
+        "entry_hash": "bad_entry_hash"
+    }
+
+    with open(mock_logs["provenance"], "w", encoding="utf-8") as f:
+        f.write(json.dumps(corrupt_event) + "\n")
+
+    data = adapter.get_provenance_explorer_data()
+    assert data["summary_panels"]["integrity"]["status"] == "CORRUPTED"
+    assert any(f["code"] == "HASH_CHAIN_CORRUPTED" for f in data["findings"])

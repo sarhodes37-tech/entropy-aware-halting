@@ -187,10 +187,27 @@
     <!-- View 3: Provenance Explorer -->
     <section id="view-provenance" class="view-panel" role="tabpanel" aria-labelledby="tab-provenance" tabindex="0">
       <div class="panel-header">
-        <h2>Provenance Chain Explorer</h2>
+        <div>
+          <h2>Provenance Explorer</h2>
+          <p class="subtitle">Investigative Workspace • Chain Verification, Source Authenticity & Evidence Inspection</p>
+        </div>
+        <div class="filter-controls">
+          <input type="search" id="provenance-search" placeholder="Search event ID / correlation / source / hash..." class="input-search" aria-label="Search provenance records">
+          <select id="provenance-type-filter" class="select-filter" aria-label="Filter provenance records by event type">
+            <option value="ALL">All Event Types</option>
+            <option value="ACTION_PROPOSED">ACTION_PROPOSED</option>
+            <option value="AUTHORIZATION_GRANTED">AUTHORIZATION_GRANTED</option>
+            <option value="AUTHORIZATION_DENIED">AUTHORIZATION_DENIED</option>
+            <option value="EXECUTION_STARTED">EXECUTION_STARTED</option>
+            <option value="EXECUTION_SUCCEEDED">EXECUTION_SUCCEEDED</option>
+            <option value="EXECUTION_FAILED">EXECUTION_FAILED</option>
+            <option value="EXECUTION_INTERRUPTED">EXECUTION_INTERRUPTED</option>
+            <option value="EGRESS_BLOCKED">EGRESS_BLOCKED</option>
+          </select>
+        </div>
       </div>
 
-      <div class="disclaimer-banner">
+      <div class="disclaimer-banner mb-1">
         <span class="warning-icon" aria-hidden="true">⚠️</span>
         <div>
           <strong>Provenance Scope Disclaimer:</strong>
@@ -198,32 +215,70 @@
         </div>
       </div>
 
+      <!-- Section A: 4 Verification Summary Panels -->
       <div class="card mb-1">
-        <div class="card-header">Local Hash Chain Verification</div>
-        <h3>Chain Integrity Summary</h3>
-        <div id="provenance-chain-summary" class="status-block">Loading...</div>
+        <div class="card-header">
+          <span>Verification Scope &amp; Summary</span>
+          <span class="subtitle font-mono">Independent Control Plane Assessments</span>
+        </div>
+        <div id="provenance-verification-grid" class="verification-summary-grid">
+          <div class="verification-panel">
+            <div class="panel-title">1. Record Availability</div>
+            <div id="summary-avail-badge" class="status-badge status-badge-unknown">CHECKING...</div>
+            <div id="summary-avail-msg" class="panel-msg">Checking provenance log presence...</div>
+            <div class="panel-scope">Scope: Physical log presence &amp; readable line structure.</div>
+          </div>
+          <div class="verification-panel">
+            <div class="panel-title">2. Integrity Verification</div>
+            <div id="summary-integrity-badge" class="status-badge status-badge-unknown">CHECKING...</div>
+            <div id="summary-integrity-msg" class="panel-msg">Checking cryptographic hash chain...</div>
+            <div class="panel-scope">Scope: SHA-256 sequence chaining continuity.</div>
+          </div>
+          <div class="verification-panel">
+            <div class="panel-title">3. Trace Coverage</div>
+            <div id="summary-coverage-badge" class="status-badge status-badge-unknown">CHECKING...</div>
+            <div id="summary-coverage-msg" class="panel-msg">Assessing event record coverage...</div>
+            <div class="panel-scope">Scope: Terminal outcome completeness per trace.</div>
+          </div>
+          <div class="verification-panel">
+            <div class="panel-title">4. Source Authenticity</div>
+            <div id="summary-authenticity-badge" class="status-badge status-badge-not-established">NOT ESTABLISHED</div>
+            <div id="summary-authenticity-msg" class="panel-msg">Local logs lack hardware enclave / signature proofs.</div>
+            <div class="panel-scope">Scope: Cryptographic origin identity &amp; non-repudiation.</div>
+          </div>
+        </div>
       </div>
 
-      <div class="card">
-        <div class="card-header">Append-Only Audit Stream</div>
-        <h3>Provenance Event Timeline</h3>
-        <div class="table-responsive">
-          <table class="data-table">
-            <thead>
-              <tr>
-                <th>Seq #</th>
-                <th>Timestamp</th>
-                <th>Event Type</th>
-                <th>Source</th>
-                <th>Correlation ID</th>
-                <th>Target</th>
-                <th>Entry Hash</th>
-              </tr>
-            </thead>
-            <tbody id="provenance-events-tbody">
-              <tr><td colspan="7" class="text-center text-muted">Loading provenance events...</td></tr>
-            </tbody>
-          </table>
+      <!-- Section B: Actionable Verification Findings -->
+      <div class="card mb-1">
+        <div class="card-header">Actionable Verification Findings</div>
+        <div id="provenance-findings-container">
+          <p class="text-muted text-center" style="padding: 0.5rem;">Loading verification findings...</p>
+        </div>
+      </div>
+
+      <!-- Section C: Provenance Record Explorer & Record Inspector Split View -->
+      <div class="trace-layout">
+        <!-- Record Stream List -->
+        <aside id="area-provenance-list" class="trace-list-container" aria-label="Provenance Record Stream">
+          <div class="card-header">
+            <span>Recorded Stream</span>
+            <span id="provenance-count" class="trace-count-badge" aria-live="polite" aria-atomic="true">--</span>
+          </div>
+          <ul id="provenance-record-list" class="trace-list" role="listbox" aria-label="Select a provenance record to inspect">
+            <li class="text-muted text-center" style="padding: 1.5rem;">Loading provenance records...</li>
+          </ul>
+        </aside>
+
+        <!-- Record Inspector Detail -->
+        <div class="trace-detail-container">
+          <div id="provenance-inspector-empty" class="empty-state">
+            <span style="font-size: 2rem;" aria-hidden="true">🔎</span>
+            <div>Select a provenance record from the stream to inspect original fields, cryptographic hashes, predecessor relationships, and related execution traces.</div>
+          </div>
+          <div id="provenance-inspector-content" class="trace-detail-content hidden">
+            <!-- Dynamically rendered via app.js -->
+          </div>
         </div>
       </div>
     </section>
