@@ -715,15 +715,15 @@ document.addEventListener('DOMContentLoaded', () => {
 
       const status = trace.status || 'OUTCOME_UNKNOWN';
       if (status === 'COMPLETED') {
-        summaryText.textContent = 'Execution reached complete runtime outcome based on observed EXECUTION_SUCCEEDED event.';
+        summaryText.textContent = 'Trace contains an observed EXECUTION_SUCCEEDED event record.';
       } else if (status === 'DENIED') {
-        summaryText.textContent = 'Execution proposal rejected by Governance Gate before authorization grant issuance.';
+        summaryText.textContent = 'Trace contains an observed AUTHORIZATION_DENIED event record.';
       } else if (status === 'HALTED') {
-        summaryText.textContent = 'Execution halted JIT by Policy/Egress Gate prior to unauthorized boundary dispatch.';
+        summaryText.textContent = 'Trace contains an observed EGRESS_BLOCKED or policy halt event record.';
       } else if (status === 'FAILED') {
-        summaryText.textContent = 'Execution halted due to runtime exception or boundary execution interrupt.';
+        summaryText.textContent = 'Trace contains an observed EXECUTION_FAILED or EXECUTION_INTERRUPTED event record.';
       } else {
-        summaryText.textContent = 'Execution outcome unknown: Available records do not verify final runtime completion.';
+        summaryText.textContent = 'Terminal outcome unestablished: Available event records do not establish execution completion or denial.';
       }
 
       const disclaimerBox = document.createElement('div');
