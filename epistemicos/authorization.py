@@ -423,6 +423,8 @@ class AuthorizationAuthority:
             self.executor_registry[executor_id_str] = exec_obj
         else:
             executor_id_str = get_callable_identity(executor_id)
+            if executor_id_str in self.executor_registry:
+                self.executor_registry[token_id] = self.executor_registry[executor_id_str]
 
         cap = Capability(
             token_id=token_id,

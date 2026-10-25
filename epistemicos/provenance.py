@@ -351,15 +351,18 @@ class TrustedExecutionBoundary:
 
         executor_id = get_callable_identity(executor_func)
 
-        # Object identity check for registered executors in AuthorizationAuthority
-        if self.authority and hasattr(self.authority, "executor_registry") and self.authority.executor_registry:
-            registered = self.authority.executor_registry.get(executor_id)
-            if not registered:
-                cap_temp = self.registry.get_capability(auth_token_id)
-                if cap_temp:
-                    registered = self.authority.executor_registry.get(cap_temp.executor_id)
-            if registered and executor_func is not registered:
-                raise PermissionError("Execution rejected: Executable object identity mismatch for registered executor")
+        # Object identity check for bound callables in AuthorizationAuthority
+        if self.authority and hasattr(self.authority, "executor_registry"):
+            bound_callable = self.authority.executor_registry.get(auth_token_id)
+            if not bound_callable:
+                bound_callable = self.authority.executor_registry.get(executor_id)
+
+            if bound_callable:
+                if executor_func is not bound_callable:
+                    raise PermissionError("Execution rejected: Executable object identity mismatch for authorized token")
+            else:
+                # Fail closed: un-bound/un-registered callable object cannot execute a capability without verified object identity
+                raise PermissionError(f"Execution rejected: Unregistered callable object cannot execute capability for '{cap_reason}'")
 
         # Verify capability via trusted AuthorizationAuthority / CapabilityRegistry
         valid, cap_reason, cap = self.authority.verify_capability(
