@@ -4,14 +4,6 @@ EpistemicOS is an experimental low-latency security middleware designed to enfor
 
 ---
 
-## 🖥 Control Plane Observatory Concept
-
-![EpistemicOS Control Plane Observatory Concept](docs/figures/observatory-concept.png)
-
-*Figure — EpistemicOS Control Plane Observatory Interface Concept. Note: Depicted interface metrics, timestamps, and benchmark results are illustrative design concepts and do not represent live system telemetry or measured benchmark outcomes.*
-
----
-
 ## 🏛 System Architecture & Control Plane Implementation
 
 ### Control Plane Architecture Diagram
