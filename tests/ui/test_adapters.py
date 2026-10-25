@@ -177,6 +177,37 @@ def test_reconciliation_mismatch_detection(mock_logs):
     assert any("without authorization granted" in v for v in rec["violations"])
 
 
+def test_execution_trace_missing_fields_handling(mock_logs):
+    """Verifies handling of events with missing optional fields (missing timestamp, target, action)."""
+    adapter = ObservatoryDataAdapter(
+        audit_log_path=mock_logs["audit"],
+        provenance_log_path=mock_logs["provenance"]
+    )
+
+    prov_store = adapter.provenance_log_path
+    partial_event = {
+        "schema_version": "1.0.0",
+        "event_id": "e_partial",
+        "event_type": "ACTION_PROPOSED",
+        "provenance_source": "AGENT_SHELL",
+        "correlation_id": "corr_partial",
+        "sequence_number": 1,
+        "prev_hash": "genesis",
+        "entry_hash": "hash_p1"
+    }
+
+    with open(prov_store, "w", encoding="utf-8") as f:
+        f.write(json.dumps(partial_event) + "\n")
+
+    trace = adapter.get_execution_trace_by_id("corr_partial")
+    assert trace is not None
+    assert trace["action_name"] == "UNKNOWN"
+    assert trace["target"] == "UNKNOWN"
+    assert trace["start_time"] == "UNKNOWN"
+    assert trace["status"] == "OUTCOME_UNKNOWN"
+    assert trace["event_count"] == 1
+
+
 def test_benchmark_data_loading(mock_logs):
     """Verifies benchmark workbench data structure parsing."""
     adapter = ObservatoryDataAdapter(

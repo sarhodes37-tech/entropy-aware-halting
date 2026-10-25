@@ -144,7 +144,10 @@
     <!-- View 2: Execution Trace Explorer -->
     <section id="view-traces" class="view-panel" role="tabpanel" aria-labelledby="tab-traces" tabindex="0">
       <div class="panel-header">
-        <h2>Execution Trace Explorer</h2>
+        <div>
+          <h2>Execution Trace Explorer</h2>
+          <p class="subtitle">Primary Investigative Surface • Recorded Events, Verification &amp; Evidence Inspection</p>
+        </div>
         <div class="filter-controls">
           <input type="search" id="trace-search" placeholder="Search correlation / request ID / action..." class="input-search" aria-label="Search execution traces by correlation or request ID">
           <select id="trace-status-filter" class="select-filter" aria-label="Filter execution traces by status">
@@ -159,17 +162,20 @@
       </div>
 
       <div class="trace-layout">
-        <div class="trace-list-container">
+        <!-- Area A: Trace List -->
+        <aside id="area-trace-list" class="trace-list-container" aria-label="Execution Trace List">
           <div class="card-header">
             <span>Execution Traces</span>
             <span id="trace-count" class="trace-count-badge" aria-live="polite" aria-atomic="true"></span>
           </div>
-          <ul id="trace-list" class="trace-list"></ul>
-        </div>
+          <ul id="trace-list" class="trace-list" role="listbox" aria-label="Select an execution trace"></ul>
+        </aside>
+
+        <!-- Main Detail & Evidence Container (Area B & Area C) -->
         <div class="trace-detail-container">
           <div id="trace-detail-empty" class="empty-state">
             <span style="font-size: 2rem;" aria-hidden="true">🔍</span>
-            <div>Select an execution trace from the list to inspect lifecycle timeline, gate decisions, authorization evidence, and reconciliation report.</div>
+            <div>Select an execution trace from the list to inspect recorded event timeline, derived summaries, authorization records, and evidence details.</div>
           </div>
           <div id="trace-detail-content" class="trace-detail-content hidden">
             <!-- Selected trace details dynamically populated via app.js -->
