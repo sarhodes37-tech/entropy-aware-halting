@@ -349,39 +349,69 @@ def test_coverage_for_incomplete_execution_trace(mock_logs):
     assert "1 of 1" in cov["message"]
 
 
-def test_corrupted_hash_chain_coverage_contradiction_prevention(mock_logs):
+def test_positively_detected_corrupted_chain(mock_logs):
     """
-    Verifies that when integrity is CORRUPTED and no trace is flagged as incomplete,
-    the coverage message does NOT claim 'Valid local cryptographic sequence chaining verifies log continuity'.
+    Verifies that a positively detected chain corruption yields integrity status CORRUPTED
+    and coverage status UNVERIFIED without claiming log continuity.
     """
-    # Complete event lifecycle (e.g. AUTHORIZATION_DENIED), but with a bad entry_hash that corrupts the chain
-    corrupt_event = {
-        "schema_version": "1.0.0",
-        "event_id": "prov_corrupt",
-        "event_type": "AUTHORIZATION_DENIED",
-        "provenance_source": "GOVERNANCE_GATE",
-        "correlation_id": "corr_corrupt",
-        "request_id": "req_corrupt",
-        "action_name": "run",
-        "target": "target",
-        "canonical_request_digest": "digest",
-        "timestamp": "2025-01-01T00:00:00Z",
-        "sequence_number": 1,
-        "prev_hash": "genesis",
-        "entry_hash": "bad_entry_hash"
-    }
+    from epistemicos.provenance import LocalProvenanceStore, ProvenanceEvent
+    store = LocalProvenanceStore(log_path=mock_logs["provenance"])
 
+    e1 = ProvenanceEvent("1.0.0", "ev1", "AUTHORIZATION_DENIED", "GOVERNANCE_GATE", "corr_1", "req1", "run", "tgt", "dig", "2025-01-01T00:00:00Z")
+    store.record_event(e1)
+
+    # Corrupt entry_hash on disk
+    with open(mock_logs["provenance"], "r", encoding="utf-8") as f:
+        lines = f.readlines()
+    data_dict = json.loads(lines[0])
+    data_dict["entry_hash"] = "bad_tampered_hash"
     with open(mock_logs["provenance"], "w", encoding="utf-8") as f:
-        f.write(json.dumps(corrupt_event) + "\n")
+        f.write(json.dumps(data_dict) + "\n")
 
     adapter = ObservatoryDataAdapter(audit_log_path=mock_logs["audit"], provenance_log_path=mock_logs["provenance"])
     data = adapter.get_provenance_explorer_data()
 
     assert data["summary_panels"]["integrity"]["status"] == "CORRUPTED"
+    assert data["summary_panels"]["integrity"]["valid"] is False
     cov = data["summary_panels"]["coverage"]
     assert cov["status"] == "UNVERIFIED"
-    assert "failed integrity verification" in cov["message"].lower()
+    assert "corruption positively detected" in cov["message"].lower()
     assert "valid local cryptographic sequence chaining" not in cov["message"].lower()
+    assert any(f["code"] == "HASH_CHAIN_CORRUPTED" for f in data["findings"])
+
+
+def test_integrity_verification_exception_yields_unverified(mock_logs, monkeypatch):
+    """
+    Verifies that an exception during verification yields status UNVERIFIED (not CORRUPTED),
+    does not claim confirmed chain corruption, and surfaces an INTEGRITY_UNVERIFIED finding.
+    """
+    from epistemicos.provenance import LocalProvenanceStore, ProvenanceEvent
+    store = LocalProvenanceStore(log_path=mock_logs["provenance"])
+    e1 = ProvenanceEvent("1.0.0", "ev1", "AUTHORIZATION_DENIED", "GOVERNANCE_GATE", "corr_1", "req1", "run", "tgt", "dig", "2025-01-01T00:00:00Z")
+    store.record_event(e1)
+
+    # Monkeypatch LocalProvenanceStore._inspect_health to raise an unexpected OSError/IOError exception
+    def mock_inspect_health_error(self):
+        raise OSError("Permission denied reading log path")
+
+    monkeypatch.setattr(LocalProvenanceStore, "_inspect_health", mock_inspect_health_error)
+
+    adapter = ObservatoryDataAdapter(audit_log_path=mock_logs["audit"], provenance_log_path=mock_logs["provenance"])
+    data = adapter.get_provenance_explorer_data()
+
+    integ = data["summary_panels"]["integrity"]
+    assert integ["status"] == "UNVERIFIED"
+    assert integ["valid"] is None
+    assert "verification execution failed" in integ["message"].lower()
+
+    cov = data["summary_panels"]["coverage"]
+    assert cov["status"] == "UNVERIFIED"
+    assert "integrity unverified" in cov["message"].lower()
+    assert "corruption positively detected" not in cov["message"].lower()
+
+    # Ensure HASH_CHAIN_CORRUPTED is NOT raised, but INTEGRITY_UNVERIFIED is
+    assert not any(f["code"] == "HASH_CHAIN_CORRUPTED" for f in data["findings"])
+    assert any(f["code"] == "INTEGRITY_UNVERIFIED" for f in data["findings"])
 
 
 def test_fully_readable_provenance_log(mock_logs):

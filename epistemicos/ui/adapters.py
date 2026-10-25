@@ -258,9 +258,12 @@ class ObservatoryDataAdapter:
         elif incomplete_traces:
             coverage_status = "INCOMPLETE"
             coverage_msg = f"{len(incomplete_traces)} of {len(traces)} execution trace(s) have missing terminal outcome events or reconciliation violations."
+        elif integrity.get("status") == "CORRUPTED":
+            coverage_status = "UNVERIFIED"
+            coverage_msg = "Cryptographic sequence chaining corruption positively detected; log continuity and trace completeness cannot be established."
         elif integrity.get("status") != "VERIFIED":
             coverage_status = "UNVERIFIED"
-            coverage_msg = "Cryptographic sequence chaining failed integrity verification; log continuity and trace completeness cannot be established."
+            coverage_msg = "Cryptographic sequence chaining integrity unverified; log continuity and trace completeness cannot be established."
         else:
             coverage_status = "UNVERIFIED"
             coverage_msg = "Valid local cryptographic sequence chaining verifies log continuity, but cannot establish whether unrecorded external actions occurred."
@@ -297,6 +300,13 @@ class ObservatoryDataAdapter:
                 "code": "HASH_CHAIN_CORRUPTED",
                 "title": "Cryptographic Hash Chain Broken",
                 "description": integrity.get("message", "Sequence number or prev_hash mismatch detected in local store.")
+            })
+        elif integrity.get("status") == "UNVERIFIED":
+            findings.append({
+                "severity": "WARNING",
+                "code": "INTEGRITY_UNVERIFIED",
+                "title": "Cryptographic Integrity Unverified",
+                "description": integrity.get("message", "Integrity check failed to execute to completion.")
             })
 
         if incomplete_traces:
@@ -462,14 +472,14 @@ class ObservatoryDataAdapter:
                 "status": "VERIFIED" if valid else "CORRUPTED",
                 "valid": valid,
                 "records_verified": count,
-                "message": err or "Integrity verified successfully"
+                "message": err or ("Integrity verified successfully" if valid else "Chain corruption detected")
             }
         except Exception as e:
             return {
-                "status": "CORRUPTED",
-                "valid": False,
+                "status": "UNVERIFIED",
+                "valid": None,
                 "records_verified": 0,
-                "message": f"Verification error: {str(e)}"
+                "message": f"Verification execution failed: {str(e)}"
             }
 
     def _verify_provenance_integrity(self) -> Dict[str, Any]:
@@ -492,10 +502,10 @@ class ObservatoryDataAdapter:
             }
         except Exception as e:
             return {
-                "status": "CORRUPTED",
-                "valid": False,
+                "status": "UNVERIFIED",
+                "valid": None,
                 "records_verified": 0,
-                "message": f"Verification error: {str(e)}"
+                "message": f"Verification execution failed: {str(e)}"
             }
 
     def _determine_execution_status(self, events: List[Dict[str, Any]]) -> str:
