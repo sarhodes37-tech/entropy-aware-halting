@@ -130,6 +130,19 @@ document.addEventListener('DOMContentLoaded', () => {
     // -------------------------------------------------------------------------
     copyToClipboard(text, btnElement) {
       if (!text) return;
+      if (!navigator.clipboard || !navigator.clipboard.writeText) {
+        if (btnElement) {
+          const origText = btnElement.textContent;
+          btnElement.textContent = 'Copy Unavailable';
+          btnElement.style.borderColor = 'var(--status-failed-border)';
+          setTimeout(() => {
+            btnElement.textContent = origText;
+            btnElement.style.borderColor = '';
+          }, 2000);
+        }
+        return;
+      }
+
       navigator.clipboard.writeText(text).then(() => {
         if (btnElement) {
           const origText = btnElement.textContent;
@@ -142,6 +155,15 @@ document.addEventListener('DOMContentLoaded', () => {
         }
       }).catch(err => {
         console.error('Copy failed:', err);
+        if (btnElement) {
+          const origText = btnElement.textContent;
+          btnElement.textContent = 'Copy Failed';
+          btnElement.style.borderColor = 'var(--status-failed-border)';
+          setTimeout(() => {
+            btnElement.textContent = origText;
+            btnElement.style.borderColor = '';
+          }, 2000);
+        }
       });
     },
 
@@ -543,7 +565,7 @@ document.addEventListener('DOMContentLoaded', () => {
         return;
       }
 
-      filtered.forEach(trace => {
+      filtered.forEach((trace, index) => {
         const isSelected = this.state.selectedTraceId === trace.correlation_id;
         const li = document.createElement('li');
         li.className = `trace-item ${isSelected ? 'active' : ''}`;
@@ -557,6 +579,26 @@ document.addEventListener('DOMContentLoaded', () => {
           if (e.key === 'Enter' || e.key === ' ') {
             e.preventDefault();
             this.selectTrace(trace.correlation_id);
+          } else if (e.key === 'ArrowDown') {
+            e.preventDefault();
+            const items = traceListUl.querySelectorAll('.trace-item');
+            if (index + 1 < items.length) {
+              items[index + 1].focus();
+            }
+          } else if (e.key === 'ArrowUp') {
+            e.preventDefault();
+            const items = traceListUl.querySelectorAll('.trace-item');
+            if (index - 1 >= 0) {
+              items[index - 1].focus();
+            }
+          } else if (e.key === 'Home') {
+            e.preventDefault();
+            const items = traceListUl.querySelectorAll('.trace-item');
+            if (items.length > 0) items[0].focus();
+          } else if (e.key === 'End') {
+            e.preventDefault();
+            const items = traceListUl.querySelectorAll('.trace-item');
+            if (items.length > 0) items[items.length - 1].focus();
           }
         });
 
@@ -713,17 +755,31 @@ document.addEventListener('DOMContentLoaded', () => {
       summaryText.style.color = 'var(--text-primary)';
       summaryText.style.marginBottom = '0.5rem';
 
-      const status = trace.status || 'OUTCOME_UNKNOWN';
-      if (status === 'COMPLETED') {
-        summaryText.textContent = 'Trace contains an observed EXECUTION_SUCCEEDED event record.';
-      } else if (status === 'DENIED') {
-        summaryText.textContent = 'Trace contains an observed AUTHORIZATION_DENIED event record.';
-      } else if (status === 'HALTED') {
-        summaryText.textContent = 'Trace contains an observed EGRESS_BLOCKED or policy halt event record.';
-      } else if (status === 'FAILED') {
-        summaryText.textContent = 'Trace contains an observed EXECUTION_FAILED or EXECUTION_INTERRUPTED event record.';
+      const events = Array.isArray(trace.provenance_events) ? trace.provenance_events : [];
+      const eventTypes = new Set(events.map(e => e.event_type));
+
+      if (eventTypes.size === 0) {
+        summaryText.textContent = 'Event records unestablished: No provenance events returned for this trace.';
       } else {
-        summaryText.textContent = 'Terminal outcome unestablished: Available event records do not establish execution completion or denial.';
+        const claims = [];
+        if (eventTypes.has('EXECUTION_SUCCEEDED')) {
+          claims.push('observed EXECUTION_SUCCEEDED event');
+        }
+        if (eventTypes.has('AUTHORIZATION_DENIED')) {
+          claims.push('observed AUTHORIZATION_DENIED event');
+        }
+        if (eventTypes.has('EGRESS_BLOCKED')) {
+          claims.push('observed EGRESS_BLOCKED event');
+        }
+        if (eventTypes.has('EXECUTION_FAILED') || eventTypes.has('EXECUTION_INTERRUPTED')) {
+          claims.push('observed EXECUTION_FAILED / EXECUTION_INTERRUPTED event');
+        }
+
+        if (claims.length > 0) {
+          summaryText.textContent = `Event records verified in trace: ${claims.join('; ')}.`;
+        } else {
+          summaryText.textContent = `Terminal outcome unestablished: None of the available ${events.length} event records establish execution completion, rejection, or failure.`;
+        }
       }
 
       const disclaimerBox = document.createElement('div');
