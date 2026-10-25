@@ -254,7 +254,7 @@ def test_failure_to_record_execution_started_prevents_executor(tmp_path):
         return "mutated"
 
     policy = Policy(policy_id="p1", allowed_operations={"MUTATE"}, allowed_resources={"db"})
-    cap, _ = boundary.authority.evaluate_and_issue_capability("MUTATE", "db", digest, executor_id="executor", policy=policy)
+    cap, _ = boundary.authority.evaluate_and_issue_capability("MUTATE", "db", digest, executor_id=executor, policy=policy)
 
     with pytest.raises(RuntimeError, match="Disk I/O error during EXECUTION_STARTED"):
         boundary.execute_protected_action(
@@ -287,7 +287,7 @@ def test_failure_to_record_terminal_outcome(tmp_path):
         return "transferred_500_usd"
 
     policy = Policy(policy_id="p1", allowed_operations={"TRANSFER"}, allowed_resources={"bank"})
-    cap, _ = boundary.authority.evaluate_and_issue_capability("TRANSFER", "bank", digest, executor_id="executor", policy=policy)
+    cap, _ = boundary.authority.evaluate_and_issue_capability("TRANSFER", "bank", digest, executor_id=executor, policy=policy)
 
     res = boundary.execute_protected_action(
         action_name="TRANSFER",

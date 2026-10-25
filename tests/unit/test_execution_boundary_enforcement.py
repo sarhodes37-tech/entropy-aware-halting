@@ -381,14 +381,14 @@ def test_revoked_expired_replayed_grant_denied():
     Verifies that revoked, expired, or replayed grants cannot be consumed a second time
     by TrustedExecutionBoundary.
     """
-    from epistemicos.authorization import Policy
+    from epistemicos.authorization import Policy, get_callable_identity
     execution_callback = MagicMock(return_value={"status": "REPLAYED"})
     orchestrator = EpistemicOrchestrator()
 
     raw_payload = {"policy_id": "POL-2026-REPLAY", "primary_metric": 100.0}
     payload_digest = orchestrator.execution_boundary.compute_canonical_digest(raw_payload)
 
-    executor_id = getattr(execution_callback, "__name__", str(execution_callback))
+    executor_id = get_callable_identity(execution_callback)
     policy = Policy(policy_id="p1", allowed_operations={"execute"}, allowed_resources={"grader_service"})
     cap, _ = orchestrator.execution_boundary.authority.evaluate_and_issue_capability(
         action_name="execute",

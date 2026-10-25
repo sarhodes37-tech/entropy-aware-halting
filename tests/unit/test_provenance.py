@@ -252,7 +252,7 @@ def test_executor_exception_recording(tmp_path):
         canonical_request_digest=digest,
         correlation_id=corr_id,
         request_id="req-div",
-        executor_id="failing_executor",
+        executor_id=failing_executor,
         policy=policy
     )
 
@@ -298,7 +298,7 @@ def test_keyboard_interrupt_propagation_and_recording(tmp_path):
         canonical_request_digest=digest,
         correlation_id=corr_id,
         request_id="req-int",
-        executor_id="interrupting_executor",
+        executor_id=interrupting_executor,
         policy=policy
     )
 

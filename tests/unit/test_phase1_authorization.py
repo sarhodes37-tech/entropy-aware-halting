@@ -261,7 +261,7 @@ def test_scenario_6_parameter_substitutions_rejected(tmp_path):
         canonical_request_digest=digest_orig,
         correlation_id="corr-task-1",
         request_id="req-1",
-        executor_id="callback_original",
+        executor_id=callback_original,
         policy=policy
     )
 
@@ -507,7 +507,7 @@ def test_scenario_11_pre_execution_audit_failure_prevents_callback(tmp_path):
     payload = {"data": "s11"}
     digest = boundary.compute_canonical_digest(payload)
     policy = Policy(policy_id="p", allowed_operations={"WRITE"}, allowed_resources={"db"})
-    cap, _ = boundary.authority.evaluate_and_issue_capability("WRITE", "db", digest, executor_id="mock_executor", policy=policy)
+    cap, _ = boundary.authority.evaluate_and_issue_capability("WRITE", "db", digest, executor_id=callback, policy=policy)
 
     with pytest.raises(RuntimeError, match="EXECUTION_STARTED"):
         boundary.execute_protected_action(
@@ -763,6 +763,111 @@ def test_f7_empty_principals_and_executors_fail_closed():
 
     p_empty_executors = Policy(policy_id="p1", allowed_operations={"op1"}, allowed_resources={"res1"}, allowed_executors=set())
     assert p_empty_executors.is_executor_allowed("exec1") is False
+
+
+def test_unambiguous_executor_identity_and_short_name_rejection(tmp_path):
+    """PR #257 Follow-up: Verifies strict canonical executor identity matching without short-name confusion."""
+    # 1. Capability issued for package_a.tools.execute cannot authorize package_b.tools.execute
+    store = LocalProvenanceStore(log_path=str(tmp_path / "prov_exec_id.jsonl"))
+    boundary = TrustedExecutionBoundary(provenance_store=store)
+
+    payload = {"data": "test_exec"}
+    digest = boundary.compute_canonical_digest(payload)
+
+    policy = Policy(policy_id="p1", allowed_operations={"op_exec"}, allowed_resources={"res_exec"})
+
+    cap_a, _ = boundary.authority.evaluate_and_issue_capability(
+        action_name="op_exec",
+        target="res_exec",
+        canonical_request_digest=digest,
+        executor_id="package_a.tools.execute",
+        policy=policy
+    )
+
+    # Calling with package_b.tools.execute must be rejected even though short name 'execute' matches
+    class PackageBExecutor:
+        def __call__(self):
+            return "package_b_ran"
+
+    exec_b = PackageBExecutor()
+    exec_b.__module__ = "package_b.tools"
+    exec_b.__name__ = "execute"
+    exec_b.__qualname__ = "execute"
+
+    with pytest.raises(PermissionError, match="EXECUTOR_MISMATCH"):
+        boundary.execute_protected_action(
+            action_name="op_exec",
+            target="res_exec",
+            request_payload=payload,
+            authorization_token_id=cap_a.token_id,
+            authorized_digest=digest,
+            authorization_granted=True,
+            executor_func=exec_b
+        )
+
+    # 2. Legitimate execution by correctly matching callable continues to work
+    class PackageAExecutor:
+        def __call__(self):
+            return "package_a_ran"
+
+    exec_a = PackageAExecutor()
+    exec_a.__module__ = "package_a.tools"
+    exec_a.__name__ = "execute"
+    exec_a.__qualname__ = "execute"
+
+    res_a = boundary.execute_protected_action(
+        action_name="op_exec",
+        target="res_exec",
+        request_payload=payload,
+        authorization_token_id=cap_a.token_id,
+        authorized_digest=digest,
+        authorization_granted=True,
+        executor_func=exec_a
+    )
+    assert res_a["status"] == "SUCCESS"
+    assert res_a["result"] == "package_a_ran"
+
+    # 3. Spoofed __name__ mutation on registered executor fails object identity check
+    def registered_target_exec():
+        return "registered"
+
+    def spoofed_attacker_exec():
+        return "spoofed"
+
+    spoofed_attacker_exec.__name__ = getattr(registered_target_exec, "__name__")
+
+    boundary.authority.register_executor("target_op", registered_target_exec)
+
+    cap_reg, _ = boundary.authority.evaluate_and_issue_capability(
+        action_name="op_exec",
+        target="res_exec",
+        canonical_request_digest=digest,
+        executor_id=registered_target_exec,
+        policy=policy
+    )
+
+    with pytest.raises(PermissionError, match="object identity mismatch"):
+        boundary.execute_protected_action(
+            action_name="op_exec",
+            target="res_exec",
+            request_payload=payload,
+            authorization_token_id=cap_reg.token_id,
+            authorized_digest=digest,
+            authorization_granted=True,
+            executor_func=spoofed_attacker_exec
+        )
+
+    # 4. Non-callable or missing executor fails closed
+    with pytest.raises(ValueError, match="must be a callable object"):
+        boundary.execute_protected_action(
+            action_name="op_exec",
+            target="res_exec",
+            request_payload=payload,
+            authorization_token_id=cap_reg.token_id,
+            authorized_digest=digest,
+            authorization_granted=True,
+            executor_func=None
+        )
 
 
 # =====================================================================

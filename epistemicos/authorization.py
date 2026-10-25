@@ -485,12 +485,9 @@ class AuthorizationAuthority:
         if cap.canonical_request_digest != canonical_request_digest:
             return False, f"CAPABILITY_VERIFICATION_FAILED_DIGEST_MISMATCH: granted '{cap.canonical_request_digest}', requested '{canonical_request_digest}'", cap
 
-        # Strict executor binding without wildcards
+        # Strict executor binding without wildcards: requires exact canonical executor identity match
         if cap.executor_id != executor_id:
-            short_cap = cap.executor_id.rsplit(".", 1)[-1]
-            short_req = executor_id.rsplit(".", 1)[-1]
-            if short_cap != short_req:
-                return False, f"CAPABILITY_VERIFICATION_FAILED_EXECUTOR_MISMATCH: granted '{cap.executor_id}', requested '{executor_id}'", cap
+            return False, f"CAPABILITY_VERIFICATION_FAILED_EXECUTOR_MISMATCH: granted '{cap.executor_id}', requested '{executor_id}'", cap
 
         if principal_id is not None and cap.principal_id != principal_id:
             return False, f"CAPABILITY_VERIFICATION_FAILED_PRINCIPAL_MISMATCH: granted '{cap.principal_id}', requested '{principal_id}'", cap
