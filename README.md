@@ -31,6 +31,14 @@ For detailed architecture specifications and security guarantees, see [`docs/SHO
 
 ---
 
+### EpistemicOS Observatory Control Room
+
+![EpistemicOS Observatory Interface](docs/figures/observatory-concept.png)
+
+*Figure 3 — EpistemicOS Observatory Control Room: Real-time telemetry monitoring, audit verification, and execution trace exploration interface. Depicted metrics, timestamps, and benchmark results are an illustrative design concept and do not represent live system telemetry.*
+
+---
+
 ## 🔒 Control Plane Mechanics & Architectural Invariants
 
 ### Architectural Responsibility Separation
