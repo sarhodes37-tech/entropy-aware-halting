@@ -776,7 +776,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         if (claims.length > 0) {
-          summaryText.textContent = `Event records verified in trace: ${claims.join('; ')}.`;
+          summaryText.textContent = `Event types present in returned trace records: ${claims.join('; ')}.`;
         } else {
           summaryText.textContent = `Terminal outcome unestablished: None of the available ${events.length} event records establish execution completion, rejection, or failure.`;
         }
