@@ -191,10 +191,19 @@ document.addEventListener('DOMContentLoaded', () => {
       }
 
       try {
-        const res = await fetch('/api/overview');
-        if (!res.ok) throw new Error(`HTTP error ${res.status}`);
-        const data = await res.json();
+        const [overviewRes, tracesRes] = await Promise.all([
+          fetch('/api/overview'),
+          fetch('/api/traces').catch(() => null)
+        ]);
+
+        if (!overviewRes.ok) throw new Error(`HTTP error ${overviewRes.status}`);
+        const data = await overviewRes.json();
         this.state.overviewData = data;
+
+        if (tracesRes && tracesRes.ok) {
+          this.state.tracesData = await tracesRes.json();
+        }
+
         this.renderOverview();
       } catch (err) {
         console.error('Failed to load overview:', err);
@@ -221,10 +230,21 @@ document.addEventListener('DOMContentLoaded', () => {
       }
 
       const m = data.metrics || {};
-      this.setText('metric-total-executions', m.total_executions !== null ? m.total_executions : 'UNAVAILABLE');
-      this.setText('metric-denials', m.authorization_denials !== null ? m.authorization_denials : 'UNAVAILABLE');
-      this.setText('metric-halts', m.halts !== null ? m.halts : 'UNAVAILABLE');
-      this.setText('metric-failures', m.execution_failures !== null ? m.execution_failures : 'UNAVAILABLE');
+      this.setText('metric-total-executions', (m.total_executions !== null && m.total_executions !== undefined) ? m.total_executions : 'UNAVAILABLE');
+      this.setText('metric-denials', (m.authorization_denials !== null && m.authorization_denials !== undefined) ? m.authorization_denials : 'UNAVAILABLE');
+      this.setText('metric-halts', (m.halts !== null && m.halts !== undefined) ? m.halts : 'UNAVAILABLE');
+      this.setText('metric-failures', (m.execution_failures !== null && m.execution_failures !== undefined) ? m.execution_failures : 'UNAVAILABLE');
+      this.setText('metric-parse-errors', (m.parse_error_count !== null && m.parse_error_count !== undefined) ? m.parse_error_count : 'UNAVAILABLE');
+
+      const sf = data.status_flags || {};
+
+      // Audit Data Availability Badge
+      const auditAvailEl = document.getElementById('audit-data-availability');
+      if (auditAvailEl) {
+        const isAvail = sf.audit_data_available;
+        auditAvailEl.className = isAvail ? 'status-badge status-badge-verified' : 'status-badge status-badge-unavailable';
+        auditAvailEl.textContent = isAvail ? '✓ DATA AVAILABLE' : '⊘ DATA UNAVAILABLE';
+      }
 
       // Audit Integrity Block
       const auditContainer = document.getElementById('audit-integrity-status');
@@ -234,13 +254,13 @@ document.addEventListener('DOMContentLoaded', () => {
 
         const headerDiv = document.createElement('div');
         headerDiv.style.display = 'flex';
-        headerDiv.style.justifySpaceBetween = 'space-between';
+        headerDiv.style.justifyContent = 'space-between';
         headerDiv.style.alignItems = 'center';
         headerDiv.style.marginBottom = '0.5rem';
 
         const labelSpan = document.createElement('span');
         labelSpan.style.fontWeight = '600';
-        labelSpan.textContent = 'Audit Trail Status: ';
+        labelSpan.textContent = 'Integrity Verification: ';
 
         const badge = this.createStatusBadge(ai.status || 'UNAVAILABLE');
         headerDiv.appendChild(labelSpan);
@@ -263,6 +283,14 @@ document.addEventListener('DOMContentLoaded', () => {
         auditContainer.appendChild(countDiv);
       }
 
+      // Provenance Data Availability Badge
+      const provAvailEl = document.getElementById('provenance-data-availability');
+      if (provAvailEl) {
+        const isAvail = sf.provenance_data_available;
+        provAvailEl.className = isAvail ? 'status-badge status-badge-verified' : 'status-badge status-badge-unavailable';
+        provAvailEl.textContent = isAvail ? '✓ DATA AVAILABLE' : '⊘ DATA UNAVAILABLE';
+      }
+
       // Provenance Integrity Block
       const provContainer = document.getElementById('provenance-integrity-status');
       if (provContainer) {
@@ -271,13 +299,13 @@ document.addEventListener('DOMContentLoaded', () => {
 
         const headerDiv = document.createElement('div');
         headerDiv.style.display = 'flex';
-        headerDiv.style.justifySpaceBetween = 'space-between';
+        headerDiv.style.justifyContent = 'space-between';
         headerDiv.style.alignItems = 'center';
         headerDiv.style.marginBottom = '0.5rem';
 
         const labelSpan = document.createElement('span');
         labelSpan.style.fontWeight = '600';
-        labelSpan.textContent = 'Hash Chain Integrity: ';
+        labelSpan.textContent = 'Integrity Verification: ';
 
         const badge = this.createStatusBadge(pi.status || 'UNAVAILABLE');
         headerDiv.appendChild(labelSpan);
@@ -309,6 +337,73 @@ document.addEventListener('DOMContentLoaded', () => {
           provContainer.appendChild(hashDiv);
         }
       }
+
+      // Render Overview Recent Traces
+      this.renderOverviewRecentTraces();
+    },
+
+    renderOverviewRecentTraces() {
+      const tbody = document.getElementById('overview-recent-traces');
+      if (!tbody) return;
+
+      tbody.innerHTML = '';
+      const traces = this.state.tracesData || [];
+
+      if (traces.length === 0) {
+        const tr = document.createElement('tr');
+        const td = document.createElement('td');
+        td.colSpan = 5;
+        td.className = 'text-center text-muted';
+        td.textContent = 'No recent execution traces recorded.';
+        tr.appendChild(td);
+        tbody.appendChild(tr);
+        return;
+      }
+
+      // Show top 5 recent execution traces
+      const recent = traces.slice(0, 5);
+
+      recent.forEach(trace => {
+        const tr = document.createElement('tr');
+        tr.className = 'clickable';
+
+        tr.addEventListener('click', () => {
+          this.state.selectedTraceId = trace.correlation_id;
+          this.switchTab('traces');
+          this.selectTrace(trace.correlation_id);
+        });
+
+        const tdCorr = document.createElement('td');
+        tdCorr.className = 'font-mono';
+        tdCorr.style.fontSize = '0.775rem';
+        tdCorr.textContent = (trace.correlation_id || '').length > 20 ? (trace.correlation_id || '').substring(0, 18) + '...' : (trace.correlation_id || 'UNKNOWN');
+        tdCorr.title = trace.correlation_id;
+
+        const tdAction = document.createElement('td');
+        tdAction.textContent = trace.action_name || 'N/A';
+
+        const tdTarget = document.createElement('td');
+        tdTarget.textContent = trace.target || 'N/A';
+
+        const tdStatus = document.createElement('td');
+        const badge = document.createElement('span');
+        badge.className = `badge badge-${trace.status || 'OUTCOME_UNKNOWN'}`;
+        badge.textContent = trace.status || 'UNKNOWN';
+        tdStatus.appendChild(badge);
+
+        const tdTime = document.createElement('td');
+        tdTime.className = 'font-mono';
+        tdTime.style.fontSize = '0.75rem';
+        tdTime.textContent = trace.start_time || trace.timestamp || 'N/A';
+
+        tr.appendChild(tdCorr);
+        tr.appendChild(tdAction);
+        tr.appendChild(tdTarget);
+        tr.appendChild(tdStatus);
+        tr.appendChild(tdTime);
+
+        tbody.appendChild(tr);
+      });
     },
 
     renderOverviewError(msg) {
