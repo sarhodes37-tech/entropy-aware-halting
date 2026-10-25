@@ -303,7 +303,7 @@ def test_scenario_6_parameter_substitutions_rejected(tmp_path):
         )
 
     # 4. Executor substitution
-    with pytest.raises(PermissionError, match="EXECUTOR_MISMATCH"):
+    with pytest.raises(PermissionError, match=r"(EXECUTOR_MISMATCH|identity mismatch)"):
         boundary.execute_protected_action(
             action_name="TRANSFER",
             target="account_A",

@@ -286,15 +286,14 @@ class CapabilityRegistry:
 
 def get_callable_identity(func: Any) -> str:
     """
-    Derives an authoritative, robust qualified identifier for a callable object
-    to prevent name-spoofing via __name__ mutation.
+    Derives an authoritative, robust fully-qualified canonical identifier for a callable object.
+    Uses module and qualname to prevent short-name collisions and name-spoofing via __name__ mutation.
+    Caller-supplied attributes (such as __executor_id__) are strictly ignored.
     """
     if not func:
         return "default_executor"
     if isinstance(func, str):
         return func
-    if hasattr(func, "__executor_id__") and isinstance(getattr(func, "__executor_id__"), str):
-        return getattr(func, "__executor_id__")
 
     name = getattr(func, "__name__", str(func))
     if name == "<lambda>":
@@ -417,6 +416,14 @@ class AuthorizationAuthority:
         token_id = f"AUTH-CAP-{uuid.uuid4()}"
         expires_at = now + active_policy.token_ttl_seconds
 
+        if callable(executor_id):
+            exec_obj = executor_id
+            executor_id_str = get_callable_identity(exec_obj)
+            self.executor_registry[token_id] = exec_obj
+            self.executor_registry[executor_id_str] = exec_obj
+        else:
+            executor_id_str = get_callable_identity(executor_id)
+
         cap = Capability(
             token_id=token_id,
             principal_id=principal_id,
@@ -425,7 +432,7 @@ class AuthorizationAuthority:
             action_name=action_name,
             target=target,
             canonical_request_digest=canonical_request_digest,
-            executor_id=get_callable_identity(executor_id),
+            executor_id=executor_id_str,
             policy_version=active_policy.version,
             created_at=now,
             expires_at=expires_at,
