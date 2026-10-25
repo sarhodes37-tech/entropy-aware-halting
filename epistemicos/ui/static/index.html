@@ -286,63 +286,196 @@
     <!-- View 4: Benchmark Workbench -->
     <section id="view-benchmarks" class="view-panel" role="tabpanel" aria-labelledby="tab-benchmarks" tabindex="0">
       <div class="panel-header">
-        <h2>Benchmark Workbench</h2>
+        <div>
+          <h2>Benchmark Workbench</h2>
+          <p class="subtitle">Empirical Evidence & Evaluation Surface • Baseline Conditions, Inferential Comparisons & Per-Case Telemetry</p>
+        </div>
       </div>
 
+      <!-- Section 1: Run Summary & Identity Panel -->
+      <div id="benchmark-run-summary-card" class="card mb-1">
+        <div class="card-header">
+          <span>Benchmark Identity &amp; Run Summary</span>
+          <span id="benchmark-artifacts-status" class="status-badge status-badge-unknown">ARTIFACTS: CHECKING...</span>
+        </div>
+        <div id="benchmark-run-summary-grid" class="metrics-grid mb-1">
+          <div class="metric-card primary">
+            <div class="metric-label">Run Identifier</div>
+            <div id="summary-run-id" class="metric-value font-mono" style="font-size: 0.95rem; word-break: break-all;">CHECKING...</div>
+            <div class="metric-subtext">Source: Ablation Table Artifact</div>
+          </div>
+          <div class="metric-card primary">
+            <div class="metric-label">Evaluated Sample Count</div>
+            <div id="summary-sample-count" class="metric-value">--</div>
+            <div class="metric-subtext">Scope: Held-out Evaluation Dataset</div>
+          </div>
+          <div class="metric-card primary">
+            <div class="metric-label">Dataset SHA-256 Digest</div>
+            <div id="summary-dataset-digest" class="metric-value font-mono" style="font-size: 0.8rem; word-break: break-all;">CHECKING...</div>
+            <div class="metric-subtext">Verification: Evaluation Set Integrity</div>
+          </div>
+          <div class="metric-card primary">
+            <div class="metric-label">Run Records SHA-256 Digest</div>
+            <div id="summary-records-digest" class="metric-value font-mono" style="font-size: 0.8rem; word-break: break-all;">CHECKING...</div>
+            <div class="metric-subtext">Verification: Case Output Serialization</div>
+          </div>
+        </div>
+        <div id="benchmark-run-meta-row" class="text-muted font-mono" style="font-size: 0.8rem; display: flex; gap: 1.5rem; flex-wrap: wrap;">
+          <span>Benchmark Version: <strong id="summary-version" class="text-primary">--</strong></span>
+          <span>Evaluation Seed: <strong id="summary-seed" class="text-primary">--</strong></span>
+        </div>
+        <div id="benchmark-artifacts-alert-container" style="margin-top: 0.75rem;"></div>
+      </div>
+
+      <!-- Section 2: Condition Comparison Surface -->
       <div class="card mb-1">
-        <div class="card-header">Baseline Evaluation Metrics</div>
+        <div class="card-header">
+          <span>Condition Comparison &amp; Empirical Performance</span>
+          <span class="subtitle font-mono">Measured Evaluation Artifact Metrics</span>
+        </div>
+
         <h3>Baseline Condition Performance</h3>
-        <div class="table-responsive">
-          <table class="data-table">
+        <div class="table-responsive mb-1">
+          <table class="data-table" aria-label="Baseline Condition Performance Metrics">
             <thead>
               <tr>
                 <th>Baseline Condition</th>
                 <th>Samples</th>
                 <th>Confusion Matrix (TC/FC/TR/FR)</th>
                 <th>Accuracy (95% CI)</th>
-                <th>FP Rate</th>
-                <th>FN Rate</th>
+                <th>Recall %</th>
+                <th>Precision %</th>
+                <th>FPR %</th>
+                <th>FNR %</th>
                 <th>Avg Latency</th>
+                <th>Total Tokens</th>
               </tr>
             </thead>
             <tbody id="benchmark-baselines-tbody">
-              <tr><td colspan="7" class="text-center text-muted">Loading benchmark baseline metrics...</td></tr>
+              <tr><td colspan="10" class="text-center text-muted">Loading baseline evaluation metrics...</td></tr>
             </tbody>
           </table>
         </div>
+
+        <div class="section-grid mb-1">
+          <div>
+            <h3 style="font-size: 0.95rem; margin-bottom: 0.5rem;">Paired McNemar Inferential Comparisons</h3>
+            <div id="benchmark-mcnemar-container" class="table-responsive">
+              <table class="data-table" aria-label="Paired McNemar Inferential Comparisons">
+                <thead>
+                  <tr>
+                    <th>Comparison</th>
+                    <th>Disc. A+/B-</th>
+                    <th>Disc. A-/B+</th>
+                    <th>Chi² Stat</th>
+                    <th>p-value</th>
+                    <th>Significant (α=0.05)</th>
+                  </tr>
+                </thead>
+                <tbody id="benchmark-mcnemar-tbody">
+                  <tr><td colspan="6" class="text-center text-muted">Loading McNemar comparisons...</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div>
+            <h3 style="font-size: 0.95rem; margin-bottom: 0.5rem;">Entropy Gate Threshold Sensitivity Analysis</h3>
+            <div id="threshold-ablations-container" class="table-responsive">
+              <table class="data-table" aria-label="Entropy Gate Threshold Sensitivity Analysis">
+                <thead>
+                  <tr>
+                    <th>Z-Threshold</th>
+                    <th>TC</th>
+                    <th>FC</th>
+                    <th>TR</th>
+                    <th>FR</th>
+                    <th>Precision %</th>
+                    <th>Recall %</th>
+                  </tr>
+                </thead>
+                <tbody id="benchmark-thresholds-tbody">
+                  <tr><td colspan="7" class="text-center text-muted">Loading threshold ablations...</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
       </div>
 
-      <div class="section-grid mb-1">
-        <div class="card">
-          <div class="card-header">Threshold Sensitivity Analysis</div>
-          <h3>Threshold Ablations</h3>
-          <div id="threshold-ablations-container">Loading threshold ablations...</div>
+      <!-- Section 3: Per-Case Evaluation Inspector -->
+      <div class="card mb-1">
+        <div class="card-header">
+          <div>
+            <span style="font-size: 1rem; font-weight: 700;">Per-Case Evaluation Inspector</span>
+            <span class="subtitle font-mono" style="display: block; font-size: 0.775rem;">Recorded Case Outcomes, Classification Labels &amp; Failure Details</span>
+          </div>
+          <div class="filter-controls">
+            <input type="search" id="benchmark-case-search" placeholder="Search case ID / family / reason..." class="input-search" aria-label="Search benchmark cases">
+            <select id="benchmark-case-baseline-filter" class="select-filter" aria-label="Filter benchmark cases by baseline condition">
+              <option value="ALL">All Baselines</option>
+            </select>
+            <select id="benchmark-case-outcome-filter" class="select-filter" aria-label="Filter benchmark cases by outcome classification">
+              <option value="ALL">All Outcomes</option>
+              <option value="TC">TC (True Commit)</option>
+              <option value="FC">FC (False Commit)</option>
+              <option value="TR">TR (True Rollback)</option>
+              <option value="FR">FR (False Rollback)</option>
+            </select>
+          </div>
         </div>
-        <div class="card">
-          <div class="card-header">Security Observations</div>
-          <h3>Security & Attribution Takeaways</h3>
-          <div id="attribution-container">Loading attribution takeaways...</div>
+
+        <div class="trace-layout" style="margin-top: 0.75rem;">
+          <!-- Case Stream List -->
+          <aside id="area-benchmark-case-list" class="trace-list-container" aria-label="Benchmark Case Stream">
+            <div class="card-header">
+              <span>Recorded Cases</span>
+              <span id="benchmark-case-count" class="trace-count-badge" aria-live="polite" aria-atomic="true">--</span>
+            </div>
+            <ul id="benchmark-case-list" class="trace-list" role="listbox" aria-label="Select a benchmark case to inspect">
+              <li class="text-muted text-center" style="padding: 1.5rem;">Loading benchmark cases...</li>
+            </ul>
+          </aside>
+
+          <!-- Case Detail Inspector -->
+          <div class="trace-detail-container">
+            <div id="benchmark-case-empty" class="empty-state">
+              <span style="font-size: 2rem;" aria-hidden="true">📊</span>
+              <div>Select a benchmark case from the list to inspect expected vs observed decisions, classification labels, latencies, and recorded decision reasons.</div>
+            </div>
+            <div id="benchmark-case-content" class="trace-detail-content hidden">
+              <!-- Dynamically populated via app.js -->
+            </div>
+          </div>
         </div>
       </div>
 
+      <!-- Section 4: Methodology & Limitations -->
       <div class="card">
-        <div class="card-header">Case-Level Outcomes</div>
-        <h3>Per-Case Evaluation Results</h3>
-        <div class="table-responsive">
-          <table class="data-table">
-            <thead>
-              <tr>
-                <th>Case ID</th>
-                <th>Category</th>
-                <th>Prompt / Target</th>
-                <th>Outcome Status</th>
-                <th>Gate Action</th>
-              </tr>
-            </thead>
-            <tbody id="benchmark-cases-tbody">
-              <tr><td colspan="5" class="text-center text-muted">Loading per-case evaluation outcomes...</td></tr>
-            </tbody>
-          </table>
+        <div class="card-header">Methodology, Scope &amp; Documented Interpretive Guidance</div>
+        <div class="section-grid" style="margin-top: 0.75rem;">
+          <div>
+            <h3 style="font-size: 0.95rem; margin-bottom: 0.5rem;">Documented Interpretive Guidance &amp; Takeaways</h3>
+            <p class="text-muted" style="font-size: 0.8rem; margin-bottom: 0.5rem;">
+              The takeaways below represent qualitative interpretive notes documented by the benchmark runner harness, distinct from raw measured telemetry.
+            </p>
+            <div id="attribution-container">Loading attribution takeaways...</div>
+          </div>
+
+          <div>
+            <h3 style="font-size: 0.95rem; margin-bottom: 0.5rem;">Benchmark Methodology &amp; Artifact Scope</h3>
+            <div class="epistemic-disclaimer-box" style="font-size: 0.8rem; line-height: 1.45;">
+              <p style="margin-bottom: 0.5rem;">
+                <strong>EPISTEMIC LIMITATIONS NOTICE:</strong>
+              </p>
+              <ul style="margin-left: 1.2rem; display: flex; flex-direction: column; gap: 0.35rem;">
+                <li>The Benchmark Workbench displays recorded evidence from static JSON artifacts (<code>results/ablation_table.json</code> and <code>results/per_case_results.json</code>).</li>
+                <li>Parsing success confirms syntactic readability of JSON artifacts only—it does NOT establish empirical validity, reproducibility, or external system safety.</li>
+                <li>Aggregated accuracy, precision, and recall metrics reflect performance on the specific N=100 held-out evaluation dataset and configured baseline conditions.</li>
+                <li>Individual case classification labels (TC/FC/TR/FR) reflect automated comparison against expected outcomes, not human adjudication or external source authenticity.</li>
+              </ul>
+            </div>
+          </div>
         </div>
       </div>
     </section>

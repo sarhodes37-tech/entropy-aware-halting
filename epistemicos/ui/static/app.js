@@ -25,7 +25,11 @@ document.addEventListener('DOMContentLoaded', () => {
       traceFilterStatus: 'ALL',
       traceSearchQuery: '',
       provenanceFilterType: 'ALL',
-      provenanceSearchQuery: ''
+      provenanceSearchQuery: '',
+      selectedCaseIndex: null,
+      caseSearchQuery: '',
+      caseBaselineFilter: 'ALL',
+      caseOutcomeFilter: 'ALL'
     },
 
     init() {
@@ -130,6 +134,38 @@ document.addEventListener('DOMContentLoaded', () => {
         provTypeFilter.addEventListener('change', (e) => {
           this.state.provenanceFilterType = e.target.value;
           this.renderProvenanceRecordList();
+        });
+      }
+
+      // Benchmark Workbench Filter Controls
+      const caseSearchInput = document.getElementById('benchmark-case-search');
+      if (caseSearchInput) {
+        caseSearchInput.addEventListener('input', (e) => {
+          this.state.caseSearchQuery = e.target.value.toLowerCase().trim();
+          this.renderBenchmarkCasesList();
+        });
+        caseSearchInput.addEventListener('keydown', (e) => {
+          if (e.key === 'Escape' && caseSearchInput.value) {
+            caseSearchInput.value = '';
+            this.state.caseSearchQuery = '';
+            this.renderBenchmarkCasesList();
+          }
+        });
+      }
+
+      const caseBaseFilterSelect = document.getElementById('benchmark-case-baseline-filter');
+      if (caseBaseFilterSelect) {
+        caseBaseFilterSelect.addEventListener('change', (e) => {
+          this.state.caseBaselineFilter = e.target.value;
+          this.renderBenchmarkCasesList();
+        });
+      }
+
+      const caseOutcomeFilterSelect = document.getElementById('benchmark-case-outcome-filter');
+      if (caseOutcomeFilterSelect) {
+        caseOutcomeFilterSelect.addEventListener('change', (e) => {
+          this.state.caseOutcomeFilter = e.target.value;
+          this.renderBenchmarkCasesList();
         });
       }
     },
@@ -1799,124 +1835,866 @@ document.addEventListener('DOMContentLoaded', () => {
     // View 4: Benchmark Workbench
     // -------------------------------------------------------------------------
     async loadBenchmarks() {
+      const caseListUl = document.getElementById('benchmark-case-list');
+      if (caseListUl && (!this.state.benchmarkData)) {
+        caseListUl.innerHTML = '<li class="text-muted text-center" style="padding: 1.5rem;">Loading benchmark cases...</li>';
+      }
+
       try {
         const res = await fetch('/api/benchmarks');
         if (!res.ok) throw new Error(`HTTP error ${res.status}`);
         const data = await res.json();
         this.state.benchmarkData = data;
+        this.populateBaselineFilterOptions();
         this.renderBenchmarks();
       } catch (err) {
         console.error('Failed to load benchmarks:', err);
+        this.renderBenchmarkLoadError(err.message);
       }
+    },
+
+    renderBenchmarkLoadError(errorMsg) {
+      const statusBadge = document.getElementById('benchmark-artifacts-status');
+      if (statusBadge) {
+        const badge = this.createStatusBadge('UNAVAILABLE');
+        statusBadge.replaceWith(badge);
+        badge.id = 'benchmark-artifacts-status';
+      }
+
+      const caseListUl = document.getElementById('benchmark-case-list');
+      if (caseListUl) {
+        caseListUl.innerHTML = '';
+        const errLi = document.createElement('li');
+        errLi.className = 'text-danger text-center';
+        errLi.style.padding = '1.5rem 1rem';
+
+        const msgSpan = document.createElement('span');
+        msgSpan.style.display = 'block';
+        msgSpan.style.marginBottom = '0.5rem';
+        msgSpan.style.fontWeight = '600';
+        msgSpan.textContent = 'Failed to load benchmark artifacts.';
+
+        const detailSpan = document.createElement('span');
+        detailSpan.className = 'text-muted font-mono';
+        detailSpan.style.fontSize = '0.75rem';
+        detailSpan.style.display = 'block';
+        detailSpan.style.marginBottom = '0.75rem';
+        detailSpan.textContent = `Server API Error: ${errorMsg}`;
+
+        const retryBtn = document.createElement('button');
+        retryBtn.type = 'button';
+        retryBtn.className = 'btn-refresh';
+        retryBtn.textContent = 'Retry Loading Benchmarks';
+        retryBtn.addEventListener('click', () => this.loadBenchmarks());
+
+        errLi.appendChild(msgSpan);
+        errLi.appendChild(detailSpan);
+        errLi.appendChild(retryBtn);
+        caseListUl.appendChild(errLi);
+      }
+
+      const countBadge = document.getElementById('benchmark-case-count');
+      if (countBadge) countBadge.textContent = 'ERROR';
+    },
+
+    populateBaselineFilterOptions() {
+      const selectEl = document.getElementById('benchmark-case-baseline-filter');
+      if (!selectEl) return;
+
+      const data = this.state.benchmarkData;
+      const pc = data?.per_case_results;
+      const caseList = (pc?.available && Array.isArray(pc.data)) ? pc.data : [];
+
+      const distinctBaselines = new Set();
+      caseList.forEach(c => {
+        if (c && c.baseline) distinctBaselines.add(c.baseline);
+      });
+
+      // Preserve existing selected value if possible
+      const currentVal = selectEl.value || 'ALL';
+
+      selectEl.innerHTML = '';
+      const allOpt = document.createElement('option');
+      allOpt.value = 'ALL';
+      allOpt.textContent = 'All Baselines';
+      selectEl.appendChild(allOpt);
+
+      Array.from(distinctBaselines).sort().forEach(baseName => {
+        const opt = document.createElement('option');
+        opt.value = baseName;
+        opt.textContent = baseName;
+        selectEl.appendChild(opt);
+      });
+
+      selectEl.value = Array.from(distinctBaselines).includes(currentVal) ? currentVal : 'ALL';
+      this.state.caseBaselineFilter = selectEl.value;
     },
 
     renderBenchmarks() {
       const data = this.state.benchmarkData;
       if (!data) return;
 
-      // Baselines
+      this.renderRunSummary();
+      this.renderConditionComparisons();
+      this.renderBenchmarkCasesList();
+      this.renderMethodologyAndLimitations();
+    },
+
+    // -------------------------------------------------------------------------
+    // Workbench Section 1: Run Summary
+    // -------------------------------------------------------------------------
+    renderRunSummary() {
+      const data = this.state.benchmarkData || {};
+      const abl = data.ablation_table || {};
+      const pc = data.per_case_results || {};
+
+      const ablData = abl.available ? abl.data : null;
+      const pcData = (pc.available && Array.isArray(pc.data)) ? pc.data : null;
+
+      // Artifact Status Badge
+      const statusBadge = document.getElementById('benchmark-artifacts-status');
+      if (statusBadge) {
+        let statusStr = 'UNAVAILABLE';
+        if (abl.available && pc.available) statusStr = 'VERIFIED';
+        else if (abl.available || pc.available) statusStr = 'PARTIAL';
+        const badge = this.createStatusBadge(statusStr);
+        statusBadge.replaceWith(badge);
+        badge.id = 'benchmark-artifacts-status';
+      }
+
+      // Run Identifier
+      const runId = (ablData && ablData.run_id) ? ablData.run_id : ((pcData && pcData.length > 0 && pcData[0].run_id) ? pcData[0].run_id : null);
+      this.renderSummaryValue('summary-run-id', runId);
+
+      // Evaluated Sample Count
+      const sampleCount = (ablData && ablData.eval_sample_count !== undefined && ablData.eval_sample_count !== null) ? ablData.eval_sample_count : (pcData ? pcData.length : null);
+      this.renderSummaryValue('summary-sample-count', sampleCount);
+
+      // Dataset SHA256 Digest
+      const datasetDigest = (ablData && ablData.dataset_sha256_digest) ? ablData.dataset_sha256_digest : ((pcData && pcData.length > 0 && pcData[0].dataset_sha256_digest) ? pcData[0].dataset_sha256_digest : null);
+      this.renderSummaryDigestValue('summary-dataset-digest', datasetDigest);
+
+      // Run Records SHA256 Digest
+      const recordsDigest = (ablData && ablData.run_records_sha256_digest) ? ablData.run_records_sha256_digest : null;
+      this.renderSummaryDigestValue('summary-records-digest', recordsDigest);
+
+      // Version & Seed
+      this.renderSummaryValue('summary-version', ablData ? ablData.version : null);
+      this.renderSummaryValue('summary-seed', (ablData && ablData.seed !== undefined && ablData.seed !== null) ? ablData.seed : null);
+
+      // Artifact Error / Warning Alerts Container
+      const alertContainer = document.getElementById('benchmark-artifacts-alert-container');
+      if (alertContainer) {
+        alertContainer.innerHTML = '';
+        if (abl.error) {
+          const ablErrCard = document.createElement('div');
+          ablErrCard.className = 'status-block';
+          ablErrCard.style.borderColor = 'var(--status-failed-border)';
+          ablErrCard.style.backgroundColor = 'rgba(251, 113, 133, 0.08)';
+          ablErrCard.style.fontSize = '0.8rem';
+          ablErrCard.style.marginBottom = '0.5rem';
+
+          const title = document.createElement('strong');
+          title.className = 'text-danger';
+          title.textContent = 'Ablation Table Artifact Status: ';
+
+          const msg = document.createElement('span');
+          msg.textContent = abl.error;
+
+          ablErrCard.appendChild(title);
+          ablErrCard.appendChild(msg);
+          alertContainer.appendChild(ablErrCard);
+        }
+
+        if (pc.error) {
+          const pcErrCard = document.createElement('div');
+          pcErrCard.className = 'status-block';
+          pcErrCard.style.borderColor = 'var(--status-failed-border)';
+          pcErrCard.style.backgroundColor = 'rgba(251, 113, 133, 0.08)';
+          pcErrCard.style.fontSize = '0.8rem';
+
+          const title = document.createElement('strong');
+          title.className = 'text-danger';
+          title.textContent = 'Per-Case Results Artifact Status: ';
+
+          const msg = document.createElement('span');
+          msg.textContent = pc.error;
+
+          pcErrCard.appendChild(title);
+          pcErrCard.appendChild(msg);
+          alertContainer.appendChild(pcErrCard);
+        }
+      }
+    },
+
+    renderSummaryValue(elementId, value) {
+      const el = document.getElementById(elementId);
+      if (!el) return;
+      el.innerHTML = '';
+
+      if (value !== null && value !== undefined && value !== '') {
+        el.textContent = String(value);
+        el.classList.remove('text-dim');
+      } else {
+        const span = document.createElement('span');
+        span.className = 'text-dim';
+        span.textContent = 'UNAVAILABLE';
+        el.appendChild(span);
+      }
+    },
+
+    renderSummaryDigestValue(elementId, digest) {
+      const el = document.getElementById(elementId);
+      if (!el) return;
+      el.innerHTML = '';
+
+      if (digest !== null && digest !== undefined && digest !== '') {
+        const fullDigest = String(digest);
+        const shortDigest = fullDigest.length > 20 ? fullDigest.substring(0, 18) + '...' : fullDigest;
+
+        const textSpan = document.createElement('span');
+        textSpan.textContent = shortDigest;
+        textSpan.title = fullDigest;
+
+        const copyBtn = document.createElement('button');
+        copyBtn.className = 'copy-btn';
+        copyBtn.style.marginLeft = '0.4rem';
+        copyBtn.style.padding = '0.1rem 0.35rem';
+        copyBtn.style.fontSize = '0.65rem';
+        copyBtn.textContent = 'Copy';
+        copyBtn.setAttribute('aria-label', `Copy ${elementId}`);
+        copyBtn.addEventListener('click', () => this.copyToClipboard(fullDigest, copyBtn));
+
+        el.appendChild(textSpan);
+        el.appendChild(copyBtn);
+      } else {
+        const span = document.createElement('span');
+        span.className = 'text-dim';
+        span.textContent = 'UNAVAILABLE';
+        el.appendChild(span);
+      }
+    },
+
+    // -------------------------------------------------------------------------
+    // Workbench Section 2: Condition Comparisons
+    // -------------------------------------------------------------------------
+    renderConditionComparisons() {
+      const data = this.state.benchmarkData || {};
+      const abl = data.ablation_table || {};
+      const ablData = abl.available ? abl.data : null;
+
+      // 1. Baseline Performance Table
       const baselinesTbody = document.getElementById('benchmark-baselines-tbody');
       if (baselinesTbody) {
         baselinesTbody.innerHTML = '';
-        const abl = data.ablation_table || {};
-        if (!abl.available || !abl.data || !abl.data.baselines) {
+        if (!ablData || !ablData.baselines || typeof ablData.baselines !== 'object' || Object.keys(ablData.baselines).length === 0) {
           const tr = document.createElement('tr');
-          tr.innerHTML = `<td colspan="7" class="text-center text-muted">${abl.error || 'Measured benchmark ablation data unavailable.'}</td>`;
+          const td = document.createElement('td');
+          td.colSpan = 10;
+          td.className = 'text-center text-muted';
+          td.textContent = abl.error || 'Measured baseline evaluation metrics unavailable in ablation table artifact.';
+          tr.appendChild(td);
           baselinesTbody.appendChild(tr);
         } else {
-          const baselines = abl.data.baselines;
-          Object.keys(baselines).forEach(name => {
-            const b = baselines[name];
-            const cm = b.confusion_matrix || {};
-            const ci = b.accuracy_95ci || [0, 0];
+          const baselines = ablData.baselines;
+          Object.keys(baselines).forEach(bName => {
+            const b = baselines[bName] || {};
+            const cm = b.confusion_matrix;
+            const ci = b.accuracy_95ci;
 
             const tr = document.createElement('tr');
 
+            // Name
             const tdName = document.createElement('td');
             tdName.style.fontWeight = '600';
-            tdName.textContent = name;
+            tdName.textContent = bName;
 
-            const tdCount = document.createElement('td');
-            tdCount.className = 'font-mono';
-            tdCount.textContent = b.sample_count ?? 'N/A';
+            // Samples
+            const tdSamples = document.createElement('td');
+            tdSamples.className = 'font-mono';
+            tdSamples.textContent = (b.sample_count !== undefined && b.sample_count !== null) ? String(b.sample_count) : 'UNAVAILABLE';
 
+            // Confusion Matrix
             const tdCm = document.createElement('td');
             tdCm.className = 'font-mono';
-            tdCm.textContent = `TC:${cm.TC ?? 0} FC:${cm.FC ?? 0} TR:${cm.TR ?? 0} FR:${cm.FR ?? 0}`;
+            if (cm && typeof cm === 'object') {
+              const tc = cm.TC !== undefined ? cm.TC : 'N/A';
+              const fc = cm.FC !== undefined ? cm.FC : 'N/A';
+              const trVal = cm.TR !== undefined ? cm.TR : 'N/A';
+              const fr = cm.FR !== undefined ? cm.FR : 'N/A';
+              tdCm.textContent = `TC:${tc} FC:${fc} TR:${trVal} FR:${fr}`;
+            } else {
+              tdCm.textContent = 'UNAVAILABLE';
+            }
 
+            // Accuracy (95% CI)
             const tdAcc = document.createElement('td');
             tdAcc.className = 'font-mono';
-            tdAcc.textContent = `${(b.accuracy_pct ?? 0).toFixed(1)}% (${ci[0]}% - ${ci[1]}%)`;
+            if (b.accuracy_pct !== undefined && b.accuracy_pct !== null) {
+              let accStr = `${b.accuracy_pct}%`;
+              if (Array.isArray(ci) && ci.length >= 2) {
+                accStr += ` (${ci[0]}% - ${ci[1]}%)`;
+              }
+              tdAcc.textContent = accStr;
+            } else {
+              tdAcc.textContent = 'UNAVAILABLE';
+            }
 
-            const tdFp = document.createElement('td');
-            tdFp.className = 'font-mono';
-            tdFp.textContent = `${(b.false_positive_rate_pct ?? 0).toFixed(1)}%`;
+            // Recall
+            const tdRecall = document.createElement('td');
+            tdRecall.className = 'font-mono';
+            tdRecall.textContent = (b.recall_pct !== undefined && b.recall_pct !== null) ? `${b.recall_pct}%` : 'UNAVAILABLE';
 
-            const tdFn = document.createElement('td');
-            tdFn.className = 'font-mono';
-            tdFn.textContent = `${(b.false_negative_rate_pct ?? 0).toFixed(1)}%`;
+            // Precision
+            const tdPrec = document.createElement('td');
+            tdPrec.className = 'font-mono';
+            if (b.precision_pct !== undefined && b.precision_pct !== null && b.precision_pct !== 'N/A') {
+              tdPrec.textContent = `${b.precision_pct}%`;
+            } else if (b.precision_pct === 'N/A') {
+              tdPrec.textContent = 'N/A';
+            } else {
+              tdPrec.textContent = 'UNAVAILABLE';
+            }
 
+            // FPR
+            const tdFpr = document.createElement('td');
+            tdFpr.className = 'font-mono';
+            tdFpr.textContent = (b.false_positive_rate_pct !== undefined && b.false_positive_rate_pct !== null) ? `${b.false_positive_rate_pct}%` : 'UNAVAILABLE';
+
+            // FNR
+            const tdFnr = document.createElement('td');
+            tdFnr.className = 'font-mono';
+            tdFnr.textContent = (b.false_negative_rate_pct !== undefined && b.false_negative_rate_pct !== null) ? `${b.false_negative_rate_pct}%` : 'UNAVAILABLE';
+
+            // Avg Latency
             const tdLat = document.createElement('td');
             tdLat.className = 'font-mono';
-            tdLat.textContent = `${(b.avg_latency_ms ?? 0).toFixed(2)} ms`;
+            tdLat.textContent = (b.avg_latency_ms !== undefined && b.avg_latency_ms !== null) ? `${b.avg_latency_ms} ms` : 'UNAVAILABLE';
+
+            // Total Tokens Spent
+            const tdTok = document.createElement('td');
+            tdTok.className = 'font-mono';
+            tdTok.textContent = (b.total_tokens_spent !== undefined && b.total_tokens_spent !== null) ? String(b.total_tokens_spent) : 'UNAVAILABLE';
 
             tr.appendChild(tdName);
-            tr.appendChild(tdCount);
+            tr.appendChild(tdSamples);
             tr.appendChild(tdCm);
             tr.appendChild(tdAcc);
-            tr.appendChild(tdFp);
-            tr.appendChild(tdFn);
+            tr.appendChild(tdRecall);
+            tr.appendChild(tdPrec);
+            tr.appendChild(tdFpr);
+            tr.appendChild(tdFnr);
             tr.appendChild(tdLat);
+            tr.appendChild(tdTok);
+
             baselinesTbody.appendChild(tr);
           });
         }
       }
 
-      // Threshold Ablations
-      const threshContainer = document.getElementById('threshold-ablations-container');
-      if (threshContainer) {
-        threshContainer.innerHTML = '';
-        const abl = data.ablation_table || {};
-        if (abl.available && abl.data && abl.data.threshold_ablations) {
-          const ta = abl.data.threshold_ablations;
-          const ul = document.createElement('ul');
-          ul.style.listStyle = 'none';
-          ul.style.display = 'flex';
-          ul.style.flexDirection = 'column';
-          ul.style.gap = '0.5rem';
+      // 2. Paired McNemar Inferential Comparisons
+      const mcnemarTbody = document.getElementById('benchmark-mcnemar-tbody');
+      if (mcnemarTbody) {
+        mcnemarTbody.innerHTML = '';
+        const comps = ablData?.paired_mcnemar_comparisons;
 
-          Object.keys(ta).forEach(k => {
-            const item = ta[k];
-            const li = document.createElement('li');
-            li.className = 'status-block font-mono';
-            li.style.fontSize = '0.8rem';
-            li.textContent = `${k}: Z=${item.z_threshold} ➔ TC:${item.TC} FC:${item.FC} TR:${item.TR} FR:${item.FR} (Precision: ${item.precision}%, Recall: ${item.recall}%)`;
-            ul.appendChild(li);
-          });
-          threshContainer.appendChild(ul);
+        if (!comps || typeof comps !== 'object' || Object.keys(comps).length === 0) {
+          const tr = document.createElement('tr');
+          const td = document.createElement('td');
+          td.colSpan = 6;
+          td.className = 'text-center text-muted';
+          td.textContent = 'Paired McNemar inferential comparisons unavailable in ablation artifact.';
+          tr.appendChild(td);
+          mcnemarTbody.appendChild(tr);
         } else {
-          threshContainer.textContent = 'Threshold ablation data unavailable.';
+          Object.keys(comps).forEach(cName => {
+            const c = comps[cName] || {};
+            const tr = document.createElement('tr');
+
+            const tdName = document.createElement('td');
+            tdName.style.fontWeight = '600';
+            tdName.style.fontSize = '0.8rem';
+            tdName.textContent = cName;
+
+            const tdDiscA = document.createElement('td');
+            tdDiscA.className = 'font-mono';
+            tdDiscA.textContent = (c.discordant_a_correct_b_incorrect !== undefined && c.discordant_a_correct_b_incorrect !== null) ? String(c.discordant_a_correct_b_incorrect) : 'UNAVAILABLE';
+
+            const tdDiscB = document.createElement('td');
+            tdDiscB.className = 'font-mono';
+            tdDiscB.textContent = (c.discordant_a_incorrect_b_correct !== undefined && c.discordant_a_incorrect_b_correct !== null) ? String(c.discordant_a_incorrect_b_correct) : 'UNAVAILABLE';
+
+            const tdChi2 = document.createElement('td');
+            tdChi2.className = 'font-mono';
+            tdChi2.textContent = (c.chi2_statistic !== undefined && c.chi2_statistic !== null) ? String(c.chi2_statistic) : 'UNAVAILABLE';
+
+            const tdPval = document.createElement('td');
+            tdPval.className = 'font-mono';
+            tdPval.textContent = (c.p_value !== undefined && c.p_value !== null) ? String(c.p_value) : 'UNAVAILABLE';
+
+            const tdSig = document.createElement('td');
+            tdSig.style.fontWeight = '600';
+            if (c.statistically_significant_alpha_005 === true) {
+              tdSig.className = 'text-success';
+              tdSig.textContent = 'YES (p < 0.05)';
+            } else if (c.statistically_significant_alpha_005 === false) {
+              tdSig.className = 'text-muted';
+              tdSig.textContent = 'NO';
+            } else {
+              tdSig.textContent = 'UNAVAILABLE';
+            }
+
+            tr.appendChild(tdName);
+            tr.appendChild(tdDiscA);
+            tr.appendChild(tdDiscB);
+            tr.appendChild(tdChi2);
+            tr.appendChild(tdPval);
+            tr.appendChild(tdSig);
+
+            mcnemarTbody.appendChild(tr);
+          });
         }
       }
 
-      // Attribution Takeaways
+      // 3. Threshold Sensitivity Analysis
+      const thresholdsTbody = document.getElementById('benchmark-thresholds-tbody');
+      if (thresholdsTbody) {
+        thresholdsTbody.innerHTML = '';
+        const ta = ablData?.threshold_ablations;
+
+        if (!ta || typeof ta !== 'object' || Object.keys(ta).length === 0) {
+          const tr = document.createElement('tr');
+          const td = document.createElement('td');
+          td.colSpan = 7;
+          td.className = 'text-center text-muted';
+          td.textContent = 'Threshold sensitivity ablations unavailable in ablation artifact.';
+          tr.appendChild(td);
+          thresholdsTbody.appendChild(tr);
+        } else {
+          Object.keys(ta).forEach(k => {
+            const item = ta[k] || {};
+            const tr = document.createElement('tr');
+
+            const tdZ = document.createElement('td');
+            tdZ.className = 'font-mono';
+            tdZ.style.fontWeight = '700';
+            tdZ.textContent = (item.z_threshold !== undefined && item.z_threshold !== null) ? `Z = ${item.z_threshold}` : k;
+
+            const tdTc = document.createElement('td');
+            tdTc.className = 'font-mono';
+            tdTc.textContent = item.TC !== undefined ? String(item.TC) : 'UNAVAILABLE';
+
+            const tdFc = document.createElement('td');
+            tdFc.className = 'font-mono';
+            tdFc.textContent = item.FC !== undefined ? String(item.FC) : 'UNAVAILABLE';
+
+            const tdTr = document.createElement('td');
+            tdTr.className = 'font-mono';
+            tdTr.textContent = item.TR !== undefined ? String(item.TR) : 'UNAVAILABLE';
+
+            const tdFr = document.createElement('td');
+            tdFr.className = 'font-mono';
+            tdFr.textContent = item.FR !== undefined ? String(item.FR) : 'UNAVAILABLE';
+
+            const tdPrec = document.createElement('td');
+            tdPrec.className = 'font-mono';
+            if (item.precision !== undefined && item.precision !== null && item.precision !== 'N/A') {
+              tdPrec.textContent = `${item.precision}%`;
+            } else if (item.precision === 'N/A') {
+              tdPrec.textContent = 'N/A';
+            } else {
+              tdPrec.textContent = 'UNAVAILABLE';
+            }
+
+            const tdRec = document.createElement('td');
+            tdRec.className = 'font-mono';
+            tdRec.textContent = (item.recall !== undefined && item.recall !== null) ? `${item.recall}%` : 'UNAVAILABLE';
+
+            tr.appendChild(tdZ);
+            tr.appendChild(tdTc);
+            tr.appendChild(tdFc);
+            tr.appendChild(tdTr);
+            tr.appendChild(tdFr);
+            tr.appendChild(tdPrec);
+            tr.appendChild(tdRec);
+
+            thresholdsTbody.appendChild(tr);
+          });
+        }
+      }
+    },
+
+    // -------------------------------------------------------------------------
+    // Workbench Section 3: Per-Case Evaluation Inspector
+    // -------------------------------------------------------------------------
+    renderBenchmarkCasesList() {
+      const listUl = document.getElementById('benchmark-case-list');
+      if (!listUl) return;
+      listUl.innerHTML = '';
+
+      const data = this.state.benchmarkData || {};
+      const pc = data.per_case_results || {};
+      const caseList = (pc.available && Array.isArray(pc.data)) ? pc.data : [];
+
+      if (!pc.available || caseList.length === 0) {
+        const emptyLi = document.createElement('li');
+        emptyLi.className = 'text-muted text-center';
+        emptyLi.style.padding = '1.5rem 1rem';
+        emptyLi.textContent = pc.error || 'No per-case evaluation results available.';
+        listUl.appendChild(emptyLi);
+
+        const countBadge = document.getElementById('benchmark-case-count');
+        if (countBadge) countBadge.textContent = '0';
+        return;
+      }
+
+      let filtered = caseList.filter(c => {
+        if (!c) return false;
+
+        // Baseline Filter
+        if (this.state.caseBaselineFilter !== 'ALL' && c.baseline !== this.state.caseBaselineFilter) {
+          return false;
+        }
+
+        // Outcome Filter
+        if (this.state.caseOutcomeFilter !== 'ALL') {
+          const targetFilter = this.state.caseOutcomeFilter.toUpperCase();
+          const classification = (c.classification || '').toUpperCase();
+          const actualOutcome = (c.actual_outcome || '').toUpperCase();
+          const status = (c.status || c.outcome || '').toUpperCase();
+
+          if (classification !== targetFilter && actualOutcome !== targetFilter && status !== targetFilter) {
+            return false;
+          }
+        }
+
+        // Search Filter
+        if (this.state.caseSearchQuery) {
+          const q = this.state.caseSearchQuery;
+          const caseId = (c.case_id || '').toLowerCase();
+          const family = (c.scenario_family || c.family || c.category || '').toLowerCase();
+          const reason = (c.decision_reason || c.reason || '').toLowerCase();
+          const baseline = (c.baseline || '').toLowerCase();
+          const actual = (c.actual_outcome || c.status || '').toLowerCase();
+          const expected = (c.expected_outcome || '').toLowerCase();
+
+          return caseId.includes(q) || family.includes(q) || reason.includes(q) || baseline.includes(q) || actual.includes(q) || expected.includes(q);
+        }
+
+        return true;
+      });
+
+      const countBadge = document.getElementById('benchmark-case-count');
+      if (countBadge) {
+        const total = caseList.length;
+        const visible = filtered.length;
+        countBadge.textContent = total === visible ? `${total}` : `${visible} of ${total}`;
+        countBadge.setAttribute('aria-label', total === visible ? `${total} cases` : `${visible} of ${total} cases shown`);
+      }
+
+      if (filtered.length === 0) {
+        const emptyLi = document.createElement('li');
+        emptyLi.className = 'text-muted text-center';
+        emptyLi.style.padding = '1.5rem 1rem';
+
+        const hasFilters = this.state.caseSearchQuery || this.state.caseBaselineFilter !== 'ALL' || this.state.caseOutcomeFilter !== 'ALL';
+        if (hasFilters) {
+          const msgSpan = document.createElement('span');
+          msgSpan.style.display = 'block';
+          msgSpan.style.marginBottom = '0.5rem';
+          msgSpan.textContent = 'No benchmark cases match active search query or filter.';
+
+          const clearBtn = document.createElement('button');
+          clearBtn.type = 'button';
+          clearBtn.className = 'btn-refresh';
+          clearBtn.textContent = 'Clear Case Filters';
+          clearBtn.setAttribute('aria-label', 'Clear case search query and filters');
+          clearBtn.addEventListener('click', () => {
+            this.state.caseSearchQuery = '';
+            this.state.caseBaselineFilter = 'ALL';
+            this.state.caseOutcomeFilter = 'ALL';
+            const searchInput = document.getElementById('benchmark-case-search');
+            if (searchInput) searchInput.value = '';
+            const baseSelect = document.getElementById('benchmark-case-baseline-filter');
+            if (baseSelect) baseSelect.value = 'ALL';
+            const outcomeSelect = document.getElementById('benchmark-case-outcome-filter');
+            if (outcomeSelect) outcomeSelect.value = 'ALL';
+            this.renderBenchmarkCasesList();
+          });
+
+          emptyLi.appendChild(msgSpan);
+          emptyLi.appendChild(clearBtn);
+        } else {
+          emptyLi.textContent = 'No recorded benchmark case instances in artifact.';
+        }
+
+        listUl.appendChild(emptyLi);
+        return;
+      }
+
+      filtered.forEach((c, index) => {
+        const isSelected = this.state.selectedCaseIndex === index;
+
+        const li = document.createElement('li');
+        li.className = `trace-item ${isSelected ? 'active' : ''}`;
+        li.setAttribute('role', 'option');
+        li.setAttribute('tabindex', '0');
+        li.setAttribute('aria-selected', isSelected ? 'true' : 'false');
+        li.setAttribute('aria-label', `Benchmark case ${c.case_id || 'unnamed'}, classification ${c.classification || c.actual_outcome || 'unknown'}`);
+
+        li.addEventListener('click', () => this.selectBenchmarkCase(c, index));
+        li.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            this.selectBenchmarkCase(c, index);
+          } else if (e.key === 'ArrowDown') {
+            e.preventDefault();
+            const items = listUl.querySelectorAll('.trace-item');
+            if (index + 1 < items.length) items[index + 1].focus();
+          } else if (e.key === 'ArrowUp') {
+            e.preventDefault();
+            const items = listUl.querySelectorAll('.trace-item');
+            if (index - 1 >= 0) items[index - 1].focus();
+          } else if (e.key === 'Home') {
+            e.preventDefault();
+            const items = listUl.querySelectorAll('.trace-item');
+            if (items.length > 0) items[0].focus();
+          } else if (e.key === 'End') {
+            e.preventDefault();
+            const items = listUl.querySelectorAll('.trace-item');
+            if (items.length > 0) items[items.length - 1].focus();
+          }
+        });
+
+        const headerDiv = document.createElement('div');
+        headerDiv.className = 'trace-item-header';
+
+        const idSpan = document.createElement('span');
+        idSpan.className = 'font-mono';
+        idSpan.style.fontWeight = '700';
+        idSpan.style.fontSize = '0.8rem';
+        idSpan.style.color = 'var(--accent-primary)';
+        idSpan.textContent = c.case_id || 'UNNAMED_CASE';
+
+        const badgeSpan = document.createElement('span');
+        const classification = (c.classification || c.actual_outcome || 'N/A').toUpperCase();
+        if (classification === 'TC') {
+          badgeSpan.className = 'status-badge status-badge-verified';
+          badgeSpan.textContent = 'TC';
+        } else if (classification === 'TR') {
+          badgeSpan.className = 'status-badge status-badge-halted';
+          badgeSpan.textContent = 'TR';
+        } else if (classification === 'FC' || classification === 'FR') {
+          badgeSpan.className = 'status-badge status-badge-failed';
+          badgeSpan.textContent = classification;
+        } else {
+          badgeSpan.className = 'status-badge status-badge-unknown';
+          badgeSpan.textContent = classification;
+        }
+
+        headerDiv.appendChild(idSpan);
+        headerDiv.appendChild(badgeSpan);
+
+        const subDiv = document.createElement('div');
+        subDiv.className = 'text-muted';
+        subDiv.style.fontSize = '0.75rem';
+        subDiv.style.marginTop = '0.2rem';
+        subDiv.textContent = `${c.baseline || 'Default Baseline'} • ${c.scenario_family || c.family || c.category || 'Unclassified'}`;
+
+        const metaDiv = document.createElement('div');
+        metaDiv.className = 'font-mono text-dim';
+        metaDiv.style.fontSize = '0.7rem';
+        metaDiv.style.marginTop = '0.15rem';
+
+        const latStr = (c.latency_ms !== undefined && c.latency_ms !== null) ? `${c.latency_ms} ms` : 'Latency unavailable';
+        const tokStr = (c.tokens_consumed !== undefined && c.tokens_consumed !== null) ? `${c.tokens_consumed} tokens` : 'Tokens unavailable';
+        metaDiv.textContent = `${latStr} • ${tokStr}`;
+
+        li.appendChild(headerDiv);
+        li.appendChild(subDiv);
+        li.appendChild(metaDiv);
+        listUl.appendChild(li);
+      });
+    },
+
+    selectBenchmarkCase(caseRecord, index) {
+      this.state.selectedCaseIndex = index;
+      this.renderBenchmarkCasesList();
+
+      const emptyDiv = document.getElementById('benchmark-case-empty');
+      const contentDiv = document.getElementById('benchmark-case-content');
+
+      if (!caseRecord) {
+        if (emptyDiv) emptyDiv.classList.remove('hidden');
+        if (contentDiv) contentDiv.classList.add('hidden');
+        return;
+      }
+
+      if (emptyDiv) emptyDiv.classList.add('hidden');
+      if (contentDiv) {
+        contentDiv.classList.remove('hidden');
+        this.renderCaseDetailInspector(caseRecord, contentDiv);
+      }
+    },
+
+    renderCaseDetailInspector(c, container) {
+      container.innerHTML = '';
+
+      // Header Bar with Copy buttons
+      const headerBar = document.createElement('div');
+      headerBar.style.display = 'flex';
+      headerBar.style.justifyContent = 'space-between';
+      headerBar.style.alignItems = 'center';
+      headerBar.style.marginBottom = '1rem';
+      headerBar.style.flexWrap = 'wrap';
+      headerBar.style.gap = '0.5rem';
+
+      const titleGroup = document.createElement('div');
+      const title = document.createElement('h3');
+      title.style.fontSize = '1.05rem';
+      title.style.fontWeight = '700';
+      title.style.margin = '0';
+      title.className = 'font-mono';
+      title.textContent = `Case: ${c.case_id || 'UNNAMED_CASE'}`;
+      titleGroup.appendChild(title);
+
+      const actionBtnGroup = document.createElement('div');
+      actionBtnGroup.style.display = 'flex';
+      actionBtnGroup.style.gap = '0.5rem';
+
+      const copyIdBtn = document.createElement('button');
+      copyIdBtn.className = 'copy-btn';
+      copyIdBtn.textContent = 'Copy Case ID';
+      copyIdBtn.setAttribute('aria-label', `Copy Case ID ${c.case_id}`);
+      copyIdBtn.addEventListener('click', () => this.copyToClipboard(c.case_id, copyIdBtn));
+      actionBtnGroup.appendChild(copyIdBtn);
+
+      const copyJsonBtn = document.createElement('button');
+      copyJsonBtn.className = 'copy-btn';
+      copyJsonBtn.textContent = 'Copy Record JSON';
+      copyJsonBtn.setAttribute('aria-label', `Copy full JSON payload for case ${c.case_id}`);
+      copyJsonBtn.addEventListener('click', () => this.copyToClipboard(JSON.stringify(c, null, 2), copyJsonBtn));
+      actionBtnGroup.appendChild(copyJsonBtn);
+
+      headerBar.appendChild(titleGroup);
+      headerBar.appendChild(actionBtnGroup);
+      container.appendChild(headerBar);
+
+      // Card 1: Structured Case Metadata Breakdown
+      const metaCard = document.createElement('div');
+      metaCard.className = 'card mb-1';
+
+      const metaHeader = document.createElement('div');
+      metaHeader.className = 'card-header';
+      metaHeader.textContent = 'Recorded Case Outcomes & Telemetry';
+      metaCard.appendChild(metaHeader);
+
+      const fieldList = [
+        { label: 'Case Identifier', value: c.case_id, mono: true, copyable: true },
+        { label: 'Baseline Condition', value: c.baseline, bold: true },
+        { label: 'Scenario Family', value: c.scenario_family || c.family || c.category },
+        { label: 'Expected Outcome', value: c.expected_outcome, mono: true },
+        { label: 'Actual Outcome', value: c.actual_outcome || c.status || c.outcome, mono: true, bold: true },
+        { label: 'Classification Label', value: c.classification, bold: true },
+        { label: 'Decision Reason / Details', value: c.decision_reason || c.reason || c.gate_action },
+        { label: 'Observed Latency', value: (c.latency_ms !== undefined && c.latency_ms !== null) ? `${c.latency_ms} ms` : null, mono: true },
+        { label: 'Tokens Consumed', value: (c.tokens_consumed !== undefined && c.tokens_consumed !== null) ? `${c.tokens_consumed} tokens` : null, mono: true },
+        { label: 'Run Identifier', value: c.run_id, mono: true, copyable: true },
+        { label: 'Dataset SHA-256 Digest', value: c.dataset_sha256_digest, mono: true, copyable: true }
+      ];
+
+      fieldList.forEach(item => {
+        const row = document.createElement('div');
+        row.style.marginBottom = '0.4rem';
+        row.style.fontSize = '0.8rem';
+        row.style.wordBreak = 'break-all';
+
+        const lbl = document.createElement('span');
+        lbl.style.color = 'var(--text-secondary)';
+        lbl.style.fontWeight = '600';
+        lbl.textContent = `${item.label}: `;
+        row.appendChild(lbl);
+
+        const valSpan = document.createElement('span');
+        if (item.value !== null && item.value !== undefined && item.value !== '') {
+          valSpan.textContent = String(item.value);
+          if (item.mono) valSpan.className = 'font-mono';
+          if (item.bold) valSpan.style.fontWeight = '700';
+          row.appendChild(valSpan);
+
+          if (item.copyable) {
+            const btn = document.createElement('button');
+            btn.className = 'copy-btn';
+            btn.style.marginLeft = '0.4rem';
+            btn.style.padding = '0.1rem 0.35rem';
+            btn.style.fontSize = '0.65rem';
+            btn.textContent = 'Copy';
+            btn.setAttribute('aria-label', `Copy ${item.label}`);
+            btn.addEventListener('click', () => this.copyToClipboard(String(item.value), btn));
+            row.appendChild(btn);
+          }
+        } else {
+          valSpan.className = 'text-dim';
+          valSpan.textContent = 'UNAVAILABLE / NOT RECORDED';
+          row.appendChild(valSpan);
+        }
+
+        metaCard.appendChild(row);
+      });
+
+      container.appendChild(metaCard);
+
+      // Epistemic Notice Callout Box
+      const epistemicBox = document.createElement('div');
+      epistemicBox.className = 'epistemic-disclaimer-box mb-1';
+      epistemicBox.textContent = 'EPISTEMIC NOTICE: Individual outcome classification labels (TC/FC/TR/FR) reflect automated harness comparison against expected target outcomes. Recorded decision reasons reflect recorded telemetry from the gate evaluation loop.';
+      container.appendChild(epistemicBox);
+
+      // Card 2: Original Raw Case Record Payload
+      const jsonCard = document.createElement('div');
+      jsonCard.className = 'card';
+
+      const jsonHeader = document.createElement('div');
+      jsonHeader.className = 'card-header';
+      jsonHeader.textContent = 'Original Raw Case JSON Payload';
+      jsonCard.appendChild(jsonHeader);
+
+      const pre = document.createElement('pre');
+      pre.className = 'inspector-block';
+      pre.textContent = JSON.stringify(c, null, 2);
+
+      jsonCard.appendChild(pre);
+      container.appendChild(jsonCard);
+    },
+
+    // -------------------------------------------------------------------------
+    // Workbench Section 4: Methodology & Limitations
+    // -------------------------------------------------------------------------
+    renderMethodologyAndLimitations() {
+      const data = this.state.benchmarkData || {};
+      const ablData = data.ablation_table?.available ? data.ablation_table.data : null;
+
       const attrContainer = document.getElementById('attribution-container');
       if (attrContainer) {
         attrContainer.innerHTML = '';
-        const abl = data.ablation_table || {};
-        if (abl.available && abl.data && abl.data.attribution) {
-          const attr = abl.data.attribution;
+        const attr = ablData?.attribution;
+
+        if (attr && typeof attr === 'object' && Object.keys(attr).length > 0) {
           const ul = document.createElement('ul');
           ul.style.marginLeft = '1.25rem';
+          ul.style.display = 'flex';
+          ul.style.flexDirection = 'column';
+          ul.style.gap = '0.45rem';
+
           Object.keys(attr).forEach(k => {
             const li = document.createElement('li');
-            li.style.marginBottom = '0.45rem';
             li.style.fontSize = '0.825rem';
 
             const strong = document.createElement('strong');
             strong.textContent = `${k.replace(/_/g, ' ')}: `;
+
             const span = document.createElement('span');
-            span.textContent = attr[k];
+            span.textContent = String(attr[k]);
 
             li.appendChild(strong);
             li.appendChild(span);
@@ -1924,49 +2702,11 @@ document.addEventListener('DOMContentLoaded', () => {
           });
           attrContainer.appendChild(ul);
         } else {
-          attrContainer.textContent = 'Attribution takeaways unavailable.';
-        }
-      }
-
-      // Per-Case Results
-      const casesTbody = document.getElementById('benchmark-cases-tbody');
-      if (casesTbody) {
-        casesTbody.innerHTML = '';
-        const pc = data.per_case_results || {};
-        if (!pc.available || !pc.data || !Array.isArray(pc.data)) {
-          const tr = document.createElement('tr');
-          tr.innerHTML = `<td colspan="5" class="text-center text-muted">${pc.error || 'Per-case evaluation results unavailable.'}</td>`;
-          casesTbody.appendChild(tr);
-        } else {
-          pc.data.slice(0, 50).forEach(c => {
-            const tr = document.createElement('tr');
-
-            const tdId = document.createElement('td');
-            tdId.className = 'font-mono';
-            tdId.style.fontSize = '0.775rem';
-            tdId.textContent = c.case_id || 'N/A';
-
-            const tdCat = document.createElement('td');
-            tdCat.textContent = c.family || c.category || 'N/A';
-
-            const tdTarget = document.createElement('td');
-            tdTarget.style.fontSize = '0.8rem';
-            tdTarget.textContent = (c.prompt || c.action || c.target || 'N/A').substring(0, 50);
-
-            const tdStatus = document.createElement('td');
-            tdStatus.style.fontWeight = '600';
-            tdStatus.textContent = c.status || c.outcome || 'N/A';
-
-            const tdGate = document.createElement('td');
-            tdGate.textContent = c.gate_action || c.decision || 'N/A';
-
-            tr.appendChild(tdId);
-            tr.appendChild(tdCat);
-            tr.appendChild(tdTarget);
-            tr.appendChild(tdStatus);
-            tr.appendChild(tdGate);
-            casesTbody.appendChild(tr);
-          });
+          const p = document.createElement('p');
+          p.className = 'text-muted';
+          p.style.fontSize = '0.825rem';
+          p.textContent = 'Documented interpretive takeaways unavailable in ablation table artifact.';
+          attrContainer.appendChild(p);
         }
       }
     },
