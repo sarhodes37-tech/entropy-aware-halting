@@ -1,9 +1,9 @@
 # ==========================================
 # EpistemicOS - Runtime Dependencies
 # ==========================================
-# Zero external runtime dependencies. 
-# Pure Python standard library implementation for maximum low-latency execution.
-# Requires Python >= 3.8
+# Baseline runtime dependencies.
+# Requires Python >= 3.10
+pydantic>=2.0.0
 
 # ==========================================
 # Development & Testing (Optional)

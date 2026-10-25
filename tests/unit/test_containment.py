@@ -12,7 +12,7 @@ from epistemicos.containment import (
 @pytest.fixture
 def default_guard():
     """Provides a default configured ContainmentGuard for standard tests."""
-    return ContainmentGuard()
+    return ContainmentGuard(allowed_egress_domains=["www.python.org", "python.org"])
 
 
 @pytest.fixture
@@ -440,3 +440,44 @@ def test_wrapper_tool_exception_and_goal_integrity_failure(default_guard):
     assert ok_ex is False
     assert "Tool transport error" in receipt_ex.reason
     assert len(executed) == 1
+
+
+# =========================================================================
+# 6. AUDIT REMEDIATION REGRESSION TESTS (F1, F2)
+# =========================================================================
+
+def test_unconfigured_containment_guard_default_deny_egress():
+    """F2 Regression: Verifies unconfigured ContainmentGuard() fails closed for network egress by default."""
+    guard = ContainmentGuard()
+    receipt = guard.inspect_network_egress("https://8.8.8.8")
+    assert receipt.passed is False
+    assert receipt.violation_type == ContainmentViolationType.UNAUTHORIZED_EGRESS_ATTEMPT
+    assert "Egress blocked" in receipt.reason
+
+
+@pytest.mark.parametrize("bypass_target", [
+    "8.8.8.8/exfil",
+    "8.8.8.8:8080",
+    "//8.8.8.8/x",
+    "192.168.1.1:8080",
+    "example.com/exfil",
+])
+def test_wrapper_pipeline_blocks_schemeless_and_protocol_relative_targets(bypass_target):
+    """F1 Regression: Verifies wrap_tool_execution extracts and inspects schemeless, host:port, and protocol-relative targets."""
+    guard = ContainmentGuard(allowed_egress_domains=["safe.com"])
+    executed = []
+
+    def mock_fetch(**kwargs):
+        executed.append(kwargs)
+        return "ok"
+
+    ok, res, receipt = guard.wrap_tool_execution(
+        tool_name="fetch",
+        tool_func=mock_fetch,
+        kwargs={"target": bypass_target}
+    )
+
+    assert ok is False
+    assert receipt.passed is False
+    assert receipt.violation_type == ContainmentViolationType.UNAUTHORIZED_EGRESS_ATTEMPT
+    assert len(executed) == 0

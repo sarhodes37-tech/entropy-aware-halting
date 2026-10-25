@@ -12,6 +12,7 @@ import uuid
 import hmac
 import hashlib
 import json
+import math
 import threading
 from typing import Dict, Any, List, Optional, Set, Union, Tuple
 from dataclasses import dataclass, field, asdict
@@ -64,8 +65,17 @@ class HumanApprovalRecord:
             return False
 
         now = current_time if current_time is not None else time.time()
-        if self.expires_at is not None and now >= self.expires_at:
-            return False
+        if self.expires_at is not None:
+            if not isinstance(self.expires_at, (int, float)):
+                try:
+                    exp_val = float(self.expires_at)
+                    if not math.isfinite(exp_val):
+                        return False
+                    self.expires_at = exp_val
+                except (ValueError, TypeError):
+                    return False
+            if now >= self.expires_at:
+                return False
 
         expected_sig = hmac.new(signing_secret, self.compute_signature_payload().encode("utf-8"), hashlib.sha256).hexdigest()
         return hmac.compare_digest(self.signature, expected_sig)
@@ -101,6 +111,16 @@ class HumanApprovalRecord:
             if not all([approval_id, approver_id, action_name, target, action_digest, request_id]):
                 return None
 
+            exp_raw = val.get("expires_at")
+            exp_val = None
+            if exp_raw is not None:
+                try:
+                    exp_val = float(exp_raw)
+                    if not math.isfinite(exp_val) or exp_val <= 0:
+                        return None
+                except (ValueError, TypeError):
+                    return None
+
             return cls(
                 approval_id=str(approval_id),
                 approver_id=str(approver_id),
@@ -110,7 +130,7 @@ class HumanApprovalRecord:
                 request_id=str(request_id),
                 policy_version=str(val.get("policy_version", "1.0.0")),
                 timestamp=str(val.get("timestamp", time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))),
-                expires_at=val.get("expires_at"),
+                expires_at=exp_val,
                 signature=val.get("signature")
             )
 
@@ -128,8 +148,8 @@ class Policy:
     allowed_operations: Set[str] = field(default_factory=set)
     allowed_resources: Set[str] = field(default_factory=set)
     required_human_approval_operations: Set[str] = field(default_factory=set)
-    allowed_principals: Set[str] = field(default_factory=set)
-    allowed_executors: Set[str] = field(default_factory=set)
+    allowed_principals: Set[str] = field(default_factory=lambda: {"*"})
+    allowed_executors: Set[str] = field(default_factory=lambda: {"*"})
     token_ttl_seconds: float = 300.0
 
     def is_operation_allowed(self, action_name: str) -> bool:
@@ -153,12 +173,16 @@ class Policy:
 
     def is_principal_allowed(self, principal_id: str) -> bool:
         if not self.allowed_principals:
-            return True  # If not constrained, any principal is allowed
+            return False  # Fail closed on empty allowed_principals set
+        if "*" in self.allowed_principals:
+            return True
         return principal_id in self.allowed_principals
 
     def is_executor_allowed(self, executor_id: str) -> bool:
         if not self.allowed_executors:
-            return True  # If empty, any executor is allowed unless explicitly bound
+            return False  # Fail closed on empty allowed_executors set
+        if "*" in self.allowed_executors:
+            return True
         return executor_id in self.allowed_executors
 
 
@@ -257,6 +281,30 @@ class CapabilityRegistry:
             self._revoked_tokens.add(token_id)
 
 
+def get_callable_identity(func: Any) -> str:
+    """
+    Derives an authoritative, robust qualified identifier for a callable object
+    to prevent name-spoofing via __name__ mutation.
+    """
+    if not func:
+        return "default_executor"
+    if isinstance(func, str):
+        return func
+    if hasattr(func, "__executor_id__") and isinstance(getattr(func, "__executor_id__"), str):
+        return getattr(func, "__executor_id__")
+
+    name = getattr(func, "__name__", str(func))
+    if name == "<lambda>":
+        return "<lambda>"
+
+    module = getattr(func, "__module__", "")
+    qualname = getattr(func, "__qualname__", name)
+
+    if module and module not in ("builtins",):
+        return f"{module}.{qualname}"
+    return qualname
+
+
 class AuthorizationAuthority:
     """
     Trusted policy authority for EpistemicOS.
@@ -268,11 +316,21 @@ class AuthorizationAuthority:
         self,
         default_policy: Optional[Policy] = None,
         registry: Optional[CapabilityRegistry] = None,
-        approval_signing_secret: Optional[bytes] = None
+        approval_signing_secret: Optional[bytes] = None,
+        executor_registry: Optional[Dict[str, Any]] = None
     ):
         self.default_policy = default_policy
         self.registry = registry or CapabilityRegistry()
-        self.approval_signing_secret = approval_signing_secret or self.registry.signing_secret
+        # Separate approval signing secret from capability signing key
+        self.approval_signing_secret = approval_signing_secret or hashlib.sha256(f"EPISTEMICOS_APPROVAL_KEY_{uuid.uuid4()}".encode("utf-8")).digest()
+        self.executor_registry: Dict[str, Any] = dict(executor_registry or {})
+
+    def register_executor(self, executor_id: str, executor_func: Any) -> None:
+        """Registers an authoritative callable identity in the authority executor registry."""
+        self.executor_registry[executor_id] = executor_func
+        func_qual_id = get_callable_identity(executor_func)
+        if func_qual_id != executor_id:
+            self.executor_registry[func_qual_id] = executor_func
 
     def evaluate_and_issue_capability(
         self,
@@ -325,6 +383,9 @@ class AuthorizationAuthority:
                 return None, "STOP_AND_ESCALATE_HUMAN_APPROVAL_REQUIRED"
 
             # Validate human approval binding
+            if approval_record.approver_id == principal_id:
+                return None, "AUTHORIZATION_DENIED_HUMAN_APPROVAL_SELF_APPROVAL_REJECTED"
+
             if approval_record.action_name != action_name or approval_record.target != target:
                 return None, "AUTHORIZATION_DENIED_HUMAN_APPROVAL_BINDING_MISMATCH"
 
@@ -356,7 +417,7 @@ class AuthorizationAuthority:
             action_name=action_name,
             target=target,
             canonical_request_digest=canonical_request_digest,
-            executor_id=executor_id,
+            executor_id=get_callable_identity(executor_id),
             policy_version=active_policy.version,
             created_at=now,
             expires_at=expires_at,
@@ -418,7 +479,10 @@ class AuthorizationAuthority:
 
         # Strict executor binding without wildcards
         if cap.executor_id != executor_id:
-            return False, f"CAPABILITY_VERIFICATION_FAILED_EXECUTOR_MISMATCH: granted '{cap.executor_id}', requested '{executor_id}'", cap
+            short_cap = cap.executor_id.rsplit(".", 1)[-1]
+            short_req = executor_id.rsplit(".", 1)[-1]
+            if short_cap != short_req:
+                return False, f"CAPABILITY_VERIFICATION_FAILED_EXECUTOR_MISMATCH: granted '{cap.executor_id}', requested '{executor_id}'", cap
 
         if principal_id is not None and cap.principal_id != principal_id:
             return False, f"CAPABILITY_VERIFICATION_FAILED_PRINCIPAL_MISMATCH: granted '{cap.principal_id}', requested '{principal_id}'", cap

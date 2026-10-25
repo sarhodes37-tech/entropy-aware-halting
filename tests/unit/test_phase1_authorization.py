@@ -628,6 +628,108 @@ def test_scenario_13_generic_continuation_text_cannot_issue_authorization(tmp_pa
 
 
 # =====================================================================
+# Audit Remediation Regression Tests (F6, F7)
+# =====================================================================
+
+def test_f6_executor_spoofing_prevented_with_registered_executor(tmp_path):
+    """F6 Regression: Verifies that spoofing __name__ on a different callable is rejected when executor object identity is registered."""
+    def authorized_exec():
+        return "authorized"
+
+    def spoofed_exec():
+        return "spoofed"
+
+    spoofed_exec.__name__ = "authorized_exec"
+
+    policy = Policy(policy_id="p1", allowed_operations={"op1"}, allowed_resources={"res1"})
+    authority = AuthorizationAuthority(default_policy=policy)
+    authority.register_executor("authorized_exec", authorized_exec)
+
+    store = LocalProvenanceStore(log_path=str(tmp_path / "prov.jsonl"))
+    boundary = TrustedExecutionBoundary(provenance_store=store, authority=authority)
+
+    payload = {"data": "test"}
+    digest = boundary.compute_canonical_digest(payload)
+
+    cap, reason = authority.evaluate_and_issue_capability("op1", "res1", digest, executor_id="authorized_exec")
+    assert cap is not None
+
+    with pytest.raises(PermissionError, match="Executable object identity mismatch"):
+        boundary.execute_protected_action(
+            action_name="op1",
+            target="res1",
+            request_payload=payload,
+            authorization_token_id=cap.token_id,
+            authorized_digest=digest,
+            authorization_granted=True,
+            executor_func=spoofed_exec
+        )
+
+
+def test_f7_human_approval_self_approval_rejected():
+    """F7 Regression: Verifies that self-approval (approver_id == principal_id) is strictly rejected."""
+    policy = Policy(
+        policy_id="p1",
+        allowed_operations={"critical_op"},
+        allowed_resources={"res1"},
+        required_human_approval_operations={"critical_op"}
+    )
+    authority = AuthorizationAuthority(default_policy=policy)
+    digest = "a" * 64
+    req_id = "req-self-1"
+
+    self_approval_record = HumanApprovalRecord(
+        approval_id="app-self",
+        approver_id="user_principal_1",
+        action_name="critical_op",
+        target="res1",
+        action_digest=digest,
+        request_id=req_id
+    )
+    self_approval_record.sign(authority.approval_signing_secret)
+
+    cap, reason = authority.evaluate_and_issue_capability(
+        action_name="critical_op",
+        target="res1",
+        canonical_request_digest=digest,
+        principal_id="user_principal_1",
+        request_id=req_id,
+        human_approval_input=self_approval_record
+    )
+
+    assert cap is None
+    assert reason == "AUTHORIZATION_DENIED_HUMAN_APPROVAL_SELF_APPROVAL_REJECTED"
+
+
+def test_f7_human_approval_string_expires_at_handled_safely():
+    """F7 Regression: Verifies that string expires_at input is parsed or rejected safely without raising uncaught TypeError."""
+    digest = "b" * 64
+    req_id = "req-str-exp"
+
+    record = HumanApprovalRecord.from_input({
+        "approval_id": "app-str",
+        "approver_id": "approver_bob",
+        "action_name": "critical_op",
+        "target": "res1",
+        "action_digest": digest,
+        "request_id": req_id,
+        "expires_at": "2030-01-01"  # Invalid non-numeric timestamp string
+    })
+
+    # Non-numeric timestamp string is rejected during parsing
+    assert record is None
+
+
+def test_f7_empty_principals_and_executors_fail_closed():
+    """F7 Regression: Verifies that explicitly passing empty set for allowed_principals or allowed_executors fails closed."""
+    p_empty_principals = Policy(policy_id="p1", allowed_operations={"op1"}, allowed_resources={"res1"}, allowed_principals=set())
+    assert p_empty_principals.is_principal_allowed("user1") is False
+
+    p_empty_executors = Policy(policy_id="p1", allowed_operations={"op1"}, allowed_resources={"res1"}, allowed_executors=set())
+    assert p_empty_executors.is_executor_allowed("exec1") is False
+
+
+# =====================================================================
 # Additional Human Approval Signature & Binding Unit Tests
 # =====================================================================
 def test_human_approval_signature_and_binding_validations():

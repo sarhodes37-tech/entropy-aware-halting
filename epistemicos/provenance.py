@@ -10,6 +10,7 @@ import os
 import json
 import time
 import uuid
+import hmac
 import hashlib
 import threading
 from enum import Enum
@@ -18,7 +19,7 @@ from dataclasses import dataclass, field, asdict
 from typing import Dict, Any, List, Optional, Tuple, Set
 
 from epistemicos.audit import _sanitize_sensitive_data, ReceiptGenerator
-from epistemicos.authorization import AuthorizationAuthority, CapabilityRegistry, Capability
+from epistemicos.authorization import AuthorizationAuthority, CapabilityRegistry, Capability, get_callable_identity
 
 try:
     import fcntl
@@ -112,23 +113,36 @@ class ProvenanceStore:
 class LocalProvenanceStore(ProvenanceStore):
     """
     Local file-backed append-only provenance store with hash chaining and file locking.
-    Note: A local process or file is not an independent trust boundary against host-level compromise.
+    Local file-backed hash chains detect inadvertent corruption, line truncation, and uncoordinated edits.
+    When configured with an explicit secret key (`hmac_key`), HMAC-SHA256 chaining provides cryptographic tamper-evidence against local process forgery.
+    Note: Without external anchoring or a secret key held outside the host, a local process with full file write access can rewrite local log files.
     """
 
     GENESIS_SEED = b"EPISTEMICOS_PROVENANCE_GENESIS"
     _VALID_EVENT_TYPES: Set[str] = frozenset(e.value for e in ProvenanceEventType)
     _VALID_PROVENANCE_SOURCES: Set[str] = frozenset(s.value for s in ProvenanceSource)
 
-    def __init__(self, log_path: str = "logs/provenance_audit.jsonl", fail_closed: bool = True):
+    def __init__(
+        self,
+        log_path: str = "logs/provenance_audit.jsonl",
+        fail_closed: bool = True,
+        hmac_key: Optional[bytes] = None
+    ):
         self.log_path = Path(log_path)
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
         self.fail_closed = fail_closed
+        self.hmac_key = hmac_key
         self._lock = threading.Lock()
-        self.genesis_hash = hashlib.sha256(self.GENESIS_SEED).hexdigest()
+        if self.hmac_key:
+            self.genesis_hash = hmac.new(self.hmac_key, self.GENESIS_SEED, hashlib.sha256).hexdigest()
+        else:
+            self.genesis_hash = hashlib.sha256(self.GENESIS_SEED).hexdigest()
 
     def _compute_chain_hash(self, prev_hash: str, payload: Dict[str, Any]) -> str:
         serialized = json.dumps(payload, sort_keys=True)
         combined = f"{prev_hash}:{serialized}".encode("utf-8")
+        if self.hmac_key:
+            return hmac.new(self.hmac_key, combined, hashlib.sha256).hexdigest()
         return hashlib.sha256(combined).hexdigest()
 
     def record_event(self, event: ProvenanceEvent) -> Dict[str, Any]:
@@ -335,7 +349,17 @@ class TrustedExecutionBoundary:
         if current_digest != auth_digest:
             raise ValueError("Request payload digest changed between authorization and execution")
 
-        executor_id = getattr(executor_func, "__name__", str(executor_func))
+        executor_id = get_callable_identity(executor_func)
+
+        # Object identity check for registered executors in AuthorizationAuthority
+        if self.authority and hasattr(self.authority, "executor_registry") and self.authority.executor_registry:
+            registered = self.authority.executor_registry.get(executor_id)
+            if not registered:
+                cap_temp = self.registry.get_capability(auth_token_id)
+                if cap_temp:
+                    registered = self.authority.executor_registry.get(cap_temp.executor_id)
+            if registered and executor_func is not registered:
+                raise PermissionError("Execution rejected: Executable object identity mismatch for registered executor")
 
         # Verify capability via trusted AuthorizationAuthority / CapabilityRegistry
         valid, cap_reason, cap = self.authority.verify_capability(

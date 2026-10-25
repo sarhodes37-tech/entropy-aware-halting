@@ -344,8 +344,9 @@ class ContainmentGuard:
     ):
         self.allowed_domains = set(allowed_egress_domains or [])
         self.egress_policy = egress_policy
-        if self.egress_policy is None and allowed_egress_domains is not None:
-            self.egress_policy = EgressPolicy(allowed_destinations=set(allowed_egress_domains))
+        if self.egress_policy is None:
+            # Default unconfigured ContainmentGuard to an explicit EgressPolicy (deny-all unless configured)
+            self.egress_policy = EgressPolicy(allowed_destinations=set(self.allowed_domains))
 
         self.blocked_hosts = blocked_hosts or self.DEFAULT_BLOCKED_HOSTS
         self.forbidden_commands_compiled = self.DEFAULT_FORBIDDEN_COMMANDS_COMPILED
@@ -529,15 +530,54 @@ class ContainmentGuard:
     # WRAPPER PIPELINE EXECUTER
     # =========================================================================
 
+    @staticmethod
+    def _is_candidate_destination(curr: str, key_context: str = "") -> bool:
+        """Determines if a string argument represents a candidate network destination URL, host, host:port, or IP."""
+        if not curr or not isinstance(curr, str):
+            return False
+        s = curr.strip()
+        if not s:
+            return False
+
+        norm = normalize_destination_host(s)
+        if not norm:
+            return False
+
+        if key_context:
+            k = key_context.lower()
+            if any(term in k for term in ("url", "host", "endpoint", "target", "uri", "dest", "server", "address", "link")):
+                return True
+
+        if "://" in s or s.startswith("//") or s.startswith(("http://", "https://", "ftp://")):
+            return True
+
+        if "/" in s or ":" in s:
+            return True
+
+        try:
+            ipaddress.ip_address(norm)
+            return True
+        except ValueError:
+            pass
+
+        if parse_ip_numeric(s) is not None:
+            return True
+
+        if re.search(r"\.[a-zA-Z]{2,}$", norm):
+            if not norm.endswith((".py", ".txt", ".json", ".md", ".sh", ".csv", ".log", ".yaml", ".yml", ".html", ".css", ".js", ".png", ".jpg", ".pdf")):
+                return True
+
+        return False
+
     def _extract_all_strings_and_urls(self, arg: Any) -> Tuple[List[str], List[str]]:
         """Recursively extracts string representations and network URLs from arbitrary nested arguments."""
         strings = []
         urls = []
-        stack = [arg]
+        stack = [(arg, "")]
         seen = set()
 
         while stack:
-            curr = stack.pop()
+            curr, parent_key = stack.pop()
             curr_id = id(curr)
             if curr_id in seen:
                 continue
@@ -549,13 +589,14 @@ class ContainmentGuard:
 
             if isinstance(curr, str):
                 strings.append(curr)
-                if "://" in curr or curr.startswith(("http://", "https://", "ftp://")):
+                if self._is_candidate_destination(curr, parent_key):
                     urls.append(curr)
             elif isinstance(curr, dict):
                 for k, v in curr.items():
-                    stack.append(v)
+                    key_str = str(k) if isinstance(k, (str, int)) else ""
+                    stack.append((v, key_str))
                     if isinstance(k, str):
-                        stack.append(k)
+                        stack.append((k, ""))
             elif isinstance(curr, (list, tuple, set, frozenset)):
                 if isinstance(curr, (set, frozenset)):
                     scalar_items = sorted([str(x) for x in curr if type(x) in (str, int, float, bool)])
@@ -564,7 +605,7 @@ class ContainmentGuard:
                 if scalar_items and len(scalar_items) > 1:
                     strings.append(" ".join(scalar_items))
                 for item in curr:
-                    stack.append(item)
+                    stack.append((item, parent_key))
 
         return strings, urls
 

@@ -93,72 +93,71 @@ class EntropyAwareScheduler:
         - Must be a 1D sequence or 1D Tensor of numeric probability values.
         - Every element must be finite (no NaN, +inf, -inf) and non-negative (>= 0.0).
         - Sum of probabilities must be strictly positive and finite (> 0.0).
-        - Epsilon addition is NOT used as a substitute for validation.
+        - Probabilities are normalized to sum to 1.0 prior to computing Shannon entropy H(P).
         """
-        if hasattr(probabilities, "ndim") and probabilities.ndim != 1:
+        if hasattr(probabilities, "ndim") and getattr(probabilities, "ndim", 1) != 1:
             raise ValueError("Probabilities must be a 1D distribution sequence")
 
-        # Pure Python / List / Tuple / Non-Tensor validation
-        if isinstance(probabilities, (list, tuple)):
-            if len(probabilities) == 0:
-                raise ValueError("Probabilities sequence cannot be empty")
+        # Torch Tensor Path if torch object passed
+        if hasattr(probabilities, "tolist") and not isinstance(probabilities, (list, tuple)):
+            try:
+                import torch
+                if isinstance(probabilities, torch.Tensor):
+                    if probabilities.ndim != 1:
+                        raise ValueError("Probabilities must be a 1D distribution sequence")
+                    if torch.any(torch.isnan(probabilities)) or torch.any(torch.isinf(probabilities)):
+                        raise ValueError("Probabilities cannot contain NaN or non-finite values")
+                    if torch.any(probabilities < 0.0):
+                        raise ValueError("Probabilities cannot contain negative values")
+                    prob_sum = torch.sum(probabilities).item()
+                    if prob_sum <= 0.0 or math.isnan(prob_sum) or math.isinf(prob_sum):
+                        raise ValueError("Probabilities must sum to a positive finite value")
+                    norm_p = probabilities / prob_sum
+                    pos_p = norm_p[norm_p > 0.0]
+                    if pos_p.numel() == 0:
+                        return 0.0
+                    return -torch.sum(pos_p * torch.log2(pos_p)).item()
+            except ImportError:
+                pass
 
-            total_sum = 0.0
+        # Pure Python / List / Tuple / Iterable sequence validation & normalization
+        try:
             p_clean = []
+            total_sum = 0.0
             for v in probabilities:
                 if isinstance(v, (list, tuple, dict, set)):
                     raise ValueError("Probabilities must be a 1D distribution sequence")
-                try:
-                    fval = float(v)
-                    if math.isnan(fval) or math.isinf(fval):
-                        raise ValueError("Probabilities cannot contain NaN or non-finite values")
-                    if fval < 0.0:
-                        raise ValueError("Probabilities cannot contain negative values")
-                    total_sum += fval
-                    p_clean.append(fval)
-                except (TypeError, ValueError) as e:
-                    if "NaN or non-finite" in str(e) or "negative values" in str(e) or "1D distribution" in str(e):
-                        raise e
-                    raise ValueError(f"Invalid probability value: {v}") from e
+                fval = float(v)
+                if math.isnan(fval) or math.isinf(fval):
+                    raise ValueError("Probabilities cannot contain NaN or non-finite values")
+                if fval < 0.0:
+                    raise ValueError("Probabilities cannot contain negative values")
+                total_sum += fval
+                p_clean.append(fval)
+        except (TypeError, ValueError) as e:
+            if "NaN or non-finite" in str(e) or "negative values" in str(e) or "1D distribution" in str(e):
+                raise e
+            raise ValueError(f"Invalid probability sequence or values: {v if 'v' in locals() else probabilities}") from e
 
-            if total_sum <= 0.0 or math.isnan(total_sum) or math.isinf(total_sum):
-                raise ValueError("Probabilities must sum to a positive finite value")
+        if not p_clean:
+            raise ValueError("Probabilities sequence cannot be empty")
 
-        # Lazy import isolates heavy tensor packages to execution boundary
-        try:
-            import torch
-        except ImportError:
-            # Pure Python Shannon Entropy H(P) = - sum(p * log2(p)) where 0 * log2(0) = 0
-            h = 0.0
-            for p in p_clean:
-                if p > 0.0:
-                    h -= p * math.log2(p)
-            return h
-
-        if not isinstance(probabilities, torch.Tensor):
-            probabilities = torch.tensor(probabilities, dtype=torch.float64)
-
-        if probabilities.ndim != 1:
-            raise ValueError("Probabilities must be a 1D distribution sequence")
-
-        if torch.any(torch.isnan(probabilities)) or torch.any(torch.isinf(probabilities)):
-            raise ValueError("Probabilities cannot contain NaN or non-finite values")
-
-        if torch.any(probabilities < 0.0):
-            raise ValueError("Probabilities cannot contain negative values")
-
-        prob_sum = torch.sum(probabilities).item()
-        if prob_sum <= 0.0 or math.isnan(prob_sum) or math.isinf(prob_sum):
+        if total_sum <= 0.0 or math.isnan(total_sum) or math.isinf(total_sum):
             raise ValueError("Probabilities must sum to a positive finite value")
 
-        # Tensor calculation without epsilon addition
-        pos_p = probabilities[probabilities > 0.0]
-        if pos_p.numel() == 0:
-            return 0.0
-
-        return -torch.sum(pos_p * torch.log2(pos_p)).item()
+        h = 0.0
+        for p in p_clean:
+            p_norm = p / total_sum
+            if p_norm > 0.0:
+                h -= p_norm * math.log2(p_norm)
+        return h
 
     def step(self, probabilities, cost, state):
+        if not isinstance(cost, (int, float)) or not math.isfinite(cost) or math.isnan(cost):
+            raise ValueError("Cost must be a finite number")
+        if cost < 0:
+            raise ValueError("Cost must be non-negative")
+
         step_index = len(self.history)
         H = self.entropy(probabilities)
 
@@ -222,9 +221,11 @@ class EntropyAwareScheduler:
             directive = "NEGATIVE_YIELD"
         elif (step_index >= self.minimum_steps_before_convergence and H < self.confidence_threshold and utility_gain < self.utility_epsilon):
             directive = "OPTIMAL_CONVERGENCE"
-        elif len(self.history) >= self.stagnation_window:
-            if all(abs(x.delta_h) < self.entropy_delta_threshold for x in self.history[-self.stagnation_window:]):
-                directive = "IRREDUCIBLE_UNCERTAINTY"
+        else:
+            real_deltas = [x.delta_h for x in self.history[1:]]
+            if len(real_deltas) >= self.stagnation_window:
+                if all(abs(d) < self.entropy_delta_threshold for d in real_deltas[-self.stagnation_window:]):
+                    directive = "IRREDUCIBLE_UNCERTAINTY"
 
         loss_avoided = 0
         if directive == "NEGATIVE_YIELD":

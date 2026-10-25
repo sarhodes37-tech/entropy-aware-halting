@@ -982,6 +982,42 @@ def test_execute_protected_action_with_execution_context_keyword(tmp_path):
     assert events[0].policy_version == "2.0.0"
 
 
+# =====================================================================
+# AUDIT REMEDIATION REGRESSION TESTS (F8)
+# =====================================================================
+
+def test_f8_local_provenance_store_hmac_keying(tmp_path):
+    """F8 Regression: Verifies that configuring LocalProvenanceStore with hmac_key uses HMAC-SHA256 for chain integrity."""
+    log_file = str(tmp_path / "prov_hmac.jsonl")
+    secret_key = b"secret_audit_key_123"
+    store = LocalProvenanceStore(log_path=log_file, hmac_key=secret_key)
+
+    evt = ProvenanceEvent(
+        schema_version="1.0.0",
+        event_id="e-hmac-1",
+        event_type=ProvenanceEventType.ACTION_PROPOSED.value,
+        provenance_source=ProvenanceSource.AGENT_ADAPTER.value,
+        correlation_id="c-hmac-1",
+        request_id="r-hmac-1",
+        action_name="TEST_ACT",
+        target="TEST_TGT",
+        canonical_request_digest="digest123",
+        timestamp="2026-01-01T00:00:00Z"
+    )
+
+    rec = store.record_event(evt)
+    assert "entry_hash" in rec
+
+    healthy, last_hash, count, ids = store._inspect_health()
+    assert healthy is True
+    assert count == 1
+
+    # Verifies unkeyed store fails health inspection on keyed log file
+    unkeyed_store = LocalProvenanceStore(log_path=log_file)
+    unkeyed_healthy, _, _, _ = unkeyed_store._inspect_health()
+    assert unkeyed_healthy is False
+
+
 def test_execute_protected_action_with_execution_context_positional(tmp_path):
     log_file = str(tmp_path / "prov_ctx_pos.jsonl")
     store = LocalProvenanceStore(log_path=log_file)
