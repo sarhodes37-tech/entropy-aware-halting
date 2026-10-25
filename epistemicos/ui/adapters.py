@@ -388,20 +388,26 @@ class ObservatoryDataAdapter:
         per_case_error = None
 
         if self.ablation_table_path.exists():
-            try:
-                with open(self.ablation_table_path, "r", encoding="utf-8") as f:
-                    ablation_table = json.load(f)
-            except Exception as e:
-                ablation_error = f"Malformed JSON in ablation table: {str(e)}"
+            if self.ablation_table_path.stat().st_size == 0:
+                ablation_error = "File is empty: results/ablation_table.json"
+            else:
+                try:
+                    with open(self.ablation_table_path, "r", encoding="utf-8") as f:
+                        ablation_table = json.load(f)
+                except Exception as e:
+                    ablation_error = f"Malformed JSON in ablation table: {str(e)}"
         else:
             ablation_error = "File not found: results/ablation_table.json"
 
         if self.per_case_results_path.exists():
-            try:
-                with open(self.per_case_results_path, "r", encoding="utf-8") as f:
-                    per_case_results = json.load(f)
-            except Exception as e:
-                per_case_error = f"Malformed JSON in per-case results: {str(e)}"
+            if self.per_case_results_path.stat().st_size == 0:
+                per_case_error = "File is empty: results/per_case_results.json"
+            else:
+                try:
+                    with open(self.per_case_results_path, "r", encoding="utf-8") as f:
+                        per_case_results = json.load(f)
+                except Exception as e:
+                    per_case_error = f"Malformed JSON in per-case results: {str(e)}"
         else:
             per_case_error = "File not found: results/per_case_results.json"
 

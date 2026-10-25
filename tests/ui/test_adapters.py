@@ -222,6 +222,88 @@ def test_benchmark_data_loading(mock_logs):
     assert len(data["per_case_results"]["data"]) == 1
 
 
+def test_benchmark_data_each_artifact_missing_independently(tmp_path):
+    """Verifies that missing ablation or per-case artifacts report available=False independently."""
+    abl_file = tmp_path / "ablation_table.json"
+    abl_file.write_text(json.dumps({"baselines": {}}), encoding="utf-8")
+
+    adapter_no_case = ObservatoryDataAdapter(
+        ablation_table_path=str(abl_file),
+        per_case_results_path=str(tmp_path / "missing_case.json")
+    )
+    res1 = adapter_no_case.get_benchmark_data()
+    assert res1["ablation_table"]["available"] is True
+    assert res1["per_case_results"]["available"] is False
+    assert "File not found" in res1["per_case_results"]["error"]
+
+    case_file = tmp_path / "per_case_results.json"
+    case_file.write_text(json.dumps([]), encoding="utf-8")
+
+    adapter_no_abl = ObservatoryDataAdapter(
+        ablation_table_path=str(tmp_path / "missing_abl.json"),
+        per_case_results_path=str(case_file)
+    )
+    res2 = adapter_no_abl.get_benchmark_data()
+    assert res2["ablation_table"]["available"] is False
+    assert "File not found" in res2["ablation_table"]["error"]
+    assert res2["per_case_results"]["available"] is True
+
+
+def test_benchmark_data_empty_and_malformed_files(tmp_path):
+    """Verifies error handling for 0-byte empty files and malformed JSON artifacts."""
+    empty_abl = tmp_path / "empty_abl.json"
+    empty_abl.touch()
+
+    corrupt_case = tmp_path / "corrupt_case.json"
+    corrupt_case.write_text("{BAD_JSON_CONTENT", encoding="utf-8")
+
+    adapter = ObservatoryDataAdapter(
+        ablation_table_path=str(empty_abl),
+        per_case_results_path=str(corrupt_case)
+    )
+
+    data = adapter.get_benchmark_data()
+    assert data["ablation_table"]["available"] is False
+    assert "File is empty" in data["ablation_table"]["error"]
+
+    assert data["per_case_results"]["available"] is False
+    assert "Malformed JSON" in data["per_case_results"]["error"]
+
+
+def test_benchmark_data_valid_empty_and_incomplete_schemas(tmp_path):
+    """Verifies that valid but empty or partial record schemas load gracefully."""
+    abl_file = tmp_path / "abl_empty.json"
+    abl_file.write_text(json.dumps({
+        "baselines": {
+            "Incomplete Baseline": {
+                "sample_count": 5
+                # Missing confusion_matrix, accuracy_pct, latencies
+            }
+        }
+    }), encoding="utf-8")
+
+    case_file = tmp_path / "case_partial.json"
+    case_file.write_text(json.dumps([
+        {
+            "case_id": "partial_case_1",
+            "baseline": "Incomplete Baseline"
+            # Missing optional fields: latency_ms, tokens_consumed, scenario_family, run_id, dataset_sha256_digest
+        }
+    ]), encoding="utf-8")
+
+    adapter = ObservatoryDataAdapter(
+        ablation_table_path=str(abl_file),
+        per_case_results_path=str(case_file)
+    )
+
+    data = adapter.get_benchmark_data()
+    assert data["ablation_table"]["available"] is True
+    assert "Incomplete Baseline" in data["ablation_table"]["data"]["baselines"]
+    assert data["per_case_results"]["available"] is True
+    assert len(data["per_case_results"]["data"]) == 1
+    assert data["per_case_results"]["data"][0]["case_id"] == "partial_case_1"
+
+
 def test_provenance_explorer_summary_panels_and_findings(mock_logs):
     """Verifies provenance explorer returns 4 verification summary panels and actionable findings."""
     adapter = ObservatoryDataAdapter(

@@ -74,6 +74,17 @@ def test_api_provenance_route(test_server):
     assert "events" in data
 
 
+def test_api_benchmarks_route(test_server):
+    """Verifies that /api/benchmarks returns expected ablation_table and per_case_results structures."""
+    req = urllib.request.urlopen(f"{test_server}/api/benchmarks")
+    assert req.status == HTTPStatus.OK
+    data = json.loads(req.read().decode("utf-8"))
+    assert "ablation_table" in data
+    assert "per_case_results" in data
+    assert "available" in data["ablation_table"]
+    assert "available" in data["per_case_results"]
+
+
 def test_static_asset_serving(test_server):
     req = urllib.request.urlopen(f"{test_server}/index.html")
     assert req.status == HTTPStatus.OK
@@ -125,6 +136,23 @@ def test_static_aria_accessibility_attributes():
     assert 'id="area-provenance-list"' in content
     assert 'id="provenance-record-list"' in content
     assert 'id="provenance-inspector-content"' in content
+    # Benchmark Workbench View 4 containers and controls
+    assert 'id="view-benchmarks"' in content
+    assert 'id="tab-benchmarks"' in content
+    assert 'id="benchmark-run-summary-card"' in content
+    assert 'id="summary-run-id"' in content
+    assert 'id="summary-sample-count"' in content
+    assert 'id="summary-dataset-digest"' in content
+    assert 'id="summary-records-digest"' in content
+    assert 'id="benchmark-baselines-tbody"' in content
+    assert 'id="benchmark-mcnemar-tbody"' in content
+    assert 'id="threshold-ablations-container"' in content
+    assert 'id="benchmark-case-search"' in content
+    assert 'id="benchmark-case-baseline-filter"' in content
+    assert 'id="benchmark-case-outcome-filter"' in content
+    assert 'id="benchmark-case-list"' in content
+    assert 'id="benchmark-case-content"' in content
+    assert 'id="attribution-container"' in content
 
 
 def test_api_traces_routes(test_server):
