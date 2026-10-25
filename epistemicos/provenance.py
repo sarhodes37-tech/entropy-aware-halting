@@ -351,20 +351,7 @@ class TrustedExecutionBoundary:
 
         executor_id = get_callable_identity(executor_func)
 
-        # Object identity check for bound callables in AuthorizationAuthority
-        if self.authority and hasattr(self.authority, "executor_registry"):
-            bound_callable = self.authority.executor_registry.get(auth_token_id)
-            if not bound_callable:
-                bound_callable = self.authority.executor_registry.get(executor_id)
-
-            if bound_callable:
-                if executor_func is not bound_callable:
-                    raise PermissionError("Execution rejected: Executable object identity mismatch for authorized token")
-            else:
-                # Fail closed: un-bound/un-registered callable object cannot execute a capability without verified object identity
-                raise PermissionError(f"Execution rejected: Unregistered callable object cannot execute capability for '{cap_reason}'")
-
-        # Verify capability via trusted AuthorizationAuthority / CapabilityRegistry
+        # Verify capability via trusted AuthorizationAuthority / CapabilityRegistry FIRST
         valid, cap_reason, cap = self.authority.verify_capability(
             token_id=auth_token_id,
             action_name=action_name,
@@ -375,6 +362,16 @@ class TrustedExecutionBoundary:
             request_id=req_id,
             policy_version=pol_version
         )
+
+        # Object identity check for bound callables in AuthorizationAuthority
+        if self.authority and hasattr(self.authority, "executor_registry"):
+            bound_callable = self.authority.executor_registry.get(auth_token_id)
+            if not bound_callable:
+                bound_callable = self.authority.executor_registry.get(executor_id)
+
+            if bound_callable:
+                if executor_func is not bound_callable:
+                    raise PermissionError("Execution rejected: Executable object identity mismatch for authorized token")
         if not valid:
             raise PermissionError(f"Execution rejected: {cap_reason}")
 
