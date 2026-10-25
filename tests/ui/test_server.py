@@ -83,7 +83,7 @@ def test_static_asset_serving(test_server):
 
 
 def test_static_aria_accessibility_attributes():
-    """Verify that the production index.html contains expected ARIA accessibility attributes and Trace Explorer areas."""
+    """Verify that the production index.html contains expected ARIA accessibility attributes and Trace / Provenance Explorer areas."""
     import pathlib
     index_path = pathlib.Path("epistemicos/ui/static/index.html")
     content = index_path.read_text(encoding="utf-8")
@@ -115,6 +115,16 @@ def test_static_aria_accessibility_attributes():
     assert 'aria-label="Execution Trace List"' in content
     assert 'role="listbox"' in content
     assert 'aria-label="Select an execution trace"' in content
+    # Provenance Explorer area containers and summary panels
+    assert 'id="provenance-verification-grid"' in content
+    assert 'id="summary-avail-badge"' in content
+    assert 'id="summary-integrity-badge"' in content
+    assert 'id="summary-coverage-badge"' in content
+    assert 'id="summary-authenticity-badge"' in content
+    assert 'id="provenance-findings-container"' in content
+    assert 'id="area-provenance-list"' in content
+    assert 'id="provenance-record-list"' in content
+    assert 'id="provenance-inspector-content"' in content
 
 
 def test_api_traces_routes(test_server):

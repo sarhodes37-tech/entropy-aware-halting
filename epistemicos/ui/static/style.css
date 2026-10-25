@@ -48,6 +48,14 @@
   --status-pending-fg: #38bdf8;
   --status-pending-border: rgba(56, 189, 248, 0.3);
 
+  --status-partial-bg: rgba(251, 146, 60, 0.15);
+  --status-partial-fg: #fb923c;
+  --status-partial-border: rgba(251, 146, 60, 0.3);
+
+  --status-unreadable-bg: rgba(244, 63, 94, 0.12);
+  --status-unreadable-fg: #f43f5e;
+  --status-unreadable-border: rgba(244, 63, 94, 0.3);
+
   /* Structure & Typography */
   --radius-sm: 4px;
   --radius-md: 6px;
@@ -278,6 +286,18 @@ h2 {
   border: 1px solid var(--status-pending-border);
 }
 
+.status-badge-partial {
+  background-color: var(--status-partial-bg);
+  color: var(--status-partial-fg);
+  border: 1px solid var(--status-partial-border);
+}
+
+.status-badge-unreadable {
+  background-color: var(--status-unreadable-bg);
+  color: var(--status-unreadable-fg);
+  border: 1px solid var(--status-unreadable-border);
+}
+
 .status-badge-not-established {
   background-color: var(--bg-elevated);
   color: var(--text-secondary);
@@ -388,6 +408,49 @@ h2 {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
   gap: 1.25rem;
+}
+
+/* Verification Summary Panels (View 3: Provenance Explorer) */
+.verification-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 1rem;
+  margin-top: 0.5rem;
+}
+
+.verification-panel {
+  background-color: var(--bg-base);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  padding: 0.85rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.verification-panel .panel-title {
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-secondary);
+  margin-bottom: 0.2rem;
+}
+
+.verification-panel .panel-msg {
+  font-size: 0.825rem;
+  color: var(--text-primary);
+  line-height: 1.35;
+  margin-top: 0.25rem;
+}
+
+.verification-panel .panel-scope {
+  font-size: 0.725rem;
+  color: var(--text-muted);
+  line-height: 1.3;
+  margin-top: 0.35rem;
+  border-top: 1px dashed var(--border-muted);
+  padding-top: 0.35rem;
 }
 
 .mb-1 { margin-bottom: 1.25rem; }

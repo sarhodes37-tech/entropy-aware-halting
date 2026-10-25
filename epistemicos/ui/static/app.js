@@ -20,9 +20,12 @@ document.addEventListener('DOMContentLoaded', () => {
       selectedTraceId: null,
       selectedEventSeq: null,
       provenanceData: null,
+      selectedRecordId: null,
       benchmarkData: null,
       traceFilterStatus: 'ALL',
-      traceSearchQuery: ''
+      traceSearchQuery: '',
+      provenanceFilterType: 'ALL',
+      provenanceSearchQuery: ''
     },
 
     init() {
@@ -103,6 +106,30 @@ document.addEventListener('DOMContentLoaded', () => {
         statusFilter.addEventListener('change', (e) => {
           this.state.traceFilterStatus = e.target.value;
           this.renderTracesList();
+        });
+      }
+
+      // Provenance Search & Filter Controls
+      const provSearchInput = document.getElementById('provenance-search');
+      if (provSearchInput) {
+        provSearchInput.addEventListener('input', (e) => {
+          this.state.provenanceSearchQuery = e.target.value.toLowerCase().trim();
+          this.renderProvenanceRecordList();
+        });
+        provSearchInput.addEventListener('keydown', (e) => {
+          if (e.key === 'Escape' && provSearchInput.value) {
+            provSearchInput.value = '';
+            this.state.provenanceSearchQuery = '';
+            this.renderProvenanceRecordList();
+          }
+        });
+      }
+
+      const provTypeFilter = document.getElementById('provenance-type-filter');
+      if (provTypeFilter) {
+        provTypeFilter.addEventListener('change', (e) => {
+          this.state.provenanceFilterType = e.target.value;
+          this.renderProvenanceRecordList();
         });
       }
     },
@@ -187,6 +214,12 @@ document.addEventListener('DOMContentLoaded', () => {
       } else if (st === 'UNAVAILABLE') {
         span.className = 'status-badge status-badge-unavailable';
         span.textContent = '⊘ UNAVAILABLE';
+      } else if (st === 'PARTIAL') {
+        span.className = 'status-badge status-badge-partial';
+        span.textContent = '⚠ PARTIAL';
+      } else if (st === 'UNREADABLE') {
+        span.className = 'status-badge status-badge-unreadable';
+        span.textContent = '⊘ UNREADABLE';
       } else if (st === 'NOT ESTABLISHED') {
         span.className = 'status-badge status-badge-not-established';
         span.textContent = '░ NOT ESTABLISHED';
@@ -950,7 +983,6 @@ document.addEventListener('DOMContentLoaded', () => {
       eventsHeader.textContent = 'Observed Chronological Event Timeline';
       eventsCard.appendChild(eventsHeader);
 
-      const events = trace.provenance_events || [];
       if (events.length === 0) {
         const noEv = document.createElement('p');
         noEv.className = 'text-muted text-center';
@@ -1186,127 +1218,581 @@ document.addEventListener('DOMContentLoaded', () => {
     // View 3: Provenance Explorer
     // -------------------------------------------------------------------------
     async loadProvenance() {
+      const recListUl = document.getElementById('provenance-record-list');
+      if (recListUl && (!this.state.provenanceData || !this.state.provenanceData.events)) {
+        recListUl.innerHTML = '<li class="text-muted text-center" style="padding: 1.5rem;">Loading provenance records...</li>';
+      }
+
       try {
-        const res = await fetch('/api/provenance');
-        if (!res.ok) throw new Error(`HTTP error ${res.status}`);
-        const data = await res.json();
-        this.state.provenanceData = data;
+        const [provRes, tracesRes] = await Promise.all([
+          fetch('/api/provenance'),
+          fetch('/api/traces').catch(() => null)
+        ]);
+
+        if (!provRes.ok) throw new Error(`HTTP error ${provRes.status}`);
+        const provData = await provRes.json();
+        this.state.provenanceData = provData;
+
+        if (tracesRes && tracesRes.ok) {
+          this.state.tracesData = await tracesRes.json();
+        }
+
         this.renderProvenance();
       } catch (err) {
-        console.error('Failed to load provenance:', err);
+        console.error('Failed to load provenance data:', err);
+        this.renderProvenanceError(err.message);
       }
+    },
+
+    renderProvenanceError(errorMsg) {
+      const recListUl = document.getElementById('provenance-record-list');
+      if (recListUl) {
+        recListUl.innerHTML = '';
+        const errLi = document.createElement('li');
+        errLi.className = 'text-danger text-center';
+        errLi.style.padding = '1.5rem 1rem';
+
+        const msgSpan = document.createElement('span');
+        msgSpan.style.display = 'block';
+        msgSpan.style.marginBottom = '0.5rem';
+        msgSpan.style.fontWeight = '600';
+        msgSpan.textContent = 'Failed to load provenance data.';
+
+        const detailSpan = document.createElement('span');
+        detailSpan.className = 'text-muted font-mono';
+        detailSpan.style.fontSize = '0.75rem';
+        detailSpan.style.display = 'block';
+        detailSpan.style.marginBottom = '0.75rem';
+        detailSpan.textContent = `Server API Error: ${errorMsg}`;
+
+        const retryBtn = document.createElement('button');
+        retryBtn.type = 'button';
+        retryBtn.className = 'btn-refresh';
+        retryBtn.textContent = 'Retry Loading Provenance';
+        retryBtn.addEventListener('click', () => this.loadProvenance());
+
+        errLi.appendChild(msgSpan);
+        errLi.appendChild(detailSpan);
+        errLi.appendChild(retryBtn);
+        recListUl.appendChild(errLi);
+      }
+
+      const countBadge = document.getElementById('provenance-count');
+      if (countBadge) countBadge.textContent = 'ERROR';
     },
 
     renderProvenance() {
       const data = this.state.provenanceData;
       if (!data) return;
 
-      const summaryDiv = document.getElementById('provenance-chain-summary');
-      if (summaryDiv) {
-        summaryDiv.innerHTML = '';
-        const pi = data.integrity || {};
+      this.renderProvenanceSummaryPanels(data.summary_panels || {});
+      this.renderProvenanceFindings(data.findings || []);
+      this.renderProvenanceRecordList();
+    },
+
+    renderProvenanceSummaryPanels(panels) {
+      // Panel 1: Availability
+      const pAvail = panels.availability || {};
+      const elAvailBadge = document.getElementById('summary-avail-badge');
+      const elAvailMsg = document.getElementById('summary-avail-msg');
+      if (elAvailBadge) {
+        const badge = this.createStatusBadge(pAvail.status || 'UNAVAILABLE');
+        elAvailBadge.replaceWith(badge);
+        badge.id = 'summary-avail-badge';
+      }
+      if (elAvailMsg) {
+        elAvailMsg.textContent = pAvail.message || 'Availability unverified.';
+      }
+
+      // Panel 2: Integrity
+      const pInteg = panels.integrity || {};
+      const elIntegBadge = document.getElementById('summary-integrity-badge');
+      const elIntegMsg = document.getElementById('summary-integrity-msg');
+      if (elIntegBadge) {
+        const badge = this.createStatusBadge(pInteg.status || 'UNAVAILABLE');
+        elIntegBadge.replaceWith(badge);
+        badge.id = 'summary-integrity-badge';
+      }
+      if (elIntegMsg) {
+        let msg = pInteg.message || 'Integrity unverified.';
+        if (pInteg.last_hash) {
+          const shortHash = pInteg.last_hash.substring(0, 16) + '...';
+          msg += ` (Tail Hash: ${shortHash})`;
+        }
+        elIntegMsg.textContent = msg;
+      }
+
+      // Panel 3: Coverage
+      const pCov = panels.coverage || {};
+      const elCovBadge = document.getElementById('summary-coverage-badge');
+      const elCovMsg = document.getElementById('summary-coverage-msg');
+      if (elCovBadge) {
+        const badge = this.createStatusBadge(pCov.status || 'UNVERIFIED');
+        elCovBadge.replaceWith(badge);
+        badge.id = 'summary-coverage-badge';
+      }
+      if (elCovMsg) {
+        elCovMsg.textContent = pCov.message || 'Trace coverage unverified.';
+      }
+
+      // Panel 4: Authenticity
+      const pAuth = panels.authenticity || {};
+      const elAuthBadge = document.getElementById('summary-authenticity-badge');
+      const elAuthMsg = document.getElementById('summary-authenticity-msg');
+      if (elAuthBadge) {
+        const badge = this.createStatusBadge(pAuth.status || 'NOT ESTABLISHED');
+        elAuthBadge.replaceWith(badge);
+        badge.id = 'summary-authenticity-badge';
+      }
+      if (elAuthMsg) {
+        elAuthMsg.textContent = pAuth.message || 'Source authenticity unestablished.';
+      }
+    },
+
+    renderProvenanceFindings(findings) {
+      const container = document.getElementById('provenance-findings-container');
+      if (!container) return;
+      container.innerHTML = '';
+
+      if (!findings || findings.length === 0) {
+        const p = document.createElement('p');
+        p.className = 'text-muted text-center';
+        p.style.padding = '0.5rem';
+        p.textContent = 'Zero verification findings or anomalies reported.';
+        container.appendChild(p);
+        return;
+      }
+
+      const grid = document.createElement('div');
+      grid.style.display = 'grid';
+      grid.style.gridTemplateColumns = 'repeat(auto-fit, minmax(280px, 1fr))';
+      grid.style.gap = '0.75rem';
+
+      findings.forEach(f => {
+        const card = document.createElement('div');
+        card.className = 'status-block';
+        card.style.fontSize = '0.825rem';
+
+        if (f.severity === 'CRITICAL' || f.severity === 'HIGH') {
+          card.style.borderColor = 'var(--status-failed-border)';
+          card.style.backgroundColor = 'rgba(251, 113, 133, 0.08)';
+        } else if (f.severity === 'WARNING') {
+          card.style.borderColor = 'var(--status-halted-border)';
+          card.style.backgroundColor = 'rgba(251, 146, 60, 0.08)';
+        } else {
+          card.style.borderColor = 'var(--border-default)';
+        }
+
+        const titleRow = document.createElement('div');
+        titleRow.style.display = 'flex';
+        titleRow.style.justifyContent = 'space-between';
+        titleRow.style.alignItems = 'center';
+        titleRow.style.marginBottom = '0.35rem';
+
+        const titleSpan = document.createElement('strong');
+        titleSpan.textContent = f.title || f.code;
+
+        const sevBadge = document.createElement('span');
+        sevBadge.className = 'font-mono text-dim';
+        sevBadge.style.fontSize = '0.7rem';
+        sevBadge.style.padding = '0.1rem 0.35rem';
+        sevBadge.style.borderRadius = '3px';
+        sevBadge.style.border = '1px solid var(--border-default)';
+        sevBadge.textContent = f.severity || 'INFO';
+
+        titleRow.appendChild(titleSpan);
+        titleRow.appendChild(sevBadge);
+
+        const descP = document.createElement('div');
+        descP.className = 'text-muted';
+        descP.style.fontSize = '0.8rem';
+        descP.textContent = f.description;
+
+        card.appendChild(titleRow);
+        card.appendChild(descP);
+        grid.appendChild(card);
+      });
+
+      container.appendChild(grid);
+    },
+
+    renderProvenanceRecordList() {
+      const listUl = document.getElementById('provenance-record-list');
+      if (!listUl) return;
+      listUl.innerHTML = '';
+
+      const data = this.state.provenanceData;
+      const events = (data && Array.isArray(data.events)) ? data.events : [];
+
+      let filtered = events.filter(ev => {
+        if (this.state.provenanceFilterType !== 'ALL' && ev.event_type !== this.state.provenanceFilterType) {
+          return false;
+        }
+        if (this.state.provenanceSearchQuery) {
+          const q = this.state.provenanceSearchQuery;
+          const id = (ev.event_id || '').toLowerCase();
+          const corr = (ev.correlation_id || '').toLowerCase();
+          const req = (ev.request_id || '').toLowerCase();
+          const src = (ev.provenance_source || '').toLowerCase();
+          const act = (ev.action_name || '').toLowerCase();
+          const tgt = (ev.target || '').toLowerCase();
+          const hash = (ev.entry_hash || '').toLowerCase();
+          const prev = (ev.prev_hash || '').toLowerCase();
+          return id.includes(q) || corr.includes(q) || req.includes(q) || src.includes(q) || act.includes(q) || tgt.includes(q) || hash.includes(q) || prev.includes(q);
+        }
+        return true;
+      });
+
+      const countBadge = document.getElementById('provenance-count');
+      if (countBadge) {
+        const total = events.length;
+        const visible = filtered.length;
+        countBadge.textContent = total === visible ? `${total}` : `${visible} of ${total}`;
+        countBadge.setAttribute('aria-label', total === visible ? `${total} records` : `${visible} of ${total} records shown`);
+      }
+
+      if (filtered.length === 0) {
+        const emptyLi = document.createElement('li');
+        emptyLi.className = 'text-muted text-center';
+        emptyLi.style.padding = '1.5rem 1rem';
+
+        const hasFilters = this.state.provenanceSearchQuery || this.state.provenanceFilterType !== 'ALL';
+        if (hasFilters) {
+          const msgSpan = document.createElement('span');
+          msgSpan.style.display = 'block';
+          msgSpan.style.marginBottom = '0.5rem';
+          msgSpan.textContent = 'No provenance records match active search query or filter.';
+
+          const clearBtn = document.createElement('button');
+          clearBtn.type = 'button';
+          clearBtn.className = 'btn-refresh';
+          clearBtn.textContent = 'Clear Filters';
+          clearBtn.setAttribute('aria-label', 'Clear search query and event type filter');
+          clearBtn.addEventListener('click', () => {
+            this.state.provenanceSearchQuery = '';
+            this.state.provenanceFilterType = 'ALL';
+            const searchInput = document.getElementById('provenance-search');
+            if (searchInput) searchInput.value = '';
+            const typeFilter = document.getElementById('provenance-type-filter');
+            if (typeFilter) typeFilter.value = 'ALL';
+            this.renderProvenanceRecordList();
+          });
+
+          emptyLi.appendChild(msgSpan);
+          emptyLi.appendChild(clearBtn);
+        } else {
+          emptyLi.textContent = 'No provenance records present in log stream.';
+        }
+
+        listUl.appendChild(emptyLi);
+        return;
+      }
+
+      filtered.forEach((ev, index) => {
+        const recId = ev.event_id || `seq_${ev.sequence_number}`;
+        const isSelected = this.state.selectedRecordId === recId;
+
+        const li = document.createElement('li');
+        li.className = `trace-item ${isSelected ? 'active' : ''}`;
+        li.setAttribute('role', 'option');
+        li.setAttribute('tabindex', '0');
+        li.setAttribute('aria-selected', isSelected ? 'true' : 'false');
+        li.setAttribute('aria-label', `Provenance event sequence ${ev.sequence_number}, type ${ev.event_type}`);
+
+        li.addEventListener('click', () => this.selectProvenanceRecord(recId));
+        li.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            this.selectProvenanceRecord(recId);
+          } else if (e.key === 'ArrowDown') {
+            e.preventDefault();
+            const items = listUl.querySelectorAll('.trace-item');
+            if (index + 1 < items.length) items[index + 1].focus();
+          } else if (e.key === 'ArrowUp') {
+            e.preventDefault();
+            const items = listUl.querySelectorAll('.trace-item');
+            if (index - 1 >= 0) items[index - 1].focus();
+          } else if (e.key === 'Home') {
+            e.preventDefault();
+            const items = listUl.querySelectorAll('.trace-item');
+            if (items.length > 0) items[0].focus();
+          } else if (e.key === 'End') {
+            e.preventDefault();
+            const items = listUl.querySelectorAll('.trace-item');
+            if (items.length > 0) items[items.length - 1].focus();
+          }
+        });
 
         const headerDiv = document.createElement('div');
-        headerDiv.style.display = 'flex';
-        headerDiv.style.alignItems = 'center';
-        headerDiv.style.gap = '0.75rem';
-        headerDiv.style.marginBottom = '0.5rem';
+        headerDiv.className = 'trace-item-header';
 
-        const label = document.createElement('span');
-        label.style.fontWeight = '600';
-        label.textContent = 'Append-Only Chain Integrity:';
+        const seqSpan = document.createElement('span');
+        seqSpan.className = 'font-mono';
+        seqSpan.style.fontWeight = '700';
+        seqSpan.style.fontSize = '0.8rem';
+        seqSpan.style.color = 'var(--accent-primary)';
+        seqSpan.textContent = `#${ev.sequence_number ?? '-'}`;
 
-        const badge = this.createStatusBadge(pi.status || 'UNAVAILABLE');
-        headerDiv.appendChild(label);
-        headerDiv.appendChild(badge);
+        const typeSpan = document.createElement('span');
+        typeSpan.className = 'trace-id';
+        typeSpan.style.fontSize = '0.8rem';
+        typeSpan.textContent = ev.event_type || 'UNKNOWN';
 
-        const countDiv = document.createElement('div');
-        countDiv.className = 'text-muted font-mono';
-        countDiv.style.fontSize = '0.825rem';
-        countDiv.textContent = `Total Verified Hash Records: ${pi.records_verified ?? 0}`;
+        headerDiv.appendChild(seqSpan);
+        headerDiv.appendChild(typeSpan);
 
-        summaryDiv.appendChild(headerDiv);
-        summaryDiv.appendChild(countDiv);
+        const subDiv = document.createElement('div');
+        subDiv.className = 'text-muted';
+        subDiv.style.fontSize = '0.75rem';
+        subDiv.style.marginTop = '0.2rem';
+        subDiv.textContent = `Src: ${ev.provenance_source || 'N/A'} • ${ev.action_name || 'N/A'}`;
 
-        if (pi.last_hash) {
-          const hashRow = document.createElement('div');
-          hashRow.style.display = 'flex';
-          hashRow.style.alignItems = 'center';
-          hashRow.style.gap = '0.5rem';
-          hashRow.style.marginTop = '0.5rem';
+        const hashDiv = document.createElement('div');
+        hashDiv.className = 'font-mono text-dim';
+        hashDiv.style.fontSize = '0.7rem';
+        hashDiv.style.marginTop = '0.15rem';
+        const entryHashShort = (ev.entry_hash || 'N/A').substring(0, 16) + '...';
+        hashDiv.textContent = `Hash: ${entryHashShort}`;
 
-          const hashText = document.createElement('span');
-          hashText.className = 'font-mono text-dim';
-          hashText.style.fontSize = '0.775rem';
-          hashText.style.wordBreak = 'break-all';
-          hashText.textContent = `Tail Chain Hash: ${pi.last_hash}`;
+        li.appendChild(headerDiv);
+        li.appendChild(subDiv);
+        li.appendChild(hashDiv);
+        listUl.appendChild(li);
+      });
+    },
 
-          const copyHashBtn = document.createElement('button');
-          copyHashBtn.className = 'copy-btn';
-          copyHashBtn.textContent = 'Copy Hash';
-          copyHashBtn.addEventListener('click', () => this.copyToClipboard(pi.last_hash, copyHashBtn));
+    selectProvenanceRecord(recId) {
+      this.state.selectedRecordId = recId;
+      this.renderProvenanceRecordList();
 
-          hashRow.appendChild(hashText);
-          hashRow.appendChild(copyHashBtn);
-          summaryDiv.appendChild(hashRow);
-        }
+      const emptyDiv = document.getElementById('provenance-inspector-empty');
+      const contentDiv = document.getElementById('provenance-inspector-content');
+
+      if (!recId) {
+        if (emptyDiv) emptyDiv.classList.remove('hidden');
+        if (contentDiv) contentDiv.classList.add('hidden');
+        return;
       }
 
-      const tbody = document.getElementById('provenance-events-tbody');
-      if (tbody) {
-        tbody.innerHTML = '';
-        const events = data.events || [];
-        if (events.length === 0) {
-          const tr = document.createElement('tr');
-          tr.innerHTML = `<td colspan="7" class="text-center text-muted">No provenance records available in log.</td>`;
-          tbody.appendChild(tr);
-          return;
-        }
+      const events = (this.state.provenanceData && Array.isArray(this.state.provenanceData.events)) ? this.state.provenanceData.events : [];
+      const record = events.find(e => (e.event_id === recId) || (`seq_${e.sequence_number}` === recId));
 
-        events.forEach(ev => {
-          const tr = document.createElement('tr');
+      if (!record) {
+        if (emptyDiv) emptyDiv.classList.remove('hidden');
+        if (contentDiv) contentDiv.classList.add('hidden');
+        return;
+      }
 
-          const tdSeq = document.createElement('td');
-          tdSeq.className = 'font-mono';
-          tdSeq.textContent = ev.sequence_number ?? '-';
+      if (emptyDiv) emptyDiv.classList.add('hidden');
+      if (contentDiv) {
+        contentDiv.classList.remove('hidden');
+        this.renderProvenanceRecordInspector(record, contentDiv);
+      }
+    },
 
-          const tdTs = document.createElement('td');
-          tdTs.className = 'font-mono';
-          tdTs.style.fontSize = '0.75rem';
-          tdTs.textContent = ev.timestamp || 'N/A';
+    renderProvenanceRecordInspector(record, container) {
+      container.innerHTML = '';
 
-          const tdType = document.createElement('td');
-          tdType.style.fontWeight = '600';
-          tdType.textContent = ev.event_type || 'UNKNOWN';
+      // Header with Copy and Related Trace Jump
+      const headerBar = document.createElement('div');
+      headerBar.style.display = 'flex';
+      headerBar.style.justifyContent = 'space-between';
+      headerBar.style.alignItems = 'center';
+      headerBar.style.marginBottom = '1rem';
+      headerBar.style.flexWrap = 'wrap';
+      headerBar.style.gap = '0.5rem';
 
-          const tdSource = document.createElement('td');
-          tdSource.textContent = ev.provenance_source || 'UNKNOWN';
+      const titleGroup = document.createElement('div');
+      const title = document.createElement('h3');
+      title.style.fontSize = '1.05rem';
+      title.style.fontWeight = '700';
+      title.style.margin = '0';
+      title.className = 'font-mono';
+      title.textContent = `Record #${record.sequence_number} • ${record.event_type}`;
+      titleGroup.appendChild(title);
 
-          const tdCorr = document.createElement('td');
-          tdCorr.className = 'font-mono';
-          tdCorr.style.fontSize = '0.775rem';
-          tdCorr.textContent = (ev.correlation_id || '').substring(0, 14) + '...';
-          tdCorr.title = ev.correlation_id;
+      const actionBtnGroup = document.createElement('div');
+      actionBtnGroup.style.display = 'flex';
+      actionBtnGroup.style.gap = '0.5rem';
 
-          const tdTarget = document.createElement('td');
-          tdTarget.textContent = ev.target || 'N/A';
+      // Related Trace Button
+      const corrId = record.correlation_id;
+      const matchingTrace = corrId ? this.state.tracesData.find(t => t.correlation_id === corrId) : null;
 
-          const tdHash = document.createElement('td');
-          tdHash.className = 'font-mono';
-          tdHash.style.fontSize = '0.75rem';
-          tdHash.textContent = (ev.entry_hash || 'N/A').substring(0, 16) + '...';
-          tdHash.title = ev.entry_hash;
-
-          tr.appendChild(tdSeq);
-          tr.appendChild(tdTs);
-          tr.appendChild(tdType);
-          tr.appendChild(tdSource);
-          tr.appendChild(tdCorr);
-          tr.appendChild(tdTarget);
-          tr.appendChild(tdHash);
-          tbody.appendChild(tr);
+      if (matchingTrace) {
+        const traceBtn = document.createElement('button');
+        traceBtn.className = 'quick-entry-btn';
+        traceBtn.style.padding = '0.25rem 0.6rem';
+        traceBtn.style.fontSize = '0.75rem';
+        traceBtn.setAttribute('aria-label', `Navigate to related execution trace ${corrId}`);
+        traceBtn.innerHTML = `<span>View Related Trace</span> <span class="arrow">➔</span>`;
+        traceBtn.addEventListener('click', () => {
+          this.state.selectedTraceId = corrId;
+          this.switchTab('traces');
+          this.selectTrace(corrId);
         });
+        actionBtnGroup.appendChild(traceBtn);
       }
+
+      const copyRecordBtn = document.createElement('button');
+      copyRecordBtn.className = 'copy-btn';
+      copyRecordBtn.textContent = 'Copy Record JSON';
+      copyRecordBtn.setAttribute('aria-label', `Copy JSON payload for record sequence ${record.sequence_number}`);
+      copyRecordBtn.addEventListener('click', () => this.copyToClipboard(JSON.stringify(record, null, 2), copyRecordBtn));
+      actionBtnGroup.appendChild(copyRecordBtn);
+
+      headerBar.appendChild(titleGroup);
+      headerBar.appendChild(actionBtnGroup);
+      container.appendChild(headerBar);
+
+      // Card 1: Key Metadata Breakdown
+      const metaCard = document.createElement('div');
+      metaCard.className = 'card mb-1';
+
+      const metaHeader = document.createElement('div');
+      metaHeader.className = 'card-header';
+      metaHeader.textContent = 'Record Information & Context';
+      metaCard.appendChild(metaHeader);
+
+      const fieldList = [
+        { label: 'Record Identifier', value: record.event_id, mono: true, copyable: true },
+        { label: 'Event Type', value: record.event_type, bold: true },
+        { label: 'Provenance Source', value: record.provenance_source },
+        { label: 'Sequence Number', value: record.sequence_number, mono: true },
+        { label: 'Timestamp', value: record.timestamp || 'TIMESTAMP UNRECORDED', mono: true },
+        { label: 'Correlation ID', value: record.correlation_id, mono: true, copyable: true },
+        { label: 'Request ID', value: record.request_id, mono: true, copyable: true },
+        { label: 'Action Name', value: record.action_name },
+        { label: 'Target Resource', value: record.target },
+        { label: 'Capability Token ID', value: record.authorization_token_id, mono: true, copyable: true },
+        { label: 'Canonical Request Digest', value: record.canonical_request_digest, mono: true, copyable: true },
+        { label: 'Policy Version', value: record.policy_version, mono: true }
+      ];
+
+      fieldList.forEach(item => {
+        const row = document.createElement('div');
+        row.style.marginBottom = '0.4rem';
+        row.style.fontSize = '0.8rem';
+        row.style.wordBreak = 'break-all';
+
+        const lbl = document.createElement('span');
+        lbl.style.color = 'var(--text-secondary)';
+        lbl.style.fontWeight = '600';
+        lbl.textContent = `${item.label}: `;
+        row.appendChild(lbl);
+
+        const valSpan = document.createElement('span');
+        if (item.value !== null && item.value !== undefined && item.value !== '') {
+          valSpan.textContent = String(item.value);
+          if (item.mono) valSpan.className = 'font-mono';
+          if (item.bold) valSpan.style.fontWeight = '700';
+          row.appendChild(valSpan);
+
+          if (item.copyable) {
+            const btn = document.createElement('button');
+            btn.className = 'copy-btn';
+            btn.style.marginLeft = '0.4rem';
+            btn.style.padding = '0.1rem 0.35rem';
+            btn.style.fontSize = '0.65rem';
+            btn.textContent = 'Copy';
+            btn.setAttribute('aria-label', `Copy ${item.label}`);
+            btn.addEventListener('click', () => this.copyToClipboard(String(item.value), btn));
+            row.appendChild(btn);
+          }
+        } else {
+          valSpan.className = 'text-dim';
+          valSpan.textContent = 'UNAVAILABLE / NOT RECORDED';
+          row.appendChild(valSpan);
+        }
+
+        metaCard.appendChild(row);
+      });
+
+      container.appendChild(metaCard);
+
+      // Card 2: Cryptographic Chain Linkage Inspector
+      const chainCard = document.createElement('div');
+      chainCard.className = 'card mb-1';
+
+      const chainHeader = document.createElement('div');
+      chainHeader.className = 'card-header';
+      chainHeader.textContent = 'Cryptographic Sequence Chaining Linkage';
+      chainCard.appendChild(chainHeader);
+
+      const prevRow = document.createElement('div');
+      prevRow.style.marginBottom = '0.5rem';
+      prevRow.style.fontSize = '0.8rem';
+      prevRow.style.wordBreak = 'break-all';
+
+      const prevLbl = document.createElement('strong');
+      prevLbl.textContent = 'Predecessor Entry Hash (prev_hash): ';
+
+      const prevVal = document.createElement('span');
+      prevVal.className = 'font-mono text-dim';
+      prevVal.textContent = record.prev_hash || 'GENESIS (No Predecessor)';
+
+      prevRow.appendChild(prevLbl);
+      prevRow.appendChild(prevVal);
+
+      if (record.prev_hash) {
+        const copyPrevBtn = document.createElement('button');
+        copyPrevBtn.className = 'copy-btn';
+        copyPrevBtn.style.marginLeft = '0.4rem';
+        copyPrevBtn.style.padding = '0.1rem 0.35rem';
+        copyPrevBtn.style.fontSize = '0.65rem';
+        copyPrevBtn.textContent = 'Copy';
+        copyPrevBtn.setAttribute('aria-label', 'Copy predecessor entry hash');
+        copyPrevBtn.addEventListener('click', () => this.copyToClipboard(record.prev_hash, copyPrevBtn));
+        prevRow.appendChild(copyPrevBtn);
+      }
+
+      const currRow = document.createElement('div');
+      currRow.style.marginBottom = '0.5rem';
+      currRow.style.fontSize = '0.8rem';
+      currRow.style.wordBreak = 'break-all';
+
+      const currLbl = document.createElement('strong');
+      currLbl.textContent = 'Current Cryptographic Entry Hash (entry_hash): ';
+
+      const currVal = document.createElement('span');
+      currVal.className = 'font-mono';
+      currVal.style.color = 'var(--accent-primary)';
+      currVal.textContent = record.entry_hash || 'UNAVAILABLE';
+
+      currRow.appendChild(currLbl);
+      currRow.appendChild(currVal);
+
+      if (record.entry_hash) {
+        const copyCurrBtn = document.createElement('button');
+        copyCurrBtn.className = 'copy-btn';
+        copyCurrBtn.style.marginLeft = '0.4rem';
+        copyCurrBtn.style.padding = '0.1rem 0.35rem';
+        copyCurrBtn.style.fontSize = '0.65rem';
+        copyCurrBtn.textContent = 'Copy';
+        copyCurrBtn.setAttribute('aria-label', 'Copy current entry hash');
+        copyCurrBtn.addEventListener('click', () => this.copyToClipboard(record.entry_hash, copyCurrBtn));
+        currRow.appendChild(copyCurrBtn);
+      }
+
+      chainCard.appendChild(prevRow);
+      chainCard.appendChild(currRow);
+      container.appendChild(chainCard);
+
+      // Card 3: Raw JSON Record Payload
+      const jsonCard = document.createElement('div');
+      jsonCard.className = 'card';
+
+      const jsonHeader = document.createElement('div');
+      jsonHeader.className = 'card-header';
+      jsonHeader.textContent = 'Original Raw Record JSON Payload';
+      jsonCard.appendChild(jsonHeader);
+
+      const pre = document.createElement('pre');
+      pre.className = 'inspector-block';
+      pre.textContent = JSON.stringify(record, null, 2);
+
+      jsonCard.appendChild(pre);
+      container.appendChild(jsonCard);
     },
 
     // -------------------------------------------------------------------------

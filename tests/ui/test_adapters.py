@@ -220,3 +220,277 @@ def test_benchmark_data_loading(mock_logs):
     assert "Permission-Only Gating" in data["ablation_table"]["data"]["baselines"]
     assert data["per_case_results"]["available"] is True
     assert len(data["per_case_results"]["data"]) == 1
+
+
+def test_provenance_explorer_summary_panels_and_findings(mock_logs):
+    """Verifies provenance explorer returns 4 verification summary panels and actionable findings."""
+    adapter = ObservatoryDataAdapter(
+        audit_log_path=mock_logs["audit"],
+        provenance_log_path=mock_logs["provenance"]
+    )
+
+    # Test missing file case
+    data_missing = adapter.get_provenance_explorer_data()
+    assert "summary_panels" in data_missing
+    panels = data_missing["summary_panels"]
+    assert panels["availability"]["status"] == "UNAVAILABLE"
+    assert panels["integrity"]["status"] == "UNAVAILABLE"
+    assert panels["coverage"]["status"] == "UNAVAILABLE"
+    assert panels["authenticity"]["status"] == "NOT ESTABLISHED"
+    assert any(f["code"] == "LOG_FILE_MISSING" for f in data_missing["findings"])
+
+    # Test valid provenance events case recorded via store
+    from epistemicos.provenance import LocalProvenanceStore, ProvenanceEvent
+    store = LocalProvenanceStore(log_path=mock_logs["provenance"])
+    event_valid = ProvenanceEvent(
+        schema_version="1.0.0",
+        event_id="prov_ev_1",
+        event_type="ACTION_PROPOSED",
+        provenance_source="AGENT_ADAPTER",
+        correlation_id="corr_test_1",
+        request_id="req_test_1",
+        action_name="read_file",
+        target="data.txt",
+        canonical_request_digest="digest_123",
+        timestamp="2025-01-01T00:00:00Z"
+    )
+    store.record_event(event_valid)
+
+    data_valid = adapter.get_provenance_explorer_data()
+    panels_valid = data_valid["summary_panels"]
+    assert panels_valid["availability"]["status"] == "AVAILABLE"
+    assert panels_valid["availability"]["record_count"] == 1
+    assert panels_valid["integrity"]["status"] == "VERIFIED"
+    assert panels_valid["authenticity"]["status"] == "NOT ESTABLISHED"
+    assert len(data_valid["events"]) == 1
+    assert data_valid["events"][0]["event_id"] == "prov_ev_1"
+
+
+def test_provenance_explorer_corrupted_hash_chain_finding(mock_logs):
+    """Verifies critical finding generation when hash chain is broken."""
+    adapter = ObservatoryDataAdapter(
+        audit_log_path=mock_logs["audit"],
+        provenance_log_path=mock_logs["provenance"]
+    )
+
+    corrupt_event = {
+        "schema_version": "1.0.0",
+        "event_id": "prov_corrupt",
+        "event_type": "ACTION_PROPOSED",
+        "provenance_source": "AGENT_ADAPTER",
+        "correlation_id": "corr_corrupt",
+        "request_id": "req_corrupt",
+        "action_name": "run",
+        "target": "target",
+        "canonical_request_digest": "digest",
+        "timestamp": "2025-01-01T00:00:00Z",
+        "sequence_number": 5,  # Mismatched sequence number (expected 1)
+        "prev_hash": "wrong_prev_hash",
+        "entry_hash": "bad_entry_hash"
+    }
+
+    with open(mock_logs["provenance"], "w", encoding="utf-8") as f:
+        f.write(json.dumps(corrupt_event) + "\n")
+
+    data = adapter.get_provenance_explorer_data()
+    assert data["summary_panels"]["integrity"]["status"] == "CORRUPTED"
+    assert any(f["code"] == "HASH_CHAIN_CORRUPTED" for f in data["findings"])
+
+
+def test_coverage_for_failed_execution_with_complete_evidence(mock_logs):
+    """
+    Verifies that a failed execution with complete, reconciled evidence
+    is NOT classified as an incomplete trace in coverage calculations.
+    """
+    from epistemicos.provenance import LocalProvenanceStore, ProvenanceEvent
+    store = LocalProvenanceStore(log_path=mock_logs["provenance"])
+
+    # Complete lifecycle for a failed execution
+    e1 = ProvenanceEvent("1.0.0", "ev1", "ACTION_PROPOSED", "AGENT_ADAPTER", "corr_fail", "req1", "run", "tgt", "dig", "2025-01-01T00:00:00Z")
+    e2 = ProvenanceEvent("1.0.0", "ev2", "AUTHORIZATION_GRANTED", "GOVERNANCE_GATE", "corr_fail", "req1", "run", "tgt", "dig", "2025-01-01T00:00:01Z", authorization_token_id="tok1")
+    e3 = ProvenanceEvent("1.0.0", "ev3", "EXECUTION_STARTED", "EXECUTOR", "corr_fail", "req1", "run", "tgt", "dig", "2025-01-01T00:00:02Z", authorization_token_id="tok1", execution_attempt_id="att1")
+    e4 = ProvenanceEvent("1.0.0", "ev4", "EXECUTION_FAILED", "EXECUTOR", "corr_fail", "req1", "run", "tgt", "dig", "2025-01-01T00:00:03Z", authorization_token_id="tok1", execution_attempt_id="att1")
+
+    for e in (e1, e2, e3, e4):
+        store.record_event(e)
+
+    adapter = ObservatoryDataAdapter(audit_log_path=mock_logs["audit"], provenance_log_path=mock_logs["provenance"])
+
+    # Trace status should be FAILED, but reconciliation should be valid
+    traces = adapter.get_execution_traces()
+    assert len(traces) == 1
+    assert traces[0]["status"] == "FAILED"
+    assert traces[0]["reconciliation"]["valid"] is True
+
+    # Coverage panel should NOT report incomplete trace
+    data = adapter.get_provenance_explorer_data()
+    assert data["summary_panels"]["coverage"]["status"] == "UNVERIFIED"
+    assert "0 of 1" not in data["summary_panels"]["coverage"]["message"]
+    assert "missing terminal" not in data["summary_panels"]["coverage"]["message"]
+
+
+def test_coverage_for_incomplete_execution_trace(mock_logs):
+    """Verifies that an execution started without terminal event yields INCOMPLETE coverage."""
+    from epistemicos.provenance import LocalProvenanceStore, ProvenanceEvent
+    store = LocalProvenanceStore(log_path=mock_logs["provenance"])
+
+    e1 = ProvenanceEvent("1.0.0", "ev1", "ACTION_PROPOSED", "AGENT_ADAPTER", "corr_inc", "req1", "run", "tgt", "dig", "2025-01-01T00:00:00Z")
+    e2 = ProvenanceEvent("1.0.0", "ev2", "AUTHORIZATION_GRANTED", "GOVERNANCE_GATE", "corr_inc", "req1", "run", "tgt", "dig", "2025-01-01T00:00:01Z", authorization_token_id="tok1")
+    e3 = ProvenanceEvent("1.0.0", "ev3", "EXECUTION_STARTED", "EXECUTOR", "corr_inc", "req1", "run", "tgt", "dig", "2025-01-01T00:00:02Z", authorization_token_id="tok1", execution_attempt_id="att1")
+
+    for e in (e1, e2, e3):
+        store.record_event(e)
+
+    adapter = ObservatoryDataAdapter(audit_log_path=mock_logs["audit"], provenance_log_path=mock_logs["provenance"])
+
+    data = adapter.get_provenance_explorer_data()
+    cov = data["summary_panels"]["coverage"]
+    assert cov["status"] == "INCOMPLETE"
+    assert "1 of 1" in cov["message"]
+
+
+def test_positively_detected_corrupted_chain(mock_logs):
+    """
+    Verifies that a positively detected chain corruption yields integrity status CORRUPTED
+    and coverage status UNVERIFIED without claiming log continuity.
+    """
+    from epistemicos.provenance import LocalProvenanceStore, ProvenanceEvent
+    store = LocalProvenanceStore(log_path=mock_logs["provenance"])
+
+    e1 = ProvenanceEvent("1.0.0", "ev1", "AUTHORIZATION_DENIED", "GOVERNANCE_GATE", "corr_1", "req1", "run", "tgt", "dig", "2025-01-01T00:00:00Z")
+    store.record_event(e1)
+
+    # Corrupt entry_hash on disk
+    with open(mock_logs["provenance"], "r", encoding="utf-8") as f:
+        lines = f.readlines()
+    data_dict = json.loads(lines[0])
+    data_dict["entry_hash"] = "bad_tampered_hash"
+    with open(mock_logs["provenance"], "w", encoding="utf-8") as f:
+        f.write(json.dumps(data_dict) + "\n")
+
+    adapter = ObservatoryDataAdapter(audit_log_path=mock_logs["audit"], provenance_log_path=mock_logs["provenance"])
+    data = adapter.get_provenance_explorer_data()
+
+    assert data["summary_panels"]["integrity"]["status"] == "CORRUPTED"
+    assert data["summary_panels"]["integrity"]["valid"] is False
+    cov = data["summary_panels"]["coverage"]
+    assert cov["status"] == "UNVERIFIED"
+    assert "corruption positively detected" in cov["message"].lower()
+    assert "valid local cryptographic sequence chaining" not in cov["message"].lower()
+    assert any(f["code"] == "HASH_CHAIN_CORRUPTED" for f in data["findings"])
+
+
+def test_integrity_verification_exception_yields_unverified(mock_logs, monkeypatch):
+    """
+    Verifies that an exception during verification yields status UNVERIFIED (not CORRUPTED),
+    does not claim confirmed chain corruption, and surfaces an INTEGRITY_UNVERIFIED finding.
+    """
+    from epistemicos.provenance import LocalProvenanceStore, ProvenanceEvent
+    store = LocalProvenanceStore(log_path=mock_logs["provenance"])
+    e1 = ProvenanceEvent("1.0.0", "ev1", "AUTHORIZATION_DENIED", "GOVERNANCE_GATE", "corr_1", "req1", "run", "tgt", "dig", "2025-01-01T00:00:00Z")
+    store.record_event(e1)
+
+    # Monkeypatch LocalProvenanceStore._inspect_health to raise an unexpected OSError/IOError exception
+    def mock_inspect_health_error(self):
+        raise OSError("Permission denied reading log path")
+
+    monkeypatch.setattr(LocalProvenanceStore, "_inspect_health", mock_inspect_health_error)
+
+    adapter = ObservatoryDataAdapter(audit_log_path=mock_logs["audit"], provenance_log_path=mock_logs["provenance"])
+    data = adapter.get_provenance_explorer_data()
+
+    integ = data["summary_panels"]["integrity"]
+    assert integ["status"] == "UNVERIFIED"
+    assert integ["valid"] is None
+    assert "verification execution failed" in integ["message"].lower()
+
+    cov = data["summary_panels"]["coverage"]
+    assert cov["status"] == "UNVERIFIED"
+    assert "integrity unverified" in cov["message"].lower()
+    assert "corruption positively detected" not in cov["message"].lower()
+
+    # Ensure HASH_CHAIN_CORRUPTED is NOT raised, but INTEGRITY_UNVERIFIED is
+    assert not any(f["code"] == "HASH_CHAIN_CORRUPTED" for f in data["findings"])
+    assert any(f["code"] == "INTEGRITY_UNVERIFIED" for f in data["findings"])
+
+
+def test_fully_readable_provenance_log(mock_logs):
+    """Verifies that a log where all entries parse yields AVAILABLE status with 0 parse errors."""
+    from epistemicos.provenance import LocalProvenanceStore, ProvenanceEvent
+    store = LocalProvenanceStore(log_path=mock_logs["provenance"])
+
+    e1 = ProvenanceEvent("1.0.0", "ev1", "ACTION_PROPOSED", "AGENT_ADAPTER", "corr_1", "req1", "run", "tgt", "dig", "2025-01-01T00:00:00Z")
+    store.record_event(e1)
+
+    adapter = ObservatoryDataAdapter(audit_log_path=mock_logs["audit"], provenance_log_path=mock_logs["provenance"])
+    data = adapter.get_provenance_explorer_data()
+
+    assert data["parse_error_count"] == 0
+    assert len(data["events"]) == 1
+    assert data["summary_panels"]["availability"]["status"] == "AVAILABLE"
+    assert "fully accessible" in data["summary_panels"]["availability"]["message"].lower()
+
+
+def test_partially_readable_provenance_log(mock_logs):
+    """Verifies that a log containing both valid and malformed entries yields PARTIAL availability status."""
+    from epistemicos.provenance import LocalProvenanceStore, ProvenanceEvent
+    store = LocalProvenanceStore(log_path=mock_logs["provenance"])
+
+    e1 = ProvenanceEvent("1.0.0", "ev1", "ACTION_PROPOSED", "AGENT_ADAPTER", "corr_1", "req1", "run", "tgt", "dig", "2025-01-01T00:00:00Z")
+    store.record_event(e1)
+
+    # Append malformed line directly
+    with open(mock_logs["provenance"], "a", encoding="utf-8") as f:
+        f.write("MALFORMED_NON_JSON_LINE\n")
+
+    adapter = ObservatoryDataAdapter(audit_log_path=mock_logs["audit"], provenance_log_path=mock_logs["provenance"])
+    data = adapter.get_provenance_explorer_data()
+
+    assert data["parse_error_count"] == 1
+    assert len(data["events"]) == 1
+    assert data["summary_panels"]["availability"]["status"] == "PARTIAL"
+    assert "partially readable" in data["summary_panels"]["availability"]["message"].lower()
+    assert any(f["code"] == "PARSE_ERRORS_DETECTED" for f in data["findings"])
+
+
+def test_all_entries_fail_to_parse_provenance_log(mock_logs):
+    """
+    Verifies that a log whose entries all fail to parse yields UNREADABLE availability status,
+    while integrity status reflects whatever the underlying verifier establishes.
+    """
+    with open(mock_logs["provenance"], "w", encoding="utf-8") as f:
+        f.write("BAD_LINE_1\nBAD_LINE_2\n")
+
+    adapter = ObservatoryDataAdapter(audit_log_path=mock_logs["audit"], provenance_log_path=mock_logs["provenance"])
+    data = adapter.get_provenance_explorer_data()
+
+    assert data["parse_error_count"] == 2
+    assert len(data["events"]) == 0
+    assert data["summary_panels"]["availability"]["status"] == "UNREADABLE"
+    assert "unparseable" in data["summary_panels"]["availability"]["message"].lower()
+
+    # Integrity panel status is computed independently via _verify_provenance_integrity()
+    actual_verifier_integrity = adapter._verify_provenance_integrity()
+    assert data["summary_panels"]["integrity"]["status"] == actual_verifier_integrity["status"]
+
+
+def test_empty_readable_provenance_log(mock_logs):
+    """Verifies that an empty existing file produces EMPTY availability status."""
+    Path(mock_logs["provenance"]).touch()
+
+    adapter = ObservatoryDataAdapter(audit_log_path=mock_logs["audit"], provenance_log_path=mock_logs["provenance"])
+    data = adapter.get_provenance_explorer_data()
+
+    assert data["summary_panels"]["availability"]["status"] == "EMPTY"
+    assert data["summary_panels"]["coverage"]["status"] == "UNAVAILABLE"
+
+
+def test_unestablished_source_authenticity(mock_logs):
+    """Verifies that source authenticity panel consistently reports NOT ESTABLISHED with scope details."""
+    adapter = ObservatoryDataAdapter(audit_log_path=mock_logs["audit"], provenance_log_path=mock_logs["provenance"])
+    data = adapter.get_provenance_explorer_data()
+
+    auth = data["summary_panels"]["authenticity"]
+    assert auth["status"] == "NOT ESTABLISHED"
+    assert "hardware enclave" in auth["message"].lower()
+    assert "scope" in auth

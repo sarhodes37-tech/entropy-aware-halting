@@ -218,11 +218,148 @@ class ObservatoryDataAdapter:
     # -------------------------------------------------------------------------
     def get_provenance_explorer_data(self) -> Dict[str, Any]:
         """
-        Returns all provenance events, hash chain integrity validation status,
-        and explicit disclaimers.
+        Returns all provenance events, 4-panel verification status summaries,
+        actionable findings, hash chain integrity status, and explicit disclaimers.
         """
         events, parse_errors = self._read_raw_provenance_events()
         integrity = self._verify_provenance_integrity()
+
+        file_exists = self.provenance_log_path.exists()
+        file_size = self.provenance_log_path.stat().st_size if file_exists else 0
+
+        # 1. Availability Status Panel
+        if not file_exists:
+            avail_status = "UNAVAILABLE"
+            avail_msg = "Provenance log file does not exist on disk."
+        elif len(events) == 0 and parse_errors == 0:
+            avail_status = "EMPTY"
+            avail_msg = "Provenance log file exists but contains zero records."
+        elif parse_errors > 0 and len(events) == 0:
+            avail_status = "UNREADABLE"
+            avail_msg = f"Provenance log file exists but all lines failed to parse ({parse_errors} unparseable line(s))."
+        elif parse_errors > 0 and len(events) > 0:
+            avail_status = "PARTIAL"
+            avail_msg = f"Log file partially readable ({len(events)} valid records, {parse_errors} unparseable line(s))."
+        else:
+            avail_status = "AVAILABLE"
+            avail_msg = f"Log file fully accessible ({len(events)} valid records, 0 parse errors)."
+
+        # 2. Coverage & Completeness Panel
+        # Assess if executions have missing terminal events or reconciliation violations
+        traces = self.get_execution_traces() if events else []
+        incomplete_traces = [
+            t for t in traces
+            if not t.get("reconciliation", {}).get("valid", True) or t.get("status") == "OUTCOME_UNKNOWN"
+        ]
+
+        if not file_exists or len(events) == 0:
+            coverage_status = "UNAVAILABLE"
+            coverage_msg = "No provenance records available to assess event coverage."
+        elif incomplete_traces:
+            coverage_status = "INCOMPLETE"
+            coverage_msg = f"{len(incomplete_traces)} of {len(traces)} execution trace(s) have missing terminal outcome events or reconciliation violations."
+        elif integrity.get("status") == "CORRUPTED":
+            coverage_status = "UNVERIFIED"
+            coverage_msg = "Cryptographic sequence chaining corruption positively detected; log continuity and trace completeness cannot be established."
+        elif integrity.get("status") != "VERIFIED":
+            coverage_status = "UNVERIFIED"
+            coverage_msg = "Cryptographic sequence chaining integrity unverified; log continuity and trace completeness cannot be established."
+        else:
+            coverage_status = "UNVERIFIED"
+            coverage_msg = "Valid local cryptographic sequence chaining verifies log continuity, but cannot establish whether unrecorded external actions occurred."
+
+        # 3. Source Authenticity Panel
+        authenticity_status = "NOT ESTABLISHED"
+        authenticity_msg = (
+            "Local process log storage lacks independent hardware enclave attestations or "
+            "asymmetric cryptographic signatures to prove external source authenticity."
+        )
+
+        # 4. Actionable Verification Findings List
+        findings = []
+
+        if not file_exists:
+            findings.append({
+                "severity": "WARNING",
+                "code": "LOG_FILE_MISSING",
+                "title": "Provenance Log File Missing",
+                "description": f"Log file at path '{self.provenance_log_path}' was not found."
+            })
+
+        if parse_errors > 0:
+            findings.append({
+                "severity": "HIGH",
+                "code": "PARSE_ERRORS_DETECTED",
+                "title": f"Malformed Log Entries ({parse_errors})",
+                "description": f"Detected {parse_errors} unparseable line(s) in provenance log file."
+            })
+
+        if integrity.get("status") == "CORRUPTED":
+            findings.append({
+                "severity": "CRITICAL",
+                "code": "HASH_CHAIN_CORRUPTED",
+                "title": "Cryptographic Hash Chain Broken",
+                "description": integrity.get("message", "Sequence number or prev_hash mismatch detected in local store.")
+            })
+        elif integrity.get("status") == "UNVERIFIED":
+            findings.append({
+                "severity": "WARNING",
+                "code": "INTEGRITY_UNVERIFIED",
+                "title": "Cryptographic Integrity Unverified",
+                "description": integrity.get("message", "Integrity check failed to execute to completion.")
+            })
+
+        if incomplete_traces:
+            findings.append({
+                "severity": "HIGH",
+                "code": "INCOMPLETE_EXECUTION_TRACES",
+                "title": f"Incomplete Trace Evidence ({len(incomplete_traces)})",
+                "description": f"{len(incomplete_traces)} trace(s) lack matching terminal events or exhibit reconciliation violations."
+            })
+
+        findings.append({
+            "severity": "INFO",
+            "code": "AUTHENTICITY_LIMITATION",
+            "title": "Source Authenticity Unestablished",
+            "description": "Local process logs do not provide non-repudiable cryptographic source identity."
+        })
+
+        findings.append({
+            "severity": "INFO",
+            "code": "COMPLETENESS_LIMITATION",
+            "title": "Trace Completeness Unverified",
+            "description": "Valid append-only hash chains establish sequence order, not proof that all relevant actions were logged."
+        })
+
+        summary_panels = {
+            "availability": {
+                "status": avail_status,
+                "file_exists": file_exists,
+                "file_size_bytes": file_size,
+                "record_count": len(events),
+                "parse_error_count": parse_errors,
+                "message": avail_msg,
+                "scope": "Evaluates physical presence and readable JSON line formatting of the local append-only provenance log file."
+            },
+            "integrity": {
+                "status": integrity.get("status", "UNAVAILABLE"),
+                "valid": integrity.get("valid"),
+                "records_verified": integrity.get("records_verified", 0),
+                "last_hash": integrity.get("last_hash"),
+                "message": integrity.get("message", "Integrity status unavailable."),
+                "scope": "Evaluates SHA-256 hash chain continuity across sequence_number and prev_hash links within the local store."
+            },
+            "coverage": {
+                "status": coverage_status,
+                "message": coverage_msg,
+                "scope": "Assesses whether all expected lifecycle events are recorded for observed executions. Valid local hash chaining alone does NOT prove event completeness."
+            },
+            "authenticity": {
+                "status": authenticity_status,
+                "message": authenticity_msg,
+                "scope": "Assesses cryptographic origin and non-repudiation of event sources. Local process logs do not constitute an independent hardware trust boundary."
+            }
+        }
 
         return {
             "disclaimer": (
@@ -230,6 +367,8 @@ class ObservatoryDataAdapter:
                 "append-only sequence chaining, but does NOT prove external source authenticity, "
                 "non-repudiation, or trace completeness."
             ),
+            "summary_panels": summary_panels,
+            "findings": findings,
             "integrity": integrity,
             "parse_error_count": parse_errors,
             "events": events
@@ -333,14 +472,14 @@ class ObservatoryDataAdapter:
                 "status": "VERIFIED" if valid else "CORRUPTED",
                 "valid": valid,
                 "records_verified": count,
-                "message": err or "Integrity verified successfully"
+                "message": err or ("Integrity verified successfully" if valid else "Chain corruption detected")
             }
         except Exception as e:
             return {
-                "status": "CORRUPTED",
-                "valid": False,
+                "status": "UNVERIFIED",
+                "valid": None,
                 "records_verified": 0,
-                "message": f"Verification error: {str(e)}"
+                "message": f"Verification execution failed: {str(e)}"
             }
 
     def _verify_provenance_integrity(self) -> Dict[str, Any]:
@@ -363,10 +502,10 @@ class ObservatoryDataAdapter:
             }
         except Exception as e:
             return {
-                "status": "CORRUPTED",
-                "valid": False,
+                "status": "UNVERIFIED",
+                "valid": None,
                 "records_verified": 0,
-                "message": f"Verification error: {str(e)}"
+                "message": f"Verification execution failed: {str(e)}"
             }
 
     def _determine_execution_status(self, events: List[Dict[str, Any]]) -> str:
