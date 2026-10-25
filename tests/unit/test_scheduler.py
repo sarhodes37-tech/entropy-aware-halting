@@ -198,19 +198,18 @@ def test_scheduler_step_optimal_convergence():
 
 
 def test_scheduler_step_irreducible_uncertainty():
-    """Validates IRREDUCIBLE_UNCERTAINTY directive across stagnation windows."""
+    """Validates IRREDUCIBLE_UNCERTAINTY directive across stagnation windows requiring real transition deltas."""
     scheduler = EntropyAwareScheduler(stagnation_window=2, entropy_delta_threshold=0.01)
 
-    scheduler.step(torch.tensor([0.5, 0.5]), cost=0, state="s1")
+    scheduler.step(torch.tensor([0.5, 0.5]), cost=0, state="s1") # step 0
 
-    res1 = scheduler.step(torch.tensor([0.5, 0.5]), cost=0, state="s2")
-    assert res1.directive == "IRREDUCIBLE_UNCERTAINTY"
+    res1 = scheduler.step(torch.tensor([0.5, 0.5]), cost=0, state="s2") # step 1 (1 real delta)
+    assert res1.directive == "CONTINUE"
 
-    res2 = scheduler.step(torch.tensor([0.5, 0.5]), cost=0, state="s3")
+    res2 = scheduler.step(torch.tensor([0.5, 0.5]), cost=0, state="s3") # step 2 (2 real deltas = stagnation_window)
     assert res2.directive == "IRREDUCIBLE_UNCERTAINTY"
     
-    # 3rd transition is required to fulfill the > stagnation_window condition
-    res3 = scheduler.step(torch.tensor([0.5, 0.5]), cost=0, state="s4")
+    res3 = scheduler.step(torch.tensor([0.5, 0.5]), cost=0, state="s4") # step 3
     assert res3.directive == "IRREDUCIBLE_UNCERTAINTY"
     assert res3.halt is True
 

@@ -479,9 +479,9 @@ class AuthorizationAuthority:
 
         # Strict executor binding without wildcards
         if cap.executor_id != executor_id:
-            short_cap = cap.executor_id.rsplit(".", 1)[-1]
             short_req = executor_id.rsplit(".", 1)[-1]
-            if short_cap != short_req:
+            short_cap = cap.executor_id.rsplit(".", 1)[-1]
+            if cap.executor_id != short_req and short_cap != short_req:
                 return False, f"CAPABILITY_VERIFICATION_FAILED_EXECUTOR_MISMATCH: granted '{cap.executor_id}', requested '{executor_id}'", cap
 
         if principal_id is not None and cap.principal_id != principal_id:

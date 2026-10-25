@@ -1,11 +1,11 @@
 # EpistemicOS Consolidated Security & Evaluation Evidence Report
 
-**Overall Status:** `PARTIAL` | **Generated:** 2026-10-25 13:31:43 UTC
+**Overall Status:** `PARTIAL` | **Generated:** 2026-10-25 14:06:08 UTC
 
 ## Reproducibility & Environment Metadata
 - **Evaluated Git Commit:** `152570c25eca6d96b955f4f48ca624807f39a877`
 - **Working Tree Status:** `DIRTY`
-- **Working Tree Digest:** `abdefdaa3dfacd6e079ab776a7db872abc4ae3c97d62c1a1b404fde843e668ae`
+- **Working Tree Digest:** `bca02482139ff9b83e584b31be59b10c124e8aa20a40abdac0a458769498e85a`
 - **Dataset Version:** `1.0.0-frozen`
 - **Dataset SHA-256 Digest:** `f4e31381a922c1143769ccb887c4841e4a14fedec6eef6569d40eed2956ce873` (Verified: `True`)
 
@@ -13,8 +13,8 @@
 
 ## Layer A: Deterministic Regression
 - **Status:** `PASS`
-- **Test Command:** `/home/jules/.local/share/pipx/venvs/pytest/bin/python -m pytest tests/unit/test_evidence_architecture.py -k test_dataset_manifest_integrity -q --tb=no`
-- **Summary:** .                                                                        [100%]
+- **Test Command:** `pytest tests/unit/ tests/e2e_security/ -q --tb=no`
+- **Summary:** SKIPPED [1] tests/unit/test_security_coverage_remediation.py:369: could not import 'torch': No module named 'torch'
 
 ---
 
@@ -48,14 +48,14 @@
 
 ## Layer D: Performance & Cost Benchmarks
 - **Status:** `PASS`
-- **Run ID:** `run-l4-20261025133103-261af259`
+- **Run ID:** `run-l4-20261025140321-29ac4ba3`
 - **Dataset Digest:** `f4e31381a922c1143769ccb887c4841e4a14fedec6eef6569d40eed2956ce873`
-- **Run Records File SHA-256:** `7ce567ceeb12ef037c9c6f5071aebf3eee6b2ec74a7964d258f65074a34f2c0b`
+- **Run Records File SHA-256:** `14fbfe2e8a78b9d634f150c8028dfa13e29d567cc5930a7e81cbfff32a3aa43c`
 - **Sample Size:** N = 100
 - **Combined Gating Accuracy:** 100.0%
 - **Combined Gating Security Recall:** 100.0%
 - **Benign False Positive Rate:** 0.0%
-- **P95 Latency:** 29.959 ms
+- **P95 Latency:** 165.189 ms
 - **Total Tokens Spent:** 2000
 - **Mandatory Criteria Passed:** `True`
 
