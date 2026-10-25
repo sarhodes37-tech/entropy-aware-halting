@@ -48,6 +48,10 @@
   --status-pending-fg: #38bdf8;
   --status-pending-border: rgba(56, 189, 248, 0.3);
 
+  --status-partial-bg: rgba(251, 146, 60, 0.15);
+  --status-partial-fg: #fb923c;
+  --status-partial-border: rgba(251, 146, 60, 0.3);
+
   /* Structure & Typography */
   --radius-sm: 4px;
   --radius-md: 6px;
@@ -276,6 +280,12 @@ h2 {
   background-color: var(--status-pending-bg);
   color: var(--status-pending-fg);
   border: 1px solid var(--status-pending-border);
+}
+
+.status-badge-partial {
+  background-color: var(--status-partial-bg);
+  color: var(--status-partial-fg);
+  border: 1px solid var(--status-partial-border);
 }
 
 .status-badge-not-established {

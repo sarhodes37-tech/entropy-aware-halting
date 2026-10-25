@@ -237,9 +237,12 @@ class ObservatoryDataAdapter:
         elif parse_errors > 0 and len(events) == 0:
             avail_status = "CORRUPTED"
             avail_msg = f"Provenance log file exists but all lines failed to parse ({parse_errors} parse errors)."
+        elif parse_errors > 0 and len(events) > 0:
+            avail_status = "PARTIAL"
+            avail_msg = f"Log file partially readable ({len(events)} valid records, {parse_errors} unparseable line(s))."
         else:
             avail_status = "AVAILABLE"
-            avail_msg = f"Log file accessible ({len(events)} valid records, {parse_errors} parse errors)."
+            avail_msg = f"Log file fully accessible ({len(events)} valid records, 0 parse errors)."
 
         # 2. Coverage & Completeness Panel
         # Assess if executions have missing terminal events or reconciliation violations

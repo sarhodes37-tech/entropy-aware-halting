@@ -384,8 +384,25 @@ def test_corrupted_hash_chain_coverage_contradiction_prevention(mock_logs):
     assert "valid local cryptographic sequence chaining" not in cov["message"].lower()
 
 
-def test_malformed_and_valid_provenance_entries_handling(mock_logs):
-    """Verifies proper handling of a log file containing both malformed and valid records."""
+def test_fully_readable_provenance_log(mock_logs):
+    """Verifies that a log where all entries parse yields AVAILABLE status with 0 parse errors."""
+    from epistemicos.provenance import LocalProvenanceStore, ProvenanceEvent
+    store = LocalProvenanceStore(log_path=mock_logs["provenance"])
+
+    e1 = ProvenanceEvent("1.0.0", "ev1", "ACTION_PROPOSED", "AGENT_ADAPTER", "corr_1", "req1", "run", "tgt", "dig", "2025-01-01T00:00:00Z")
+    store.record_event(e1)
+
+    adapter = ObservatoryDataAdapter(audit_log_path=mock_logs["audit"], provenance_log_path=mock_logs["provenance"])
+    data = adapter.get_provenance_explorer_data()
+
+    assert data["parse_error_count"] == 0
+    assert len(data["events"]) == 1
+    assert data["summary_panels"]["availability"]["status"] == "AVAILABLE"
+    assert "fully accessible" in data["summary_panels"]["availability"]["message"].lower()
+
+
+def test_partially_readable_provenance_log(mock_logs):
+    """Verifies that a log containing both valid and malformed entries yields PARTIAL availability status."""
     from epistemicos.provenance import LocalProvenanceStore, ProvenanceEvent
     store = LocalProvenanceStore(log_path=mock_logs["provenance"])
 
@@ -401,8 +418,22 @@ def test_malformed_and_valid_provenance_entries_handling(mock_logs):
 
     assert data["parse_error_count"] == 1
     assert len(data["events"]) == 1
-    assert data["summary_panels"]["availability"]["status"] == "AVAILABLE"
+    assert data["summary_panels"]["availability"]["status"] == "PARTIAL"
+    assert "partially readable" in data["summary_panels"]["availability"]["message"].lower()
     assert any(f["code"] == "PARSE_ERRORS_DETECTED" for f in data["findings"])
+
+
+def test_all_entries_fail_to_parse_provenance_log(mock_logs):
+    """Verifies that a log whose entries all fail to parse yields CORRUPTED availability status."""
+    with open(mock_logs["provenance"], "w", encoding="utf-8") as f:
+        f.write("BAD_LINE_1\nBAD_LINE_2\n")
+
+    adapter = ObservatoryDataAdapter(audit_log_path=mock_logs["audit"], provenance_log_path=mock_logs["provenance"])
+    data = adapter.get_provenance_explorer_data()
+
+    assert data["parse_error_count"] == 2
+    assert len(data["events"]) == 0
+    assert data["summary_panels"]["availability"]["status"] == "CORRUPTED"
 
 
 def test_empty_readable_provenance_log(mock_logs):

@@ -214,6 +214,9 @@ document.addEventListener('DOMContentLoaded', () => {
       } else if (st === 'UNAVAILABLE') {
         span.className = 'status-badge status-badge-unavailable';
         span.textContent = '⊘ UNAVAILABLE';
+      } else if (st === 'PARTIAL') {
+        span.className = 'status-badge status-badge-partial';
+        span.textContent = '⚠ PARTIAL';
       } else if (st === 'NOT ESTABLISHED') {
         span.className = 'status-badge status-badge-not-established';
         span.textContent = '░ NOT ESTABLISHED';
