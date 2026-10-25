@@ -701,6 +701,42 @@ def test_f7_human_approval_self_approval_rejected():
     assert reason == "AUTHORIZATION_DENIED_HUMAN_APPROVAL_SELF_APPROVAL_REJECTED"
 
 
+def test_f7_human_approval_untrusted_approver_rejected():
+    """F7 Regression: Verifies that a signed approval from an untrusted approver_id is rejected when allowed_approvers is configured."""
+    policy = Policy(
+        policy_id="p1",
+        allowed_operations={"critical_op"},
+        allowed_resources={"res1"},
+        required_human_approval_operations={"critical_op"},
+        allowed_approvers={"security_lead_alice"}  # Only Alice is authorized
+    )
+    authority = AuthorizationAuthority(default_policy=policy)
+    digest = "c" * 64
+    req_id = "req-untrusted-1"
+
+    untrusted_approval_record = HumanApprovalRecord(
+        approval_id="app-untrusted",
+        approver_id="untrusted_user_bob",
+        action_name="critical_op",
+        target="res1",
+        action_digest=digest,
+        request_id=req_id
+    )
+    untrusted_approval_record.sign(authority.approval_signing_secret)
+
+    cap, reason = authority.evaluate_and_issue_capability(
+        action_name="critical_op",
+        target="res1",
+        canonical_request_digest=digest,
+        principal_id="principal_user_1",
+        request_id=req_id,
+        human_approval_input=untrusted_approval_record
+    )
+
+    assert cap is None
+    assert "UNTRUSTED_APPROVER" in reason
+
+
 def test_f7_human_approval_string_expires_at_handled_safely():
     """F7 Regression: Verifies that string expires_at input is parsed or rejected safely without raising uncaught TypeError."""
     digest = "b" * 64

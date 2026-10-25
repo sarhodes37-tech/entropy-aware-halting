@@ -1,11 +1,11 @@
 # EpistemicOS Consolidated Security & Evaluation Evidence Report
 
-**Overall Status:** `PARTIAL` | **Generated:** 2026-10-25 14:06:08 UTC
+**Overall Status:** `PARTIAL` | **Generated:** 2026-10-25 14:26:22 UTC
 
 ## Reproducibility & Environment Metadata
 - **Evaluated Git Commit:** `152570c25eca6d96b955f4f48ca624807f39a877`
 - **Working Tree Status:** `DIRTY`
-- **Working Tree Digest:** `bca02482139ff9b83e584b31be59b10c124e8aa20a40abdac0a458769498e85a`
+- **Working Tree Digest:** `3d38b7d9c1c28331b31f168feb251c55f623f3c9474e9868aeacf7c117a804d4`
 - **Dataset Version:** `1.0.0-frozen`
 - **Dataset SHA-256 Digest:** `f4e31381a922c1143769ccb887c4841e4a14fedec6eef6569d40eed2956ce873` (Verified: `True`)
 
@@ -48,14 +48,14 @@
 
 ## Layer D: Performance & Cost Benchmarks
 - **Status:** `PASS`
-- **Run ID:** `run-l4-20261025140321-29ac4ba3`
+- **Run ID:** `run-l4-20261025142154-f59f2a86`
 - **Dataset Digest:** `f4e31381a922c1143769ccb887c4841e4a14fedec6eef6569d40eed2956ce873`
-- **Run Records File SHA-256:** `14fbfe2e8a78b9d634f150c8028dfa13e29d567cc5930a7e81cbfff32a3aa43c`
+- **Run Records File SHA-256:** `8aec35b7df551ebb809751b949417168044bb062da756c847e194b61f5e2286a`
 - **Sample Size:** N = 100
 - **Combined Gating Accuracy:** 100.0%
 - **Combined Gating Security Recall:** 100.0%
 - **Benign False Positive Rate:** 0.0%
-- **P95 Latency:** 165.189 ms
+- **P95 Latency:** 266.277 ms
 - **Total Tokens Spent:** 2000
 - **Mandatory Criteria Passed:** `True`
 

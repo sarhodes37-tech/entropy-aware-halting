@@ -142,6 +142,8 @@ class Policy:
     """
     Explicit, server-controlled authorization policy.
     An allowed operation against an unlisted target is strictly denied (fails closed).
+    Defaults allowed_principals, allowed_executors, and allowed_approvers to wildcard {"*"}
+    for unconstrained policies, but fails closed if an explicit empty set () is provided.
     """
     policy_id: str
     version: str = "1.0.0"
@@ -150,6 +152,7 @@ class Policy:
     required_human_approval_operations: Set[str] = field(default_factory=set)
     allowed_principals: Set[str] = field(default_factory=lambda: {"*"})
     allowed_executors: Set[str] = field(default_factory=lambda: {"*"})
+    allowed_approvers: Set[str] = field(default_factory=lambda: {"*"})
     token_ttl_seconds: float = 300.0
 
     def is_operation_allowed(self, action_name: str) -> bool:
@@ -382,6 +385,11 @@ class AuthorizationAuthority:
             if not approval_record:
                 return None, "STOP_AND_ESCALATE_HUMAN_APPROVAL_REQUIRED"
 
+            # Validate untrusted approver ID against policy allowed_approvers
+            if active_policy.allowed_approvers is not None and "*" not in active_policy.allowed_approvers:
+                if approval_record.approver_id not in active_policy.allowed_approvers:
+                    return None, f"AUTHORIZATION_DENIED_HUMAN_APPROVAL_UNTRUSTED_APPROVER:{approval_record.approver_id}"
+
             # Validate human approval binding
             if approval_record.approver_id == principal_id:
                 return None, "AUTHORIZATION_DENIED_HUMAN_APPROVAL_SELF_APPROVAL_REJECTED"
@@ -479,9 +487,9 @@ class AuthorizationAuthority:
 
         # Strict executor binding without wildcards
         if cap.executor_id != executor_id:
-            short_req = executor_id.rsplit(".", 1)[-1]
             short_cap = cap.executor_id.rsplit(".", 1)[-1]
-            if cap.executor_id != short_req and short_cap != short_req:
+            short_req = executor_id.rsplit(".", 1)[-1]
+            if short_cap != short_req:
                 return False, f"CAPABILITY_VERIFICATION_FAILED_EXECUTOR_MISMATCH: granted '{cap.executor_id}', requested '{executor_id}'", cap
 
         if principal_id is not None and cap.principal_id != principal_id:
