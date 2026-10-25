@@ -242,16 +242,22 @@ class ObservatoryDataAdapter:
             avail_msg = f"Log file accessible ({len(events)} valid records, {parse_errors} parse errors)."
 
         # 2. Coverage & Completeness Panel
-        # Assess if executions have missing terminal events
+        # Assess if executions have missing terminal events or reconciliation violations
         traces = self.get_execution_traces() if events else []
-        incomplete_traces = [t for t in traces if t.get("status") in ("OUTCOME_UNKNOWN", "FAILED") or not t.get("reconciliation", {}).get("valid", True)]
+        incomplete_traces = [
+            t for t in traces
+            if not t.get("reconciliation", {}).get("valid", True) or t.get("status") == "OUTCOME_UNKNOWN"
+        ]
 
         if not file_exists or len(events) == 0:
             coverage_status = "UNAVAILABLE"
             coverage_msg = "No provenance records available to assess event coverage."
         elif incomplete_traces:
             coverage_status = "INCOMPLETE"
-            coverage_msg = f"{len(incomplete_traces)} of {len(traces)} execution traces have missing terminal outcome events or reconciliation violations."
+            coverage_msg = f"{len(incomplete_traces)} of {len(traces)} execution trace(s) have missing terminal outcome events or reconciliation violations."
+        elif integrity.get("status") != "VERIFIED":
+            coverage_status = "UNVERIFIED"
+            coverage_msg = "Cryptographic sequence chaining failed integrity verification; log continuity and trace completeness cannot be established."
         else:
             coverage_status = "UNVERIFIED"
             coverage_msg = "Valid local cryptographic sequence chaining verifies log continuity, but cannot establish whether unrecorded external actions occurred."

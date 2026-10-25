@@ -295,3 +295,133 @@ def test_provenance_explorer_corrupted_hash_chain_finding(mock_logs):
     data = adapter.get_provenance_explorer_data()
     assert data["summary_panels"]["integrity"]["status"] == "CORRUPTED"
     assert any(f["code"] == "HASH_CHAIN_CORRUPTED" for f in data["findings"])
+
+
+def test_coverage_for_failed_execution_with_complete_evidence(mock_logs):
+    """
+    Verifies that a failed execution with complete, reconciled evidence
+    is NOT classified as an incomplete trace in coverage calculations.
+    """
+    from epistemicos.provenance import LocalProvenanceStore, ProvenanceEvent
+    store = LocalProvenanceStore(log_path=mock_logs["provenance"])
+
+    # Complete lifecycle for a failed execution
+    e1 = ProvenanceEvent("1.0.0", "ev1", "ACTION_PROPOSED", "AGENT_ADAPTER", "corr_fail", "req1", "run", "tgt", "dig", "2025-01-01T00:00:00Z")
+    e2 = ProvenanceEvent("1.0.0", "ev2", "AUTHORIZATION_GRANTED", "GOVERNANCE_GATE", "corr_fail", "req1", "run", "tgt", "dig", "2025-01-01T00:00:01Z", authorization_token_id="tok1")
+    e3 = ProvenanceEvent("1.0.0", "ev3", "EXECUTION_STARTED", "EXECUTOR", "corr_fail", "req1", "run", "tgt", "dig", "2025-01-01T00:00:02Z", authorization_token_id="tok1", execution_attempt_id="att1")
+    e4 = ProvenanceEvent("1.0.0", "ev4", "EXECUTION_FAILED", "EXECUTOR", "corr_fail", "req1", "run", "tgt", "dig", "2025-01-01T00:00:03Z", authorization_token_id="tok1", execution_attempt_id="att1")
+
+    for e in (e1, e2, e3, e4):
+        store.record_event(e)
+
+    adapter = ObservatoryDataAdapter(audit_log_path=mock_logs["audit"], provenance_log_path=mock_logs["provenance"])
+
+    # Trace status should be FAILED, but reconciliation should be valid
+    traces = adapter.get_execution_traces()
+    assert len(traces) == 1
+    assert traces[0]["status"] == "FAILED"
+    assert traces[0]["reconciliation"]["valid"] is True
+
+    # Coverage panel should NOT report incomplete trace
+    data = adapter.get_provenance_explorer_data()
+    assert data["summary_panels"]["coverage"]["status"] == "UNVERIFIED"
+    assert "0 of 1" not in data["summary_panels"]["coverage"]["message"]
+    assert "missing terminal" not in data["summary_panels"]["coverage"]["message"]
+
+
+def test_coverage_for_incomplete_execution_trace(mock_logs):
+    """Verifies that an execution started without terminal event yields INCOMPLETE coverage."""
+    from epistemicos.provenance import LocalProvenanceStore, ProvenanceEvent
+    store = LocalProvenanceStore(log_path=mock_logs["provenance"])
+
+    e1 = ProvenanceEvent("1.0.0", "ev1", "ACTION_PROPOSED", "AGENT_ADAPTER", "corr_inc", "req1", "run", "tgt", "dig", "2025-01-01T00:00:00Z")
+    e2 = ProvenanceEvent("1.0.0", "ev2", "AUTHORIZATION_GRANTED", "GOVERNANCE_GATE", "corr_inc", "req1", "run", "tgt", "dig", "2025-01-01T00:00:01Z", authorization_token_id="tok1")
+    e3 = ProvenanceEvent("1.0.0", "ev3", "EXECUTION_STARTED", "EXECUTOR", "corr_inc", "req1", "run", "tgt", "dig", "2025-01-01T00:00:02Z", authorization_token_id="tok1", execution_attempt_id="att1")
+
+    for e in (e1, e2, e3):
+        store.record_event(e)
+
+    adapter = ObservatoryDataAdapter(audit_log_path=mock_logs["audit"], provenance_log_path=mock_logs["provenance"])
+
+    data = adapter.get_provenance_explorer_data()
+    cov = data["summary_panels"]["coverage"]
+    assert cov["status"] == "INCOMPLETE"
+    assert "1 of 1" in cov["message"]
+
+
+def test_corrupted_hash_chain_coverage_contradiction_prevention(mock_logs):
+    """
+    Verifies that when integrity is CORRUPTED and no trace is flagged as incomplete,
+    the coverage message does NOT claim 'Valid local cryptographic sequence chaining verifies log continuity'.
+    """
+    # Complete event lifecycle (e.g. AUTHORIZATION_DENIED), but with a bad entry_hash that corrupts the chain
+    corrupt_event = {
+        "schema_version": "1.0.0",
+        "event_id": "prov_corrupt",
+        "event_type": "AUTHORIZATION_DENIED",
+        "provenance_source": "GOVERNANCE_GATE",
+        "correlation_id": "corr_corrupt",
+        "request_id": "req_corrupt",
+        "action_name": "run",
+        "target": "target",
+        "canonical_request_digest": "digest",
+        "timestamp": "2025-01-01T00:00:00Z",
+        "sequence_number": 1,
+        "prev_hash": "genesis",
+        "entry_hash": "bad_entry_hash"
+    }
+
+    with open(mock_logs["provenance"], "w", encoding="utf-8") as f:
+        f.write(json.dumps(corrupt_event) + "\n")
+
+    adapter = ObservatoryDataAdapter(audit_log_path=mock_logs["audit"], provenance_log_path=mock_logs["provenance"])
+    data = adapter.get_provenance_explorer_data()
+
+    assert data["summary_panels"]["integrity"]["status"] == "CORRUPTED"
+    cov = data["summary_panels"]["coverage"]
+    assert cov["status"] == "UNVERIFIED"
+    assert "failed integrity verification" in cov["message"].lower()
+    assert "valid local cryptographic sequence chaining" not in cov["message"].lower()
+
+
+def test_malformed_and_valid_provenance_entries_handling(mock_logs):
+    """Verifies proper handling of a log file containing both malformed and valid records."""
+    from epistemicos.provenance import LocalProvenanceStore, ProvenanceEvent
+    store = LocalProvenanceStore(log_path=mock_logs["provenance"])
+
+    e1 = ProvenanceEvent("1.0.0", "ev1", "ACTION_PROPOSED", "AGENT_ADAPTER", "corr_1", "req1", "run", "tgt", "dig", "2025-01-01T00:00:00Z")
+    store.record_event(e1)
+
+    # Append malformed line directly
+    with open(mock_logs["provenance"], "a", encoding="utf-8") as f:
+        f.write("MALFORMED_NON_JSON_LINE\n")
+
+    adapter = ObservatoryDataAdapter(audit_log_path=mock_logs["audit"], provenance_log_path=mock_logs["provenance"])
+    data = adapter.get_provenance_explorer_data()
+
+    assert data["parse_error_count"] == 1
+    assert len(data["events"]) == 1
+    assert data["summary_panels"]["availability"]["status"] == "AVAILABLE"
+    assert any(f["code"] == "PARSE_ERRORS_DETECTED" for f in data["findings"])
+
+
+def test_empty_readable_provenance_log(mock_logs):
+    """Verifies that an empty existing file produces EMPTY availability status."""
+    Path(mock_logs["provenance"]).touch()
+
+    adapter = ObservatoryDataAdapter(audit_log_path=mock_logs["audit"], provenance_log_path=mock_logs["provenance"])
+    data = adapter.get_provenance_explorer_data()
+
+    assert data["summary_panels"]["availability"]["status"] == "EMPTY"
+    assert data["summary_panels"]["coverage"]["status"] == "UNAVAILABLE"
+
+
+def test_unestablished_source_authenticity(mock_logs):
+    """Verifies that source authenticity panel consistently reports NOT ESTABLISHED with scope details."""
+    adapter = ObservatoryDataAdapter(audit_log_path=mock_logs["audit"], provenance_log_path=mock_logs["provenance"])
+    data = adapter.get_provenance_explorer_data()
+
+    auth = data["summary_panels"]["authenticity"]
+    assert auth["status"] == "NOT ESTABLISHED"
+    assert "hardware enclave" in auth["message"].lower()
+    assert "scope" in auth
