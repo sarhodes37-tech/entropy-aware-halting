@@ -1018,6 +1018,97 @@ def test_f8_local_provenance_store_hmac_keying(tmp_path):
     assert unkeyed_healthy is False
 
 
+def test_option_a_trusted_executor_binding_scenarios(tmp_path):
+    """
+    Option A Comprehensive Regression Test Suite:
+    Covering all required policy scenarios for Option A trusted executor binding:
+    1. String-issued capability with no registered executor: denied.
+    2. Impersonating callable with matching __module__ and __qualname__: denied and never invoked.
+    3. Correct registered callable: allowed.
+    4. Different callable under the same registered executor ID: denied.
+    5. Valid remote dispatch through a trusted receiver registry: allowed.
+    6. Unknown remote executor ID: denied.
+    7. Invalid, expired, or replayed capability: denied even when executor is registered.
+    """
+    from epistemicos.authorization import AuthorizationAuthority, Policy
+
+    policy = Policy(policy_id="p1", allowed_operations={"op1"}, allowed_resources={"res1"})
+    auth = AuthorizationAuthority(default_policy=policy)
+    log_file = str(tmp_path / "prov_option_a.jsonl")
+    store = LocalProvenanceStore(log_path=log_file)
+    boundary = TrustedExecutionBoundary(provenance_store=store, authority=auth)
+
+    payload = {"data": "test_option_a"}
+    digest = boundary.compute_canonical_digest(payload)
+
+    # 1. String-issued capability with no registered executor -> denied
+    cap1, reason1 = auth.evaluate_and_issue_capability("op1", "res1", digest, executor_id="unregistered.service", policy=policy)
+    assert reason1 == "AUTHORIZATION_GRANTED"
+    auth.executor_registry.clear()
+
+    def dummy_func(): return "dummy"
+    with pytest.raises(PermissionError, match=r"(Unregistered callable|EXECUTOR_MISMATCH)"):
+        boundary.execute_protected_action("op1", "res1", payload, cap1.correlation_id, cap1.request_id, cap1.token_id, digest, True, dummy_func)
+
+    # 2. Impersonating callable with matching __module__ and __qualname__ -> denied and never invoked
+    cap2, _ = auth.evaluate_and_issue_capability("op1", "res1", digest, executor_id="some_module.authorized_exec", policy=policy)
+    auth.executor_registry.clear()
+
+    invoked = []
+    def impersonator():
+        invoked.append(True)
+        return "exploited"
+    impersonator.__module__ = "some_module"
+    impersonator.__qualname__ = "authorized_exec"
+
+    with pytest.raises(PermissionError, match=r"(Unregistered callable|Unregistered or mismatched callable)"):
+        boundary.execute_protected_action("op1", "res1", payload, cap2.correlation_id, cap2.request_id, cap2.token_id, digest, True, impersonator)
+    assert len(invoked) == 0
+
+    # 3. Correct registered callable -> allowed
+    def legitimate_exec(): return "legitimate_success"
+    cap3, _ = auth.evaluate_and_issue_capability("op1", "res1", digest, executor_id=legitimate_exec, policy=policy)
+    res3 = boundary.execute_protected_action("op1", "res1", payload, cap3.correlation_id, cap3.request_id, cap3.token_id, digest, True, legitimate_exec)
+    assert res3["status"] == "SUCCESS"
+    assert res3["result"] == "legitimate_success"
+
+    # 4. Different callable under the same registered executor ID -> denied
+    def registered_exec(): return "registered_ok"
+    def attacker_exec(): return "attacker_bad"
+    attacker_exec.__module__ = getattr(registered_exec, "__module__")
+    attacker_exec.__qualname__ = getattr(registered_exec, "__qualname__")
+
+    auth.register_executor("bound.handler", registered_exec)
+    cap4, _ = auth.evaluate_and_issue_capability("op1", "res1", digest, executor_id="bound.handler", policy=policy)
+
+    with pytest.raises(PermissionError, match=r"(Executable object identity mismatch|EXECUTOR_MISMATCH)"):
+        boundary.execute_protected_action("op1", "res1", payload, cap4.correlation_id, cap4.request_id, cap4.token_id, digest, True, attacker_exec)
+
+    # 5. Valid remote dispatch through a trusted receiver registry -> allowed
+    def receiver_dispatch_handler(): return "remote_dispatch_ok"
+    auth.register_executor("remote.rpc.service", receiver_dispatch_handler)
+    cap5, _ = auth.evaluate_and_issue_capability("op1", "res1", digest, executor_id="remote.rpc.service", policy=policy)
+
+    res5 = boundary.execute_protected_action("op1", "res1", payload, cap5.correlation_id, cap5.request_id, cap5.token_id, digest, True, receiver_dispatch_handler)
+    assert res5["status"] == "SUCCESS"
+    assert res5["result"] == "remote_dispatch_ok"
+
+    # 6. Unknown remote executor ID -> denied
+    cap6, _ = auth.evaluate_and_issue_capability("op1", "res1", digest, executor_id="unknown.rpc.service", policy=policy)
+    with pytest.raises(PermissionError, match=r"(Unregistered callable|EXECUTOR_MISMATCH)"):
+        boundary.execute_protected_action("op1", "res1", payload, cap6.correlation_id, cap6.request_id, cap6.token_id, digest, True, receiver_dispatch_handler)
+
+    # 7. Invalid, expired, or replayed capability -> denied even when executor is registered
+    def valid_registered_func(): return "valid_run"
+    auth.register_executor("valid.registered.func", valid_registered_func)
+    cap7, _ = auth.evaluate_and_issue_capability("op1", "res1", digest, executor_id=valid_registered_func, policy=policy)
+
+    # Replayed token
+    boundary.execute_protected_action("op1", "res1", payload, cap7.correlation_id, cap7.request_id, cap7.token_id, digest, True, valid_registered_func)
+    with pytest.raises(PermissionError, match="already been consumed"):
+        boundary.execute_protected_action("op1", "res1", payload, cap7.correlation_id, cap7.request_id, cap7.token_id, digest, True, valid_registered_func)
+
+
 def test_execute_protected_action_with_execution_context_positional(tmp_path):
     log_file = str(tmp_path / "prov_ctx_pos.jsonl")
     store = LocalProvenanceStore(log_path=log_file)

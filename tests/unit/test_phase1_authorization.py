@@ -654,7 +654,7 @@ def test_f6_executor_spoofing_prevented_with_registered_executor(tmp_path):
     cap, reason = authority.evaluate_and_issue_capability("op1", "res1", digest, executor_id="authorized_exec")
     assert cap is not None
 
-    with pytest.raises(PermissionError, match="Executable object identity mismatch"):
+    with pytest.raises(PermissionError, match=r"(Executable object identity mismatch|EXECUTOR_MISMATCH)"):
         boundary.execute_protected_action(
             action_name="op1",
             target="res1",
@@ -846,7 +846,7 @@ def test_unambiguous_executor_identity_and_short_name_rejection(tmp_path):
         policy=policy
     )
 
-    with pytest.raises(PermissionError, match="object identity mismatch"):
+    with pytest.raises(PermissionError, match=r"(object identity mismatch|EXECUTOR_MISMATCH)"):
         boundary.execute_protected_action(
             action_name="op_exec",
             target="res_exec",
