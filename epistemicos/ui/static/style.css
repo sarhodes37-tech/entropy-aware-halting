@@ -52,6 +52,10 @@
   --status-partial-fg: #fb923c;
   --status-partial-border: rgba(251, 146, 60, 0.3);
 
+  --status-unreadable-bg: rgba(244, 63, 94, 0.12);
+  --status-unreadable-fg: #f43f5e;
+  --status-unreadable-border: rgba(244, 63, 94, 0.3);
+
   /* Structure & Typography */
   --radius-sm: 4px;
   --radius-md: 6px;
@@ -286,6 +290,12 @@ h2 {
   background-color: var(--status-partial-bg);
   color: var(--status-partial-fg);
   border: 1px solid var(--status-partial-border);
+}
+
+.status-badge-unreadable {
+  background-color: var(--status-unreadable-bg);
+  color: var(--status-unreadable-fg);
+  border: 1px solid var(--status-unreadable-border);
 }
 
 .status-badge-not-established {

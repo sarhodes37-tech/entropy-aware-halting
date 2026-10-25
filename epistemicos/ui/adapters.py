@@ -235,8 +235,8 @@ class ObservatoryDataAdapter:
             avail_status = "EMPTY"
             avail_msg = "Provenance log file exists but contains zero records."
         elif parse_errors > 0 and len(events) == 0:
-            avail_status = "CORRUPTED"
-            avail_msg = f"Provenance log file exists but all lines failed to parse ({parse_errors} parse errors)."
+            avail_status = "UNREADABLE"
+            avail_msg = f"Provenance log file exists but all lines failed to parse ({parse_errors} unparseable line(s))."
         elif parse_errors > 0 and len(events) > 0:
             avail_status = "PARTIAL"
             avail_msg = f"Log file partially readable ({len(events)} valid records, {parse_errors} unparseable line(s))."

@@ -424,7 +424,10 @@ def test_partially_readable_provenance_log(mock_logs):
 
 
 def test_all_entries_fail_to_parse_provenance_log(mock_logs):
-    """Verifies that a log whose entries all fail to parse yields CORRUPTED availability status."""
+    """
+    Verifies that a log whose entries all fail to parse yields UNREADABLE availability status,
+    while integrity status reflects whatever the underlying verifier establishes.
+    """
     with open(mock_logs["provenance"], "w", encoding="utf-8") as f:
         f.write("BAD_LINE_1\nBAD_LINE_2\n")
 
@@ -433,7 +436,12 @@ def test_all_entries_fail_to_parse_provenance_log(mock_logs):
 
     assert data["parse_error_count"] == 2
     assert len(data["events"]) == 0
-    assert data["summary_panels"]["availability"]["status"] == "CORRUPTED"
+    assert data["summary_panels"]["availability"]["status"] == "UNREADABLE"
+    assert "unparseable" in data["summary_panels"]["availability"]["message"].lower()
+
+    # Integrity panel status is computed independently via _verify_provenance_integrity()
+    actual_verifier_integrity = adapter._verify_provenance_integrity()
+    assert data["summary_panels"]["integrity"]["status"] == actual_verifier_integrity["status"]
 
 
 def test_empty_readable_provenance_log(mock_logs):
