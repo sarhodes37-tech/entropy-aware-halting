@@ -422,14 +422,59 @@ document.addEventListener('DOMContentLoaded', () => {
     // View 2: Execution Trace Explorer
     // -------------------------------------------------------------------------
     async loadTraces() {
+      const traceListUl = document.getElementById('trace-list');
+      if (traceListUl && this.state.tracesData.length === 0) {
+        traceListUl.innerHTML = '<li class="text-muted text-center" style="padding: 1.5rem;">Loading execution traces...</li>';
+      }
+
       try {
         const res = await fetch('/api/traces');
         if (!res.ok) throw new Error(`HTTP error ${res.status}`);
         const data = await res.json();
-        this.state.tracesData = data;
+        this.state.tracesData = Array.isArray(data) ? data : [];
         this.renderTracesList();
       } catch (err) {
         console.error('Failed to load traces:', err);
+        this.renderTracesLoadError(err.message);
+      }
+    },
+
+    renderTracesLoadError(errorMsg) {
+      const traceListUl = document.getElementById('trace-list');
+      if (!traceListUl) return;
+      traceListUl.innerHTML = '';
+
+      const errLi = document.createElement('li');
+      errLi.className = 'text-danger text-center';
+      errLi.style.padding = '1.5rem 1rem';
+
+      const msgSpan = document.createElement('span');
+      msgSpan.style.display = 'block';
+      msgSpan.style.marginBottom = '0.5rem';
+      msgSpan.style.fontWeight = '600';
+      msgSpan.textContent = 'Failed to load execution traces.';
+
+      const detailSpan = document.createElement('span');
+      detailSpan.className = 'text-muted font-mono';
+      detailSpan.style.fontSize = '0.75rem';
+      detailSpan.style.display = 'block';
+      detailSpan.style.marginBottom = '0.75rem';
+      detailSpan.textContent = `Server API Error: ${errorMsg}`;
+
+      const retryBtn = document.createElement('button');
+      retryBtn.type = 'button';
+      retryBtn.className = 'btn-refresh';
+      retryBtn.textContent = 'Retry Loading Traces';
+      retryBtn.addEventListener('click', () => this.loadTraces());
+
+      errLi.appendChild(msgSpan);
+      errLi.appendChild(detailSpan);
+      errLi.appendChild(retryBtn);
+      traceListUl.appendChild(errLi);
+
+      const countBadge = document.getElementById('trace-count');
+      if (countBadge) {
+        countBadge.textContent = 'ERROR';
       }
     },
 
@@ -491,7 +536,7 @@ document.addEventListener('DOMContentLoaded', () => {
           emptyLi.appendChild(msgSpan);
           emptyLi.appendChild(clearBtn);
         } else {
-          emptyLi.textContent = 'No execution traces recorded.';
+          emptyLi.textContent = 'No execution traces recorded in local provenance or audit log.';
         }
 
         traceListUl.appendChild(emptyLi);
@@ -502,7 +547,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const isSelected = this.state.selectedTraceId === trace.correlation_id;
         const li = document.createElement('li');
         li.className = `trace-item ${isSelected ? 'active' : ''}`;
-        li.setAttribute('role', 'button');
+        li.setAttribute('role', 'option');
         li.setAttribute('tabindex', '0');
         li.setAttribute('aria-selected', isSelected ? 'true' : 'false');
         li.setAttribute('aria-label', `Execution trace ${trace.correlation_id}, status ${trace.status}`);
@@ -537,8 +582,15 @@ document.addEventListener('DOMContentLoaded', () => {
         subDiv.style.marginTop = '0.2rem';
         subDiv.textContent = `${trace.action_name || 'N/A'} ➔ ${trace.target || 'N/A'}`;
 
+        const timeDiv = document.createElement('div');
+        timeDiv.className = 'font-mono text-dim';
+        timeDiv.style.fontSize = '0.7rem';
+        timeDiv.style.marginTop = '0.15rem';
+        timeDiv.textContent = trace.start_time || trace.timestamp || 'Timestamp unavailable';
+
         li.appendChild(headerDiv);
         li.appendChild(subDiv);
+        li.appendChild(timeDiv);
         traceListUl.appendChild(li);
       });
     },
@@ -570,7 +622,42 @@ document.addEventListener('DOMContentLoaded', () => {
         }
       } catch (err) {
         console.error('Failed to load trace detail:', err);
+        if (contentDiv) {
+          contentDiv.classList.remove('hidden');
+          this.renderTraceErrorDetail(correlationId, err.message, contentDiv);
+        }
       }
+    },
+
+    renderTraceErrorDetail(correlationId, errorMsg, container) {
+      container.innerHTML = '';
+
+      const errCard = document.createElement('div');
+      errCard.className = 'card';
+
+      const errHeader = document.createElement('div');
+      errHeader.className = 'card-header text-danger';
+      errHeader.textContent = 'Execution Trace Fetch Failure';
+
+      const h3 = document.createElement('h3');
+      h3.textContent = `Unable to retrieve records for trace: ${correlationId}`;
+
+      const p = document.createElement('p');
+      p.className = 'text-muted font-mono';
+      p.style.fontSize = '0.825rem';
+      p.textContent = `Server response: ${errorMsg}`;
+
+      const retryBtn = document.createElement('button');
+      retryBtn.className = 'btn-refresh';
+      retryBtn.style.marginTop = '1rem';
+      retryBtn.textContent = 'Retry Selection';
+      retryBtn.addEventListener('click', () => this.selectTrace(correlationId));
+
+      errCard.appendChild(errHeader);
+      errCard.appendChild(h3);
+      errCard.appendChild(p);
+      errCard.appendChild(retryBtn);
+      container.appendChild(errCard);
     },
 
     renderTraceDetail(trace, container) {
@@ -591,7 +678,7 @@ document.addEventListener('DOMContentLoaded', () => {
       title.style.fontWeight = '700';
       title.style.margin = '0';
       title.className = 'font-mono';
-      title.textContent = `Trace: ${trace.correlation_id}`;
+      title.textContent = `Trace Correlation: ${trace.correlation_id}`;
 
       titleGroup.appendChild(title);
 
@@ -604,7 +691,51 @@ document.addEventListener('DOMContentLoaded', () => {
       headerBar.appendChild(copyCorrBtn);
       container.appendChild(headerBar);
 
-      // Section Grid: Lifecycle Overview & Authorization Evidence
+      // Section B1: Derived Interpretation Summary
+      const derivedSummaryCard = document.createElement('div');
+      derivedSummaryCard.className = 'derived-summary-card mb-1';
+
+      const summaryHeader = document.createElement('div');
+      summaryHeader.className = 'derived-summary-header';
+
+      const summaryTitle = document.createElement('span');
+      summaryTitle.textContent = 'Derived Summary • Inferred Status & Evidence Correlation';
+
+      const summaryBadge = document.createElement('span');
+      summaryBadge.className = 'status-badge status-badge-not-established';
+      summaryBadge.textContent = 'DERIVED INTERPRETATION';
+
+      summaryHeader.appendChild(summaryTitle);
+      summaryHeader.appendChild(summaryBadge);
+
+      const summaryText = document.createElement('p');
+      summaryText.style.fontSize = '0.85rem';
+      summaryText.style.color = 'var(--text-primary)';
+      summaryText.style.marginBottom = '0.5rem';
+
+      const status = trace.status || 'OUTCOME_UNKNOWN';
+      if (status === 'COMPLETED') {
+        summaryText.textContent = 'Execution reached complete runtime outcome based on observed EXECUTION_SUCCEEDED event.';
+      } else if (status === 'DENIED') {
+        summaryText.textContent = 'Execution proposal rejected by Governance Gate before authorization grant issuance.';
+      } else if (status === 'HALTED') {
+        summaryText.textContent = 'Execution halted JIT by Policy/Egress Gate prior to unauthorized boundary dispatch.';
+      } else if (status === 'FAILED') {
+        summaryText.textContent = 'Execution halted due to runtime exception or boundary execution interrupt.';
+      } else {
+        summaryText.textContent = 'Execution outcome unknown: Available records do not verify final runtime completion.';
+      }
+
+      const disclaimerBox = document.createElement('div');
+      disclaimerBox.className = 'epistemic-disclaimer-box';
+      disclaimerBox.textContent = 'EPISTEMIC NOTICE: Displaying available event records establishes recorded activity, but does NOT claim a complete execution history or prove external source non-repudiation.';
+
+      derivedSummaryCard.appendChild(summaryHeader);
+      derivedSummaryCard.appendChild(summaryText);
+      derivedSummaryCard.appendChild(disclaimerBox);
+      container.appendChild(derivedSummaryCard);
+
+      // Section B2: Lifecycle Overview & Authorization Records
       const metaGrid = document.createElement('div');
       metaGrid.className = 'section-grid mb-1';
 
@@ -614,37 +745,45 @@ document.addEventListener('DOMContentLoaded', () => {
 
       const metaHeader = document.createElement('div');
       metaHeader.className = 'card-header';
-      metaHeader.textContent = 'Lifecycle Overview';
+      metaHeader.textContent = 'Observed Execution Overview';
       metaCard.appendChild(metaHeader);
 
       const pStatus = document.createElement('p');
       pStatus.style.marginBottom = '0.4rem';
-      pStatus.innerHTML = `<strong>Status:</strong> `;
+      pStatus.innerHTML = `<strong>Observed Outcome:</strong> `;
       const statusBadge = document.createElement('span');
       statusBadge.className = `badge badge-${trace.status || 'OUTCOME_UNKNOWN'}`;
-      statusBadge.textContent = trace.status || 'UNKNOWN';
+      statusBadge.textContent = trace.status || 'OUTCOME_UNKNOWN';
       pStatus.appendChild(statusBadge);
 
       const pAction = document.createElement('p');
       pAction.style.marginBottom = '0.3rem';
       pAction.style.fontSize = '0.85rem';
-      pAction.textContent = `Action Name: ${trace.action_name || 'N/A'}`;
+      pAction.textContent = `Action Name: ${trace.action_name || 'NOT RECORDED'}`;
 
       const pTarget = document.createElement('p');
       pTarget.style.marginBottom = '0.3rem';
       pTarget.style.fontSize = '0.85rem';
-      pTarget.textContent = `Target Resource: ${trace.target || 'N/A'}`;
+      pTarget.textContent = `Target Resource: ${trace.target || 'NOT RECORDED'}`;
 
       const pReq = document.createElement('p');
       pReq.className = 'font-mono';
       pReq.style.fontSize = '0.8rem';
       pReq.style.color = 'var(--text-secondary)';
-      pReq.textContent = `Request ID: ${trace.request_id || 'N/A'}`;
+      pReq.textContent = `Request ID: ${trace.request_id || 'NOT RECORDED'}`;
+
+      const pTimeWindow = document.createElement('p');
+      pTimeWindow.className = 'font-mono';
+      pTimeWindow.style.fontSize = '0.75rem';
+      pTimeWindow.style.color = 'var(--text-muted)';
+      pTimeWindow.style.marginTop = '0.3rem';
+      pTimeWindow.textContent = `Time Span: ${trace.start_time || 'N/A'} ➔ ${trace.end_time || 'N/A'}`;
 
       metaCard.appendChild(pStatus);
       metaCard.appendChild(pAction);
       metaCard.appendChild(pTarget);
       metaCard.appendChild(pReq);
+      metaCard.appendChild(pTimeWindow);
 
       // Authorization Evidence Card
       const authCard = document.createElement('div');
@@ -652,31 +791,40 @@ document.addEventListener('DOMContentLoaded', () => {
 
       const authHeader = document.createElement('div');
       authHeader.className = 'card-header';
-      authHeader.textContent = 'Authorization Evidence';
+      authHeader.textContent = 'Authorization & Policy Record';
       authCard.appendChild(authHeader);
 
       const ae = trace.authorization_evidence || {};
+      const hasAuthEvidence = ae.authorization_token_id || ae.canonical_request_digest || ae.policy_version;
 
-      const pAuthToken = document.createElement('p');
-      pAuthToken.className = 'font-mono';
-      pAuthToken.style.fontSize = '0.8rem';
-      pAuthToken.style.marginBottom = '0.3rem';
-      pAuthToken.textContent = `Capability Token ID: ${ae.authorization_token_id || 'NONE'}`;
+      if (!hasAuthEvidence) {
+        const noAuthP = document.createElement('p');
+        noAuthP.className = 'text-muted';
+        noAuthP.style.fontSize = '0.825rem';
+        noAuthP.textContent = 'No explicit authorization grant or token record found in provenance events for this correlation ID.';
+        authCard.appendChild(noAuthP);
+      } else {
+        const pAuthToken = document.createElement('p');
+        pAuthToken.className = 'font-mono';
+        pAuthToken.style.fontSize = '0.8rem';
+        pAuthToken.style.marginBottom = '0.3rem';
+        pAuthToken.textContent = `Capability Token ID: ${ae.authorization_token_id || 'UNISSUED'}`;
 
-      const pDigest = document.createElement('p');
-      pDigest.className = 'font-mono';
-      pDigest.style.fontSize = '0.8rem';
-      pDigest.style.marginBottom = '0.3rem';
-      pDigest.style.wordBreak = 'break-all';
-      pDigest.textContent = `Payload Digest: ${ae.canonical_request_digest || 'NONE'}`;
+        const pDigest = document.createElement('p');
+        pDigest.className = 'font-mono';
+        pDigest.style.fontSize = '0.8rem';
+        pDigest.style.marginBottom = '0.3rem';
+        pDigest.style.wordBreak = 'break-all';
+        pDigest.textContent = `Payload Digest: ${ae.canonical_request_digest || 'UNRECORDED'}`;
 
-      const pPolicy = document.createElement('p');
-      pPolicy.style.fontSize = '0.85rem';
-      pPolicy.textContent = `Policy Version: ${ae.policy_version || 'N/A'}`;
+        const pPolicy = document.createElement('p');
+        pPolicy.style.fontSize = '0.85rem';
+        pPolicy.textContent = `Policy Version: ${ae.policy_version || 'NOT RECORDED'}`;
 
-      authCard.appendChild(pAuthToken);
-      authCard.appendChild(pDigest);
-      authCard.appendChild(pPolicy);
+        authCard.appendChild(pAuthToken);
+        authCard.appendChild(pDigest);
+        authCard.appendChild(pPolicy);
+      }
 
       metaGrid.appendChild(metaCard);
       metaGrid.appendChild(authCard);
@@ -737,13 +885,13 @@ document.addEventListener('DOMContentLoaded', () => {
       }
       container.appendChild(recCard);
 
-      // Event Timeline & Evidence Inspector Container
+      // Area C & B: Observed Event Timeline & Dedicated Evidence Inspector
       const eventsCard = document.createElement('div');
       eventsCard.className = 'card';
 
       const eventsHeader = document.createElement('div');
       eventsHeader.className = 'card-header';
-      eventsHeader.textContent = 'Observed Event Timeline';
+      eventsHeader.textContent = 'Observed Chronological Event Timeline';
       eventsCard.appendChild(eventsHeader);
 
       const events = trace.provenance_events || [];
@@ -751,14 +899,31 @@ document.addEventListener('DOMContentLoaded', () => {
         const noEv = document.createElement('p');
         noEv.className = 'text-muted text-center';
         noEv.style.padding = '1rem';
-        noEv.textContent = 'No provenance events recorded for this trace.';
+        noEv.textContent = 'No recorded provenance events exist for this execution trace correlation ID.';
         eventsCard.appendChild(noEv);
       } else {
+        // Check for ambiguous or missing timestamps
+        let hasMissingOrAmbiguousTimestamps = false;
+        events.forEach(e => {
+          if (!e.timestamp || e.timestamp === 'UNKNOWN' || e.timestamp === 'N/A') {
+            hasMissingOrAmbiguousTimestamps = true;
+          }
+        });
+
+        if (hasMissingOrAmbiguousTimestamps) {
+          const ambigNotice = document.createElement('div');
+          ambigNotice.className = 'epistemic-disclaimer-box mb-1';
+          ambigNotice.style.borderColor = 'var(--status-halted-fg)';
+          ambigNotice.textContent = 'NOTICE: One or more recorded events lack a reliable timestamp. Displayed sequence ordering reflects append-only sequence numbers rather than strictly verified physical real-world time.';
+          eventsCard.appendChild(ambigNotice);
+        }
+
         const tableResp = document.createElement('div');
         tableResp.className = 'table-responsive';
 
         const table = document.createElement('table');
         table.className = 'data-table';
+        table.setAttribute('aria-label', 'Recorded Events for Selected Trace');
 
         const thead = document.createElement('thead');
         thead.innerHTML = `
@@ -775,15 +940,25 @@ document.addEventListener('DOMContentLoaded', () => {
         const tbody = document.createElement('tbody');
 
         events.forEach(ev => {
+          const isSelectedEvent = (this.state.selectedEventSeq === ev.sequence_number) ||
+            (!this.state.selectedEventSeq && ev.sequence_number === events[0].sequence_number);
+
           const tr = document.createElement('tr');
-          tr.className = 'clickable';
-          if (this.state.selectedEventSeq === ev.sequence_number) {
-            tr.style.backgroundColor = 'var(--bg-hover)';
-          }
+          tr.className = `clickable ${isSelectedEvent ? 'selected' : ''}`;
+          tr.setAttribute('role', 'button');
+          tr.setAttribute('tabindex', '0');
+          tr.setAttribute('aria-label', `Inspect event sequence ${ev.sequence_number}, type ${ev.event_type}`);
 
           tr.addEventListener('click', () => {
             this.state.selectedEventSeq = ev.sequence_number;
             this.renderTraceDetail(trace, container);
+          });
+          tr.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              this.state.selectedEventSeq = ev.sequence_number;
+              this.renderTraceDetail(trace, container);
+            }
           });
 
           const tdSeq = document.createElement('td');
@@ -793,7 +968,7 @@ document.addEventListener('DOMContentLoaded', () => {
           const tdTs = document.createElement('td');
           tdTs.className = 'font-mono';
           tdTs.style.fontSize = '0.75rem';
-          tdTs.textContent = ev.timestamp || 'N/A';
+          tdTs.textContent = ev.timestamp || 'TIMESTAMP UNRECORDED';
 
           const tdType = document.createElement('td');
           tdType.style.fontWeight = '600';
@@ -805,7 +980,9 @@ document.addEventListener('DOMContentLoaded', () => {
           const tdHash = document.createElement('td');
           tdHash.className = 'font-mono';
           tdHash.style.fontSize = '0.75rem';
-          tdHash.textContent = ev.entry_hash ? ev.entry_hash.substring(0, 16) + '...' : 'N/A';
+          const fullHash = ev.entry_hash || '';
+          tdHash.textContent = fullHash ? (fullHash.length > 18 ? fullHash.substring(0, 16) + '...' : fullHash) : 'N/A';
+          tdHash.title = fullHash;
 
           tr.appendChild(tdSeq);
           tr.appendChild(tdTs);
@@ -819,10 +996,11 @@ document.addEventListener('DOMContentLoaded', () => {
         tableResp.appendChild(table);
         eventsCard.appendChild(tableResp);
 
-        // Evidence Inspector for Selected Event
+        // Area C: Evidence Inspector Panel for Selected Event
         const selectedEv = events.find(e => e.sequence_number === this.state.selectedEventSeq) || events[0];
         if (selectedEv) {
           const inspectorBox = document.createElement('div');
+          inspectorBox.id = 'area-evidence-inspector';
           inspectorBox.style.marginTop = '1.25rem';
           inspectorBox.style.borderTop = '1px solid var(--border-default)';
           inspectorBox.style.paddingTop = '1rem';
@@ -831,29 +1009,116 @@ document.addEventListener('DOMContentLoaded', () => {
           inspHeader.style.display = 'flex';
           inspHeader.style.justifyContent = 'space-between';
           inspHeader.style.alignItems = 'center';
-          inspHeader.style.marginBottom = '0.5rem';
+          inspHeader.style.marginBottom = '0.75rem';
+          inspHeader.style.flexWrap = 'wrap';
+          inspHeader.style.gap = '0.5rem';
 
           const inspTitle = document.createElement('h4');
-          inspTitle.style.fontSize = '0.85rem';
+          inspTitle.style.fontSize = '0.9rem';
+          inspTitle.style.fontWeight = '700';
           inspTitle.style.color = 'var(--accent-primary)';
           inspTitle.textContent = `Evidence Inspector: Event #${selectedEv.sequence_number} (${selectedEv.event_type})`;
 
           const inspCopyBtn = document.createElement('button');
           inspCopyBtn.className = 'copy-btn';
-          inspCopyBtn.textContent = 'Copy Event JSON';
+          inspCopyBtn.textContent = 'Copy Event Payload JSON';
+          inspCopyBtn.setAttribute('aria-label', `Copy full JSON payload for event sequence ${selectedEv.sequence_number}`);
           inspCopyBtn.addEventListener('click', () => {
             this.copyToClipboard(JSON.stringify(selectedEv, null, 2), inspCopyBtn);
           });
 
           inspHeader.appendChild(inspTitle);
           inspHeader.appendChild(inspCopyBtn);
+          inspectorBox.appendChild(inspHeader);
+
+          // Grid Layout for Key Fields & Full Raw JSON Payload
+          const inspectorGrid = document.createElement('div');
+          inspectorGrid.className = 'evidence-inspector-grid';
+
+          // Field Inspector Breakdown Card
+          const fieldsCard = document.createElement('div');
+          fieldsCard.className = 'card';
+          fieldsCard.style.padding = '0.85rem';
+
+          const fieldsHeader = document.createElement('div');
+          fieldsHeader.className = 'card-header';
+          fieldsHeader.textContent = 'Structured Event Metadata';
+          fieldsCard.appendChild(fieldsHeader);
+
+          const fieldList = [
+            { label: 'Event ID', value: selectedEv.event_id, mono: true },
+            { label: 'Event Type', value: selectedEv.event_type, bold: true },
+            { label: 'Provenance Source', value: selectedEv.provenance_source },
+            { label: 'Sequence Number', value: selectedEv.sequence_number, mono: true },
+            { label: 'Timestamp', value: selectedEv.timestamp, mono: true },
+            { label: 'Correlation ID', value: selectedEv.correlation_id, mono: true, copyable: true },
+            { label: 'Request ID', value: selectedEv.request_id, mono: true, copyable: true },
+            { label: 'Action Name', value: selectedEv.action_name },
+            { label: 'Target Resource', value: selectedEv.target },
+            { label: 'Capability Token ID', value: selectedEv.authorization_token_id, mono: true, copyable: true },
+            { label: 'Canonical Request Digest', value: selectedEv.canonical_request_digest, mono: true, copyable: true },
+            { label: 'Policy Version', value: selectedEv.policy_version, mono: true },
+            { label: 'Previous Entry Hash', value: selectedEv.prev_hash, mono: true, copyable: true },
+            { label: 'Entry Cryptographic Hash', value: selectedEv.entry_hash, mono: true, copyable: true }
+          ];
+
+          fieldList.forEach(item => {
+            const row = document.createElement('div');
+            row.style.marginBottom = '0.4rem';
+            row.style.fontSize = '0.8rem';
+            row.style.wordBreak = 'break-all';
+
+            const lbl = document.createElement('span');
+            lbl.style.color = 'var(--text-secondary)';
+            lbl.style.fontWeight = '600';
+            lbl.textContent = `${item.label}: `;
+            row.appendChild(lbl);
+
+            const valSpan = document.createElement('span');
+            if (item.value !== null && item.value !== undefined && item.value !== '') {
+              valSpan.textContent = String(item.value);
+              if (item.mono) valSpan.className = 'font-mono';
+              if (item.bold) valSpan.style.fontWeight = '700';
+              row.appendChild(valSpan);
+
+              if (item.copyable) {
+                const btn = document.createElement('button');
+                btn.className = 'copy-btn';
+                btn.style.marginLeft = '0.4rem';
+                btn.style.padding = '0.1rem 0.35rem';
+                btn.style.fontSize = '0.65rem';
+                btn.textContent = 'Copy';
+                btn.setAttribute('aria-label', `Copy ${item.label}`);
+                btn.addEventListener('click', () => this.copyToClipboard(String(item.value), btn));
+                row.appendChild(btn);
+              }
+            } else {
+              valSpan.className = 'text-dim';
+              valSpan.textContent = 'UNAVAILABLE / NOT RECORDED';
+              row.appendChild(valSpan);
+            }
+
+            fieldsCard.appendChild(row);
+          });
+
+          // Raw JSON Block Card
+          const jsonCard = document.createElement('div');
+          jsonCard.className = 'card';
+          jsonCard.style.padding = '0.85rem';
+
+          const jsonHeader = document.createElement('div');
+          jsonHeader.className = 'card-header';
+          jsonHeader.textContent = 'Raw Event JSON Record';
+          jsonCard.appendChild(jsonHeader);
 
           const pre = document.createElement('pre');
           pre.className = 'inspector-block';
           pre.textContent = JSON.stringify(selectedEv, null, 2);
+          jsonCard.appendChild(pre);
 
-          inspectorBox.appendChild(inspHeader);
-          inspectorBox.appendChild(pre);
+          inspectorGrid.appendChild(fieldsCard);
+          inspectorGrid.appendChild(jsonCard);
+          inspectorBox.appendChild(inspectorGrid);
           eventsCard.appendChild(inspectorBox);
         }
       }

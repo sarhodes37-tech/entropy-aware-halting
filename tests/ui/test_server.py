@@ -83,7 +83,7 @@ def test_static_asset_serving(test_server):
 
 
 def test_static_aria_accessibility_attributes():
-    """Verify that the production index.html contains expected ARIA accessibility attributes and Overview elements."""
+    """Verify that the production index.html contains expected ARIA accessibility attributes and Trace Explorer areas."""
     import pathlib
     index_path = pathlib.Path("epistemicos/ui/static/index.html")
     content = index_path.read_text(encoding="utf-8")
@@ -110,6 +110,25 @@ def test_static_aria_accessibility_attributes():
     assert 'aria-label="Recent Execution Traces"' in content
     assert 'aria-label="View Denied Requests"' in content
     assert 'aria-label="View Policy Halts"' in content
+    # Trace Explorer area containers
+    assert 'id="area-trace-list"' in content
+    assert 'aria-label="Execution Trace List"' in content
+    assert 'role="listbox"' in content
+    assert 'aria-label="Select an execution trace"' in content
+
+
+def test_api_traces_routes(test_server):
+    """Verify REST API trace listing and trace detail lookup routes."""
+    # Test trace list
+    req_list = urllib.request.urlopen(f"{test_server}/api/traces")
+    assert req_list.status == HTTPStatus.OK
+    traces = json.loads(req_list.read().decode("utf-8"))
+    assert isinstance(traces, list)
+
+    # Test trace lookup for non-existent ID
+    with pytest.raises(urllib.error.HTTPError) as exc_info:
+        urllib.request.urlopen(f"{test_server}/api/trace/missing_id_123")
+    assert exc_info.value.code == HTTPStatus.NOT_FOUND
 
 
 def test_read_only_method_restriction(test_server):
