@@ -704,6 +704,7 @@ def test_sanitize_sensitive_data_deep_structures_and_text():
 
     raw_data = {
         "x-api-key": "sk-123456789012345678901234",
+        "github_token": "github_pat_11AAAAAAA0123456789abcdef_ghijklmnopqrstuvwxyz0123456789abcdef0123456789abcdef012",
         "headers": {
             "Authorization": "Bearer my_secret_bearer_token_123",
             "Credential_Token": "secret_pass_123"
@@ -715,10 +716,36 @@ def test_sanitize_sensitive_data_deep_structures_and_text():
     sanitized = _sanitize_sensitive_data(raw_data)
 
     assert sanitized["x-api-key"] == "[REDACTED]"
+    assert sanitized["github_token"] == "[REDACTED]"
     assert sanitized["headers"]["Authorization"] == "[REDACTED]"
     assert sanitized["headers"]["Credential_Token"] == "[REDACTED]"
     assert "password=[REDACTED]" in sanitized["tags_set"]
     assert "api_key=[REDACTED]" in sanitized["config_tuple"][1]
+
+
+def test_github_token_redaction_comprehensive_cases():
+    """Validates GitHub token redaction across variable lengths, punctuation boundaries, multiple tokens, and near-miss inputs."""
+    from epistemicos.audit import _sanitize_sensitive_data
+
+    fine_grained_pat = "github_pat_11AAAAAAA0123456789abcdef_ghijklmnopqrstuvwxyz0123456789abcdef0123456789abcdef012"
+    classic_ghp_36 = "ghp_123456789012345678901234567890123456"
+    classic_ghp_40 = "ghp_1234567890123456789012345678901234567890"
+
+    # Punctuation boundaries & multiple tokens
+    text = f"Tokens: ({fine_grained_pat}); [{classic_ghp_36}], and {classic_ghp_40}."
+    sanitized_text = _sanitize_sensitive_data(text)
+    assert fine_grained_pat not in sanitized_text
+    assert classic_ghp_36 not in sanitized_text
+    assert classic_ghp_40 not in sanitized_text
+    assert sanitized_text == "Tokens: (sk-[REDACTED]); [sk-[REDACTED]], and sk-[REDACTED]."
+
+    # Near-miss inputs (should NOT be redacted)
+    short_pat = "github_pat_short123456"
+    short_ghp = "ghp_short123"
+    near_miss_text = f"Benign strings: {short_pat} and {short_ghp}"
+    sanitized_near_miss = _sanitize_sensitive_data(near_miss_text)
+    assert short_pat in sanitized_near_miss
+    assert short_ghp in sanitized_near_miss
 
 
 def test_record_event_payload_too_large_multibyte(temp_audit_file):

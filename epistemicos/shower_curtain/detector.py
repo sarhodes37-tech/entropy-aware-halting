@@ -135,7 +135,7 @@ class SensitiveDataDetector:
             r"\b[A-Z]{2}\d{2}[A-Z0-9]{11,30}\b"
         )
         self.api_key_regex = re.compile(
-            r"\b(sk-[a-zA-Z0-9_\-]{20,}|AKIA[0-9A-Z]{16}|ghp_[a-zA-Z0-9]{36}|xox[baprs]-[a-zA-Z0-9_\-]{10,})\b"
+            r"\b(sk-[a-zA-Z0-9_\-]{20,}|AKIA[0-9A-Z]{16}|ghp_[a-zA-Z0-9]{36,}|github_pat_[a-zA-Z0-9_\-]{80,}|xox[baprs]-[a-zA-Z0-9_\-]{10,})\b"
         )
         self.bearer_regex = re.compile(
             r"Bearer\s+([a-zA-Z0-9\._\-]{20,})", re.IGNORECASE
