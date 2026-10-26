@@ -12,7 +12,7 @@ import hmac
 import hashlib
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 
 class ActionCategory(Enum):
@@ -49,6 +49,7 @@ class TypedHumanApprovalRecord:
     approved_by_principal: str
     timestamp: str
     signature: str
+    expires_at: Optional[float] = None
 
 
 class ActionRegistry:
@@ -185,11 +186,11 @@ class SideEffectPolicyEngine:
                 cb = str(payload).encode("utf-8")
         return hashlib.sha256(cb).hexdigest()
 
-    def compute_approval_signature(self, record_data: Tuple[str, str, str, str, str, str, str]) -> str:
+    def compute_approval_signature(self, record_data: Union[Tuple[str, str, str, str, str, str, str], Tuple[str, str, str, str, str, str, str, str]]) -> str:
         """Computes standard HMAC-SHA256 signature for approval record fields."""
         if not self.signing_secret:
             raise ValueError("No signing secret configured for approval signature computation")
-        sig_data = ":".join(record_data)
+        sig_data = ":".join(str(x) for x in record_data)
         return hmac.new(
             self.signing_secret.encode("utf-8"),
             sig_data.encode("utf-8"),
@@ -211,11 +212,12 @@ class SideEffectPolicyEngine:
         expected_target: str,
         expected_payload: Any,
         expected_task_id: str,
-        expected_policy_version: str = "1.0.0"
+        expected_policy_version: str = "1.0.0",
+        current_time: Optional[float] = None
     ) -> Tuple[bool, str]:
         """
         Validates typed human approval record against Phase 1 criteria:
-        Binds specific operation, destination/resource, canonical arguments digest, task, and policy version.
+        Binds specific operation, destination/resource, canonical arguments digest, task, policy version, and expiration timestamp.
         Uses HMAC-SHA256 and constant-time signature comparison.
         Generic automated responses ("continue", "best judgement") are rejected.
         """
@@ -241,16 +243,34 @@ class SideEffectPolicyEngine:
         if record.policy_version != expected_policy_version:
             return False, f"Approval policy version mismatch: expected '{expected_policy_version}', got '{record.policy_version}'"
 
+        # Expiration check
+        if record.expires_at is not None:
+            now = current_time if current_time is not None else time.time()
+            if now >= record.expires_at:
+                return False, "Approval record expired"
+
         # Verify signature using HMAC-SHA256 and constant-time comparison
-        sig_tuple = (
-            record.approval_id,
-            record.operation_id,
-            record.target_resource,
-            record.canonical_args_digest,
-            record.task_id,
-            record.policy_version,
-            record.approved_by_principal
-        )
+        if record.expires_at is not None:
+            sig_tuple = (
+                record.approval_id,
+                record.operation_id,
+                record.target_resource,
+                record.canonical_args_digest,
+                record.task_id,
+                record.policy_version,
+                record.approved_by_principal,
+                str(record.expires_at)
+            )
+        else:
+            sig_tuple = (
+                record.approval_id,
+                record.operation_id,
+                record.target_resource,
+                record.canonical_args_digest,
+                record.task_id,
+                record.policy_version,
+                record.approved_by_principal
+            )
         sig_data = ":".join(sig_tuple)
         expected_sig = hmac.new(
             self.signing_secret.encode("utf-8"),

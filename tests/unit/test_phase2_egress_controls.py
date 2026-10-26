@@ -427,6 +427,87 @@ def test_action_allowed_resources_enforcement():
     assert ok_wildcard is True
 
 
+# Test TypedHumanApprovalRecord expiration handling
+def test_typed_human_approval_record_expiration():
+    engine = SideEffectPolicyEngine(signing_secret="TEST_SECRET")
+
+    payload = {"action": "package_publish"}
+    digest = engine.compute_canonical_digest(payload)
+
+    # 1. Valid non-expired record
+    record_data_valid = (
+        "APP-EXP-1",
+        "package_publish",
+        "https://pypi.org",
+        digest,
+        "TASK-EXP",
+        "1.0.0",
+        "human_admin",
+        "2000000000.0"
+    )
+    valid_sig = engine.compute_approval_signature(record_data_valid)
+
+    valid_record = TypedHumanApprovalRecord(
+        approval_id="APP-EXP-1",
+        operation_id="package_publish",
+        target_resource="https://pypi.org",
+        canonical_args_digest=digest,
+        task_id="TASK-EXP",
+        policy_version="1.0.0",
+        approved_by_principal="human_admin",
+        timestamp="2026-10-24T00:00:00Z",
+        expires_at=2000000000.0,
+        signature=valid_sig
+    )
+
+    ok_valid, msg_valid = engine.evaluate_side_effect_authorization(
+        operation_id="package_publish",
+        target_resource="https://pypi.org",
+        payload=payload,
+        task_id="TASK-EXP",
+        correlation_id="CORR-EXP-1",
+        approval_record=valid_record
+    )
+    assert ok_valid is True
+
+    # 2. Expired record
+    record_data_expired = (
+        "APP-EXP-2",
+        "package_publish",
+        "https://pypi.org",
+        digest,
+        "TASK-EXP",
+        "1.0.0",
+        "human_admin",
+        "1000000000.0"
+    )
+    expired_sig = engine.compute_approval_signature(record_data_expired)
+
+    expired_record = TypedHumanApprovalRecord(
+        approval_id="APP-EXP-2",
+        operation_id="package_publish",
+        target_resource="https://pypi.org",
+        canonical_args_digest=digest,
+        task_id="TASK-EXP",
+        policy_version="1.0.0",
+        approved_by_principal="human_admin",
+        timestamp="2026-10-24T00:00:00Z",
+        expires_at=1000000000.0,
+        signature=expired_sig
+    )
+
+    ok_expired, msg_expired = engine.evaluate_side_effect_authorization(
+        operation_id="package_publish",
+        target_resource="https://pypi.org",
+        payload=payload,
+        task_id="TASK-EXP",
+        correlation_id="CORR-EXP-2",
+        approval_record=expired_record
+    )
+    assert ok_expired is False
+    assert "Approval record expired" in msg_expired
+
+
 # 16. A destination or operation changed after grant issuance invalidates the capability.
 def test_16_destination_or_operation_change_invalidates_capability():
     engine = SideEffectPolicyEngine(signing_secret="TEST_SECRET")
