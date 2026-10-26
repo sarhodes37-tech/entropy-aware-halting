@@ -168,6 +168,22 @@ document.addEventListener('DOMContentLoaded', () => {
           this.renderBenchmarkCasesList();
         });
       }
+
+      // Global Keyboard Shortcut: '/' to focus active tab search input
+      document.addEventListener('keydown', (e) => {
+        if (e.key === '/' && !['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName)) {
+          let searchInput = null;
+          if (this.state.currentTab === 'traces') searchInput = document.getElementById('trace-search');
+          else if (this.state.currentTab === 'provenance') searchInput = document.getElementById('provenance-search');
+          else if (this.state.currentTab === 'benchmarks') searchInput = document.getElementById('benchmark-case-search');
+
+          if (searchInput) {
+            e.preventDefault();
+            searchInput.focus();
+            searchInput.select();
+          }
+        }
+      });
     },
 
     switchTab(tabName) {
@@ -193,13 +209,26 @@ document.addEventListener('DOMContentLoaded', () => {
     // -------------------------------------------------------------------------
     copyToClipboard(text, btnElement) {
       if (!text) return;
+      const origAriaLabel = btnElement ? btnElement.getAttribute('aria-label') : null;
+
+      const restoreState = (origText) => {
+        if (!btnElement) return;
+        btnElement.textContent = origText;
+        if (origAriaLabel !== null) {
+          btnElement.setAttribute('aria-label', origAriaLabel);
+        } else {
+          btnElement.removeAttribute('aria-label');
+        }
+      };
+
       if (!navigator.clipboard || !navigator.clipboard.writeText) {
         if (btnElement) {
           const origText = btnElement.textContent;
           btnElement.textContent = 'Copy Unavailable';
+          btnElement.setAttribute('aria-label', 'Copy unavailable');
           btnElement.style.borderColor = 'var(--status-failed-border)';
           setTimeout(() => {
-            btnElement.textContent = origText;
+            restoreState(origText);
             btnElement.style.borderColor = '';
           }, 2000);
         }
@@ -210,9 +239,10 @@ document.addEventListener('DOMContentLoaded', () => {
         if (btnElement) {
           const origText = btnElement.textContent;
           btnElement.textContent = 'Copied!';
+          btnElement.setAttribute('aria-label', 'Copied to clipboard!');
           btnElement.classList.add('copied');
           setTimeout(() => {
-            btnElement.textContent = origText;
+            restoreState(origText);
             btnElement.classList.remove('copied');
           }, 1500);
         }
@@ -221,9 +251,10 @@ document.addEventListener('DOMContentLoaded', () => {
         if (btnElement) {
           const origText = btnElement.textContent;
           btnElement.textContent = 'Copy Failed';
+          btnElement.setAttribute('aria-label', 'Copy failed');
           btnElement.style.borderColor = 'var(--status-failed-border)';
           setTimeout(() => {
-            btnElement.textContent = origText;
+            restoreState(origText);
             btnElement.style.borderColor = '';
           }, 2000);
         }
@@ -567,6 +598,7 @@ document.addEventListener('DOMContentLoaded', () => {
       retryBtn.type = 'button';
       retryBtn.className = 'btn-refresh';
       retryBtn.textContent = 'Retry Loading Traces';
+      retryBtn.setAttribute('aria-label', 'Retry loading execution traces');
       retryBtn.addEventListener('click', () => this.loadTraces());
 
       errLi.appendChild(msgSpan);
@@ -773,6 +805,7 @@ document.addEventListener('DOMContentLoaded', () => {
       retryBtn.className = 'btn-refresh';
       retryBtn.style.marginTop = '1rem';
       retryBtn.textContent = 'Retry Selection';
+      retryBtn.setAttribute('aria-label', `Retry selection for trace ${correlationId}`);
       retryBtn.addEventListener('click', () => this.selectTrace(correlationId));
 
       errCard.appendChild(errHeader);
@@ -807,6 +840,7 @@ document.addEventListener('DOMContentLoaded', () => {
       const copyCorrBtn = document.createElement('button');
       copyCorrBtn.className = 'copy-btn';
       copyCorrBtn.textContent = 'Copy Correlation ID';
+      copyCorrBtn.setAttribute('aria-label', 'Copy Correlation ID');
       copyCorrBtn.addEventListener('click', () => this.copyToClipboard(trace.correlation_id, copyCorrBtn));
 
       headerBar.appendChild(titleGroup);
@@ -1082,6 +1116,7 @@ document.addEventListener('DOMContentLoaded', () => {
           tr.className = `clickable ${isSelectedEvent ? 'selected' : ''}`;
           tr.setAttribute('role', 'button');
           tr.setAttribute('tabindex', '0');
+          tr.setAttribute('aria-selected', isSelectedEvent ? 'true' : 'false');
           tr.setAttribute('aria-label', `Inspect event sequence ${ev.sequence_number}, type ${ev.event_type}`);
 
           tr.addEventListener('click', () => {
@@ -1316,6 +1351,7 @@ document.addEventListener('DOMContentLoaded', () => {
         retryBtn.type = 'button';
         retryBtn.className = 'btn-refresh';
         retryBtn.textContent = 'Retry Loading Provenance';
+        retryBtn.setAttribute('aria-label', 'Retry loading provenance records');
         retryBtn.addEventListener('click', () => this.loadProvenance());
 
         errLi.appendChild(msgSpan);
@@ -1672,7 +1708,7 @@ document.addEventListener('DOMContentLoaded', () => {
         traceBtn.style.padding = '0.25rem 0.6rem';
         traceBtn.style.fontSize = '0.75rem';
         traceBtn.setAttribute('aria-label', `Navigate to related execution trace ${corrId}`);
-        traceBtn.innerHTML = `<span>View Related Trace</span> <span class="arrow">➔</span>`;
+        traceBtn.innerHTML = `<span>View Related Trace</span> <span class="arrow" aria-hidden="true">➔</span>`;
         traceBtn.addEventListener('click', () => {
           this.state.selectedTraceId = corrId;
           this.switchTab('traces');
@@ -1896,6 +1932,7 @@ document.addEventListener('DOMContentLoaded', () => {
         retryBtn.type = 'button';
         retryBtn.className = 'btn-refresh';
         retryBtn.textContent = 'Retry Loading Benchmarks';
+        retryBtn.setAttribute('aria-label', 'Retry loading benchmark artifacts');
         retryBtn.addEventListener('click', () => this.loadBenchmarks());
 
         errLi.appendChild(msgSpan);

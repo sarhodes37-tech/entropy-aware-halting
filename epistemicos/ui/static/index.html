@@ -123,19 +123,19 @@
         <div class="quick-entry-grid">
           <button type="button" class="quick-entry-btn" data-jump-tab="traces" data-filter="DENIED" aria-label="View Denied Requests">
             <span>Inspect Denials</span>
-            <span class="arrow">➔</span>
+            <span class="arrow" aria-hidden="true">➔</span>
           </button>
           <button type="button" class="quick-entry-btn" data-jump-tab="traces" data-filter="HALTED" aria-label="View Policy Halts">
             <span>Inspect Policy Halts</span>
-            <span class="arrow">➔</span>
+            <span class="arrow" aria-hidden="true">➔</span>
           </button>
           <button type="button" class="quick-entry-btn" data-jump-tab="traces" data-filter="FAILED" aria-label="View Execution Failures">
             <span>Inspect Failures</span>
-            <span class="arrow">➔</span>
+            <span class="arrow" aria-hidden="true">➔</span>
           </button>
           <button type="button" class="quick-entry-btn" data-jump-tab="traces" data-filter="OUTCOME_UNKNOWN" aria-label="View Unknown Outcomes">
             <span>Inspect Unknown Outcomes</span>
-            <span class="arrow">➔</span>
+            <span class="arrow" aria-hidden="true">➔</span>
           </button>
         </div>
       </div>
@@ -149,7 +149,7 @@
           <p class="subtitle">Primary Investigative Surface • Recorded Events, Verification &amp; Evidence Inspection</p>
         </div>
         <div class="filter-controls">
-          <input type="search" id="trace-search" placeholder="Search correlation / request ID / action..." class="input-search" aria-label="Search execution traces by correlation or request ID">
+          <input type="search" id="trace-search" placeholder="Search correlation / request ID / action..." class="input-search" aria-label="Search execution traces by correlation or request ID" aria-keyshortcuts="/" title="Press '/' to focus search">
           <select id="trace-status-filter" class="select-filter" aria-label="Filter execution traces by status">
             <option value="ALL">All Statuses</option>
             <option value="COMPLETED">COMPLETED</option>
@@ -192,7 +192,7 @@
           <p class="subtitle">Investigative Workspace • Chain Verification, Source Authenticity & Evidence Inspection</p>
         </div>
         <div class="filter-controls">
-          <input type="search" id="provenance-search" placeholder="Search event ID / correlation / source / hash..." class="input-search" aria-label="Search provenance records">
+          <input type="search" id="provenance-search" placeholder="Search event ID / correlation / source / hash..." class="input-search" aria-label="Search provenance records" aria-keyshortcuts="/" title="Press '/' to focus search">
           <select id="provenance-type-filter" class="select-filter" aria-label="Filter provenance records by event type">
             <option value="ALL">All Event Types</option>
             <option value="ACTION_PROPOSED">ACTION_PROPOSED</option>
@@ -411,7 +411,7 @@
             <span class="subtitle font-mono" style="display: block; font-size: 0.775rem;">Recorded Case Outcomes, Classification Labels &amp; Failure Details</span>
           </div>
           <div class="filter-controls">
-            <input type="search" id="benchmark-case-search" placeholder="Search case ID / family / reason..." class="input-search" aria-label="Search benchmark cases">
+            <input type="search" id="benchmark-case-search" placeholder="Search case ID / family / reason..." class="input-search" aria-label="Search benchmark cases" aria-keyshortcuts="/" title="Press '/' to focus search">
             <select id="benchmark-case-baseline-filter" class="select-filter" aria-label="Filter benchmark cases by baseline condition">
               <option value="ALL">All Baselines</option>
             </select>
