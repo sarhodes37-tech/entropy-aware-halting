@@ -383,6 +383,48 @@ def test_p0_concurrent_threads_isolated_policy_dispatch(temp_prov_store):
     assert not errors
 
 
+def test_p0_unrelated_child_threads_do_not_inherit_parent_egress_authority():
+    """P0 test: Proves child threads spawned inside parent's enforce_socket_boundary do not inherit parent's egress authority."""
+    import threading
+
+    pol_a = EgressPolicy(allowed_destinations={"host-a.com"})
+    broker_a = EgressTransportBroker(policy=pol_a, resolver_func=default_mock_resolver)
+
+    parent_history_counts = []
+
+    def parent_worker():
+        with broker_a.enforce_socket_boundary(correlation_id="PARENT-CORR", request_id="PARENT-REQ"):
+            with patch("epistemicos.containment._orig_socket_connect") as mock_orig_conn:
+                s_parent = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                try:
+                    s_parent.connect(("host-a.com", 80))
+                except Exception:
+                    pass
+
+                parent_history_counts.append(len(broker_a.connection_history))
+
+                def child_worker_without_boundary():
+                    s_child = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    try:
+                        s_child.connect(("host-a.com", 80))
+                    except Exception:
+                        pass
+
+                t_child = threading.Thread(target=child_worker_without_boundary)
+                t_child.start()
+                t_child.join()
+
+                parent_history_counts.append(len(broker_a.connection_history))
+
+    t_parent = threading.Thread(target=parent_worker)
+    t_parent.start()
+    t_parent.join()
+
+    # Parent thread's socket connect dispatched to broker_a (history count 1)
+    # Child thread's socket connect did NOT dispatch to broker_a (history count remained 1)
+    assert parent_history_counts == [1, 1]
+
+
 def test_p1_request_and_urlopen_timeout_override_and_validation():
     """P1 test: Verifies request() and urlopen() accept per-request timeout overrides and validate positive timeouts."""
     policy = EgressPolicy(allowed_destinations={"api.github.com"})
@@ -439,3 +481,172 @@ def test_p1_table_driven_adversarial_destination_parsing():
     for raw_input, expected in test_cases:
         res = normalize_destination_host(raw_input)
         assert res == expected, f"Failed for input '{raw_input}': expected '{expected}', got '{res}'"
+
+
+# =========================================================================
+# REAL LOCAL SERVER INTEGRATION TESTS (P1)
+# =========================================================================
+
+import os
+import ssl
+import threading
+import subprocess
+from http.server import HTTPServer, BaseHTTPRequestHandler
+
+
+def _make_temp_self_signed_cert(cert_dir):
+    cert_path = os.path.join(cert_dir, "cert.pem")
+    key_path = os.path.join(cert_dir, "key.pem")
+    cmd = [
+        "openssl", "req", "-x509", "-newkey", "rsa:2048",
+        "-keyout", key_path, "-out", cert_path,
+        "-days", "1", "-nodes",
+        "-subj", "/CN=127.0.0.1"
+    ]
+    subprocess.run(cmd, check=True, capture_output=True)
+    return cert_path, key_path
+
+
+def test_p1_real_local_http_server_connection():
+    """P1 integration test: Proves real HTTP I/O against local loopback server using ControlledEgressTransport."""
+    class LocalHTTPHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b'{"status": "real_http_ok"}')
+
+        def log_message(self, format, *args):
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), LocalHTTPHandler)
+    port = server.server_port
+    server_thread = threading.Thread(target=server.serve_forever)
+    server_thread.daemon = True
+    server_thread.start()
+
+    try:
+        policy = EgressPolicy(
+            allowed_destinations={"127.0.0.1"},
+            allowed_ports={port},
+            allow_loopback=True
+        )
+        broker = EgressTransportBroker(policy=policy)
+        transport = ControlledEgressTransport(broker=broker)
+
+        res = transport.urlopen(f"http://127.0.0.1:{port}/data")
+        assert res["status"] == 200
+        assert b"real_http_ok" in res["body"]
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_p1_real_local_https_server_connection(tmp_path):
+    """P1 integration test: Proves real HTTPS I/O and TLS handshake against local SSL server using ControlledEgressTransport."""
+    cert_file, key_file = _make_temp_self_signed_cert(str(tmp_path))
+
+    class LocalHTTPSHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b'{"status": "real_https_ok"}')
+
+        def log_message(self, format, *args):
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), LocalHTTPSHandler)
+    port = server.server_port
+
+    ssl_server_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ssl_server_ctx.load_cert_chain(certfile=cert_file, keyfile=key_file)
+    server.socket = ssl_server_ctx.wrap_socket(server.socket, server_side=True)
+
+    server_thread = threading.Thread(target=server.serve_forever)
+    server_thread.daemon = True
+    server_thread.start()
+
+    try:
+        policy = EgressPolicy(
+            allowed_destinations={"127.0.0.1"},
+            allowed_ports={port},
+            allow_loopback=True
+        )
+        broker = EgressTransportBroker(policy=policy)
+        transport = ControlledEgressTransport(broker=broker)
+
+        # Patch ssl.create_default_context inside request to accept our self-signed cert
+        orig_create_ctx = ssl.create_default_context
+        def unverified_ctx_factory(*args, **kwargs):
+            ctx = orig_create_ctx(*args, **kwargs)
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            return ctx
+
+        with patch("ssl.create_default_context", side_effect=unverified_ctx_factory):
+            res = transport.request("GET", f"https://127.0.0.1:{port}/secure_data")
+
+        assert res["status"] == 200
+        assert b"real_https_ok" in res["body"]
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_p1_real_local_redirect_server_prohibited_target_never_contacted():
+    """P1 integration test: Proves an allowed local redirect target redirecting to a prohibited port is blocked before contacting the prohibited port."""
+    server_b_contacts = [0]
+
+    class HandlerB(BaseHTTPRequestHandler):
+        def do_GET(self):
+            server_b_contacts[0] += 1
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"prohibited_content_reached!")
+
+        def log_message(self, format, *args):
+            pass
+
+    server_b = HTTPServer(("127.0.0.1", 0), HandlerB)
+    port_b = server_b.server_port
+    thread_b = threading.Thread(target=server_b.serve_forever)
+    thread_b.daemon = True
+    thread_b.start()
+
+    class HandlerA(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(302)
+            self.send_header("Location", f"http://127.0.0.1:{port_b}/exfil")
+            self.end_headers()
+
+        def log_message(self, format, *args):
+            pass
+
+    server_a = HTTPServer(("127.0.0.1", 0), HandlerA)
+    port_a = server_a.server_port
+    thread_a = threading.Thread(target=server_a.serve_forever)
+    thread_a.daemon = True
+    thread_a.start()
+
+    try:
+        # Policy allows port_a, but NOT port_b
+        policy = EgressPolicy(
+            allowed_destinations={"127.0.0.1"},
+            allowed_ports={port_a},
+            allow_loopback=True
+        )
+        broker = EgressTransportBroker(policy=policy)
+        transport = ControlledEgressTransport(broker=broker)
+
+        with pytest.raises(PermissionError) as exc_info:
+            transport.request("GET", f"http://127.0.0.1:{port_a}/start")
+
+        assert "blocked redirect" in str(exc_info.value) or "Egress blocked" in str(exc_info.value)
+        # Server B MUST have received ZERO HTTP requests!
+        assert server_b_contacts[0] == 0
+    finally:
+        server_a.shutdown()
+        server_a.server_close()
+        server_b.shutdown()
+        server_b.server_close()

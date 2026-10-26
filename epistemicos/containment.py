@@ -97,48 +97,125 @@ class ActionCategory(Enum):
     STATE_MUTATION = "STATE_MUTATION"
 
 
-def extract_url_components(target: str, default_protocol: str = "https", default_port: int = 443) -> Tuple[str, int]:
+def parse_url_authority_structure(target_url_or_host: str, default_protocol: str = "https", default_port: int = 443) -> Dict[str, Any]:
     """
-    Extracts (protocol, port) from a target URL or host string.
+    Unified authority and destination parser using urllib.parse.urlsplit.
+    Extracts canonical scheme, normalized host, explicit/default port, and authority sanity status.
+    Rejects authority strings containing userinfo with `#` or `%23` fragment tricks.
     """
-    if not isinstance(target, str):
-        return default_protocol.lower(), default_port
+    if not isinstance(target_url_or_host, str):
+        return {"scheme": default_protocol.lower(), "port": default_port, "normalized_host": "", "valid": False}
 
-    s = target.strip()
-    protocol = default_protocol.lower()
-    port = default_port
+    raw = target_url_or_host.strip().replace('\\', '/')
+    if not raw:
+        return {"scheme": default_protocol.lower(), "port": default_port, "normalized_host": "", "valid": False}
 
-    if "://" in s:
-        scheme_part, rest = s.split("://", 1)
-        if scheme_part.strip():
-            protocol = scheme_part.strip().lower()
-            if protocol == "http" and default_port == 443:
-                port = 80
-            elif protocol == "https" and default_port == 80:
-                port = 443
-    elif s.startswith("//"):
-        rest = s[2:]
+    if "://" in raw:
+        url_to_split = raw
+    elif raw.startswith("//"):
+        url_to_split = f"{default_protocol.lower()}:{raw}"
     else:
-        rest = s
+        url_to_split = f"{default_protocol.lower()}://{raw}"
 
-    authority = rest.split("/", 1)[0].split("?", 1)[0].split("#", 1)[0]
-    unquoted = unquote(authority)
-    if "@" in unquoted:
-        host_port = unquoted.rsplit("@", 1)[1]
+    try:
+        parsed = urlsplit(url_to_split)
+    except Exception:
+        return {"scheme": default_protocol.lower(), "port": default_port, "normalized_host": "", "valid": False}
+
+    scheme = (parsed.scheme or default_protocol).lower()
+
+    eff_default_port = default_port
+    if scheme == "http" and default_port == 443:
+        eff_default_port = 80
+    elif scheme == "https" and default_port == 80:
+        eff_default_port = 443
+
+    netloc = parsed.netloc
+    if not netloc:
+        return {"scheme": scheme, "port": eff_default_port, "normalized_host": "", "valid": False}
+
+    if "#" in netloc or "%23" in netloc.lower():
+        return {"scheme": scheme, "port": eff_default_port, "normalized_host": "", "valid": False}
+
+    unquoted_netloc = unquote(netloc)
+    if "#" in unquoted_netloc:
+        return {"scheme": scheme, "port": eff_default_port, "normalized_host": "", "valid": False}
+
+    if "@" in unquoted_netloc:
+        host_port = unquoted_netloc.rsplit("@", 1)[1]
     else:
-        host_port = unquoted
+        host_port = unquoted_netloc
 
+    port = eff_default_port
     if host_port.startswith("["):
-        if "]" in host_port:
-            after_bracket = host_port.rsplit("]", 1)[1]
-            if after_bracket.startswith(":") and after_bracket[1:].isdigit():
-                port = int(after_bracket[1:])
+        if "]" not in host_port:
+            return {"scheme": scheme, "port": eff_default_port, "normalized_host": "", "valid": False}
+        end_idx = host_port.find("]")
+        host_part = host_port[:end_idx + 1]
+        after_bracket = host_port[end_idx + 1:]
+        if after_bracket.startswith(":") and after_bracket[1:].isdigit():
+            port = int(after_bracket[1:])
     elif ":" in host_port:
-        p_str = host_port.rsplit(":", 1)[1]
+        h_str, p_str = host_port.rsplit(":", 1)
         if p_str.isdigit():
             port = int(p_str)
+            host_part = h_str
+        else:
+            host_part = host_port
+    else:
+        host_part = host_port
 
-    return protocol, port
+    host_clean = host_part.strip().lower()
+    if host_clean.endswith(".") and len(host_clean) > 1:
+        host_clean = host_clean[:-1]
+
+    if not host_clean or any(c.isspace() for c in host_clean):
+        return {"scheme": scheme, "port": port, "normalized_host": "", "valid": False}
+
+    norm_host = ""
+    if host_clean.startswith("[") and host_clean.endswith("]"):
+        inner = host_clean[1:-1]
+        try:
+            ip = ipaddress.ip_address(inner)
+            if getattr(ip, "ipv4_mapped", None):
+                norm_host = str(ip.ipv4_mapped)
+            else:
+                norm_host = str(ip)
+        except ValueError:
+            pass
+    else:
+        try:
+            ip = ipaddress.ip_address(host_clean)
+            if getattr(ip, "ipv4_mapped", None):
+                norm_host = str(ip.ipv4_mapped)
+            else:
+                norm_host = str(ip)
+        except ValueError:
+            alt_ip = parse_ip_numeric(host_clean)
+            if alt_ip:
+                norm_host = str(alt_ip)
+            else:
+                try:
+                    idna_host = host_clean.encode('idna').decode('ascii')
+                except Exception:
+                    idna_host = host_clean
+                if re.match(r'^[a-z0-9\-\.]+$', idna_host):
+                    norm_host = idna_host
+
+    return {
+        "scheme": scheme,
+        "port": port,
+        "normalized_host": norm_host,
+        "valid": bool(norm_host)
+    }
+
+
+def extract_url_components(target: str, default_protocol: str = "https", default_port: int = 443) -> Tuple[str, int]:
+    """
+    Extracts (protocol, port) from a target URL or host string using unified parse_url_authority_structure.
+    """
+    res = parse_url_authority_structure(target, default_protocol=default_protocol, default_port=default_port)
+    return res["scheme"], res["port"]
 
 
 @dataclass
@@ -250,101 +327,11 @@ def parse_ip_numeric(host_str: str) -> Optional[ipaddress.IPv4Address]:
 
 def normalize_destination_host(target_url_or_host: str) -> str:
     """
-    Strictly normalizes a target host/URL string into a canonical host representation.
-    Handles userinfo, userinfo with `#` or `%23` bypass tricks, IPv6 brackets,
-    percent-encoded delimiters, alternate numeric IP encodings, trailing dots, IDNA,
-    and converts scheme-rest to lower case.
+    Strictly normalizes a target host/URL string into a canonical host representation using unified parse_url_authority_structure.
     Returns empty string if invalid or malformed authority.
     """
-    if not isinstance(target_url_or_host, str):
-        return ""
-
-    raw = target_url_or_host.strip()
-    if not raw:
-        return ""
-
-    # Replace backslashes with forward slashes before parsing
-    norm = raw.replace('\\', '/')
-
-    # Handle scheme or schemeless URL structure
-    if "://" in norm:
-        scheme_rest = norm.split("://", 1)[1]
-    elif norm.startswith("//"):
-        scheme_rest = norm[2:]
-    else:
-        scheme_rest = norm
-
-    # Extract authority part before path or query
-    authority_part = scheme_rest.split("/", 1)[0].split("?", 1)[0]
-    if not authority_part:
-        return ""
-
-    # Reject URLs containing '#' or '%23' in authority part before path or query
-    if "#" in authority_part or "%23" in authority_part.lower():
-        return ""
-
-    # Unquote percent-encoded characters in authority part
-    unquoted_auth = unquote(authority_part)
-    if "#" in unquoted_auth:
-        return ""
-
-    # Handle userinfo (e.g. user:pass@hostname)
-    if "@" in unquoted_auth:
-        host_port = unquoted_auth.rsplit("@", 1)[1]
-    else:
-        host_port = unquoted_auth
-
-    # Strip port if present
-    if host_port.startswith("["):
-        # Bracketed IPv6
-        if "]" not in host_port:
-            return ""
-        host_part = host_port.split("]", 1)[0] + "]"
-    else:
-        host_part = host_port.split(":", 1)[0]
-
-    host_clean = host_part.strip().lower()
-
-    # Strip trailing dot if present (DNS FQDN dot)
-    if host_clean.endswith(".") and len(host_clean) > 1:
-        host_clean = host_clean[:-1]
-
-    if not host_clean or any(c.isspace() for c in host_clean):
-        return ""
-
-    # IPv6 bracketed handling
-    if host_clean.startswith("[") and host_clean.endswith("]"):
-        inner = host_clean[1:-1]
-        try:
-            ip = ipaddress.ip_address(inner)
-            if getattr(ip, "ipv4_mapped", None):
-                return str(ip.ipv4_mapped)
-            return str(ip)
-        except ValueError:
-            return ""
-
-    # Check for direct IPv4 / IPv6 or alternate numeric IP encodings
-    try:
-        ip = ipaddress.ip_address(host_clean)
-        if getattr(ip, "ipv4_mapped", None):
-            return str(ip.ipv4_mapped)
-        return str(ip)
-    except ValueError:
-        alt_ip = parse_ip_numeric(host_clean)
-        if alt_ip:
-            return str(alt_ip)
-
-    # Handle IDNA (internationalized domain names)
-    try:
-        host_clean = host_clean.encode('idna').decode('ascii')
-    except Exception:
-        pass
-
-    # Validate standard domain name character set
-    if not re.match(r'^[a-z0-9\-\.]+$', host_clean):
-        return ""
-
-    return host_clean
+    res = parse_url_authority_structure(target_url_or_host)
+    return res["normalized_host"]
 
 
 class ContainmentGuard(ControlPlaneGate):
@@ -921,13 +908,17 @@ class EgressTransportBroker:
                 if getattr(ip_obj, "ipv4_mapped", None):
                     ip_obj = ip_obj.ipv4_mapped
 
-                if (
-                    ip_obj.is_loopback
-                    or ip_obj.is_private
-                    or ip_obj.is_link_local
-                    or ip_obj.is_reserved
-                    or ip_obj.is_unspecified
-                ):
+                is_restricted = False
+                if ip_obj.is_loopback:
+                    if not (self.policy and self.policy.allow_loopback):
+                        is_restricted = True
+                elif ip_obj.is_private:
+                    if not (self.policy and self.policy.allow_private):
+                        is_restricted = True
+                elif ip_obj.is_link_local or ip_obj.is_reserved or ip_obj.is_unspecified:
+                    is_restricted = True
+
+                if is_restricted:
                     restricted_found.append(ip_str)
                 else:
                     valid_ips.append(ip_str)
@@ -995,11 +986,16 @@ class EgressTransportBroker:
                 return _orig_socket_connect(sock_self, address)
 
             active_ctx = _active_broker_context.get()
-            dispatch_broker = active_ctx["broker"] if active_ctx else self
-            dispatch_corr = active_ctx.get("correlation_id", correlation_id) if active_ctx else correlation_id
-            dispatch_req = active_ctx.get("request_id", request_id) if active_ctx else request_id
-            dispatch_act = active_ctx.get("action_name", action_name) if active_ctx else action_name
-            dispatch_cat = active_ctx.get("category", category) if active_ctx else category
+            if not active_ctx or active_ctx.get("thread_id") != threading.get_ident():
+                if is_connect_ex:
+                    return _orig_socket_connect_ex(sock_self, address)
+                return _orig_socket_connect(sock_self, address)
+
+            dispatch_broker = active_ctx["broker"]
+            dispatch_corr = active_ctx.get("correlation_id", "DEFAULT-CORR")
+            dispatch_req = active_ctx.get("request_id", "DEFAULT-REQ")
+            dispatch_act = active_ctx.get("action_name", "socket_connect")
+            dispatch_cat = active_ctx.get("category", None)
 
             if isinstance(address, (tuple, list)) and len(address) >= 2:
                 target_host, target_port = str(address[0]), int(address[1])
@@ -1036,7 +1032,8 @@ class EgressTransportBroker:
             "correlation_id": correlation_id,
             "request_id": request_id,
             "action_name": action_name,
-            "category": category
+            "category": category,
+            "thread_id": threading.get_ident()
         }
         ctx_token = _active_broker_context.set(ctx_info)
 
