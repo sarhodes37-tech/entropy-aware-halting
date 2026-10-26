@@ -138,6 +138,129 @@ class HumanApprovalRecord:
 
 
 @dataclass
+class TrustedTaskContract:
+    """
+    Explicit, versioned trusted task contract representing a task's authorized execution envelope.
+    Binds task identity, contract version, permitted actions, resource scope, explicit prohibitions,
+    approval requirements, and success evidence requirements.
+    Explicit prohibitions strictly override broad permissions.
+    """
+    task_id: str
+    contract_version: str = "1.0.0"
+    permitted_actions: Set[str] = field(default_factory=set)
+    resource_scope: Set[str] = field(default_factory=set)
+    explicit_prohibitions: Set[str] = field(default_factory=set)
+    prohibited_resources: Set[str] = field(default_factory=set)
+    approval_requirements: Set[str] = field(default_factory=set)
+    success_evidence_requirements: Set[str] = field(default_factory=set)
+    created_at: float = field(default_factory=time.time)
+    expires_at: Optional[float] = None
+    issuer_id: str = "TrustedTaskContractAuthority"
+    signature: Optional[str] = None
+
+    def compute_contract_digest(self) -> str:
+        data = {
+            "task_id": self.task_id,
+            "contract_version": self.contract_version,
+            "permitted_actions": sorted(list(self.permitted_actions)),
+            "resource_scope": sorted(list(self.resource_scope)),
+            "explicit_prohibitions": sorted(list(self.explicit_prohibitions)),
+            "prohibited_resources": sorted(list(self.prohibited_resources)),
+            "approval_requirements": sorted(list(self.approval_requirements)),
+            "success_evidence_requirements": sorted(list(self.success_evidence_requirements)),
+            "created_at": self.created_at,
+            "expires_at": self.expires_at,
+            "issuer_id": self.issuer_id,
+        }
+        serialized = json.dumps(data, sort_keys=True).encode("utf-8")
+        return hashlib.sha256(serialized).hexdigest()
+
+    def sign(self, signing_secret: bytes) -> str:
+        digest = self.compute_contract_digest()
+        self.signature = hmac.new(signing_secret, digest.encode("utf-8"), hashlib.sha256).hexdigest()
+        return self.signature
+
+    def verify_signature(self, signing_secret: bytes, current_time: Optional[float] = None) -> bool:
+        if not self.signature or not isinstance(self.signature, str):
+            return False
+
+        if self.is_expired(current_time=current_time):
+            return False
+
+        digest = self.compute_contract_digest()
+        expected_sig = hmac.new(signing_secret, digest.encode("utf-8"), hashlib.sha256).hexdigest()
+        return hmac.compare_digest(self.signature, expected_sig)
+
+    def is_expired(self, current_time: Optional[float] = None) -> bool:
+        if self.expires_at is None:
+            return False
+        now = current_time if current_time is not None else time.time()
+        return now >= self.expires_at
+
+    def is_action_prohibited(self, action_name: str, target: str) -> bool:
+        """
+        Precedence rule: Explicit prohibitions strictly override permissions.
+        """
+        if "*" in self.explicit_prohibitions or action_name in self.explicit_prohibitions:
+            return True
+        if "*" in self.prohibited_resources or target in self.prohibited_resources:
+            return True
+        return False
+
+    def is_action_permitted(self, action_name: str, target: str) -> bool:
+        if self.is_action_prohibited(action_name, target):
+            return False
+
+        action_allowed = ("*" in self.permitted_actions) or (action_name in self.permitted_actions)
+        if not action_allowed:
+            return False
+
+        target_allowed = ("*" in self.resource_scope) or (target in self.resource_scope)
+        if not target_allowed:
+            return False
+
+        return True
+
+    def requires_human_approval(self, action_name: str) -> bool:
+        return ("*" in self.approval_requirements) or (action_name in self.approval_requirements)
+
+    def to_dict(self) -> Dict[str, Any]:
+        data = {
+            "task_id": self.task_id,
+            "contract_version": self.contract_version,
+            "permitted_actions": list(self.permitted_actions),
+            "resource_scope": list(self.resource_scope),
+            "explicit_prohibitions": list(self.explicit_prohibitions),
+            "prohibited_resources": list(self.prohibited_resources),
+            "approval_requirements": list(self.approval_requirements),
+            "success_evidence_requirements": list(self.success_evidence_requirements),
+            "created_at": self.created_at,
+            "expires_at": self.expires_at,
+            "issuer_id": self.issuer_id,
+            "signature": self.signature,
+            "contract_digest": self.compute_contract_digest()
+        }
+        return data
+
+    @classmethod
+    def from_dict(cls, val: Dict[str, Any]) -> "TrustedTaskContract":
+        return cls(
+            task_id=str(val["task_id"]),
+            contract_version=str(val.get("contract_version", "1.0.0")),
+            permitted_actions=set(val.get("permitted_actions", [])),
+            resource_scope=set(val.get("resource_scope", [])),
+            explicit_prohibitions=set(val.get("explicit_prohibitions", [])),
+            prohibited_resources=set(val.get("prohibited_resources", [])),
+            approval_requirements=set(val.get("approval_requirements", [])),
+            success_evidence_requirements=set(val.get("success_evidence_requirements", [])),
+            created_at=float(val.get("created_at", time.time())),
+            expires_at=float(val["expires_at"]) if val.get("expires_at") is not None else None,
+            issuer_id=str(val.get("issuer_id", "TrustedTaskContractAuthority")),
+            signature=val.get("signature")
+        )
+
+
+@dataclass
 class Policy:
     """
     Explicit, server-controlled authorization policy.
@@ -158,6 +281,8 @@ class Policy:
     def is_operation_allowed(self, action_name: str) -> bool:
         if not self.allowed_operations:
             return False
+        if "*" in self.allowed_operations:
+            return True
         return action_name in self.allowed_operations
 
     def is_target_allowed(self, target: str) -> bool:
@@ -193,7 +318,7 @@ class Policy:
 class Capability:
     """
     Server-issued, verifiable authorization token/capability.
-    Immutably binds action details, target, arguments, executor, principal, and approval state.
+    Immutably binds action details, target, arguments, executor, principal, task identity, contract version, and approval state.
     """
     token_id: str
     principal_id: str
@@ -206,6 +331,9 @@ class Capability:
     policy_version: str
     created_at: float
     expires_at: float
+    task_id: Optional[str] = None
+    contract_version: Optional[str] = None
+    contract_digest: Optional[str] = None
     human_approval: Optional[HumanApprovalRecord] = None
     issuer_id: str = "TrustedAuthorizationAuthority"
     signature: Optional[str] = None
@@ -237,11 +365,50 @@ class CapabilityRegistry:
         self._consumed_tokens: Set[str] = set()
         self._consumed_approvals: Set[str] = set()
         self._revoked_tokens: Set[str] = set()
+        self._denied_records: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
         self.signing_secret = signing_secret or hashlib.sha256(f"EPISTEMICOS_CAP_KEY_{uuid.uuid4()}".encode("utf-8")).digest()
 
     def sign_capability(self, cap: Capability) -> str:
-        payload = f"{cap.token_id}:{cap.principal_id}:{cap.correlation_id}:{cap.request_id}:{cap.action_name}:{cap.target}:{cap.canonical_request_digest}:{cap.executor_id}:{cap.policy_version}:{cap.expires_at}"
+        payload = f"{cap.token_id}:{cap.principal_id}:{cap.correlation_id}:{cap.request_id}:{cap.action_name}:{cap.target}:{cap.canonical_request_digest}:{cap.executor_id}:{cap.policy_version}:{cap.task_id or ''}:{cap.contract_version or ''}:{cap.contract_digest or ''}:{cap.expires_at}"
         return hmac.new(self.signing_secret, payload.encode("utf-8"), hashlib.sha256).hexdigest()
+
+    def record_denial(
+        self,
+        task_id: str,
+        action_name: str,
+        target: str,
+        reason: str,
+        contract_version: str = "1.0.0",
+        policy_version: str = "1.0.0"
+    ) -> None:
+        with self._lock:
+            key = (str(task_id), str(action_name), str(target))
+            self._denied_records[key] = {
+                "task_id": str(task_id),
+                "action_name": str(action_name),
+                "target": str(target),
+                "reason": str(reason),
+                "contract_version": str(contract_version),
+                "policy_version": str(policy_version),
+                "timestamp": time.time()
+            }
+
+    def check_denial(
+        self,
+        task_id: str,
+        action_name: str,
+        target: str,
+        contract_version: str = "1.0.0",
+        policy_version: str = "1.0.0"
+    ) -> Tuple[bool, Optional[Dict[str, Any]]]:
+        with self._lock:
+            key = (str(task_id), str(action_name), str(target))
+            rec = self._denied_records.get(key)
+            if rec:
+                # Same contract version and policy version means denial is active
+                if rec.get("contract_version") == contract_version and rec.get("policy_version") == policy_version:
+                    return True, rec
+            return False, None
 
     def register_capability(self, cap: Capability) -> None:
         with self._lock:
@@ -345,28 +512,78 @@ class AuthorizationAuthority:
         executor_id: str = "default_executor",
         policy: Optional[Policy] = None,
         human_approval_input: Any = None,
-        current_time: Optional[float] = None
+        current_time: Optional[float] = None,
+        task_contract: Optional[Union[TrustedTaskContract, Dict[str, Any]]] = None,
+        task_id: Optional[str] = None
     ) -> Tuple[Optional[Capability], str]:
         """
-        Evaluates authorization request against explicit policy and returns (Capability, reason_code).
-        Fails closed on missing policy, missing fields, or failed human approval requirement.
+        Evaluates authorization request against explicit policy and trusted task contract, returning (Capability, reason_code).
+        Fails closed on missing policy, missing fields, explicit prohibitions, scope violations, or failed human approval.
         """
         active_policy = policy or self.default_policy
         if not active_policy:
             return None, "AUTHORIZATION_DENIED_NO_TRUSTED_POLICY"
 
-        # Validate action and target against policy
+        # Parse task contract if provided as dict
+        contract_obj: Optional[TrustedTaskContract] = None
+        if task_contract is not None:
+            if isinstance(task_contract, TrustedTaskContract):
+                contract_obj = task_contract
+            elif isinstance(task_contract, dict):
+                try:
+                    contract_obj = TrustedTaskContract.from_dict(task_contract)
+                except Exception:
+                    return None, "AUTHORIZATION_DENIED_MALFORMED_TASK_CONTRACT"
+
+        # Validate contract task_id vs task_id parameter if both provided
+        effective_task_id = task_id or (contract_obj.task_id if contract_obj else None)
+        if contract_obj and task_id and contract_obj.task_id != task_id:
+            return None, "AUTHORIZATION_DENIED_TASK_IDENTITY_MISMATCH"
+
+        # Validate action and target
         if not action_name or not isinstance(action_name, str) or not action_name.strip():
             return None, "AUTHORIZATION_DENIED_INVALID_ACTION_NAME"
 
         if not target or not isinstance(target, str) or not target.strip():
             return None, "AUTHORIZATION_DENIED_INVALID_TARGET"
 
+        # Validate against TrustedTaskContract if present
+        if contract_obj:
+            if contract_obj.is_expired(current_time=current_time):
+                return None, "AUTHORIZATION_DENIED_EXPIRED_TASK_CONTRACT"
+
+            if contract_obj.is_action_prohibited(action_name, target):
+                reason = f"AUTHORIZATION_DENIED_CONTRACT_EXPLICIT_PROHIBITION:{action_name}:{target}"
+                if effective_task_id:
+                    self.registry.record_denial(effective_task_id, action_name, target, reason, contract_obj.contract_version, active_policy.version)
+                return None, reason
+
+            if not contract_obj.is_action_permitted(action_name, target):
+                reason = f"AUTHORIZATION_DENIED_CONTRACT_SCOPE_VIOLATION:{action_name}:{target}"
+                if effective_task_id:
+                    self.registry.record_denial(effective_task_id, action_name, target, reason, contract_obj.contract_version, active_policy.version)
+                return None, reason
+
+        # Check durable denial registry if effective_task_id is known
+        if effective_task_id:
+            c_ver = contract_obj.contract_version if contract_obj else "1.0.0"
+            is_denied, prev_denial = self.registry.check_denial(effective_task_id, action_name, target, c_ver, active_policy.version)
+            if is_denied and prev_denial:
+                return None, f"AUTHORIZATION_DENIED_DURABLE_DENIAL_ACTIVE:{prev_denial['reason']}"
+
         if not active_policy.is_operation_allowed(action_name):
-            return None, f"AUTHORIZATION_DENIED_OPERATION_NOT_ALLOWED:{action_name}"
+            reason = f"AUTHORIZATION_DENIED_OPERATION_NOT_ALLOWED:{action_name}"
+            if effective_task_id:
+                c_ver = contract_obj.contract_version if contract_obj else "1.0.0"
+                self.registry.record_denial(effective_task_id, action_name, target, reason, c_ver, active_policy.version)
+            return None, reason
 
         if not active_policy.is_target_allowed(target):
-            return None, f"AUTHORIZATION_DENIED_TARGET_NOT_ALLOWED:{target}"
+            reason = f"AUTHORIZATION_DENIED_TARGET_NOT_ALLOWED:{target}"
+            if effective_task_id:
+                c_ver = contract_obj.contract_version if contract_obj else "1.0.0"
+                self.registry.record_denial(effective_task_id, action_name, target, reason, c_ver, active_policy.version)
+            return None, reason
 
         if not active_policy.is_principal_allowed(principal_id):
             return None, f"AUTHORIZATION_DENIED_PRINCIPAL_NOT_ALLOWED:{principal_id}"
@@ -377,9 +594,10 @@ class AuthorizationAuthority:
         corr_id = correlation_id or str(uuid.uuid4())
         req_id = request_id or str(uuid.uuid4())
 
-        # Check human approval requirement
+        # Check human approval requirement from policy OR task contract
+        requires_approval = active_policy.requires_human_approval(action_name) or (contract_obj.requires_human_approval(action_name) if contract_obj else False)
         approval_record = None
-        if active_policy.requires_human_approval(action_name):
+        if requires_approval:
             approval_record = HumanApprovalRecord.from_input(human_approval_input)
             if not approval_record:
                 return None, "STOP_AND_ESCALATE_HUMAN_APPROVAL_REQUIRED"
@@ -438,6 +656,9 @@ class AuthorizationAuthority:
             policy_version=active_policy.version,
             created_at=now,
             expires_at=expires_at,
+            task_id=effective_task_id,
+            contract_version=contract_obj.contract_version if contract_obj else None,
+            contract_digest=contract_obj.compute_contract_digest() if contract_obj else None,
             human_approval=approval_record
         )
 
@@ -455,12 +676,14 @@ class AuthorizationAuthority:
         correlation_id: Optional[str] = None,
         request_id: Optional[str] = None,
         policy_version: Optional[str] = None,
-        current_time: Optional[float] = None
+        current_time: Optional[float] = None,
+        task_id: Optional[str] = None,
+        contract_version: Optional[str] = None
     ) -> Tuple[bool, str, Optional[Capability]]:
         """
         Independently verifies a capability for the execution boundary.
         Checks existence, signature, consumption, revocation, expiration, and strict field bindings
-        (action_name, target, canonical_request_digest, executor_id, principal_id, correlation_id, request_id, policy_version).
+        (action_name, target, canonical_request_digest, executor_id, principal_id, correlation_id, request_id, policy_version, task_id, contract_version).
         Eliminates executor-binding wildcards (exact match required).
         """
         if not token_id or not isinstance(token_id, str):
@@ -509,5 +732,11 @@ class AuthorizationAuthority:
 
         if policy_version is not None and cap.policy_version != policy_version:
             return False, f"CAPABILITY_VERIFICATION_FAILED_POLICY_VERSION_MISMATCH: granted '{cap.policy_version}', requested '{policy_version}'", cap
+
+        if task_id is not None and cap.task_id != task_id:
+            return False, f"CAPABILITY_VERIFICATION_FAILED_TASK_ID_MISMATCH: granted '{cap.task_id}', requested '{task_id}'", cap
+
+        if contract_version is not None and cap.contract_version != contract_version:
+            return False, f"CAPABILITY_VERIFICATION_FAILED_CONTRACT_VERSION_MISMATCH: granted '{cap.contract_version}', requested '{contract_version}'", cap
 
         return True, "CAPABILITY_VERIFIED", cap

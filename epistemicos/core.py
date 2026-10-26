@@ -445,8 +445,11 @@ class EpistemicOrchestrator:
                     else:
                         active_policy = None
 
-                # Evaluate against AuthorizationAuthority and issue capability
+                # Evaluate against AuthorizationAuthority and issue capability, forwarding task_contract and task_id
                 executor_id = exec_func if exec_func else "default_executor"
+                task_contract_val = context.get("task_contract") or raw_payload.get("task_contract")
+                task_id_val = context.get("task_id") or raw_payload.get("task_id")
+
                 cap, cap_reason = self.authority.evaluate_and_issue_capability(
                     action_name=action_name,
                     target=target,
@@ -456,7 +459,9 @@ class EpistemicOrchestrator:
                     request_id=req_id,
                     executor_id=executor_id,
                     policy=active_policy,
-                    human_approval_input=context.get("human_approval") or context.get("human_approval_record")
+                    human_approval_input=context.get("human_approval") or context.get("human_approval_record"),
+                    task_contract=task_contract_val,
+                    task_id=task_id_val
                 )
 
                 if not cap:
@@ -600,7 +605,9 @@ class EpistemicOrchestrator:
                         authorized_digest=valid_grant_event.canonical_request_digest,
                         authorization_granted=True,
                         execution_attempt_id=context.get("execution_attempt_id"),
-                        policy_version=getattr(valid_grant_event, "policy_version", None) or cap.policy_version
+                        policy_version=getattr(valid_grant_event, "policy_version", None) or cap.policy_version,
+                        task_id=cap.task_id,
+                        contract_version=cap.contract_version
                     )
 
                     try:
