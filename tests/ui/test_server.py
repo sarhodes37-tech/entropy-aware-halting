@@ -291,3 +291,18 @@ def test_observatory_css_design_foundation_tokens():
     assert "--accent-primary: #38bdf8;" in css_content
     assert "--status-verified-fg: #2dd4bf;" in css_content
     assert "--status-failed-fg: #fb7185;" in css_content
+
+
+def test_recent_traces_row_keyboard_accessibility():
+    """Verifies that app.js sets tabindex, role='button', aria-label, and keydown handlers for clickable table rows."""
+    import pathlib
+    js_path = pathlib.Path("epistemicos/ui/static/app.js")
+    js_content = js_path.read_text(encoding="utf-8")
+    assert "tr.setAttribute('tabindex', '0');" in js_content
+    assert "tr.setAttribute('role', 'button');" in js_content
+    assert "tr.setAttribute('aria-label', `Inspect execution trace" in js_content
+    assert "e.key === 'Enter' || e.key === ' '" in js_content
+
+    css_path = pathlib.Path("epistemicos/ui/static/style.css")
+    css_content = css_path.read_text(encoding="utf-8")
+    assert ".data-table tr.clickable:focus-visible" in css_content

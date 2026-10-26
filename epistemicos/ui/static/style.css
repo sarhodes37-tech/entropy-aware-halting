@@ -853,9 +853,10 @@ h2 {
 .select-filter:focus-visible,
 .trace-item:focus-visible,
 .quick-entry-btn:focus-visible,
-.copy-btn:focus-visible {
+.copy-btn:focus-visible,
+.data-table tr.clickable:focus-visible {
   outline: 2px solid var(--accent-primary);
-  outline-offset: 2px;
+  outline-offset: -2px;
 }
 
 /* App Footer */
