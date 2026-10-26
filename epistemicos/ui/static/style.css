@@ -825,6 +825,39 @@ h2 {
   flex-wrap: wrap;
 }
 
+.search-input-wrapper {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.search-input-wrapper .input-search {
+  padding-right: 2rem;
+}
+
+.search-shortcut-badge {
+  position: absolute;
+  right: 0.5rem;
+  top: 50%;
+  transform: translateY(-50%);
+  background-color: var(--bg-elevated);
+  border: 1px solid var(--border-default);
+  border-radius: 3px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 0.675rem;
+  font-weight: 600;
+  padding: 0.05rem 0.35rem;
+  line-height: 1.2;
+  pointer-events: none;
+  user-select: none;
+  transition: opacity 0.15s ease, border-color 0.15s ease;
+}
+
+.search-input-wrapper .input-search:focus + .search-shortcut-badge {
+  opacity: 0.3;
+}
+
 .input-search, .select-filter {
   background-color: var(--bg-base);
   color: var(--text-primary);
