@@ -10,7 +10,7 @@ MPU = ΔU / (ΔL + ε)
 """
 
 from dataclasses import dataclass
-from typing import Dict, Any, Optional, List
+from typing import Dict, Optional, List
 from epistemicos.shower_curtain.detector import DetectionResult, SensitivityCategory
 
 
