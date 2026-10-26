@@ -489,7 +489,7 @@ def test_property_2_socket_boundary_enforcement_in_spawned_threads():
     Property 2 Test: Proves socket-boundary enforcement in spawned child threads:
     1. Parent thread starts a protected operation with enforce_socket_boundary().
     2. Parent policy permits port_allowed, but prohibits port_prohibited on 127.0.0.1.
-    3. Parent spawns and synchronizes with child thread from inside that operation.
+    3. Parent spawns child thread using broker.spawn_thread() from inside that operation.
     4. Child thread attempts connection to prohibited port_prohibited against local Server B.
     5. Connection is blocked with socket.error, and Server B receives ZERO requests!
     """
@@ -537,7 +537,7 @@ def test_property_2_socket_boundary_enforcement_in_spawned_threads():
 
         def parent_protected_operation():
             with broker.enforce_socket_boundary(correlation_id="CORR-P2", request_id="REQ-P2"):
-                # Spawn child thread from within protected operation
+                # Spawn child thread carrying context
                 def child_thread_worker():
                     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                     try:
@@ -547,7 +547,7 @@ def test_property_2_socket_boundary_enforcement_in_spawned_threads():
                     finally:
                         s.close()
 
-                t_child = threading.Thread(target=child_thread_worker)
+                t_child = broker.spawn_thread(child_thread_worker)
                 t_child.start()
                 t_child.join()
 
@@ -563,6 +563,291 @@ def test_property_2_socket_boundary_enforcement_in_spawned_threads():
         server_a.server_close()
         server_b.shutdown()
         server_b.server_close()
+
+
+def test_test_a_overlapping_contexts_child_threads_barrier_synchronization():
+    """Test A: Proves two overlapping protected contexts with child threads synchronize and evaluate strictly against their own brokers."""
+    class PortHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"ok")
+
+        def log_message(self, *a):
+            pass
+
+    srv1 = HTTPServer(("127.0.0.1", 0), PortHandler)
+    port1 = srv1.server_port
+    t1 = threading.Thread(target=srv1.serve_forever)
+    t1.daemon = True
+    t1.start()
+
+    srv2 = HTTPServer(("127.0.0.1", 0), PortHandler)
+    port2 = srv2.server_port
+    t2 = threading.Thread(target=srv2.serve_forever)
+    t2.daemon = True
+    t2.start()
+
+    try:
+        pol1 = EgressPolicy(allowed_destinations={"127.0.0.1"}, allowed_ports={port1}, allow_loopback=True)
+        broker1 = EgressTransportBroker(policy=pol1)
+
+        pol2 = EgressPolicy(allowed_destinations={"127.0.0.1"}, allowed_ports={port2}, allow_loopback=True)
+        broker2 = EgressTransportBroker(policy=pol2)
+
+        barrier = threading.Barrier(2)
+        results1 = {}
+        results2 = {}
+
+        def thread1_worker():
+            with broker1.enforce_socket_boundary(correlation_id="CORR-1", request_id="REQ-1"):
+                barrier.wait()
+                # Connect child thread 1
+                def child1():
+                    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    try:
+                        s.connect(("127.0.0.1", port1))
+                        results1["port1"] = "ALLOWED"
+                    except Exception as e:
+                        results1["port1"] = f"BLOCKED: {e}"
+                    s.close()
+
+                    s2 = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    try:
+                        s2.connect(("127.0.0.1", port2))
+                        results1["port2"] = "ALLOWED"
+                    except Exception as e:
+                        results1["port2"] = f"BLOCKED: {e}"
+                    s2.close()
+
+                tc1 = broker1.spawn_thread(child1)
+                tc1.start()
+                tc1.join()
+
+        def thread2_worker():
+            with broker2.enforce_socket_boundary(correlation_id="CORR-2", request_id="REQ-2"):
+                barrier.wait()
+                # Connect child thread 2
+                def child2():
+                    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    try:
+                        s.connect(("127.0.0.1", port2))
+                        results2["port2"] = "ALLOWED"
+                    except Exception as e:
+                        results2["port2"] = f"BLOCKED: {e}"
+                    s.close()
+
+                    s1 = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    try:
+                        s1.connect(("127.0.0.1", port1))
+                        results2["port1"] = "ALLOWED"
+                    except Exception as e:
+                        results2["port1"] = f"BLOCKED: {e}"
+                    s1.close()
+
+                tc2 = broker2.spawn_thread(child2)
+                tc2.start()
+                tc2.join()
+
+        t_parent1 = threading.Thread(target=thread1_worker)
+        t_parent2 = threading.Thread(target=thread2_worker)
+
+        t_parent1.start()
+        t_parent2.start()
+        t_parent1.join()
+        t_parent2.join()
+
+        assert results1["port1"] == "ALLOWED"
+        assert "BLOCKED" in results1["port2"]
+        assert results2["port2"] == "ALLOWED"
+        assert "BLOCKED" in results2["port1"]
+
+        # Check connection history in brokers
+        assert any(str(port1) in r.target_url for r in broker1.connection_history)
+        assert any(str(port2) in r.target_url for r in broker2.connection_history)
+    finally:
+        srv1.shutdown()
+        srv1.server_close()
+        srv2.shutdown()
+        srv2.server_close()
+
+
+def test_test_b_uncontexted_child_thread_fails_closed():
+    """Test B: Proves uncontexted raw child thread spawned without context propagation fails closed."""
+    class LocalHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"ok")
+
+        def log_message(self, *a):
+            pass
+
+    srv = HTTPServer(("127.0.0.1", 0), LocalHandler)
+    port = srv.server_port
+    t = threading.Thread(target=srv.serve_forever)
+    t.daemon = True
+    t.start()
+
+    try:
+        pol = EgressPolicy(allowed_destinations={"127.0.0.1"}, allowed_ports={port}, allow_loopback=True)
+        broker = EgressTransportBroker(policy=pol)
+        child_res = [None]
+
+        with broker.enforce_socket_boundary(correlation_id="CORR-B"):
+            # Raw threading.Thread without broker.spawn_thread or context propagation
+            def raw_child():
+                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                try:
+                    s.connect(("127.0.0.1", port))
+                    child_res[0] = "ALLOWED"
+                except Exception as e:
+                    child_res[0] = f"BLOCKED: {e}"
+                finally:
+                    s.close()
+
+            t_raw = threading.Thread(target=raw_child)
+            t_raw.start()
+            t_raw.join()
+
+        # Raw child thread MUST fail closed
+        assert "BLOCKED" in child_res[0]
+        assert "Uncontexted thread" in child_res[0] or "Egress blocked" in child_res[0]
+    finally:
+        srv.shutdown()
+        srv.server_close()
+
+
+def test_test_c_nested_context_independence_after_inner_exit():
+    """Test C: Proves exiting an inner nested context restores outer context policy and correlation ID cleanly."""
+    class LocalHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"ok")
+
+        def log_message(self, *a):
+            pass
+
+    srv1 = HTTPServer(("127.0.0.1", 0), LocalHandler)
+    port1 = srv1.server_port
+    t1 = threading.Thread(target=srv1.serve_forever)
+    t1.daemon = True
+    t1.start()
+
+    srv2 = HTTPServer(("127.0.0.1", 0), LocalHandler)
+    port2 = srv2.server_port
+    t2 = threading.Thread(target=srv2.serve_forever)
+    t2.daemon = True
+    t2.start()
+
+    try:
+        pol1 = EgressPolicy(allowed_destinations={"127.0.0.1"}, allowed_ports={port1}, allow_loopback=True)
+        broker1 = EgressTransportBroker(policy=pol1)
+
+        pol2 = EgressPolicy(allowed_destinations={"127.0.0.1"}, allowed_ports={port2}, allow_loopback=True)
+        broker2 = EgressTransportBroker(policy=pol2)
+
+        results = {}
+
+        with broker1.enforce_socket_boundary(correlation_id="CORR-OUTER"):
+            with broker2.enforce_socket_boundary(correlation_id="CORR-INNER"):
+                # Inside inner context
+                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                try:
+                    s.connect(("127.0.0.1", port2))
+                    results["inner_port2"] = "ALLOWED"
+                except Exception as e:
+                    results["inner_port2"] = f"BLOCKED: {e}"
+                s.close()
+
+            # Now back in outer context after inner exit
+            s_outer = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            try:
+                s_outer.connect(("127.0.0.1", port1))
+                results["outer_port1"] = "ALLOWED"
+            except Exception as e:
+                results["outer_port1"] = f"BLOCKED: {e}"
+            s_outer.close()
+
+            s_outer_bad = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            try:
+                s_outer_bad.connect(("127.0.0.1", port2))
+                results["outer_port2"] = "ALLOWED"
+            except Exception as e:
+                results["outer_port2"] = f"BLOCKED: {e}"
+            s_outer_bad.close()
+
+        assert results["inner_port2"] == "ALLOWED"
+        assert results["outer_port1"] == "ALLOWED"
+        assert "BLOCKED" in results["outer_port2"]
+
+        # Outer broker history must record port1 events
+        assert any(str(port1) in r.target_url for r in broker1.connection_history)
+        # Inner broker history must record port2 events
+        assert any(str(port2) in r.target_url for r in broker2.connection_history)
+    finally:
+        srv1.shutdown()
+        srv1.server_close()
+        srv2.shutdown()
+        srv2.server_close()
+
+
+def test_test_d_unrelated_concurrent_threads_fail_closed():
+    """Test D: Proves unrelated concurrent threads during active boundary interception are failed closed."""
+    class LocalHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"ok")
+
+        def log_message(self, *a):
+            pass
+
+    srv = HTTPServer(("127.0.0.1", 0), LocalHandler)
+    port = srv.server_port
+    t = threading.Thread(target=srv.serve_forever)
+    t.daemon = True
+    t.start()
+
+    try:
+        pol = EgressPolicy(allowed_destinations={"127.0.0.1"}, allowed_ports={port}, allow_loopback=True)
+        broker = EgressTransportBroker(policy=pol)
+
+        unrelated_results = [None]
+        barrier = threading.Barrier(2)
+
+        import time
+
+        def protected_worker():
+            with broker.enforce_socket_boundary(correlation_id="CORR-PROT"):
+                barrier.wait()
+                time.sleep(0.1)
+
+        def unrelated_worker():
+            barrier.wait()
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            try:
+                s.connect(("127.0.0.1", port))
+                unrelated_results[0] = "ALLOWED"
+            except Exception as e:
+                unrelated_results[0] = f"BLOCKED: {e}"
+            finally:
+                s.close()
+
+        tp = threading.Thread(target=protected_worker)
+        tu = threading.Thread(target=unrelated_worker)
+
+        tp.start()
+        tu.start()
+        tp.join()
+        tu.join()
+
+        # Unrelated concurrent thread MUST fail closed
+        assert "BLOCKED" in unrelated_results[0]
+    finally:
+        srv.shutdown()
+        srv.server_close()
 
 
 def test_p1_request_and_urlopen_timeout_override_and_validation():

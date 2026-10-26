@@ -29,7 +29,6 @@ import threading
 
 _boundary_lock = threading.Lock()
 _active_boundary_count = 0
-_boundary_active_broker = None
 _orig_socket_connect = socket.socket.connect
 _orig_socket_connect_ex = socket.socket.connect_ex
 
@@ -44,19 +43,26 @@ def _patched_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
     """
     results = _original_getaddrinfo(host, port, family, type, proto, flags)
     if _enforce_safe_dns.get():
+        active_ctx = _active_broker_context.get()
+        allow_loop = active_ctx["broker"].policy.allow_loopback if (active_ctx and active_ctx.get("broker") and active_ctx["broker"].policy) else False
+        allow_priv = active_ctx["broker"].policy.allow_private if (active_ctx and active_ctx.get("broker") and active_ctx["broker"].policy) else False
+
         for res in results:
             ip_str = res[4][0]
             try:
                 ip = ipaddress.ip_address(ip_str)
                 if getattr(ip, "ipv4_mapped", None):
                     ip = ip.ipv4_mapped
-                if (
-                    ip.is_loopback
-                    or ip.is_private
-                    or ip.is_link_local
-                    or ip.is_reserved
-                    or ip.is_unspecified
-                ):
+
+                is_restricted = False
+                if ip.is_loopback and not allow_loop:
+                    is_restricted = True
+                elif ip.is_private and not allow_priv:
+                    is_restricted = True
+                elif ip.is_link_local or ip.is_reserved or ip.is_unspecified:
+                    is_restricted = True
+
+                if is_restricted:
                     raise socket.error(f"Egress blocked: DNS resolution for '{host}' returned restricted IP '{ip_str}'.")
             except ValueError:
                 pass
@@ -813,6 +819,14 @@ class EgressTransportBroker:
 
     def _default_resolver(self, hostname: str) -> List[str]:
         try:
+            ip = ipaddress.ip_address(hostname)
+            if getattr(ip, "ipv4_mapped", None):
+                return [str(ip.ipv4_mapped)]
+            return [str(ip)]
+        except ValueError:
+            pass
+
+        try:
             results = socket.getaddrinfo(hostname, None)
             ips = []
             for res in results:
@@ -960,6 +974,19 @@ class EgressTransportBroker:
             category=category
         )
 
+    def wrap_callable(self, func: Callable[..., Any]) -> Callable[..., Any]:
+        """Wraps a callable to copy the current contextvars context so child calls inherit active broker context."""
+        ctx = contextvars.copy_context()
+        def wrapper(*args, **kwargs):
+            return ctx.run(func, *args, **kwargs)
+        return wrapper
+
+    def spawn_thread(self, target: Callable[..., Any], args: Tuple[Any, ...] = (), kwargs: Optional[Dict[str, Any]] = None) -> threading.Thread:
+        """Spawns a thread carrying the current contextvars context so active egress policy is preserved in child thread."""
+        wrapped = self.wrap_callable(lambda: target(*args, **(kwargs or {})))
+        t = threading.Thread(target=wrapped)
+        return t
+
     @contextlib.contextmanager
     def enforce_socket_boundary(
         self,
@@ -987,22 +1014,17 @@ class EgressTransportBroker:
                 return _orig_socket_connect(sock_self, address)
 
             active_ctx = _active_broker_context.get()
-            if active_ctx:
-                dispatch_broker = active_ctx["broker"]
-                dispatch_corr = active_ctx.get("correlation_id", correlation_id)
-                dispatch_req = active_ctx.get("request_id", request_id)
-                dispatch_act = active_ctx.get("action_name", action_name)
-                dispatch_cat = active_ctx.get("category", category)
-            elif _boundary_active_broker:
-                dispatch_broker = _boundary_active_broker
-                dispatch_corr = "DEFAULT-CORR"
-                dispatch_req = "DEFAULT-REQ"
-                dispatch_act = "socket_connect"
-                dispatch_cat = None
-            else:
+            if not active_ctx:
+                err_msg = "Egress blocked: Uncontexted thread socket connection attempt inside active protected boundary."
                 if is_connect_ex:
-                    return _orig_socket_connect_ex(sock_self, address)
-                return _orig_socket_connect(sock_self, address)
+                    return errno.EACCES
+                raise socket.error(err_msg)
+
+            dispatch_broker = active_ctx["broker"]
+            dispatch_corr = active_ctx.get("correlation_id", correlation_id)
+            dispatch_req = active_ctx.get("request_id", request_id)
+            dispatch_act = active_ctx.get("action_name", action_name)
+            dispatch_cat = active_ctx.get("category", category)
 
             if isinstance(address, (tuple, list)) and len(address) >= 2:
                 target_host, target_port = str(address[0]), int(address[1])
@@ -1045,14 +1067,13 @@ class EgressTransportBroker:
         ctx_token = _active_broker_context.set(ctx_info)
 
         with _boundary_lock:
-            global _active_boundary_count, _boundary_active_broker
+            global _active_boundary_count
             if _active_boundary_count == 0:
                 _orig_socket_connect = socket.socket.connect
                 _orig_socket_connect_ex = socket.socket.connect_ex
                 socket.socket.connect = _patched_connect
                 socket.socket.connect_ex = _patched_connect_ex
             _active_boundary_count += 1
-            _boundary_active_broker = self
 
         token = _enforce_safe_dns.set(True)
         try:
@@ -1064,7 +1085,6 @@ class EgressTransportBroker:
                 _active_boundary_count -= 1
                 if _active_boundary_count <= 0:
                     _active_boundary_count = 0
-                    _boundary_active_broker = None
                     socket.socket.connect = _orig_socket_connect
                     socket.socket.connect_ex = _orig_socket_connect_ex
 
