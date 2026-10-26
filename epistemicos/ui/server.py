@@ -30,6 +30,14 @@ class ObservatoryRequestHandler(BaseHTTPRequestHandler):
     adapter: ObservatoryDataAdapter = ObservatoryDataAdapter()
     static_dir: Path = Path(__file__).parent / "static"
 
+    @property
+    def current_adapter(self) -> ObservatoryDataAdapter:
+        return getattr(self.server, "adapter", self.adapter)
+
+    @property
+    def current_static_dir(self) -> Path:
+        return getattr(self.server, "static_dir", self.static_dir)
+
     def do_GET(self) -> None:
         """Handles HTTP GET requests with strict path validation and security headers."""
         raw_path = self.path.split("?")[0]  # Strip query string
@@ -77,43 +85,50 @@ class ObservatoryRequestHandler(BaseHTTPRequestHandler):
     # Route Handlers
     # -------------------------------------------------------------------------
     def _handle_api_route(self, path: str) -> None:
-        if path == "/api/overview":
-            data = self.adapter.get_overview()
-            self._send_json_response(data)
-        elif path == "/api/traces":
-            data = self.adapter.get_execution_traces()
-            self._send_json_response(data)
-        elif path.startswith("/api/trace/"):
-            corr_id = path[len("/api/trace/"):]
-            if not corr_id:
-                self._send_json_response({"error": "Correlation ID required"}, status=HTTPStatus.BAD_REQUEST)
-                return
-            trace = self.adapter.get_execution_trace_by_id(corr_id)
-            if trace:
-                self._send_json_response(trace)
+        try:
+            if path == "/api/overview":
+                data = self.current_adapter.get_overview()
+                self._send_json_response(data)
+            elif path == "/api/traces":
+                data = self.current_adapter.get_execution_traces()
+                self._send_json_response(data)
+            elif path.startswith("/api/trace/"):
+                corr_id = path[len("/api/trace/"):]
+                if not corr_id:
+                    self._send_json_response({"error": "Correlation ID required"}, status=HTTPStatus.BAD_REQUEST)
+                    return
+                trace = self.current_adapter.get_execution_trace_by_id(corr_id)
+                if trace:
+                    self._send_json_response(trace)
+                else:
+                    # Sanitize requested ID to prevent leaking credentials or PII in URL parameters
+                    sanitized_corr_id = _sanitize_sensitive_data(corr_id)
+                    self._send_json_response({"error": f"Trace not found: {sanitized_corr_id}"}, status=HTTPStatus.NOT_FOUND)
+            elif path == "/api/provenance":
+                data = self.current_adapter.get_provenance_explorer_data()
+                self._send_json_response(data)
+            elif path == "/api/benchmarks":
+                data = self.current_adapter.get_benchmark_data()
+                self._send_json_response(data)
             else:
-                # Sanitize requested ID to prevent leaking credentials or PII in URL parameters
-                sanitized_corr_id = _sanitize_sensitive_data(corr_id)
-                self._send_json_response({"error": f"Trace not found: {sanitized_corr_id}"}, status=HTTPStatus.NOT_FOUND)
-        elif path == "/api/provenance":
-            data = self.adapter.get_provenance_explorer_data()
-            self._send_json_response(data)
-        elif path == "/api/benchmarks":
-            data = self.adapter.get_benchmark_data()
-            self._send_json_response(data)
-        else:
-            self._send_json_response({"error": "API endpoint not found"}, status=HTTPStatus.NOT_FOUND)
+                self._send_json_response({"error": "API endpoint not found"}, status=HTTPStatus.NOT_FOUND)
+        except Exception:
+            self._send_json_response(
+                {"error": "Internal Server Error"},
+                status=HTTPStatus.INTERNAL_SERVER_ERROR
+            )
 
     def _handle_static_route(self, path: str) -> None:
+        static_dir = self.current_static_dir
         if path == "/" or path == "/index.html":
-            file_path = self.static_dir / "index.html"
+            file_path = static_dir / "index.html"
             content_type = "text/html; charset=utf-8"
         else:
             rel_path = path.lstrip("/")
-            file_path = (self.static_dir / rel_path).resolve()
+            file_path = (static_dir / rel_path).resolve()
             # Ensure resolved path stays strictly within static_dir
             try:
-                file_path.relative_to(self.static_dir.resolve())
+                file_path.relative_to(static_dir.resolve())
             except ValueError:
                 self._send_json_response({"error": "Access denied"}, status=HTTPStatus.FORBIDDEN)
                 return
@@ -199,12 +214,9 @@ def create_server(
     static_dir: Optional[str] = None
 ) -> HTTPServer:
     """Factory creating an Observatory HTTPServer instance."""
-    if adapter:
-        ObservatoryRequestHandler.adapter = adapter
-    if static_dir:
-        ObservatoryRequestHandler.static_dir = Path(static_dir)
-
     server = HTTPServer((host, port), ObservatoryRequestHandler)
+    server.adapter = adapter if adapter is not None else ObservatoryRequestHandler.adapter
+    server.static_dir = Path(static_dir) if static_dir is not None else ObservatoryRequestHandler.static_dir
     return server
 
 

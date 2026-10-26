@@ -393,7 +393,11 @@ class ObservatoryDataAdapter:
             else:
                 try:
                     with open(self.ablation_table_path, "r", encoding="utf-8") as f:
-                        ablation_table = json.load(f)
+                        loaded = json.load(f)
+                        if isinstance(loaded, dict):
+                            ablation_table = loaded
+                        else:
+                            ablation_error = f"Unexpected JSON structure in ablation table: expected object, got {type(loaded).__name__}"
                 except Exception as e:
                     ablation_error = f"Malformed JSON in ablation table: {str(e)}"
         else:
@@ -405,7 +409,11 @@ class ObservatoryDataAdapter:
             else:
                 try:
                     with open(self.per_case_results_path, "r", encoding="utf-8") as f:
-                        per_case_results = json.load(f)
+                        loaded = json.load(f)
+                        if isinstance(loaded, list):
+                            per_case_results = loaded
+                        else:
+                            per_case_error = f"Unexpected JSON structure in per-case results: expected list, got {type(loaded).__name__}"
                 except Exception as e:
                     per_case_error = f"Malformed JSON in per-case results: {str(e)}"
         else:
@@ -440,7 +448,10 @@ class ObservatoryDataAdapter:
                     continue
                 try:
                     data = json.loads(line_str)
-                    events.append(data)
+                    if isinstance(data, dict):
+                        events.append(data)
+                    else:
+                        parse_errors += 1
                 except Exception:
                     parse_errors += 1
         return events, parse_errors
@@ -458,7 +469,10 @@ class ObservatoryDataAdapter:
                     continue
                 try:
                     data = json.loads(line_str)
-                    events.append(data)
+                    if isinstance(data, dict):
+                        events.append(data)
+                    else:
+                        parse_errors += 1
                 except Exception:
                     parse_errors += 1
         return events, parse_errors

@@ -348,3 +348,223 @@ def test_search_input_keyboard_shortcut_aria_attributes():
     assert "e.key === '/'" in js_content
     assert "['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName)" in js_content
     assert "searchInput.focus()" in js_content
+
+
+def test_api_route_edge_cases(test_server):
+    """Verifies API routes for missing correlation ID, unknown endpoint, and security headers on errors."""
+    # Test GET /api/trace/ with empty correlation ID
+    with pytest.raises(urllib.error.HTTPError) as exc_info:
+        urllib.request.urlopen(f"{test_server}/api/trace/")
+    assert exc_info.value.code == HTTPStatus.BAD_REQUEST
+    assert exc_info.value.headers.get("X-Content-Type-Options") == "nosniff"
+
+    # Test GET /api/unknown
+    with pytest.raises(urllib.error.HTTPError) as exc_info:
+        urllib.request.urlopen(f"{test_server}/api/unknown_route")
+    assert exc_info.value.code == HTTPStatus.NOT_FOUND
+    assert exc_info.value.headers.get("X-Frame-Options") == "DENY"
+
+
+def test_deep_encoding_traversal_prevention(test_server):
+    """Verifies that deep encoding beyond 3 passes cannot escape the static directory."""
+    deep_paths = [
+        "/%2525252e%2525252e/%2525252e%2525252e/etc/passwd",
+        "/api/%2525252e%2525252e/audit.py",
+        "/..%5c..%5c/etc/passwd"
+    ]
+    for dp in deep_paths:
+        with pytest.raises(urllib.error.HTTPError) as exc_info:
+            urllib.request.urlopen(f"{test_server}{dp}")
+        assert exc_info.value.code in (HTTPStatus.BAD_REQUEST, HTTPStatus.FORBIDDEN, HTTPStatus.NOT_FOUND)
+
+
+def test_static_asset_content_types_and_symlinks(tmp_path):
+    """Verifies content types for all supported static file extensions, directory access, and symlink escape prevention."""
+    static_dir = tmp_path / "static_ext"
+    static_dir.mkdir()
+
+    # Create various static files
+    (static_dir / "style.css").write_text("body { color: red; }", encoding="utf-8")
+    (static_dir / "script.js").write_text("console.log(1);", encoding="utf-8")
+    (static_dir / "image.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+    (static_dir / "photo.jpg").write_bytes(b"\xff\xd8\xff")
+    (static_dir / "photo2.jpeg").write_bytes(b"\xff\xd8\xff")
+    (static_dir / "icon.svg").write_text("<svg></svg>", encoding="utf-8")
+    (static_dir / "favicon.ico").write_bytes(b"\x00\x00\x01\x00")
+    (static_dir / "data.json").write_text("{}", encoding="utf-8")
+    (static_dir / "note.txt").write_text("hello", encoding="utf-8")
+    (static_dir / "unknown.xyz").write_text("unknown", encoding="utf-8")
+    subdir = static_dir / "subdir"
+    subdir.mkdir()
+
+    # Create an outside secret file and a symlink pointing to it inside static_dir
+    outside_secret = tmp_path / "outside_secret.txt"
+    outside_secret.write_text("SECRET_DATA", encoding="utf-8")
+    symlink_file = static_dir / "symlink_escape.txt"
+    try:
+        symlink_file.symlink_to(outside_secret)
+        has_symlink = True
+    except (OSError, NotImplementedError):
+        has_symlink = False
+
+    server = create_server(host="127.0.0.1", port=0, static_dir=str(static_dir))
+    port = server.server_port
+    thread = threading.Thread(target=server.serve_forever)
+    thread.daemon = True
+    thread.start()
+    time.sleep(0.1)
+
+    base = f"http://127.0.0.1:{port}"
+
+    try:
+        # Check extensions
+        ext_map = {
+            "/style.css": "text/css",
+            "/script.js": "application/javascript",
+            "/image.png": "image/png",
+            "/photo.jpg": "image/jpg",
+            "/photo2.jpeg": "image/jpeg",
+            "/icon.svg": "image/svg",
+            "/favicon.ico": "image/ico",
+            "/data.json": "application/json",
+            "/note.txt": "text/plain",
+            "/unknown.xyz": "text/plain",
+        }
+        for path, expected_ct in ext_map.items():
+            req = urllib.request.urlopen(f"{base}{path}")
+            assert expected_ct in req.headers.get("Content-Type")
+            assert req.headers.get("X-Frame-Options") == "DENY"
+
+        # Directory path access
+        with pytest.raises(urllib.error.HTTPError) as exc_info:
+            urllib.request.urlopen(f"{base}/subdir")
+        assert exc_info.value.code == HTTPStatus.NOT_FOUND
+
+        # Missing static file
+        with pytest.raises(urllib.error.HTTPError) as exc_info:
+            urllib.request.urlopen(f"{base}/missing_static.html")
+        assert exc_info.value.code == HTTPStatus.NOT_FOUND
+
+        # Symlink escape test
+        if has_symlink:
+            with pytest.raises(urllib.error.HTTPError) as exc_info:
+                urllib.request.urlopen(f"{base}/symlink_escape.txt")
+            assert exc_info.value.code in (HTTPStatus.FORBIDDEN, HTTPStatus.NOT_FOUND)
+            # Crucial assertion: response must NOT contain SECRET_DATA
+            body = exc_info.value.read().decode("utf-8")
+            assert "SECRET_DATA" not in body
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_server_instance_isolation(tmp_path):
+    """Verifies that two HTTPServer instances have isolated adapter and static_dir configurations."""
+    dir1 = tmp_path / "dir1"
+    dir1.mkdir()
+    (dir1 / "index.html").write_text("SERVER_1", encoding="utf-8")
+
+    dir2 = tmp_path / "dir2"
+    dir2.mkdir()
+    (dir2 / "index.html").write_text("SERVER_2", encoding="utf-8")
+
+    class Adapter1(ObservatoryDataAdapter):
+        def get_overview(self):
+            return {"server": 1}
+
+    class Adapter2(ObservatoryDataAdapter):
+        def get_overview(self):
+            return {"server": 2}
+
+    s1 = create_server(host="127.0.0.1", port=0, adapter=Adapter1(), static_dir=str(dir1))
+    s2 = create_server(host="127.0.0.1", port=0, adapter=Adapter2(), static_dir=str(dir2))
+
+    t1 = threading.Thread(target=s1.serve_forever)
+    t1.daemon = True
+    t1.start()
+
+    t2 = threading.Thread(target=s2.serve_forever)
+    t2.daemon = True
+    t2.start()
+
+    time.sleep(0.1)
+
+    url1 = f"http://127.0.0.1:{s1.server_port}"
+    url2 = f"http://127.0.0.1:{s2.server_port}"
+
+    try:
+        # Check index.html responses
+        req1 = urllib.request.urlopen(f"{url1}/index.html")
+        assert req1.read().decode("utf-8") == "SERVER_1"
+
+        req2 = urllib.request.urlopen(f"{url2}/index.html")
+        assert req2.read().decode("utf-8") == "SERVER_2"
+
+        # Check API responses
+        api1 = json.loads(urllib.request.urlopen(f"{url1}/api/overview").read().decode("utf-8"))
+        assert api1["server"] == 1
+
+        api2 = json.loads(urllib.request.urlopen(f"{url2}/api/overview").read().decode("utf-8"))
+        assert api2["server"] == 2
+    finally:
+        s1.shutdown()
+        s1.server_close()
+        s2.shutdown()
+        s2.server_close()
+
+
+def test_adapter_exception_returns_500_without_leaking(test_server, monkeypatch):
+    """Verifies that unhandled exceptions inside adapter methods return 500 without leaking stack traces or secrets."""
+    def mock_get_overview(self):
+        raise RuntimeError("Secret DB Connection Failed: postgresql://admin:secret_pass@10.0.0.1/db")
+
+    monkeypatch.setattr(ObservatoryDataAdapter, "get_overview", mock_get_overview)
+
+    with pytest.raises(urllib.error.HTTPError) as exc_info:
+        urllib.request.urlopen(f"{test_server}/api/overview")
+
+    assert exc_info.value.code == HTTPStatus.INTERNAL_SERVER_ERROR
+    body = exc_info.value.read().decode("utf-8")
+    data = json.loads(body)
+    assert data["error"] == "Internal Server Error"
+    assert "secret_pass" not in body
+    assert "RuntimeError" not in body
+    assert exc_info.value.headers.get("X-Content-Type-Options") == "nosniff"
+
+
+def test_main_cli_functionality(monkeypatch):
+    """Verifies argument parsing and server instantiation in main()."""
+    import sys
+    from epistemicos.ui import server as server_module
+
+    args = [
+        "server.py",
+        "--host", "127.0.0.1",
+        "--port", "0",
+        "--audit-log", "test_audit.jsonl",
+        "--provenance-log", "test_prov.jsonl",
+        "--ablation-table", "test_abl.json",
+        "--per-case-results", "test_case.json"
+    ]
+    monkeypatch.setattr(sys, "argv", args)
+
+    server_created = []
+
+    def mock_create_server(host, port, adapter):
+        class MockServer:
+            def serve_forever(self):
+                server_created.append((host, port, adapter))
+                raise KeyboardInterrupt()
+
+            def server_close(self):
+                pass
+        return MockServer()
+
+    monkeypatch.setattr(server_module, "create_server", mock_create_server)
+
+    server_module.main()
+    assert len(server_created) == 1
+    host, port, adapter = server_created[0]
+    assert host == "127.0.0.1"
+    assert port == 0
+    assert str(adapter.audit_log_path) == "test_audit.jsonl"

@@ -1,18 +1,11 @@
 # EpistemicOS Consolidated Security & Evaluation Evidence Report
 
-**Overall Status:** `PARTIAL` | **Generated:** 2026-10-26 12:30:17 UTC
+**Overall Status:** `PARTIAL` | **Generated:** 2026-10-26 14:25:56 UTC
 
 ## Reproducibility & Environment Metadata
-- **Evaluated Git Commit:** `d4050c054f7f22db4685a7850077cf3be5a04d53`
+- **Evaluated Git Commit:** `46eaccf674e57d5ee76d4c2478f4bd08d1838151`
 - **Working Tree Status:** `DIRTY`
-- **Working Tree Digest:** `569f75fe256cbe6a07d3de61043ddd52035f0730cb2f7aab9c63bbe6e4ec555d`
-**Overall Status:** `PARTIAL` | **Generated:** 2026-10-26 07:38:08 UTC
-**Overall Status:** `PARTIAL` | **Generated:** 2026-10-26 13:22:52 UTC
-
-## Reproducibility & Environment Metadata
-- **Evaluated Git Commit:** `c7f1a495733e994e63952efa1ce944c71ffb5997`
-- **Working Tree Status:** `DIRTY`
-- **Working Tree Digest:** `03325bc82d7c0dcf8471eca3717b169659d7e56b32accde49ea5bf77dba85059`
+- **Working Tree Digest:** `cb77661ebefece4bf3aa57d46220d875313b02a9002b9c58fbc72a4504e25923`
 - **Dataset Version:** `1.0.0-frozen`
 - **Dataset SHA-256 Digest:** `f4e31381a922c1143769ccb887c4841e4a14fedec6eef6569d40eed2956ce873` (Verified: `True`)
 
@@ -20,7 +13,7 @@
 
 ## Layer A: Deterministic Regression
 - **Status:** `PASS`
-- **Test Command:** `pytest tests/unit/test_evidence_architecture.py -k test_dataset_manifest_integrity -q --tb=no`
+- **Test Command:** `/home/jules/.local/share/pipx/venvs/pytest/bin/python -m pytest tests/unit/test_evidence_architecture.py -k test_dataset_manifest_integrity -q --tb=no`
 - **Summary:** .                                                                        [100%]
 
 ---
@@ -55,20 +48,14 @@
 
 ## Layer D: Performance & Cost Benchmarks
 - **Status:** `PASS`
-- **Run ID:** `run-l4-20261026070918-30b490aa`
+- **Run ID:** `run-l4-20261026142514-5b8d08ff`
 - **Dataset Digest:** `f4e31381a922c1143769ccb887c4841e4a14fedec6eef6569d40eed2956ce873`
-- **Run Records File SHA-256:** `9609659798d31a418d528fc80531a87c018f1b28eed2044c03921cf839757611`
-- **Run ID:** `run-l4-20261026073727-49334443`
-- **Run ID:** `run-l4-20261026132212-2fb0da47`
-- **Dataset Digest:** `f4e31381a922c1143769ccb887c4841e4a14fedec6eef6569d40eed2956ce873`
-- **Run Records File SHA-256:** `f5f93e998d1d3b6074ce8aad8b3b26d75960b1a97b213b790d10bc2787e29fb1`
+- **Run Records File SHA-256:** `a63ef7c549c7c1bd38102ac860463ad3b1780c66a8dcd6134dcf2d626770ff5b`
 - **Sample Size:** N = 100
 - **Combined Gating Accuracy:** 100.0%
 - **Combined Gating Security Recall:** 100.0%
 - **Benign False Positive Rate:** 0.0%
-- **P95 Latency:** 143.585 ms
-- **P95 Latency:** 29.556 ms
-- **P95 Latency:** 28.26 ms
+- **P95 Latency:** 29.68 ms
 - **Total Tokens Spent:** 2000
 - **Mandatory Criteria Passed:** `True`
 
