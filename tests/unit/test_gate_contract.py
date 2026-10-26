@@ -109,7 +109,68 @@ def test_fail_closed_on_security_critical_gate_exception():
 
     assert outcome.decision == GateDecision.HALT
     assert outcome.reason_code == "GATE_EXECUTION_ERROR"
+    assert outcome.gate_name == "FailingSecurityGate"
+    assert outcome.gate_version == "1.0.0"
     assert "Cryptographic verification service unreachable" in outcome.evidence.get("error", "")
+    assert outcome.evidence.get("exception_type") == "RuntimeError"
+    assert outcome.latency_ms >= 0.0
+
+
+def test_evaluate_safe_non_critical_gate_exception():
+    """Ensures non-critical gate exceptions return INDETERMINATE status."""
+    gate = FailingSecurityGate(is_critical=False)
+    gi = GateInput(payload={}, context={})
+    outcome = gate.evaluate_safe(gi)
+
+    assert outcome.decision == GateDecision.INDETERMINATE
+    assert outcome.reason_code == "GATE_EXECUTION_ERROR_NON_CRITICAL"
+    assert outcome.gate_name == "FailingSecurityGate"
+    assert outcome.gate_version == "1.0.0"
+    assert "Cryptographic verification service unreachable" in outcome.evidence.get("error", "")
+    assert outcome.latency_ms >= 0.0
+
+
+def test_evaluate_safe_happy_path():
+    """Ensures evaluate_safe returns normal GateOutcome on successful evaluate_contract."""
+    class DummySuccessGate(ControlPlaneGate):
+        def evaluate_contract(self, gate_input: GateInput) -> GateOutcome:
+            return GateOutcome(
+                decision=GateDecision.ALLOW,
+                reason_code="SUCCESS",
+                gate_name=self.gate_name,
+                gate_version=self.config.version,
+                evidence={"status": "OK"}
+            )
+
+    gate = DummySuccessGate()
+    gi = GateInput(payload={}, context={})
+    outcome = gate.evaluate_safe(gi)
+
+    assert outcome.decision == GateDecision.ALLOW
+    assert outcome.reason_code == "SUCCESS"
+    assert outcome.evidence == {"status": "OK"}
+
+
+def test_evaluate_safe_attribute_fallbacks():
+    """Validates fallback attributes when custom gate instances lack standard attributes."""
+    class MinimalGate(ControlPlaneGate):
+        def __init__(self):
+            # Intentionally omit super().__init__() so gate_name and config attributes are not set
+            pass
+
+        def evaluate_contract(self, gate_input: GateInput) -> GateOutcome:
+            raise ValueError("Minimal gate failure")
+
+    gate = MinimalGate()
+    gi = GateInput(payload={}, context={})
+    outcome = gate.evaluate_safe(gi)
+
+    assert outcome.decision == GateDecision.HALT
+    assert outcome.reason_code == "GATE_EXECUTION_ERROR"
+    assert outcome.gate_name == "MinimalGate"
+    assert outcome.gate_version == "1.0.0"
+    assert outcome.evidence.get("error") == "Minimal gate failure"
+    assert outcome.evidence.get("exception_type") == "ValueError"
 
 
 def test_explicit_gate_ordering_in_orchestrator():
