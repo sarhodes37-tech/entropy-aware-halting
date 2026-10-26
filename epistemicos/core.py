@@ -445,7 +445,7 @@ class EpistemicOrchestrator:
                         active_policy = None
 
                 # Evaluate against AuthorizationAuthority and issue capability
-                executor_id = get_callable_identity(exec_func) if exec_func else "default_executor"
+                executor_id = exec_func if exec_func else "default_executor"
                 cap, cap_reason = self.authority.evaluate_and_issue_capability(
                     action_name=action_name,
                     target=target,

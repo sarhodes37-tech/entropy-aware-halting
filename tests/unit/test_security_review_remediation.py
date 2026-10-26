@@ -198,13 +198,15 @@ def test_concurrent_competing_attempts_barrier(tmp_path):
     payload = {"op": "UNIQUE_TRANSACTION"}
     digest = boundary.compute_canonical_digest(payload)
 
+    executions = []
+    exec_func = lambda: (executions.append(1), "PAID")[1]
+
     policy = Policy(policy_id="p1", allowed_operations={"PAYMENT"}, allowed_resources={"gateway"})
-    cap, _ = boundary.authority.evaluate_and_issue_capability("PAYMENT", "gateway", digest, correlation_id="corr-conc", request_id="req-conc", executor_id="<lambda>", policy=policy)
+    cap, _ = boundary.authority.evaluate_and_issue_capability("PAYMENT", "gateway", digest, correlation_id="corr-conc", request_id="req-conc", executor_id=exec_func, policy=policy)
     token_id = cap.token_id
 
     num_threads = 5
     barrier = threading.Barrier(num_threads)
-    executions = []
     results = []
     errors = []
 
@@ -220,7 +222,7 @@ def test_concurrent_competing_attempts_barrier(tmp_path):
                 authorization_token_id=token_id,
                 authorized_digest=digest,
                 authorization_granted=True,
-                executor_func=lambda: (executions.append(1), "PAID")[1]
+                executor_func=exec_func
             )
             results.append(res)
         except Exception as e:
@@ -314,8 +316,9 @@ def test_replay_attempt_after_successful_token_consumption(tmp_path):
     payload = {"action": "withdraw"}
     digest = boundary.compute_canonical_digest(payload)
 
+    exec_func = lambda: "dispensed_100"
     policy = Policy(policy_id="p1", allowed_operations={"WITHDRAW"}, allowed_resources={"atm"})
-    cap, _ = boundary.authority.evaluate_and_issue_capability("WITHDRAW", "atm", digest, executor_id="<lambda>", policy=policy)
+    cap, _ = boundary.authority.evaluate_and_issue_capability("WITHDRAW", "atm", digest, executor_id=exec_func, policy=policy)
     token_id = cap.token_id
 
     # First attempt succeeds
@@ -326,7 +329,7 @@ def test_replay_attempt_after_successful_token_consumption(tmp_path):
         authorization_token_id=token_id,
         authorized_digest=digest,
         authorization_granted=True,
-        executor_func=lambda: "dispensed_100"
+        executor_func=exec_func
     )
     assert res1["status"] == "SUCCESS"
 
@@ -339,7 +342,7 @@ def test_replay_attempt_after_successful_token_consumption(tmp_path):
             authorization_token_id=token_id,
             authorized_digest=digest,
             authorization_granted=True,
-            executor_func=lambda: "dispensed_100_again"
+            executor_func=exec_func
         )
 
 

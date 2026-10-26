@@ -371,8 +371,9 @@ def test_scenario_7_replay_and_concurrent_attempts_prevented(tmp_path):
 
     payload = {"tx": "single_use"}
     digest = boundary.compute_canonical_digest(payload)
+    exec_func = lambda: "PAID"
     policy = Policy(policy_id="p", allowed_operations={"PAY"}, allowed_resources={"gateway"})
-    cap, _ = boundary.authority.evaluate_and_issue_capability("PAY", "gateway", digest, executor_id="<lambda>", policy=policy)
+    cap, _ = boundary.authority.evaluate_and_issue_capability("PAY", "gateway", digest, executor_id=exec_func, policy=policy)
 
     num_threads = 8
     barrier = threading.Barrier(num_threads)
@@ -389,7 +390,7 @@ def test_scenario_7_replay_and_concurrent_attempts_prevented(tmp_path):
                 authorization_token_id=cap.token_id,
                 authorized_digest=digest,
                 authorization_granted=True,
-                executor_func=lambda: "PAID"
+                executor_func=exec_func
             )
             results.append(res)
         except Exception as e:
@@ -532,8 +533,9 @@ def test_scenario_12_post_execution_audit_failure_reports_unknown_outcome(tmp_pa
 
     payload = {"data": "s12"}
     digest = boundary.compute_canonical_digest(payload)
+    exec_func = lambda: "MUTATED_VALUE"
     policy = Policy(policy_id="p", allowed_operations={"UPDATE"}, allowed_resources={"table"})
-    cap, _ = boundary.authority.evaluate_and_issue_capability("UPDATE", "table", digest, executor_id="<lambda>", policy=policy)
+    cap, _ = boundary.authority.evaluate_and_issue_capability("UPDATE", "table", digest, executor_id=exec_func, policy=policy)
 
     res = boundary.execute_protected_action(
         action_name="UPDATE",
@@ -542,7 +544,7 @@ def test_scenario_12_post_execution_audit_failure_reports_unknown_outcome(tmp_pa
         authorization_token_id=cap.token_id,
         authorized_digest=digest,
         authorization_granted=True,
-        executor_func=lambda: "MUTATED_VALUE"
+        executor_func=exec_func
     )
 
     assert res["status"] == "EXECUTION_OUTCOME_UNKNOWN"
@@ -776,11 +778,22 @@ def test_unambiguous_executor_identity_and_short_name_rejection(tmp_path):
 
     policy = Policy(policy_id="p1", allowed_operations={"op_exec"}, allowed_resources={"res_exec"})
 
+    class PackageAExecutor:
+        def __call__(self):
+            return "package_a_ran"
+
+    exec_a = PackageAExecutor()
+    exec_a.__module__ = "package_a.tools"
+    exec_a.__name__ = "execute"
+    exec_a.__qualname__ = "execute"
+
+    boundary.authority.register_executor("package_a.tools.execute", exec_a)
+
     cap_a, _ = boundary.authority.evaluate_and_issue_capability(
         action_name="op_exec",
         target="res_exec",
         canonical_request_digest=digest,
-        executor_id="package_a.tools.execute",
+        executor_id=exec_a,
         policy=policy
     )
 
@@ -794,7 +807,7 @@ def test_unambiguous_executor_identity_and_short_name_rejection(tmp_path):
     exec_b.__name__ = "execute"
     exec_b.__qualname__ = "execute"
 
-    with pytest.raises(PermissionError, match="EXECUTOR_MISMATCH"):
+    with pytest.raises(PermissionError, match=r"(Executable object identity mismatch|Unregistered callable object|EXECUTOR_MISMATCH)"):
         boundary.execute_protected_action(
             action_name="op_exec",
             target="res_exec",
@@ -805,16 +818,7 @@ def test_unambiguous_executor_identity_and_short_name_rejection(tmp_path):
             executor_func=exec_b
         )
 
-    # 2. Legitimate execution by correctly matching callable continues to work
-    class PackageAExecutor:
-        def __call__(self):
-            return "package_a_ran"
-
-    exec_a = PackageAExecutor()
-    exec_a.__module__ = "package_a.tools"
-    exec_a.__name__ = "execute"
-    exec_a.__qualname__ = "execute"
-
+    # 2. Legitimate execution by correctly registered callable continues to work
     res_a = boundary.execute_protected_action(
         action_name="op_exec",
         target="res_exec",

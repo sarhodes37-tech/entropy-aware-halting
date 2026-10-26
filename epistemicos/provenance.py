@@ -349,23 +349,6 @@ class TrustedExecutionBoundary:
 
         executor_id = get_callable_identity(executor_func)
 
-        # Option A Strict Trusted Executor Binding Check:
-        # A valid capability alone NEVER authorizes an unverified or unregistered callable object.
-        # Execution is permitted if and only if the provided callable is registered in executor_registry
-        # under token_id or executor_id, AND executor_func matches that registered object identity ('is').
-        if self.authority and hasattr(self.authority, "executor_registry"):
-            bound_callable = self.authority.executor_registry.get(auth_token_id)
-            if not bound_callable:
-                bound_callable = self.authority.executor_registry.get(executor_id)
-
-            if bound_callable:
-                if executor_func is not bound_callable:
-                    raise PermissionError("Execution rejected: Executable object identity mismatch for authorized token")
-            else:
-                cap_temp = self.registry.get_capability(auth_token_id)
-                bound_id = cap_temp.executor_id if cap_temp else executor_id
-                raise PermissionError(f"Execution rejected: Unregistered callable object cannot execute capability bound to '{bound_id}'")
-
         # Verify capability via trusted AuthorizationAuthority / CapabilityRegistry
         valid, cap_reason, cap = self.authority.verify_capability(
             token_id=auth_token_id,
@@ -379,6 +362,21 @@ class TrustedExecutionBoundary:
         )
         if not valid:
             raise PermissionError(f"Execution rejected: {cap_reason}")
+
+        # Option A Strict Trusted Executor Binding Check:
+        # A valid capability alone NEVER authorizes an unverified or unregistered callable object.
+        # Execution is permitted if and only if the provided callable is registered in executor_registry
+        # under token_id or executor_id, AND executor_func matches that registered object identity ('is').
+        if self.authority and hasattr(self.authority, "executor_registry"):
+            bound_callable = self.authority.executor_registry.get(auth_token_id)
+            if not bound_callable:
+                bound_callable = self.authority.executor_registry.get(executor_id)
+
+            if bound_callable:
+                if executor_func is not bound_callable:
+                    raise PermissionError("Execution rejected: Executable object identity mismatch for authorized token")
+            else:
+                raise PermissionError(f"Execution rejected: Unregistered callable object cannot execute capability bound to '{cap.executor_id if cap else executor_id}'")
 
         # Atomic token consumption and retry check
         with self._lock:
