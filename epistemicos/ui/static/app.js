@@ -457,11 +457,22 @@ document.addEventListener('DOMContentLoaded', () => {
       recent.forEach(trace => {
         const tr = document.createElement('tr');
         tr.className = 'clickable';
+        tr.setAttribute('tabindex', '0');
+        tr.setAttribute('role', 'button');
+        tr.setAttribute('aria-label', `Inspect execution trace ${trace.correlation_id || 'UNKNOWN'}`);
 
-        tr.addEventListener('click', () => {
+        const handleActivate = () => {
           this.state.selectedTraceId = trace.correlation_id;
           this.switchTab('traces');
           this.selectTrace(trace.correlation_id);
+        };
+
+        tr.addEventListener('click', handleActivate);
+        tr.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            handleActivate();
+          }
         });
 
         const tdCorr = document.createElement('td');
