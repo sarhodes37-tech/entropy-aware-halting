@@ -24,6 +24,7 @@ from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union
 from epistemicos.gates import ControlPlaneGate, GateConfig, GateInput, GateOutcome, GateDecision, GateAction, GateResult
 
+import errno
 import threading
 
 _boundary_lock = threading.Lock()
@@ -31,6 +32,7 @@ _active_boundary_count = 0
 _orig_socket_connect = socket.socket.connect
 _orig_socket_connect_ex = socket.socket.connect_ex
 
+_active_broker_context = contextvars.ContextVar("active_broker_context", default=None)
 _enforce_safe_dns = contextvars.ContextVar("enforce_safe_dns", default=False)
 _original_getaddrinfo = socket.getaddrinfo
 
@@ -976,9 +978,9 @@ class EgressTransportBroker:
     ):
         """
         Thread-safe context manager patching socket.socket.connect and connect_ex
-        during protected execution. Uses reference counting so process-wide interception
-        remains active for all overlapping or nested protected contexts and is unpatched
-        only when all protected contexts exit.
+        during protected execution. Uses contextvars for active broker/policy context
+        propagation so overlapping and concurrent contexts across threads and nested calls
+        dispatch to their own correct policy and emit provenance events with their own correlation/request IDs.
         """
         global _active_boundary_count, _orig_socket_connect, _orig_socket_connect_ex
 
@@ -992,19 +994,26 @@ class EgressTransportBroker:
                     return _orig_socket_connect_ex(sock_self, address)
                 return _orig_socket_connect(sock_self, address)
 
+            active_ctx = _active_broker_context.get()
+            dispatch_broker = active_ctx["broker"] if active_ctx else self
+            dispatch_corr = active_ctx.get("correlation_id", correlation_id) if active_ctx else correlation_id
+            dispatch_req = active_ctx.get("request_id", request_id) if active_ctx else request_id
+            dispatch_act = active_ctx.get("action_name", action_name) if active_ctx else action_name
+            dispatch_cat = active_ctx.get("category", category) if active_ctx else category
+
             if isinstance(address, (tuple, list)) and len(address) >= 2:
                 target_host, target_port = str(address[0]), int(address[1])
-                allowed, reason, pinned_ip = self.establish_connection(
+                allowed, reason, pinned_ip = dispatch_broker.establish_connection(
                     target_url=f"{target_host}:{target_port}",
-                    action_name=action_name,
-                    correlation_id=correlation_id,
-                    request_id=request_id,
-                    category=category
+                    action_name=dispatch_act,
+                    correlation_id=dispatch_corr,
+                    request_id=dispatch_req,
+                    category=dispatch_cat
                 )
                 if not allowed:
                     err_msg = f"Egress blocked: Socket connection to '{target_host}:{target_port}' denied by policy ({reason})."
                     if is_connect_ex:
-                        return 13  # EACCES Permission denied
+                        return errno.EACCES
                     raise socket.error(err_msg)
                 if pinned_ip and not target_host.startswith("["):
                     new_addr = (pinned_ip, target_port) + tuple(address[2:])
@@ -1022,6 +1031,15 @@ class EgressTransportBroker:
         def _patched_connect_ex(sock_self, address):
             return _patched_connect_internal(sock_self, address, is_connect_ex=True)
 
+        ctx_info = {
+            "broker": self,
+            "correlation_id": correlation_id,
+            "request_id": request_id,
+            "action_name": action_name,
+            "category": category
+        }
+        ctx_token = _active_broker_context.set(ctx_info)
+
         with _boundary_lock:
             if _active_boundary_count == 0:
                 _orig_socket_connect = socket.socket.connect
@@ -1035,12 +1053,62 @@ class EgressTransportBroker:
             yield
         finally:
             _enforce_safe_dns.reset(token)
+            _active_broker_context.reset(ctx_token)
             with _boundary_lock:
                 _active_boundary_count -= 1
                 if _active_boundary_count <= 0:
                     _active_boundary_count = 0
                     socket.socket.connect = _orig_socket_connect
                     socket.socket.connect_ex = _orig_socket_connect_ex
+
+
+import http.client
+import ssl
+
+
+class PinnedHTTPConnection(http.client.HTTPConnection):
+    """HTTP Connection connecting directly to pinned_ip while sending Host: norm_host."""
+    def __init__(self, norm_host: str, pinned_ip: Optional[str] = None, port: Optional[int] = None, timeout: float = 10.0):
+        super().__init__(norm_host, port=port or 80, timeout=timeout)
+        self.pinned_ip = pinned_ip
+
+    def connect(self):
+        connect_target = self.pinned_ip if self.pinned_ip else self.host
+        self.sock = self._create_connection(
+            (connect_target, self.port),
+            self.timeout,
+            self.source_address
+        )
+        if self._tunnel_host:
+            self._tunnel()
+
+
+class PinnedHTTPSConnection(http.client.HTTPSConnection):
+    """HTTPS Connection connecting directly to pinned_ip with SNI and cert verification for norm_host."""
+    def __init__(
+        self,
+        norm_host: str,
+        pinned_ip: Optional[str] = None,
+        port: Optional[int] = None,
+        timeout: float = 10.0,
+        context: Optional[ssl.SSLContext] = None
+    ):
+        super().__init__(norm_host, port=port or 443, timeout=timeout, context=context)
+        self.pinned_ip = pinned_ip
+
+    def connect(self):
+        connect_target = self.pinned_ip if self.pinned_ip else self.host
+        self.sock = self._create_connection(
+            (connect_target, self.port),
+            self.timeout,
+            self.source_address
+        )
+        if self._tunnel_host:
+            self._tunnel()
+        ctx = getattr(self, "_context", None) or getattr(self, "context", None)
+        if ctx is None:
+            ctx = ssl.create_default_context()
+        self.sock = ctx.wrap_socket(self.sock, server_hostname=self.host)
 
 
 class ControlledEgressTransport:
@@ -1067,6 +1135,7 @@ class ControlledEgressTransport:
         url: str,
         headers: Optional[Dict[str, str]] = None,
         body: Optional[Union[bytes, str]] = None,
+        timeout: Optional[float] = None,
         correlation_id: str = "DEFAULT-CORR",
         request_id: str = "DEFAULT-REQ",
         category: Optional[ActionCategory] = None,
@@ -1078,8 +1147,11 @@ class ControlledEgressTransport:
         Validates initial destination, performs real HTTP network I/O bound to the pinned IP,
         and re-validates every redirect hop before opening subsequent connections.
         """
-        import http.client
         from urllib.parse import urlsplit, urljoin
+
+        eff_timeout = timeout if timeout is not None else self.timeout
+        if eff_timeout is not None and eff_timeout <= 0:
+            raise ValueError(f"Timeout must be a positive number, got {eff_timeout}")
 
         current_url = url
         current_method = method.upper()
@@ -1110,20 +1182,22 @@ class ControlledEgressTransport:
                 if "Host" not in req_headers and "host" not in req_headers:
                     req_headers["Host"] = norm_host
 
-                connect_host = pinned_ip if pinned_ip else norm_host
                 try:
                     if scheme == "https":
-                        conn = http.client.HTTPSConnection(
-                            connect_host,
+                        ssl_ctx = ssl.create_default_context()
+                        conn = PinnedHTTPSConnection(
+                            norm_host=norm_host,
+                            pinned_ip=pinned_ip,
                             port=eff_port,
-                            timeout=self.timeout,
-                            server_hostname=norm_host
+                            timeout=eff_timeout,
+                            context=ssl_ctx
                         )
                     else:
-                        conn = http.client.HTTPConnection(
-                            connect_host,
+                        conn = PinnedHTTPConnection(
+                            norm_host=norm_host,
+                            pinned_ip=pinned_ip,
                             port=eff_port,
-                            timeout=self.timeout
+                            timeout=eff_timeout
                         )
                     encoded_body = body.encode("utf-8") if isinstance(body, str) else body
                     conn.request(current_method, path_and_query, body=encoded_body, headers=req_headers)
@@ -1172,7 +1246,7 @@ class ControlledEgressTransport:
         self,
         url: str,
         data: Optional[bytes] = None,
-        timeout: float = 10.0,
+        timeout: Optional[float] = None,
         correlation_id: str = "DEFAULT-CORR",
         request_id: str = "DEFAULT-REQ",
         category: Optional[ActionCategory] = None
