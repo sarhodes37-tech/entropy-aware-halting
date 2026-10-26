@@ -302,11 +302,13 @@ def test_recent_traces_row_keyboard_accessibility():
     assert "tr.setAttribute('tabindex', '0');" in js_content
     assert "tr.setAttribute('role', 'button');" in js_content
     assert "tr.setAttribute('aria-label', `Inspect execution trace" in js_content
+    assert "tr.setAttribute('aria-selected', isSelectedEvent ? 'true' : 'false');" in js_content
     assert "e.key === 'Enter' || e.key === ' '" in js_content
 
     css_path = pathlib.Path("epistemicos/ui/static/style.css")
     css_content = css_path.read_text(encoding="utf-8")
     assert ".data-table tr.clickable:focus-visible" in css_content
+    assert ".data-table tr.clickable.selected" in css_content
 
 
 def test_copy_to_clipboard_dynamic_aria_accessibility_update():

@@ -1100,6 +1100,7 @@ document.addEventListener('DOMContentLoaded', () => {
           tr.className = `clickable ${isSelectedEvent ? 'selected' : ''}`;
           tr.setAttribute('role', 'button');
           tr.setAttribute('tabindex', '0');
+          tr.setAttribute('aria-selected', isSelectedEvent ? 'true' : 'false');
           tr.setAttribute('aria-label', `Inspect event sequence ${ev.sequence_number}, type ${ev.event_type}`);
 
           tr.addEventListener('click', () => {
