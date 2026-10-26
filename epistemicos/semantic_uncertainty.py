@@ -52,7 +52,13 @@ class SemanticComparisonResult:
 
 
 class SemanticResolver:
-    """Abstract interface / base class for semantic equivalence resolution."""
+    """
+    Abstract interface / base class for semantic equivalence resolution.
+
+    Contract & Invariants:
+    - Supported implementations MUST be deterministic and symmetric:
+      resolve(candidate_a, candidate_b) == resolve(candidate_b, candidate_a).
+    """
 
     def resolve(self, candidate_a: Candidate, candidate_b: Candidate) -> SemanticComparisonResult:
         raise NotImplementedError("Subclasses must implement resolve()")
@@ -407,17 +413,20 @@ class SemanticUncertaintyEstimator:
         comparison_cache: Dict[Tuple[int, int], SemanticComparisonResult] = {}
 
         def _get_comparison(idx_a: int, idx_b: int) -> SemanticComparisonResult:
-            if idx_a > idx_b:
-                pair_key = (idx_b, idx_a)
-                c_a, c_b = parsed_candidates[idx_b], parsed_candidates[idx_a]
-            else:
-                pair_key = (idx_a, idx_b)
-                c_a, c_b = parsed_candidates[idx_a], parsed_candidates[idx_b]
+            key = (idx_a, idx_b)
+            rev_key = (idx_b, idx_a)
 
-            res = comparison_cache.get(pair_key)
-            if res is None:
-                res = self.resolver.resolve(c_a, c_b)
-                comparison_cache[pair_key] = res
+            res = comparison_cache.get(key)
+            if res is not None:
+                return res
+
+            res = comparison_cache.get(rev_key)
+            if res is not None:
+                return res
+
+            c_a, c_b = parsed_candidates[idx_a], parsed_candidates[idx_b]
+            res = self.resolver.resolve(c_a, c_b)
+            comparison_cache[key] = res
             return res
 
         for i in range(n_candidates):
@@ -425,7 +434,7 @@ class SemanticUncertaintyEstimator:
 
             for cluster in clusters:
                 rep_idx = cluster[0]
-                comp = _get_comparison(rep_idx, i)
+                comp = _get_comparison(i, rep_idx)
                 ambiguity_scores.append(1.0 - comp.resolver_confidence)
 
                 if comp.is_equivalent:
