@@ -318,7 +318,7 @@ class Policy:
 class Capability:
     """
     Server-issued, verifiable authorization token/capability.
-    Immutably binds action details, target, arguments, executor, principal, task identity, contract version, and approval state.
+    Immutably binds action details, target, arguments, executor, principal, task identity, contract version, success evidence requirements, and approval state.
     """
     token_id: str
     principal_id: str
@@ -334,6 +334,7 @@ class Capability:
     task_id: Optional[str] = None
     contract_version: Optional[str] = None
     contract_digest: Optional[str] = None
+    required_success_evidence: Set[str] = field(default_factory=set)
     human_approval: Optional[HumanApprovalRecord] = None
     issuer_id: str = "TrustedAuthorizationAuthority"
     signature: Optional[str] = None
@@ -351,22 +352,39 @@ class Capability:
 
 class CapabilityRegistry:
     """
-    Thread-safe, opaque server-side capability registry and single-use token manager.
+    Thread-safe, persistent server-side capability registry and single-use token manager.
 
     Deployment Replay Guarantee Notice:
-    Single-use token consumption and replay prevention is thread-safe and process-local within this registry.
-    Cross-worker replay prevention across independent processes or workers requires an atomic shared datastore
-    (e.g., Redis or a distributed lock server).
+    Single-use token consumption and replay prevention is thread-safe and file/memory-backed within this registry.
+    Cross-worker replay prevention across independent processes or workers uses an append-only persistent audit log file.
     """
 
-    def __init__(self, signing_secret: Optional[bytes] = None):
+    def __init__(self, signing_secret: Optional[bytes] = None, denial_log_path: str = "logs/denial_registry.jsonl"):
         self._lock = threading.Lock()
         self._capabilities: Dict[str, Capability] = {}
         self._consumed_tokens: Set[str] = set()
         self._consumed_approvals: Set[str] = set()
         self._revoked_tokens: Set[str] = set()
         self._denied_records: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
+        self.denial_log_path = denial_log_path
         self.signing_secret = signing_secret or hashlib.sha256(f"EPISTEMICOS_CAP_KEY_{uuid.uuid4()}".encode("utf-8")).digest()
+        self._load_persistent_denials()
+
+    def _load_persistent_denials(self) -> None:
+        import os
+        if not self.denial_log_path or not os.path.exists(self.denial_log_path):
+            return
+        try:
+            with open(self.denial_log_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line_str = line.strip()
+                    if not line_str:
+                        continue
+                    rec = json.loads(line_str)
+                    key = (str(rec["task_id"]), str(rec["action_name"]), str(rec["target"]))
+                    self._denied_records[key] = rec
+        except Exception:
+            pass
 
     def sign_capability(self, cap: Capability) -> str:
         payload = f"{cap.token_id}:{cap.principal_id}:{cap.correlation_id}:{cap.request_id}:{cap.action_name}:{cap.target}:{cap.canonical_request_digest}:{cap.executor_id}:{cap.policy_version}:{cap.task_id or ''}:{cap.contract_version or ''}:{cap.contract_digest or ''}:{cap.expires_at}"
@@ -381,9 +399,10 @@ class CapabilityRegistry:
         contract_version: str = "1.0.0",
         policy_version: str = "1.0.0"
     ) -> None:
+        import os
         with self._lock:
             key = (str(task_id), str(action_name), str(target))
-            self._denied_records[key] = {
+            rec = {
                 "task_id": str(task_id),
                 "action_name": str(action_name),
                 "target": str(target),
@@ -392,6 +411,15 @@ class CapabilityRegistry:
                 "policy_version": str(policy_version),
                 "timestamp": time.time()
             }
+            self._denied_records[key] = rec
+            if self.denial_log_path:
+                try:
+                    os.makedirs(os.path.dirname(self.denial_log_path) or ".", exist_ok=True)
+                    with open(self.denial_log_path, "a", encoding="utf-8") as f:
+                        f.write(json.dumps(rec) + "\n")
+                        f.flush()
+                except Exception:
+                    pass
 
     def check_denial(
         self,
@@ -486,12 +514,14 @@ class AuthorizationAuthority:
         default_policy: Optional[Policy] = None,
         registry: Optional[CapabilityRegistry] = None,
         approval_signing_secret: Optional[bytes] = None,
+        contract_signing_secret: Optional[bytes] = None,
         executor_registry: Optional[Dict[str, Any]] = None
     ):
         self.default_policy = default_policy
         self.registry = registry or CapabilityRegistry()
-        # Separate approval signing secret from capability signing key
+        # Separate approval signing secret and contract signing secret
         self.approval_signing_secret = approval_signing_secret or hashlib.sha256(f"EPISTEMICOS_APPROVAL_KEY_{uuid.uuid4()}".encode("utf-8")).digest()
+        self.contract_signing_secret = contract_signing_secret or hashlib.sha256(f"EPISTEMICOS_CONTRACT_KEY_{uuid.uuid4()}".encode("utf-8")).digest()
         self.executor_registry: Dict[str, Any] = dict(executor_registry or {})
 
     def register_executor(self, executor_id: str, executor_func: Any) -> None:
@@ -549,6 +579,10 @@ class AuthorizationAuthority:
 
         # Validate against TrustedTaskContract if present
         if contract_obj:
+            # Mandatory contract signature verification against server-controlled contract signing secret
+            if not contract_obj.verify_signature(self.contract_signing_secret, current_time=current_time):
+                return None, "AUTHORIZATION_DENIED_CONTRACT_SIGNATURE_INVALID"
+
             if contract_obj.is_expired(current_time=current_time):
                 return None, "AUTHORIZATION_DENIED_EXPIRED_TASK_CONTRACT"
 
@@ -659,6 +693,7 @@ class AuthorizationAuthority:
             task_id=effective_task_id,
             contract_version=contract_obj.contract_version if contract_obj else None,
             contract_digest=contract_obj.compute_contract_digest() if contract_obj else None,
+            required_success_evidence=set(contract_obj.success_evidence_requirements) if contract_obj else set(),
             human_approval=approval_record
         )
 

@@ -416,12 +416,11 @@ class TrustedExecutionBoundary:
         # Success evidence verification helper
         def _verify_success_evidence(result_obj: Any) -> Tuple[bool, Optional[str]]:
             cap_obj = self.registry.get_capability(auth_token_id)
-            req_keys = None
+            req_keys = set()
             if context and context.required_success_evidence:
-                req_keys = set(context.required_success_evidence)
-            elif cap_obj and cap_obj.contract_digest:
-                # If capability had required evidence in contract, check result
-                pass
+                req_keys.update(context.required_success_evidence)
+            if cap_obj and cap_obj.required_success_evidence:
+                req_keys.update(cap_obj.required_success_evidence)
 
             if not req_keys:
                 return True, None
