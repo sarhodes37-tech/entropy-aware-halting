@@ -29,6 +29,7 @@ import threading
 
 _boundary_lock = threading.Lock()
 _active_boundary_count = 0
+_boundary_active_broker = None
 _orig_socket_connect = socket.socket.connect
 _orig_socket_connect_ex = socket.socket.connect_ex
 
@@ -986,16 +987,22 @@ class EgressTransportBroker:
                 return _orig_socket_connect(sock_self, address)
 
             active_ctx = _active_broker_context.get()
-            if not active_ctx or active_ctx.get("thread_id") != threading.get_ident():
+            if active_ctx:
+                dispatch_broker = active_ctx["broker"]
+                dispatch_corr = active_ctx.get("correlation_id", correlation_id)
+                dispatch_req = active_ctx.get("request_id", request_id)
+                dispatch_act = active_ctx.get("action_name", action_name)
+                dispatch_cat = active_ctx.get("category", category)
+            elif _boundary_active_broker:
+                dispatch_broker = _boundary_active_broker
+                dispatch_corr = "DEFAULT-CORR"
+                dispatch_req = "DEFAULT-REQ"
+                dispatch_act = "socket_connect"
+                dispatch_cat = None
+            else:
                 if is_connect_ex:
                     return _orig_socket_connect_ex(sock_self, address)
                 return _orig_socket_connect(sock_self, address)
-
-            dispatch_broker = active_ctx["broker"]
-            dispatch_corr = active_ctx.get("correlation_id", "DEFAULT-CORR")
-            dispatch_req = active_ctx.get("request_id", "DEFAULT-REQ")
-            dispatch_act = active_ctx.get("action_name", "socket_connect")
-            dispatch_cat = active_ctx.get("category", None)
 
             if isinstance(address, (tuple, list)) and len(address) >= 2:
                 target_host, target_port = str(address[0]), int(address[1])
@@ -1038,12 +1045,14 @@ class EgressTransportBroker:
         ctx_token = _active_broker_context.set(ctx_info)
 
         with _boundary_lock:
+            global _active_boundary_count, _boundary_active_broker
             if _active_boundary_count == 0:
                 _orig_socket_connect = socket.socket.connect
                 _orig_socket_connect_ex = socket.socket.connect_ex
                 socket.socket.connect = _patched_connect
                 socket.socket.connect_ex = _patched_connect_ex
             _active_boundary_count += 1
+            _boundary_active_broker = self
 
         token = _enforce_safe_dns.set(True)
         try:
@@ -1055,6 +1064,7 @@ class EgressTransportBroker:
                 _active_boundary_count -= 1
                 if _active_boundary_count <= 0:
                     _active_boundary_count = 0
+                    _boundary_active_broker = None
                     socket.socket.connect = _orig_socket_connect
                     socket.socket.connect_ex = _orig_socket_connect_ex
 

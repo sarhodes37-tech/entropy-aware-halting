@@ -300,6 +300,107 @@ def test_pinned_https_connection_socket_and_tls_sni():
         mock_ctx.wrap_socket.assert_called_once_with(mock_sock, server_hostname="api.github.com")
 
 
+def _make_property1_test_certs(cert_dir):
+    ca_key = os.path.join(cert_dir, "ca_key.pem")
+    ca_cert = os.path.join(cert_dir, "ca_cert.pem")
+    subprocess.run(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-keyout", ca_key, "-out", ca_cert, "-days", "1", "-nodes", "-subj", "/CN=TestCA"], check=True, capture_output=True)
+
+    s1_key = os.path.join(cert_dir, "s1_key.pem")
+    s1_csr = os.path.join(cert_dir, "s1_csr.pem")
+    s1_cert = os.path.join(cert_dir, "s1_cert.pem")
+    s1_ext = os.path.join(cert_dir, "s1_ext.ini")
+    with open(s1_ext, "w") as f:
+        f.write("subjectAltName=DNS:good-hostname.com,IP:127.0.0.1\n")
+    subprocess.run(["openssl", "req", "-newkey", "rsa:2048", "-keyout", s1_key, "-out", s1_csr, "-nodes", "-subj", "/CN=good-hostname.com"], check=True, capture_output=True)
+    subprocess.run(["openssl", "x509", "-req", "-in", s1_csr, "-CA", ca_cert, "-CAkey", ca_key, "-CAcreateserial", "-out", s1_cert, "-days", "1", "-extfile", s1_ext], check=True, capture_output=True)
+
+    s2_key = os.path.join(cert_dir, "s2_key.pem")
+    s2_csr = os.path.join(cert_dir, "s2_csr.pem")
+    s2_cert = os.path.join(cert_dir, "s2_cert.pem")
+    s2_ext = os.path.join(cert_dir, "s2_ext.ini")
+    with open(s2_ext, "w") as f:
+        f.write("subjectAltName=DNS:wrong-hostname.com,IP:127.0.0.1\n")
+    subprocess.run(["openssl", "req", "-newkey", "rsa:2048", "-keyout", s2_key, "-out", s2_csr, "-nodes", "-subj", "/CN=wrong-hostname.com"], check=True, capture_output=True)
+    subprocess.run(["openssl", "x509", "-req", "-in", s2_csr, "-CA", ca_cert, "-CAkey", ca_key, "-CAcreateserial", "-out", s2_cert, "-days", "1", "-extfile", s2_ext], check=True, capture_output=True)
+
+    untrusted_key = os.path.join(cert_dir, "untrusted_key.pem")
+    untrusted_cert = os.path.join(cert_dir, "untrusted_cert.pem")
+    subprocess.run(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-keyout", untrusted_key, "-out", untrusted_cert, "-days", "1", "-nodes", "-subj", "/CN=good-hostname.com"], check=True, capture_output=True)
+
+    return ca_cert, (s1_cert, s1_key), (s2_cert, s2_key), (untrusted_cert, untrusted_key)
+
+
+def test_property_1_tls_identity_verification_under_ip_pinning(tmp_path):
+    """
+    Property 1 Test: Proves TLS identity verification under IP pinning simultaneously:
+    1. Connects TCP socket to pinned IP address (127.0.0.1).
+    2. Uses original normalized hostname (good-hostname.com) for TLS SNI.
+    3. Enforces certificate-chain validation and hostname verification (succeeding for good-hostname.com).
+    4. Rejects untrusted certificates (unknown CA) and certificates for wrong hostname (wrong-hostname.com).
+    """
+    from epistemicos.containment import PinnedHTTPSConnection
+
+    ca_cert, (s1_cert, s1_key), (s2_cert, s2_key), (u_cert, u_key) = _make_property1_test_certs(str(tmp_path))
+
+    class TLSServerHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"property_1_verified")
+
+        def log_message(self, *args):
+            pass
+
+    def run_server(cert_file, key_file):
+        server = HTTPServer(("127.0.0.1", 0), TLSServerHandler)
+        port = server.server_port
+        srv_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        srv_ctx.load_cert_chain(cert_file, key_file)
+        server.socket = srv_ctx.wrap_socket(server.socket, server_side=True)
+        t = threading.Thread(target=server.serve_forever)
+        t.daemon = True
+        t.start()
+        return server, port
+
+    client_ca_ctx = ssl.create_default_context(cafile=ca_cert)
+    assert client_ca_ctx.check_hostname is True
+    assert client_ca_ctx.verify_mode == ssl.CERT_REQUIRED
+
+    # 1. Trusted cert matching requested hostname succeeds when pinned to 127.0.0.1
+    s1, p1 = run_server(s1_cert, s1_key)
+    try:
+        conn = PinnedHTTPSConnection(norm_host="good-hostname.com", pinned_ip="127.0.0.1", port=p1, context=client_ca_ctx)
+        assert conn.host == "good-hostname.com"
+        assert conn.pinned_ip == "127.0.0.1"
+        conn.request("GET", "/data")
+        resp = conn.getresponse()
+        assert resp.status == 200
+        assert resp.read() == b"property_1_verified"
+        conn.close()
+    finally:
+        s1.shutdown()
+
+    # 2. Untrusted cert (unknown CA) fails certificate verification
+    su, pu = run_server(u_cert, u_key)
+    try:
+        conn = PinnedHTTPSConnection(norm_host="good-hostname.com", pinned_ip="127.0.0.1", port=pu, context=client_ca_ctx)
+        with pytest.raises((ssl.SSLCertVerificationError, ssl.SSLError, socket.error)):
+            conn.request("GET", "/data")
+        conn.close()
+    finally:
+        su.shutdown()
+
+    # 3. Trusted cert for wrong hostname fails hostname verification
+    s2, p2 = run_server(s2_cert, s2_key)
+    try:
+        conn = PinnedHTTPSConnection(norm_host="good-hostname.com", pinned_ip="127.0.0.1", port=p2, context=client_ca_ctx)
+        with pytest.raises((ssl.SSLCertVerificationError, ssl.SSLError, socket.error)):
+            conn.request("GET", "/data")
+        conn.close()
+    finally:
+        s2.shutdown()
+
+
 def test_p0_overlapping_contexts_with_different_policies_and_provenance(temp_prov_store):
     """P0 test: Proves overlapping contexts with different brokers/policies dispatch to their own policy and record their own provenance IDs."""
     pol_a = EgressPolicy(allowed_destinations={"domain-a.com"})
@@ -383,46 +484,85 @@ def test_p0_concurrent_threads_isolated_policy_dispatch(temp_prov_store):
     assert not errors
 
 
-def test_p0_unrelated_child_threads_do_not_inherit_parent_egress_authority():
-    """P0 test: Proves child threads spawned inside parent's enforce_socket_boundary do not inherit parent's egress authority."""
-    import threading
+def test_property_2_socket_boundary_enforcement_in_spawned_threads():
+    """
+    Property 2 Test: Proves socket-boundary enforcement in spawned child threads:
+    1. Parent thread starts a protected operation with enforce_socket_boundary().
+    2. Parent policy permits port_allowed, but prohibits port_prohibited on 127.0.0.1.
+    3. Parent spawns and synchronizes with child thread from inside that operation.
+    4. Child thread attempts connection to prohibited port_prohibited against local Server B.
+    5. Connection is blocked with socket.error, and Server B receives ZERO requests!
+    """
+    server_b_contacts = [0]
 
-    pol_a = EgressPolicy(allowed_destinations={"host-a.com"})
-    broker_a = EgressTransportBroker(policy=pol_a, resolver_func=default_mock_resolver)
+    class HandlerB(BaseHTTPRequestHandler):
+        def do_GET(self):
+            server_b_contacts[0] += 1
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"prohibited_content")
 
-    parent_history_counts = []
+        def log_message(self, *a):
+            pass
 
-    def parent_worker():
-        with broker_a.enforce_socket_boundary(correlation_id="PARENT-CORR", request_id="PARENT-REQ"):
-            with patch("epistemicos.containment._orig_socket_connect") as mock_orig_conn:
-                s_parent = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                try:
-                    s_parent.connect(("host-a.com", 80))
-                except Exception:
-                    pass
+    server_b = HTTPServer(("127.0.0.1", 0), HandlerB)
+    port_prohibited = server_b.server_port
+    thread_b = threading.Thread(target=server_b.serve_forever)
+    thread_b.daemon = True
+    thread_b.start()
 
-                parent_history_counts.append(len(broker_a.connection_history))
+    class HandlerA(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"allowed_content")
 
-                def child_worker_without_boundary():
-                    s_child = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        def log_message(self, *a):
+            pass
+
+    server_a = HTTPServer(("127.0.0.1", 0), HandlerA)
+    port_allowed = server_a.server_port
+    thread_a = threading.Thread(target=server_a.serve_forever)
+    thread_a.daemon = True
+    thread_a.start()
+
+    try:
+        policy = EgressPolicy(
+            allowed_destinations={"127.0.0.1"},
+            allowed_ports={port_allowed},
+            allow_loopback=True
+        )
+        broker = EgressTransportBroker(policy=policy)
+        child_exception = [None]
+
+        def parent_protected_operation():
+            with broker.enforce_socket_boundary(correlation_id="CORR-P2", request_id="REQ-P2"):
+                # Spawn child thread from within protected operation
+                def child_thread_worker():
+                    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                     try:
-                        s_child.connect(("host-a.com", 80))
-                    except Exception:
-                        pass
+                        s.connect(("127.0.0.1", port_prohibited))
+                    except Exception as e:
+                        child_exception[0] = e
+                    finally:
+                        s.close()
 
-                t_child = threading.Thread(target=child_worker_without_boundary)
+                t_child = threading.Thread(target=child_thread_worker)
                 t_child.start()
                 t_child.join()
 
-                parent_history_counts.append(len(broker_a.connection_history))
+        parent_protected_operation()
 
-    t_parent = threading.Thread(target=parent_worker)
-    t_parent.start()
-    t_parent.join()
-
-    # Parent thread's socket connect dispatched to broker_a (history count 1)
-    # Child thread's socket connect did NOT dispatch to broker_a (history count remained 1)
-    assert parent_history_counts == [1, 1]
+        # Child thread connection attempt was blocked
+        assert child_exception[0] is not None
+        assert "Egress blocked" in str(child_exception[0])
+        # Prohibited Server B received ZERO requests
+        assert server_b_contacts[0] == 0
+    finally:
+        server_a.shutdown()
+        server_a.server_close()
+        server_b.shutdown()
+        server_b.server_close()
 
 
 def test_p1_request_and_urlopen_timeout_override_and_validation():
