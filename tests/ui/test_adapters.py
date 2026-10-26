@@ -476,7 +476,8 @@ def test_integrity_verification_exception_yields_unverified(mock_logs, monkeypat
     def mock_inspect_health_error(self):
         raise OSError("Permission denied reading log path")
 
-    monkeypatch.setattr(LocalProvenanceStore, "_inspect_health", mock_inspect_health_error)
+    import epistemicos.ui.adapters
+    monkeypatch.setattr(epistemicos.ui.adapters.LocalProvenanceStore, "_inspect_health", mock_inspect_health_error)
 
     adapter = ObservatoryDataAdapter(audit_log_path=mock_logs["audit"], provenance_log_path=mock_logs["provenance"])
     data = adapter.get_provenance_explorer_data()

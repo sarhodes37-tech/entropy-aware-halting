@@ -37,17 +37,18 @@ To eliminate SSRF and parsing ambiguity bypasses:
 
 ## 3. Transport-Boundary Egress Enforcement (`EgressTransportBroker`)
 
-### 3.1 Point-of-Establishment Verification
+### 3.1 Point-of-Establishment Verification & Transport Boundary
 URL argument inspection alone is insufficient against socket-level requests, redirects, or raw callbacks.
-The `EgressTransportBroker`:
-1. Intercepts connection establishment at the transport boundary before network socket creation.
-2. Resolves DNS strictly via registered/approved resolvers.
-3. Re-validates **all** returned DNS IP addresses against restricted IP ranges (loopback `127.0.0.1`, private `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, link-local `169.254.0.0/16`, AWS/GCP metadata endpoints). If any returned answer is restricted, the connection is denied.
-4. Pins the validated IP address to prevent DNS rebinding attacks between authorization and connection time.
-5. Re-validates every HTTP redirect target URL strictly before the redirected request is made.
+The `EgressTransportBroker` and `ControlledEgressTransport`:
+1. Intercept connection establishment at the transport boundary before network socket creation.
+2. Resolve DNS strictly via registered/approved resolvers.
+3. Re-validate **all** returned DNS IP addresses against restricted IP ranges (loopback `127.0.0.1`/`::1`, private `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, link-local `169.254.0.0/16`, AWS/GCP metadata endpoints `169.254.169.254` and `metadata.google.internal`). If any returned answer is restricted, the connection is denied.
+4. Pin the validated IP address to prevent DNS rebinding (TOCTOU) attacks between authorization and connection time.
+5. Re-validate every HTTP redirect target URL strictly before the redirected request is made across arbitrary redirect chains.
+6. Intercept direct `socket.connect` calls in protected execution scope via `enforce_socket_boundary()`.
 
 ### 3.2 Audit & Provenance Recording
-Failed egress attempts record an explicit `EGRESS_BLOCKED` provenance event into `LocalProvenanceStore` bound to the correlation ID, request ID, target URL, normalized host, resolved IP, and denial reason.
+Failed egress attempts record an explicit `EGRESS_BLOCKED` provenance event into `LocalProvenanceStore` bound to the correlation ID, request ID, target URL, normalized host, resolved IP, and denial reason without leaking sensitive credentials or payload data.
 
 ---
 
@@ -90,15 +91,15 @@ The `ShowerCurtainOpenAIAdapter` wraps model inference requests:
 
 ## 6. Deployment Boundary & Infrastructure Requirements
 
-### 6.1 Application-Level Checks vs. Deployment Infrastructure
-- **Application-Level Controls**: Python-level destination normalization, `EgressPolicy` checks, `EgressTransportBroker` resolution, `ShowerCurtain` privacy transformations, and `SideEffectPolicyEngine` approval verification.
+### 6.1 Application-Level Checks vs. Deployment Infrastructure (GAP-03 Status: PARTIAL)
+- **Enforced Outbound Paths**: Application-level Python HTTP requests (`ControlledEgressTransport`, `ShowerCurtainOpenAIAdapter`), `EgressTransportBroker` connections, `ContainmentGuard.inspect_network_egress()` / `wrap_tool_execution()`, and direct `socket.connect` calls within `enforce_socket_boundary()` protected execution scope.
 - **Deployment Infrastructure Requirements**: OS-level network isolation, egress firewall rules (iptables/nftables), enforced HTTP egress proxy, or network namespaces (`netns`). Application-level Python code cannot replace OS-level process isolation.
 
 ### 6.2 Deployment Enforcement Invariants
 When deployed in protected mode with `require_infrastructure_enforcement=True`, `EgressTransportBroker` verifies the presence of infrastructure-level network enforcement (`infrastructure_enforced=True`) and fails startup if missing.
 
-### 6.3 Remaining Library-Level Bypass Routes
-The following bypass routes cannot be prevented by Python library checks alone and require OS/container isolation:
-- Raw C/C++ extensions or subprocesses bypassing standard Python socket modules.
-- Compromise of the Python process memory space.
-- Direct host filesystem manipulation when running without container/sandbox boundaries.
+### 6.3 Remaining Library-Level Bypass Routes & Status Verdict
+The overall GAP-03 status remains `PARTIAL` (and `PARTIAL_GATING_DEFENSE` in Incident Lab evidence reports) because:
+- Direct Python socket calls and HTTP transports are authoritatively enforced at the transport boundary within the process.
+- Subprocesses (`curl`/`wget`/raw shell execution) and raw C-extensions bypassing Python's `socket` module require container/OS-level network isolation (iptables or netns).
+- Egress policy enforcement is fail-closed, DNS-rebind-protected, and provenance-audited.
