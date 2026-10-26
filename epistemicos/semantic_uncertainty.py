@@ -17,11 +17,12 @@ Phase 2 & Phase 3 Architecture & Operational Semantics:
   Identical candidates are aggregated into the same semantic cluster, summing their sample weight P(S_k) = sum_{c_i in S_k} p_tilde(c_i).
 """
 
+import functools
 import math
 import re
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
+from typing import Any, Dict, FrozenSet, List, Optional, Sequence, Tuple, Union
 
 
 class SemanticUncertaintyStatus(str, Enum):
@@ -77,26 +78,39 @@ class ExactAndNormalizedResolver(SemanticResolver):
         (re.compile(r"\bnot\s+incorrect\b"), "correct"),
     ]
     CLEAN_PUNCTUATION_PATTERN = re.compile(r"[^\w\s\$\€\£\¥]")
+    QUANTITY_UNIT_PATTERN = re.compile(r"[\$\€\£\¥]?\b\d+(?:\.\d+)?\b(?:\s*(?:usd|eur|gbp|jpy|kg|lbs|dollars|euros|percent|%))?")
 
     def __init__(self, confidence_threshold: float = 0.85):
         self.confidence_threshold = confidence_threshold
 
-    def _normalize(self, text: str) -> str:
+    @staticmethod
+    @functools.lru_cache(maxsize=4096)
+    def _get_features(text: str) -> Tuple[str, Tuple[str, ...], FrozenSet[str], Tuple[str, ...]]:
         clean = text.strip().lower()
         # Simplify double negations
-        for pattern, replacement in self.DOUBLE_NEGATION_PATTERNS:
+        for pattern, replacement in ExactAndNormalizedResolver.DOUBLE_NEGATION_PATTERNS:
             clean = pattern.sub(replacement, clean)
-        clean = self.CLEAN_PUNCTUATION_PATTERN.sub("", clean)
-        return " ".join(clean.split())
+        clean = ExactAndNormalizedResolver.CLEAN_PUNCTUATION_PATTERN.sub("", clean)
+        norm = " ".join(clean.split())
+        tokens = tuple(norm.split())
+        token_set = frozenset(tokens)
+
+        matches = ExactAndNormalizedResolver.QUANTITY_UNIT_PATTERN.findall(text.lower())
+        units = tuple(m.strip() for m in matches if m.strip())
+        return norm, tokens, token_set, units
+
+    def _normalize(self, text: str) -> str:
+        norm, _, _, _ = self._get_features(text)
+        return norm
 
     def _extract_tokens(self, text: str) -> List[str]:
-        return self._normalize(text).split()
+        _, tokens, _, _ = self._get_features(text)
+        return list(tokens)
 
     def _extract_quantities_with_units(self, text: str) -> List[str]:
         """Extract numbers along with adjacent currency symbols or unit tokens."""
-        # Find currency + number, or number + unit word
-        matches = re.findall(r"[\$\€\£\¥]?\b\d+(?:\.\d+)?\b(?:\s*(?:usd|eur|gbp|jpy|kg|lbs|dollars|euros|percent|%))?", text.lower())
-        return [m.strip() for m in matches if m.strip()]
+        _, _, _, units = self._get_features(text)
+        return list(units)
 
     def _has_negation_flip(self, tokens_a: List[str], tokens_b: List[str]) -> bool:
         negs_a = set(tokens_a) & self.NEGATION_WORDS
@@ -124,8 +138,8 @@ class ExactAndNormalizedResolver(SemanticResolver):
         return False
 
     def resolve(self, candidate_a: Candidate, candidate_b: Candidate) -> SemanticComparisonResult:
-        norm_a = self._normalize(candidate_a.text)
-        norm_b = self._normalize(candidate_b.text)
+        norm_a, tokens_a, set_a, units_a = self._get_features(candidate_a.text)
+        norm_b, tokens_b, set_b, units_b = self._get_features(candidate_b.text)
 
         # Exact match after normalization and double negation simplification
         if norm_a == norm_b:
@@ -138,23 +152,27 @@ class ExactAndNormalizedResolver(SemanticResolver):
                 resolver_confidence=1.0
             )
 
-        tokens_a = self._extract_tokens(candidate_a.text)
-        tokens_b = self._extract_tokens(candidate_b.text)
-        units_a = self._extract_quantities_with_units(candidate_a.text)
-        units_b = self._extract_quantities_with_units(candidate_b.text)
-
         # Check for negation flip
-        neg_flip = self._has_negation_flip(tokens_a, tokens_b)
+        negs_a = set_a & self.NEGATION_WORDS
+        negs_b = set_b & self.NEGATION_WORDS
+        neg_flip = len(negs_a) != len(negs_b)
 
         # Check for quantity/unit mismatch
         unit_mismatch = (units_a != units_b) and (len(units_a) > 0 or len(units_b) > 0)
 
         # Check conditional & temporal discrepancies
-        conditional_diff = self._has_conditional_discrepancy(tokens_a, tokens_b)
-        temporal_diff = self._has_temporal_discrepancy(tokens_a, tokens_b)
+        cond_a = set_a & self.CONDITIONAL_WORDS
+        cond_b = set_b & self.CONDITIONAL_WORDS
+        conditional_diff = (cond_a != cond_b)
+
+        temp_a = set_a & self.TEMPORAL_WORDS
+        temp_b = set_b & self.TEMPORAL_WORDS
+        temporal_diff = (temp_a != temp_b)
 
         # Check actor/order swap
-        actor_swap = self._has_actor_swap(tokens_a, tokens_b)
+        directional_a = set_a & self.DIRECTIONAL_KEYWORDS
+        directional_b = set_b & self.DIRECTIONAL_KEYWORDS
+        actor_swap = bool(directional_a and directional_b and set_a == set_b and tokens_a != tokens_b)
 
         # Check action difference
         affects_decision = False
@@ -162,7 +180,6 @@ class ExactAndNormalizedResolver(SemanticResolver):
             affects_decision = (candidate_a.action != candidate_b.action)
 
         # Calculate token overlap Jaccard index
-        set_a, set_b = set(tokens_a), set(tokens_b)
         intersection = set_a & set_b
         union = set_a | set_b
         jaccard = len(intersection) / len(union) if union else 1.0
@@ -387,14 +404,28 @@ class SemanticUncertaintyEstimator:
         total_pairs = 0
         ambiguity_scores = []
 
+        comparison_cache: Dict[Tuple[int, int], SemanticComparisonResult] = {}
+
+        def _get_comparison(idx_a: int, idx_b: int) -> SemanticComparisonResult:
+            if idx_a > idx_b:
+                pair_key = (idx_b, idx_a)
+                c_a, c_b = parsed_candidates[idx_b], parsed_candidates[idx_a]
+            else:
+                pair_key = (idx_a, idx_b)
+                c_a, c_b = parsed_candidates[idx_a], parsed_candidates[idx_b]
+
+            res = comparison_cache.get(pair_key)
+            if res is None:
+                res = self.resolver.resolve(c_a, c_b)
+                comparison_cache[pair_key] = res
+            return res
+
         for i in range(n_candidates):
-            cand_i = parsed_candidates[i]
             assigned_cluster = None
 
             for cluster in clusters:
                 rep_idx = cluster[0]
-                cand_rep = parsed_candidates[rep_idx]
-                comp = self.resolver.resolve(cand_i, cand_rep)
+                comp = _get_comparison(rep_idx, i)
                 ambiguity_scores.append(1.0 - comp.resolver_confidence)
 
                 if comp.is_equivalent:
@@ -410,8 +441,7 @@ class SemanticUncertaintyEstimator:
         for i in range(n_candidates):
             for j in range(i + 1, n_candidates):
                 total_pairs += 1
-                cand_i, cand_j = parsed_candidates[i], parsed_candidates[j]
-                comp = self.resolver.resolve(cand_i, cand_j)
+                comp = _get_comparison(i, j)
 
                 if not comp.is_equivalent:
                     pairwise_disagreements += 1
