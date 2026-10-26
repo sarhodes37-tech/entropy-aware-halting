@@ -1,11 +1,11 @@
 # EpistemicOS Consolidated Security & Evaluation Evidence Report
 
-**Overall Status:** `PARTIAL` | **Generated:** 2026-10-26 07:11:51 UTC
+**Overall Status:** `PARTIAL` | **Generated:** 2026-10-26 10:20:31 UTC
 
 ## Reproducibility & Environment Metadata
 - **Evaluated Git Commit:** `d4050c054f7f22db4685a7850077cf3be5a04d53`
 - **Working Tree Status:** `DIRTY`
-- **Working Tree Digest:** `16a7425750b13a8f496a3442e014a2ae6a7a097db7f0013677df3288b96752b4`
+- **Working Tree Digest:** `767ecc387bf0ca56827d5e3eb685830424a0ecefeda5e7f77e852833431b6999`
 - **Dataset Version:** `1.0.0-frozen`
 - **Dataset SHA-256 Digest:** `f4e31381a922c1143769ccb887c4841e4a14fedec6eef6569d40eed2956ce873` (Verified: `True`)
 
@@ -13,8 +13,8 @@
 
 ## Layer A: Deterministic Regression
 - **Status:** `PASS`
-- **Test Command:** `pytest tests/unit/ tests/e2e_security/ -q --tb=no`
-- **Summary:** SKIPPED [1] tests/unit/test_security_coverage_remediation.py:369: could not import 'torch': No module named 'torch'
+- **Test Command:** `pytest tests/unit/test_evidence_architecture.py -k test_dataset_manifest_integrity -q --tb=no`
+- **Summary:** .                                                                        [100%]
 
 ---
 

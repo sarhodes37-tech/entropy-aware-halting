@@ -24,6 +24,12 @@ from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union
 from epistemicos.gates import ControlPlaneGate, GateConfig, GateInput, GateOutcome, GateDecision, GateAction, GateResult
 
+import threading
+
+_boundary_lock = threading.Lock()
+_active_boundary_count = 0
+_orig_socket_connect = socket.socket.connect
+_orig_socket_connect_ex = socket.socket.connect_ex
 
 _enforce_safe_dns = contextvars.ContextVar("enforce_safe_dns", default=False)
 _original_getaddrinfo = socket.getaddrinfo
@@ -969,13 +975,23 @@ class EgressTransportBroker:
         category: Optional[ActionCategory] = None
     ):
         """
-        Thread-safe context manager patching socket.socket.connect during protected execution.
-        Intercepts direct socket.connect calls, normalizes target host/IP, resolves DNS,
-        and enforces EgressPolicy before socket connection establishment.
+        Thread-safe context manager patching socket.socket.connect and connect_ex
+        during protected execution. Uses reference counting so process-wide interception
+        remains active for all overlapping or nested protected contexts and is unpatched
+        only when all protected contexts exit.
         """
-        orig_connect = socket.socket.connect
+        global _active_boundary_count, _orig_socket_connect, _orig_socket_connect_ex
 
-        def _patched_connect(sock_self, address):
+        def _is_inet_family(sock_self) -> bool:
+            family = getattr(sock_self, "family", socket.AF_INET)
+            return family in (socket.AF_INET, getattr(socket, "AF_INET6", socket.AF_INET))
+
+        def _patched_connect_internal(sock_self, address, is_connect_ex=False):
+            if not _is_inet_family(sock_self):
+                if is_connect_ex:
+                    return _orig_socket_connect_ex(sock_self, address)
+                return _orig_socket_connect(sock_self, address)
+
             if isinstance(address, (tuple, list)) and len(address) >= 2:
                 target_host, target_port = str(address[0]), int(address[1])
                 allowed, reason, pinned_ip = self.establish_connection(
@@ -986,19 +1002,45 @@ class EgressTransportBroker:
                     category=category
                 )
                 if not allowed:
-                    raise socket.error(f"Egress blocked: Socket connection to '{target_host}:{target_port}' denied by policy ({reason}).")
+                    err_msg = f"Egress blocked: Socket connection to '{target_host}:{target_port}' denied by policy ({reason})."
+                    if is_connect_ex:
+                        return 13  # EACCES Permission denied
+                    raise socket.error(err_msg)
                 if pinned_ip and not target_host.startswith("["):
                     new_addr = (pinned_ip, target_port) + tuple(address[2:])
-                    return orig_connect(sock_self, new_addr)
-            return orig_connect(sock_self, address)
+                    if is_connect_ex:
+                        return _orig_socket_connect_ex(sock_self, new_addr)
+                    return _orig_socket_connect(sock_self, new_addr)
 
-        socket.socket.connect = _patched_connect
+            if is_connect_ex:
+                return _orig_socket_connect_ex(sock_self, address)
+            return _orig_socket_connect(sock_self, address)
+
+        def _patched_connect(sock_self, address):
+            return _patched_connect_internal(sock_self, address, is_connect_ex=False)
+
+        def _patched_connect_ex(sock_self, address):
+            return _patched_connect_internal(sock_self, address, is_connect_ex=True)
+
+        with _boundary_lock:
+            if _active_boundary_count == 0:
+                _orig_socket_connect = socket.socket.connect
+                _orig_socket_connect_ex = socket.socket.connect_ex
+                socket.socket.connect = _patched_connect
+                socket.socket.connect_ex = _patched_connect_ex
+            _active_boundary_count += 1
+
         token = _enforce_safe_dns.set(True)
         try:
             yield
         finally:
             _enforce_safe_dns.reset(token)
-            socket.socket.connect = orig_connect
+            with _boundary_lock:
+                _active_boundary_count -= 1
+                if _active_boundary_count <= 0:
+                    _active_boundary_count = 0
+                    socket.socket.connect = _orig_socket_connect
+                    socket.socket.connect_ex = _orig_socket_connect_ex
 
 
 class ControlledEgressTransport:
@@ -1033,9 +1075,11 @@ class ControlledEgressTransport:
     ) -> Dict[str, Any]:
         """
         Executes an outbound HTTP request through transport-boundary policy enforcement.
-        Validates initial destination and re-validates every redirect hop.
+        Validates initial destination, performs real HTTP network I/O bound to the pinned IP,
+        and re-validates every redirect hop before opening subsequent connections.
         """
-        from urllib.parse import urljoin
+        import http.client
+        from urllib.parse import urlsplit, urljoin
 
         current_url = url
         current_method = method.upper()
@@ -1056,13 +1100,48 @@ class ControlledEgressTransport:
             if redirect_handler:
                 res = redirect_handler(current_url)
             else:
-                res = {
-                    "status": 200,
-                    "url": current_url,
-                    "pinned_ip": pinned_ip,
-                    "headers": current_headers,
-                    "body": body
-                }
+                parsed = urlsplit(current_url)
+                scheme = parsed.scheme.lower() or "http"
+                norm_host = normalize_destination_host(current_url)
+                eff_protocol, eff_port = extract_url_components(current_url, default_protocol=scheme)
+                path_and_query = (parsed.path or "/") + (f"?{parsed.query}" if parsed.query else "")
+
+                req_headers = dict(current_headers)
+                if "Host" not in req_headers and "host" not in req_headers:
+                    req_headers["Host"] = norm_host
+
+                connect_host = pinned_ip if pinned_ip else norm_host
+                try:
+                    if scheme == "https":
+                        conn = http.client.HTTPSConnection(
+                            connect_host,
+                            port=eff_port,
+                            timeout=self.timeout,
+                            server_hostname=norm_host
+                        )
+                    else:
+                        conn = http.client.HTTPConnection(
+                            connect_host,
+                            port=eff_port,
+                            timeout=self.timeout
+                        )
+                    encoded_body = body.encode("utf-8") if isinstance(body, str) else body
+                    conn.request(current_method, path_and_query, body=encoded_body, headers=req_headers)
+                    resp = conn.getresponse()
+                    resp_data = resp.read()
+                    resp_headers = {k: v for k, v in resp.getheaders()}
+                    conn.close()
+
+                    res = {
+                        "status": resp.status,
+                        "reason": resp.reason,
+                        "url": current_url,
+                        "pinned_ip": pinned_ip,
+                        "headers": resp_headers,
+                        "body": resp_data
+                    }
+                except Exception as net_err:
+                    raise socket.error(f"Egress transport network I/O error to '{current_url}': {str(net_err)}") from net_err
 
             loc = res.get("headers", {}).get("Location") or res.get("headers", {}).get("location")
             if res.get("status") in (301, 302, 303, 307, 308) and loc:
