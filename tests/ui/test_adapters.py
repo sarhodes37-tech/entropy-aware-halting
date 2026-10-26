@@ -577,3 +577,199 @@ def test_unestablished_source_authenticity(mock_logs):
     assert auth["status"] == "NOT ESTABLISHED"
     assert "hardware enclave" in auth["message"].lower()
     assert "scope" in auth
+
+
+def test_non_dict_json_lines_counted_as_parse_errors(tmp_path):
+    """Verifies that structurally valid non-dict JSON lines (null, list, number, string) are counted as parse errors."""
+    prov_file = tmp_path / "non_dict_prov.jsonl"
+    audit_file = tmp_path / "non_dict_audit.jsonl"
+
+    lines = ["null\n", "[1, 2, 3]\n", "\"string_val\"\n", "123.45\n", "{\"valid\": True}\n"]  # 4 non-dict JSON, 1 invalid JSON
+    prov_file.write_text("".join(lines), encoding="utf-8")
+    audit_file.write_text("".join(lines), encoding="utf-8")
+
+    adapter = ObservatoryDataAdapter(
+        audit_log_path=str(audit_file),
+        provenance_log_path=str(prov_file)
+    )
+
+    overview = adapter.get_overview()
+    # 5 non-dict/invalid lines in prov + 5 in audit = 10 parse errors
+    assert overview["metrics"]["parse_error_count"] == 10
+
+    events, parse_errors = adapter._read_raw_provenance_events()
+    assert len(events) == 0
+    assert parse_errors == 5
+
+
+def test_overview_metrics_from_audit_and_provenance(tmp_path):
+    """Verifies metric aggregation for denials, halts (provenance + audit), and execution failures (failed + interrupted)."""
+    prov_file = tmp_path / "prov_metrics.jsonl"
+    audit_file = tmp_path / "audit_metrics.jsonl"
+
+    prov_events = [
+        {"correlation_id": "c1", "event_type": "AUTHORIZATION_DENIED"},
+        {"correlation_id": "c2", "event_type": "EGRESS_BLOCKED"},
+        {"correlation_id": "c3", "event_type": "EXECUTION_FAILED"},
+        {"correlation_id": "c4", "event_type": "EXECUTION_INTERRUPTED"}
+    ]
+    with open(prov_file, "w", encoding="utf-8") as f:
+        for pe in prov_events:
+            f.write(json.dumps(pe) + "\n")
+
+    audit_events = [
+        {"event_type": "DETERMINISTIC_HALT"}
+    ]
+    with open(audit_file, "w", encoding="utf-8") as f:
+        for ae in audit_events:
+            f.write(json.dumps(ae) + "\n")
+
+    adapter = ObservatoryDataAdapter(
+        audit_log_path=str(audit_file),
+        provenance_log_path=str(prov_file)
+    )
+
+    overview = adapter.get_overview()
+    metrics = overview["metrics"]
+    assert metrics["total_executions"] == 4
+    assert metrics["authorization_denials"] == 1
+    assert metrics["halts"] == 2  # 1 EGRESS_BLOCKED + 1 DETERMINISTIC_HALT
+    assert metrics["execution_failures"] == 2  # 1 FAILED + 1 INTERRUPTED
+
+
+def test_audit_integrity_verification_paths(tmp_path, monkeypatch):
+    """Verifies audit integrity status for success (VERIFIED), corruption (CORRUPTED), and exception (UNVERIFIED)."""
+    audit_file = tmp_path / "audit.jsonl"
+    audit_file.write_text("{\"event\": 1}\n", encoding="utf-8")
+
+    adapter = ObservatoryDataAdapter(audit_log_path=str(audit_file))
+
+    # Mock TamperEvidentAuditTrail returning integrity pass
+    def mock_verify_pass(self):
+        return True, 1, None
+
+    monkeypatch.setattr("epistemicos.ui.adapters.TamperEvidentAuditTrail.verify_chain_integrity", mock_verify_pass)
+    res_pass = adapter._verify_audit_integrity()
+    assert res_pass["status"] == "VERIFIED"
+    assert res_pass["records_verified"] == 1
+
+    # Mock returning corruption
+    def mock_verify_corrupt(self):
+        return False, 1, "Hash mismatch at sequence 1"
+
+    monkeypatch.setattr("epistemicos.ui.adapters.TamperEvidentAuditTrail.verify_chain_integrity", mock_verify_corrupt)
+    res_corrupt = adapter._verify_audit_integrity()
+    assert res_corrupt["status"] == "CORRUPTED"
+    assert "Hash mismatch" in res_corrupt["message"]
+
+    # Mock throwing exception
+    def mock_verify_error(self):
+        raise RuntimeError("Audit engine error")
+
+    monkeypatch.setattr("epistemicos.ui.adapters.TamperEvidentAuditTrail.verify_chain_integrity", mock_verify_error)
+    res_err = adapter._verify_audit_integrity()
+    assert res_err["status"] == "UNVERIFIED"
+    assert "Audit engine error" in res_err["message"]
+
+
+def test_execution_traces_audit_event_matching_and_precedence(tmp_path):
+    """Verifies audit event matching via metadata.correlation_id or event_id and status precedence."""
+    prov_file = tmp_path / "prov_traces.jsonl"
+    audit_file = tmp_path / "audit_traces.jsonl"
+
+    prov_events = [
+        # c1: Execution interrupted -> status FAILED
+        {
+            "correlation_id": "c1",
+            "request_id": "r1",
+            "event_type": "EXECUTION_INTERRUPTED",
+            "timestamp": "2025-01-01T10:00:00Z",
+            "provenance_source": "EXECUTOR",
+            "action_name": "cmd",
+            "target": "server"
+        },
+        # c2: Authorization granted + Execution succeeded -> status COMPLETED
+        {
+            "correlation_id": "c2",
+            "request_id": "r2",
+            "event_type": "AUTHORIZATION_GRANTED",
+            "timestamp": "2025-01-01T11:00:00Z",
+            "provenance_source": "GOVERNANCE_GATE",
+            "decision": None  # Test fallback decision to event_type
+        },
+        {
+            "correlation_id": "c2",
+            "request_id": "r2",
+            "event_type": "EXECUTION_SUCCEEDED",
+            "timestamp": "2025-01-01T11:05:00Z",
+            "provenance_source": "EXECUTOR"
+        },
+        # Invalid typed event payload to trigger exception in ProvenanceEvent(**filtered_pe)
+        {
+            "correlation_id": "c3",
+            "event_type": "ACTION_PROPOSED",
+            "timestamp": "invalid_type_triggers_exception"
+        }
+    ]
+    with open(prov_file, "w", encoding="utf-8") as f:
+        for pe in prov_events:
+            f.write(json.dumps(pe) + "\n")
+
+    audit_events = [
+        {
+            "event_id": "c1",
+            "event_type": "DETERMINISTIC_HALT",
+            "gate_name": "AuditGate1",
+            "timestamp": "2025-01-01T10:00:01Z",
+            "reason": "Security rule triggered"
+        },
+        {
+            "metadata": {"correlation_id": "c2"},
+            "event_type": "AUDIT_RECORDED",
+            "gate_name": "AuditGate2",
+            "timestamp": "2025-01-01T11:01:00Z",
+            "reason": "Audit record"
+        }
+    ]
+    with open(audit_file, "w", encoding="utf-8") as f:
+        for ae in audit_events:
+            f.write(json.dumps(ae) + "\n")
+
+    adapter = ObservatoryDataAdapter(
+        audit_log_path=str(audit_file),
+        provenance_log_path=str(prov_file)
+    )
+
+    traces = adapter.get_execution_traces()
+    trace_map = {t["correlation_id"]: t for t in traces}
+
+    assert trace_map["c1"]["status"] == "FAILED"
+    assert len(trace_map["c1"]["gate_decisions"]) == 1
+    assert trace_map["c1"]["gate_decisions"][0]["source"] == "AuditGate1"
+
+    assert trace_map["c2"]["status"] == "COMPLETED"
+    assert len(trace_map["c2"]["gate_decisions"]) == 2
+    # Check decision fallback when decision is None in event
+    auth_decision = [g for g in trace_map["c2"]["gate_decisions"] if g["source"] == "GOVERNANCE_GATE"][0]
+    assert auth_decision["decision"] == "AUTHORIZATION_GRANTED"
+
+
+def test_benchmark_unexpected_json_shapes(tmp_path):
+    """Verifies that unexpected top-level JSON structures (list for ablation, dict for per-case) produce controlled error messages."""
+    abl_file = tmp_path / "abl_list.json"
+    abl_file.write_text(json.dumps(["unexpected", "list"]), encoding="utf-8")
+
+    case_file = tmp_path / "case_dict.json"
+    case_file.write_text(json.dumps({"unexpected": "object"}), encoding="utf-8")
+
+    adapter = ObservatoryDataAdapter(
+        ablation_table_path=str(abl_file),
+        per_case_results_path=str(case_file)
+    )
+
+    data = adapter.get_benchmark_data()
+    assert data["ablation_table"]["available"] is False
+    assert "expected object, got list" in data["ablation_table"]["error"]
+
+    assert data["per_case_results"]["available"] is False
+    assert "expected list, got dict" in data["per_case_results"]["error"]
