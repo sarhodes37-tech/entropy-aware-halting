@@ -306,3 +306,15 @@ def test_recent_traces_row_keyboard_accessibility():
     css_path = pathlib.Path("epistemicos/ui/static/style.css")
     css_content = css_path.read_text(encoding="utf-8")
     assert ".data-table tr.clickable:focus-visible" in css_content
+
+
+def test_copy_to_clipboard_dynamic_aria_accessibility_update():
+    """Verifies that app.js captures original aria-label and dynamically updates aria-label during clipboard copy feedback."""
+    import pathlib
+    js_path = pathlib.Path("epistemicos/ui/static/app.js")
+    js_content = js_path.read_text(encoding="utf-8")
+    assert "const origAriaLabel = btnElement ? btnElement.getAttribute('aria-label') : null;" in js_content
+    assert "btnElement.setAttribute('aria-label', 'Copied to clipboard!');" in js_content
+    assert "btnElement.setAttribute('aria-label', 'Copy failed');" in js_content
+    assert "btnElement.setAttribute('aria-label', 'Copy unavailable');" in js_content
+    assert "restoreState" in js_content
