@@ -739,6 +739,11 @@ h2 {
   cursor: pointer;
 }
 
+.data-table tr.clickable.selected {
+  background-color: var(--bg-elevated);
+  box-shadow: inset 3px 0 0 var(--accent-cyan);
+}
+
 /* Technical Banners & Disclaimers */
 .disclaimer-banner {
   background-color: var(--bg-subtle);
