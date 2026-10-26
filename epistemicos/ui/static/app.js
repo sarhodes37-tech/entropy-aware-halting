@@ -168,6 +168,22 @@ document.addEventListener('DOMContentLoaded', () => {
           this.renderBenchmarkCasesList();
         });
       }
+
+      // Global Keyboard Shortcut: '/' to focus active tab search input
+      document.addEventListener('keydown', (e) => {
+        if (e.key === '/' && !['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName)) {
+          let searchInput = null;
+          if (this.state.currentTab === 'traces') searchInput = document.getElementById('trace-search');
+          else if (this.state.currentTab === 'provenance') searchInput = document.getElementById('provenance-search');
+          else if (this.state.currentTab === 'benchmarks') searchInput = document.getElementById('benchmark-case-search');
+
+          if (searchInput) {
+            e.preventDefault();
+            searchInput.focus();
+            searchInput.select();
+          }
+        }
+      });
     },
 
     switchTab(tabName) {
