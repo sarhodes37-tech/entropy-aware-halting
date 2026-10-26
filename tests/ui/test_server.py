@@ -121,6 +121,7 @@ def test_static_aria_accessibility_attributes():
     assert 'aria-label="Recent Execution Traces"' in content
     assert 'aria-label="View Denied Requests"' in content
     assert 'aria-label="View Policy Halts"' in content
+    assert '<span class="arrow" aria-hidden="true">➔</span>' in content
     # Trace Explorer area containers
     assert 'id="area-trace-list"' in content
     assert 'aria-label="Execution Trace List"' in content
@@ -318,3 +319,15 @@ def test_copy_to_clipboard_dynamic_aria_accessibility_update():
     assert "btnElement.setAttribute('aria-label', 'Copy failed');" in js_content
     assert "btnElement.setAttribute('aria-label', 'Copy unavailable');" in js_content
     assert "restoreState" in js_content
+
+
+def test_dynamic_buttons_aria_accessibility_completeness():
+    """Verifies that dynamically created retry buttons and copy buttons in app.js have explicit aria-label attributes."""
+    import pathlib
+    js_path = pathlib.Path("epistemicos/ui/static/app.js")
+    js_content = js_path.read_text(encoding="utf-8")
+    assert "retryBtn.setAttribute('aria-label', 'Retry loading execution traces');" in js_content
+    assert "retryBtn.setAttribute('aria-label', 'Retry loading provenance records');" in js_content
+    assert "retryBtn.setAttribute('aria-label', 'Retry loading benchmark artifacts');" in js_content
+    assert "copyCorrBtn.setAttribute('aria-label', 'Copy Correlation ID');" in js_content
+    assert '<span class="arrow" aria-hidden="true">➔</span>' in js_content

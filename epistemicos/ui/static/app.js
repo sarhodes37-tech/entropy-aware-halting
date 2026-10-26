@@ -582,6 +582,7 @@ document.addEventListener('DOMContentLoaded', () => {
       retryBtn.type = 'button';
       retryBtn.className = 'btn-refresh';
       retryBtn.textContent = 'Retry Loading Traces';
+      retryBtn.setAttribute('aria-label', 'Retry loading execution traces');
       retryBtn.addEventListener('click', () => this.loadTraces());
 
       errLi.appendChild(msgSpan);
@@ -788,6 +789,7 @@ document.addEventListener('DOMContentLoaded', () => {
       retryBtn.className = 'btn-refresh';
       retryBtn.style.marginTop = '1rem';
       retryBtn.textContent = 'Retry Selection';
+      retryBtn.setAttribute('aria-label', `Retry selection for trace ${correlationId}`);
       retryBtn.addEventListener('click', () => this.selectTrace(correlationId));
 
       errCard.appendChild(errHeader);
@@ -822,6 +824,7 @@ document.addEventListener('DOMContentLoaded', () => {
       const copyCorrBtn = document.createElement('button');
       copyCorrBtn.className = 'copy-btn';
       copyCorrBtn.textContent = 'Copy Correlation ID';
+      copyCorrBtn.setAttribute('aria-label', 'Copy Correlation ID');
       copyCorrBtn.addEventListener('click', () => this.copyToClipboard(trace.correlation_id, copyCorrBtn));
 
       headerBar.appendChild(titleGroup);
@@ -1331,6 +1334,7 @@ document.addEventListener('DOMContentLoaded', () => {
         retryBtn.type = 'button';
         retryBtn.className = 'btn-refresh';
         retryBtn.textContent = 'Retry Loading Provenance';
+        retryBtn.setAttribute('aria-label', 'Retry loading provenance records');
         retryBtn.addEventListener('click', () => this.loadProvenance());
 
         errLi.appendChild(msgSpan);
@@ -1687,7 +1691,7 @@ document.addEventListener('DOMContentLoaded', () => {
         traceBtn.style.padding = '0.25rem 0.6rem';
         traceBtn.style.fontSize = '0.75rem';
         traceBtn.setAttribute('aria-label', `Navigate to related execution trace ${corrId}`);
-        traceBtn.innerHTML = `<span>View Related Trace</span> <span class="arrow">➔</span>`;
+        traceBtn.innerHTML = `<span>View Related Trace</span> <span class="arrow" aria-hidden="true">➔</span>`;
         traceBtn.addEventListener('click', () => {
           this.state.selectedTraceId = corrId;
           this.switchTab('traces');
@@ -1911,6 +1915,7 @@ document.addEventListener('DOMContentLoaded', () => {
         retryBtn.type = 'button';
         retryBtn.className = 'btn-refresh';
         retryBtn.textContent = 'Retry Loading Benchmarks';
+        retryBtn.setAttribute('aria-label', 'Retry loading benchmark artifacts');
         retryBtn.addEventListener('click', () => this.loadBenchmarks());
 
         errLi.appendChild(msgSpan);
