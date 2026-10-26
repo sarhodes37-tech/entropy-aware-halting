@@ -168,6 +168,25 @@ def test_record_event_payload_too_large(temp_audit_file):
         audit.record_event(event)
 
 
+def test_f8_tamper_evident_audit_trail_hmac_keying(temp_audit_file):
+    """F8 Regression: Verifies that configuring TamperEvidentAuditTrail with hmac_key uses HMAC-SHA256 for chain integrity."""
+    secret_key = b"audit_trail_secret_key"
+    audit = TamperEvidentAuditTrail(temp_audit_file, hmac_key=secret_key)
+
+    event = AuditEvent(AuditLogLevel.INFO, "gate_hmac", "reason_hmac", "model1", "snippet_hmac")
+    rec = audit.record_event(event)
+    assert "entry_hash" in rec
+
+    is_valid, count, msg = audit.verify_chain_integrity()
+    assert is_valid is True
+    assert count == 1
+
+    # Unkeyed instance fails integrity check on keyed file
+    unkeyed_audit = TamperEvidentAuditTrail(temp_audit_file)
+    unkeyed_valid, _, _ = unkeyed_audit.verify_chain_integrity()
+    assert unkeyed_valid is False
+
+
 def test_audit_event_cpr_telemetry_belief_snapshots(temp_audit_file):
     """Validates audit event logging with CPR, telemetry, and belief state snapshots."""
     from epistemicos.models import CanonicalProblemRepresentation, BeliefObject, PopperianContract

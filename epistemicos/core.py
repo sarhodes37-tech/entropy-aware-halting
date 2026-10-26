@@ -26,14 +26,16 @@ from epistemicos.gates import (
 )
 from epistemicos.shower_curtain.gate import ShowerCurtainGate
 from epistemicos.shower_curtain.engine import ShowerCurtainEngine
-from epistemicos.authorization import AuthorizationAuthority, Policy, Capability, HumanApprovalRecord
+from epistemicos.authorization import AuthorizationAuthority, Policy, Capability, HumanApprovalRecord, get_callable_identity
 from epistemicos.provenance import (
     TrustedExecutionBoundary,
+    LocalProvenanceStore,
     ExecutionContext,
     ProvenanceEvent,
     ProvenanceEventType,
     ProvenanceSource,
 )
+import os
 
 class EpistemicOrchestrator:
     def register_gate(self, gate, *args, **kwargs):
@@ -74,14 +76,18 @@ class EpistemicOrchestrator:
         self._trajectory_locks: Dict[str, threading.Lock] = {}
         self._schedulers: Dict[str, EntropyAwareScheduler] = {}
 
-        # Plug the dead wire back in so logs actually route to Google Drive
-        self.audit_logger = TamperEvidentAuditTrail(log_file_path=self.audit_log_path) 
+        audit_hmac_key = os.getenv("EPISTEMICOS_AUDIT_HMAC_KEY", "").encode("utf-8") if os.getenv("EPISTEMICOS_AUDIT_HMAC_KEY") else None
+        prov_hmac_key = os.getenv("EPISTEMICOS_PROVENANCE_HMAC_KEY", "").encode("utf-8") if os.getenv("EPISTEMICOS_PROVENANCE_HMAC_KEY") else None
+
+        self.audit_logger = TamperEvidentAuditTrail(log_file_path=self.audit_log_path, hmac_key=audit_hmac_key)
 
         # Pass the db_client properly
         self.vector_manager = VectorHygieneManager(db_client=db_client)
 
         # Authoritative Authorization & Execution Boundary
-        self.execution_boundary = execution_boundary or TrustedExecutionBoundary()
+        self.execution_boundary = execution_boundary or TrustedExecutionBoundary(
+            provenance_store=LocalProvenanceStore(hmac_key=prov_hmac_key)
+        )
         self.authority = authority or getattr(self.execution_boundary, "authority", None) or AuthorizationAuthority()
         self.execution_boundary.authority = self.authority
 
@@ -439,7 +445,7 @@ class EpistemicOrchestrator:
                         active_policy = None
 
                 # Evaluate against AuthorizationAuthority and issue capability
-                executor_id = getattr(exec_func, "__name__", str(exec_func)) if exec_func else "default_executor"
+                executor_id = exec_func if exec_func else "default_executor"
                 cap, cap_reason = self.authority.evaluate_and_issue_capability(
                     action_name=action_name,
                     target=target,

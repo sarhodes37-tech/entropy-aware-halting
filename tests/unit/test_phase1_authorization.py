@@ -261,7 +261,7 @@ def test_scenario_6_parameter_substitutions_rejected(tmp_path):
         canonical_request_digest=digest_orig,
         correlation_id="corr-task-1",
         request_id="req-1",
-        executor_id="callback_original",
+        executor_id=callback_original,
         policy=policy
     )
 
@@ -303,7 +303,7 @@ def test_scenario_6_parameter_substitutions_rejected(tmp_path):
         )
 
     # 4. Executor substitution
-    with pytest.raises(PermissionError, match="EXECUTOR_MISMATCH"):
+    with pytest.raises(PermissionError, match=r"(EXECUTOR_MISMATCH|identity mismatch)"):
         boundary.execute_protected_action(
             action_name="TRANSFER",
             target="account_A",
@@ -371,8 +371,9 @@ def test_scenario_7_replay_and_concurrent_attempts_prevented(tmp_path):
 
     payload = {"tx": "single_use"}
     digest = boundary.compute_canonical_digest(payload)
+    exec_func = lambda: "PAID"
     policy = Policy(policy_id="p", allowed_operations={"PAY"}, allowed_resources={"gateway"})
-    cap, _ = boundary.authority.evaluate_and_issue_capability("PAY", "gateway", digest, executor_id="<lambda>", policy=policy)
+    cap, _ = boundary.authority.evaluate_and_issue_capability("PAY", "gateway", digest, executor_id=exec_func, policy=policy)
 
     num_threads = 8
     barrier = threading.Barrier(num_threads)
@@ -389,7 +390,7 @@ def test_scenario_7_replay_and_concurrent_attempts_prevented(tmp_path):
                 authorization_token_id=cap.token_id,
                 authorized_digest=digest,
                 authorization_granted=True,
-                executor_func=lambda: "PAID"
+                executor_func=exec_func
             )
             results.append(res)
         except Exception as e:
@@ -507,7 +508,7 @@ def test_scenario_11_pre_execution_audit_failure_prevents_callback(tmp_path):
     payload = {"data": "s11"}
     digest = boundary.compute_canonical_digest(payload)
     policy = Policy(policy_id="p", allowed_operations={"WRITE"}, allowed_resources={"db"})
-    cap, _ = boundary.authority.evaluate_and_issue_capability("WRITE", "db", digest, executor_id="mock_executor", policy=policy)
+    cap, _ = boundary.authority.evaluate_and_issue_capability("WRITE", "db", digest, executor_id=callback, policy=policy)
 
     with pytest.raises(RuntimeError, match="EXECUTION_STARTED"):
         boundary.execute_protected_action(
@@ -532,8 +533,9 @@ def test_scenario_12_post_execution_audit_failure_reports_unknown_outcome(tmp_pa
 
     payload = {"data": "s12"}
     digest = boundary.compute_canonical_digest(payload)
+    exec_func = lambda: "MUTATED_VALUE"
     policy = Policy(policy_id="p", allowed_operations={"UPDATE"}, allowed_resources={"table"})
-    cap, _ = boundary.authority.evaluate_and_issue_capability("UPDATE", "table", digest, executor_id="<lambda>", policy=policy)
+    cap, _ = boundary.authority.evaluate_and_issue_capability("UPDATE", "table", digest, executor_id=exec_func, policy=policy)
 
     res = boundary.execute_protected_action(
         action_name="UPDATE",
@@ -542,7 +544,7 @@ def test_scenario_12_post_execution_audit_failure_reports_unknown_outcome(tmp_pa
         authorization_token_id=cap.token_id,
         authorized_digest=digest,
         authorization_granted=True,
-        executor_func=lambda: "MUTATED_VALUE"
+        executor_func=exec_func
     )
 
     assert res["status"] == "EXECUTION_OUTCOME_UNKNOWN"
@@ -625,6 +627,251 @@ def test_scenario_13_generic_continuation_text_cannot_issue_authorization(tmp_pa
     res_genuine = orchestrator.process_submission(raw_payload, context_genuine)
     assert res_genuine["status"] == "ALLOWED"
     assert callback.call_count == 1
+
+
+# =====================================================================
+# Audit Remediation Regression Tests (F6, F7)
+# =====================================================================
+
+def test_f6_executor_spoofing_prevented_with_registered_executor(tmp_path):
+    """F6 Regression: Verifies that spoofing __name__ on a different callable is rejected when executor object identity is registered."""
+    def authorized_exec():
+        return "authorized"
+
+    def spoofed_exec():
+        return "spoofed"
+
+    spoofed_exec.__name__ = "authorized_exec"
+
+    policy = Policy(policy_id="p1", allowed_operations={"op1"}, allowed_resources={"res1"})
+    authority = AuthorizationAuthority(default_policy=policy)
+    authority.register_executor("authorized_exec", authorized_exec)
+
+    store = LocalProvenanceStore(log_path=str(tmp_path / "prov.jsonl"))
+    boundary = TrustedExecutionBoundary(provenance_store=store, authority=authority)
+
+    payload = {"data": "test"}
+    digest = boundary.compute_canonical_digest(payload)
+
+    cap, reason = authority.evaluate_and_issue_capability("op1", "res1", digest, executor_id="authorized_exec")
+    assert cap is not None
+
+    with pytest.raises(PermissionError, match=r"(Executable object identity mismatch|EXECUTOR_MISMATCH)"):
+        boundary.execute_protected_action(
+            action_name="op1",
+            target="res1",
+            request_payload=payload,
+            authorization_token_id=cap.token_id,
+            authorized_digest=digest,
+            authorization_granted=True,
+            executor_func=spoofed_exec
+        )
+
+
+def test_f7_human_approval_self_approval_rejected():
+    """F7 Regression: Verifies that self-approval (approver_id == principal_id) is strictly rejected."""
+    policy = Policy(
+        policy_id="p1",
+        allowed_operations={"critical_op"},
+        allowed_resources={"res1"},
+        required_human_approval_operations={"critical_op"}
+    )
+    authority = AuthorizationAuthority(default_policy=policy)
+    digest = "a" * 64
+    req_id = "req-self-1"
+
+    self_approval_record = HumanApprovalRecord(
+        approval_id="app-self",
+        approver_id="user_principal_1",
+        action_name="critical_op",
+        target="res1",
+        action_digest=digest,
+        request_id=req_id
+    )
+    self_approval_record.sign(authority.approval_signing_secret)
+
+    cap, reason = authority.evaluate_and_issue_capability(
+        action_name="critical_op",
+        target="res1",
+        canonical_request_digest=digest,
+        principal_id="user_principal_1",
+        request_id=req_id,
+        human_approval_input=self_approval_record
+    )
+
+    assert cap is None
+    assert reason == "AUTHORIZATION_DENIED_HUMAN_APPROVAL_SELF_APPROVAL_REJECTED"
+
+
+def test_f7_human_approval_untrusted_approver_rejected():
+    """F7 Regression: Verifies that a signed approval from an untrusted approver_id is rejected when allowed_approvers is configured."""
+    policy = Policy(
+        policy_id="p1",
+        allowed_operations={"critical_op"},
+        allowed_resources={"res1"},
+        required_human_approval_operations={"critical_op"},
+        allowed_approvers={"security_lead_alice"}  # Only Alice is authorized
+    )
+    authority = AuthorizationAuthority(default_policy=policy)
+    digest = "c" * 64
+    req_id = "req-untrusted-1"
+
+    untrusted_approval_record = HumanApprovalRecord(
+        approval_id="app-untrusted",
+        approver_id="untrusted_user_bob",
+        action_name="critical_op",
+        target="res1",
+        action_digest=digest,
+        request_id=req_id
+    )
+    untrusted_approval_record.sign(authority.approval_signing_secret)
+
+    cap, reason = authority.evaluate_and_issue_capability(
+        action_name="critical_op",
+        target="res1",
+        canonical_request_digest=digest,
+        principal_id="principal_user_1",
+        request_id=req_id,
+        human_approval_input=untrusted_approval_record
+    )
+
+    assert cap is None
+    assert "UNTRUSTED_APPROVER" in reason
+
+
+def test_f7_human_approval_string_expires_at_handled_safely():
+    """F7 Regression: Verifies that string expires_at input is parsed or rejected safely without raising uncaught TypeError."""
+    digest = "b" * 64
+    req_id = "req-str-exp"
+
+    record = HumanApprovalRecord.from_input({
+        "approval_id": "app-str",
+        "approver_id": "approver_bob",
+        "action_name": "critical_op",
+        "target": "res1",
+        "action_digest": digest,
+        "request_id": req_id,
+        "expires_at": "2030-01-01"  # Invalid non-numeric timestamp string
+    })
+
+    # Non-numeric timestamp string is rejected during parsing
+    assert record is None
+
+
+def test_f7_empty_principals_and_executors_fail_closed():
+    """F7 Regression: Verifies that explicitly passing empty set for allowed_principals or allowed_executors fails closed."""
+    p_empty_principals = Policy(policy_id="p1", allowed_operations={"op1"}, allowed_resources={"res1"}, allowed_principals=set())
+    assert p_empty_principals.is_principal_allowed("user1") is False
+
+    p_empty_executors = Policy(policy_id="p1", allowed_operations={"op1"}, allowed_resources={"res1"}, allowed_executors=set())
+    assert p_empty_executors.is_executor_allowed("exec1") is False
+
+
+def test_unambiguous_executor_identity_and_short_name_rejection(tmp_path):
+    """PR #257 Follow-up: Verifies strict canonical executor identity matching without short-name confusion."""
+    # 1. Capability issued for package_a.tools.execute cannot authorize package_b.tools.execute
+    store = LocalProvenanceStore(log_path=str(tmp_path / "prov_exec_id.jsonl"))
+    boundary = TrustedExecutionBoundary(provenance_store=store)
+
+    payload = {"data": "test_exec"}
+    digest = boundary.compute_canonical_digest(payload)
+
+    policy = Policy(policy_id="p1", allowed_operations={"op_exec"}, allowed_resources={"res_exec"})
+
+    class PackageAExecutor:
+        def __call__(self):
+            return "package_a_ran"
+
+    exec_a = PackageAExecutor()
+    exec_a.__module__ = "package_a.tools"
+    exec_a.__name__ = "execute"
+    exec_a.__qualname__ = "execute"
+
+    boundary.authority.register_executor("package_a.tools.execute", exec_a)
+
+    cap_a, _ = boundary.authority.evaluate_and_issue_capability(
+        action_name="op_exec",
+        target="res_exec",
+        canonical_request_digest=digest,
+        executor_id=exec_a,
+        policy=policy
+    )
+
+    # Calling with package_b.tools.execute must be rejected even though short name 'execute' matches
+    class PackageBExecutor:
+        def __call__(self):
+            return "package_b_ran"
+
+    exec_b = PackageBExecutor()
+    exec_b.__module__ = "package_b.tools"
+    exec_b.__name__ = "execute"
+    exec_b.__qualname__ = "execute"
+
+    with pytest.raises(PermissionError, match=r"(Executable object identity mismatch|Unregistered callable object|EXECUTOR_MISMATCH)"):
+        boundary.execute_protected_action(
+            action_name="op_exec",
+            target="res_exec",
+            request_payload=payload,
+            authorization_token_id=cap_a.token_id,
+            authorized_digest=digest,
+            authorization_granted=True,
+            executor_func=exec_b
+        )
+
+    # 2. Legitimate execution by correctly registered callable continues to work
+    res_a = boundary.execute_protected_action(
+        action_name="op_exec",
+        target="res_exec",
+        request_payload=payload,
+        authorization_token_id=cap_a.token_id,
+        authorized_digest=digest,
+        authorization_granted=True,
+        executor_func=exec_a
+    )
+    assert res_a["status"] == "SUCCESS"
+    assert res_a["result"] == "package_a_ran"
+
+    # 3. Spoofed __name__ mutation on registered executor fails object identity check
+    def registered_target_exec():
+        return "registered"
+
+    def spoofed_attacker_exec():
+        return "spoofed"
+
+    spoofed_attacker_exec.__name__ = getattr(registered_target_exec, "__name__")
+
+    boundary.authority.register_executor("target_op", registered_target_exec)
+
+    cap_reg, _ = boundary.authority.evaluate_and_issue_capability(
+        action_name="op_exec",
+        target="res_exec",
+        canonical_request_digest=digest,
+        executor_id=registered_target_exec,
+        policy=policy
+    )
+
+    with pytest.raises(PermissionError, match=r"(object identity mismatch|EXECUTOR_MISMATCH)"):
+        boundary.execute_protected_action(
+            action_name="op_exec",
+            target="res_exec",
+            request_payload=payload,
+            authorization_token_id=cap_reg.token_id,
+            authorized_digest=digest,
+            authorization_granted=True,
+            executor_func=spoofed_attacker_exec
+        )
+
+    # 4. Non-callable or missing executor fails closed
+    with pytest.raises(ValueError, match="must be a callable object"):
+        boundary.execute_protected_action(
+            action_name="op_exec",
+            target="res_exec",
+            request_payload=payload,
+            authorization_token_id=cap_reg.token_id,
+            authorized_digest=digest,
+            authorization_granted=True,
+            executor_func=None
+        )
 
 
 # =====================================================================

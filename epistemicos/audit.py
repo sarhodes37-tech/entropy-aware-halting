@@ -108,15 +108,21 @@ class AuditEvent:
 class TamperEvidentAuditTrail:
     """
     Append-only, cryptographically chained JSON-Lines audit logger for EpistemicOS.
-    Ensures tamper-evident records for regulatory compliance and enterprise security audits.
+    Local file-backed hash chains detect inadvertent corruption, line truncation, and uncoordinated edits.
+    When configured with an explicit secret key (`hmac_key`), HMAC-SHA256 chaining provides cryptographic tamper-evidence against local process forgery.
+    Note: Without external anchoring or a secret key held outside the host, a local process with full file write access can rewrite local log files.
     """
 
     GENESIS_SEED = b"EPISTEMIC_OS_GENESIS_BLOCK"
 
-    def __init__(self, log_file_path: str = "logs/epistemic_audit.jsonl"):
+    def __init__(self, log_file_path: str = "logs/epistemic_audit.jsonl", hmac_key: Optional[bytes] = None):
         self.log_path = Path(log_file_path)
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
-        self.genesis_hash = hashlib.sha256(self.GENESIS_SEED).hexdigest()
+        self.hmac_key = hmac_key
+        if self.hmac_key:
+            self.genesis_hash = hmac.new(self.hmac_key, self.GENESIS_SEED, hashlib.sha256).hexdigest()
+        else:
+            self.genesis_hash = hashlib.sha256(self.GENESIS_SEED).hexdigest()
         self.last_hash = None
 
     def inspect_log_health(self) -> Tuple[bool, Optional[str], Optional[str]]:
@@ -186,9 +192,11 @@ class TamperEvidentAuditTrail:
         return self.last_hash
 
     def _compute_hash(self, prev_hash: str, payload_data: Dict[str, Any]) -> str:
-        """Computes SHA-256 over the canonical JSON representation of the entry + prev_hash."""
+        """Computes SHA-256 or HMAC-SHA256 over the canonical JSON representation of the entry + prev_hash."""
         serialized = json.dumps(payload_data, sort_keys=True)
         combined = f"{prev_hash}:{serialized}".encode("utf-8")
+        if getattr(self, "hmac_key", None):
+            return hmac.new(self.hmac_key, combined, hashlib.sha256).hexdigest()
         return hashlib.sha256(combined).hexdigest()
 
     def record_event(

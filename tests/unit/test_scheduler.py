@@ -198,19 +198,18 @@ def test_scheduler_step_optimal_convergence():
 
 
 def test_scheduler_step_irreducible_uncertainty():
-    """Validates IRREDUCIBLE_UNCERTAINTY directive across stagnation windows."""
+    """Validates IRREDUCIBLE_UNCERTAINTY directive across stagnation windows requiring real transition deltas."""
     scheduler = EntropyAwareScheduler(stagnation_window=2, entropy_delta_threshold=0.01)
 
-    scheduler.step(torch.tensor([0.5, 0.5]), cost=0, state="s1")
+    scheduler.step(torch.tensor([0.5, 0.5]), cost=0, state="s1") # step 0
 
-    res1 = scheduler.step(torch.tensor([0.5, 0.5]), cost=0, state="s2")
-    assert res1.directive == "IRREDUCIBLE_UNCERTAINTY"
+    res1 = scheduler.step(torch.tensor([0.5, 0.5]), cost=0, state="s2") # step 1 (1 real delta)
+    assert res1.directive == "CONTINUE"
 
-    res2 = scheduler.step(torch.tensor([0.5, 0.5]), cost=0, state="s3")
+    res2 = scheduler.step(torch.tensor([0.5, 0.5]), cost=0, state="s3") # step 2 (2 real deltas = stagnation_window)
     assert res2.directive == "IRREDUCIBLE_UNCERTAINTY"
     
-    # 3rd transition is required to fulfill the > stagnation_window condition
-    res3 = scheduler.step(torch.tensor([0.5, 0.5]), cost=0, state="s4")
+    res3 = scheduler.step(torch.tensor([0.5, 0.5]), cost=0, state="s4") # step 3
     assert res3.directive == "IRREDUCIBLE_UNCERTAINTY"
     assert res3.halt is True
 
@@ -234,3 +233,48 @@ def test_scheduler_reset():
     assert scheduler.best_step == -1
     assert scheduler.best_utility == float("-inf")
     assert scheduler.initial_entropy is None
+
+
+# =====================================================================
+# AUDIT REMEDIATION REGRESSION TESTS (F3, F4, F5)
+# =====================================================================
+
+def test_entropy_unnormalized_probabilities():
+    """F3 Regression: Verifies that unnormalized distributions are normalized prior to entropy calculation."""
+    scheduler = EntropyAwareScheduler()
+    assert pytest.approx(scheduler.entropy([1, 1]), abs=1e-5) == 1.0
+    assert pytest.approx(scheduler.entropy([2, 2]), abs=1e-5) == 1.0
+    assert pytest.approx(scheduler.entropy([10, 10, 10, 10]), abs=1e-5) == 2.0
+
+
+def test_entropy_non_list_sequence():
+    """F3 Regression: Verifies non-list 1D sequences work in pure Python mode without UnboundLocalError."""
+    scheduler = EntropyAwareScheduler()
+    gen = (x for x in [0.5, 0.5])
+    assert pytest.approx(scheduler.entropy(gen), abs=1e-5) == 1.0
+
+
+def test_stagnation_window_accounting():
+    """F4 Regression: Verifies step 0 synthetic zero is excluded and N stagnation steps require N real transitions."""
+    scheduler = EntropyAwareScheduler(stagnation_window=3, entropy_delta_threshold=0.005)
+
+    res0 = scheduler.step([0.5, 0.5], cost=1, state="s0") # step 0
+    res1 = scheduler.step([0.5, 0.5], cost=1, state="s1") # transition 1 (real delta=0)
+    res2 = scheduler.step([0.5, 0.5], cost=1, state="s2") # transition 2 (real delta=0)
+
+    # After only 2 real transitions with stagnation_window=3, should CONTINUE
+    assert res2.directive == "CONTINUE"
+    assert res2.halt is False
+
+    res3 = scheduler.step([0.5, 0.5], cost=1, state="s3") # transition 3 (real delta=0)
+    # After 3 real transitions, triggers IRREDUCIBLE_UNCERTAINTY
+    assert res3.directive == "IRREDUCIBLE_UNCERTAINTY"
+    assert res3.halt is True
+
+
+@pytest.mark.parametrize("invalid_cost", [-1.0, -1000.0, float("nan"), float("inf")])
+def test_step_cost_validation(invalid_cost):
+    """F5 Regression: Verifies step() rejects negative or non-finite cost values."""
+    scheduler = EntropyAwareScheduler()
+    with pytest.raises(ValueError, match="Cost must be"):
+        scheduler.step([0.5, 0.5], cost=invalid_cost, state="s0")

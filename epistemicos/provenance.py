@@ -10,6 +10,7 @@ import os
 import json
 import time
 import uuid
+import hmac
 import hashlib
 import threading
 from enum import Enum
@@ -18,7 +19,7 @@ from dataclasses import dataclass, field, asdict
 from typing import Dict, Any, List, Optional, Tuple, Set
 
 from epistemicos.audit import _sanitize_sensitive_data, ReceiptGenerator
-from epistemicos.authorization import AuthorizationAuthority, CapabilityRegistry, Capability
+from epistemicos.authorization import AuthorizationAuthority, CapabilityRegistry, Capability, get_callable_identity
 
 try:
     import fcntl
@@ -119,16 +120,27 @@ class LocalProvenanceStore(ProvenanceStore):
     _VALID_EVENT_TYPES: Set[str] = frozenset(e.value for e in ProvenanceEventType)
     _VALID_PROVENANCE_SOURCES: Set[str] = frozenset(s.value for s in ProvenanceSource)
 
-    def __init__(self, log_path: str = "logs/provenance_audit.jsonl", fail_closed: bool = True):
+    def __init__(
+        self,
+        log_path: str = "logs/provenance_audit.jsonl",
+        fail_closed: bool = True,
+        hmac_key: Optional[bytes] = None
+    ):
         self.log_path = Path(log_path)
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
         self.fail_closed = fail_closed
+        self.hmac_key = hmac_key
         self._lock = threading.Lock()
-        self.genesis_hash = hashlib.sha256(self.GENESIS_SEED).hexdigest()
+        if self.hmac_key:
+            self.genesis_hash = hmac.new(self.hmac_key, self.GENESIS_SEED, hashlib.sha256).hexdigest()
+        else:
+            self.genesis_hash = hashlib.sha256(self.GENESIS_SEED).hexdigest()
 
     def _compute_chain_hash(self, prev_hash: str, payload: Dict[str, Any]) -> str:
         serialized = json.dumps(payload, sort_keys=True)
         combined = f"{prev_hash}:{serialized}".encode("utf-8")
+        if self.hmac_key:
+            return hmac.new(self.hmac_key, combined, hashlib.sha256).hexdigest()
         return hashlib.sha256(combined).hexdigest()
 
     def record_event(self, event: ProvenanceEvent) -> Dict[str, Any]:
@@ -335,7 +347,7 @@ class TrustedExecutionBoundary:
         if current_digest != auth_digest:
             raise ValueError("Request payload digest changed between authorization and execution")
 
-        executor_id = getattr(executor_func, "__name__", str(executor_func))
+        executor_id = get_callable_identity(executor_func)
 
         # Verify capability via trusted AuthorizationAuthority / CapabilityRegistry
         valid, cap_reason, cap = self.authority.verify_capability(
@@ -350,6 +362,21 @@ class TrustedExecutionBoundary:
         )
         if not valid:
             raise PermissionError(f"Execution rejected: {cap_reason}")
+
+        # Option A Strict Trusted Executor Binding Check:
+        # A valid capability alone NEVER authorizes an unverified or unregistered callable object.
+        # Execution is permitted if and only if the provided callable is registered in executor_registry
+        # under token_id or executor_id, AND executor_func matches that registered object identity ('is').
+        if self.authority and hasattr(self.authority, "executor_registry"):
+            bound_callable = self.authority.executor_registry.get(auth_token_id)
+            if not bound_callable:
+                bound_callable = self.authority.executor_registry.get(executor_id)
+
+            if bound_callable:
+                if executor_func is not bound_callable:
+                    raise PermissionError("Execution rejected: Executable object identity mismatch for authorized token")
+            else:
+                raise PermissionError(f"Execution rejected: Unregistered callable object cannot execute capability bound to '{cap.executor_id if cap else executor_id}'")
 
         # Atomic token consumption and retry check
         with self._lock:

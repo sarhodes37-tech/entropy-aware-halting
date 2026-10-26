@@ -37,6 +37,10 @@ The complete lifecycle of a protected operation follows six distinct phases:
 ## Threat Model & Local Adapter Limitations
 - **Host-Level Compromise**: The `LocalProvenanceStore` utilizes append-only hash chaining and file locking (`fcntl.flock`). However, a local process or log file does not constitute an independent trust boundary against an attacker who has root access or host-level compromise.
 - **Forgery Prevention**: Agents cannot emit `EXECUTION_SUCCEEDED` events because `ProvenanceSource.EXECUTOR` events are generated solely by `TrustedExecutionBoundary`.
+- **Option A Trusted Executor Binding**: A valid capability alone does not authorize an arbitrary or impersonating callable at execution time. At the execution boundary, `TrustedExecutionBoundary` enforces strict executor binding:
+  - **Local Execution**: Requires a trusted registered callable and enforces exact object identity (`is`) against `executor_registry`.
+  - **Remote / RPC Dispatch**: Remote or multi-process execution consumers register stable executor IDs through `AuthorizationAuthority.register_executor("remote.service.id", handler_func)` on the receiving boundary. Receiver instances resolve the capability string ID to their own trusted handler in `executor_registry`.
+  - **Unregistered Callables**: Calling `execute_protected_action` with an unregistered callable or attempting to impersonate `__module__`/`__qualname__` strings without object registration fails closed (`PermissionError`).
 - **Replay & Atomicity**: Single-use authorization tokens are consumed atomically using in-memory locks (`threading.Lock`) before execution proceeds.
 
 ## Failure & Availability Policy
