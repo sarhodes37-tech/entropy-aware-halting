@@ -193,13 +193,26 @@ document.addEventListener('DOMContentLoaded', () => {
     // -------------------------------------------------------------------------
     copyToClipboard(text, btnElement) {
       if (!text) return;
+      const origAriaLabel = btnElement ? btnElement.getAttribute('aria-label') : null;
+
+      const restoreState = (origText) => {
+        if (!btnElement) return;
+        btnElement.textContent = origText;
+        if (origAriaLabel !== null) {
+          btnElement.setAttribute('aria-label', origAriaLabel);
+        } else {
+          btnElement.removeAttribute('aria-label');
+        }
+      };
+
       if (!navigator.clipboard || !navigator.clipboard.writeText) {
         if (btnElement) {
           const origText = btnElement.textContent;
           btnElement.textContent = 'Copy Unavailable';
+          btnElement.setAttribute('aria-label', 'Copy unavailable');
           btnElement.style.borderColor = 'var(--status-failed-border)';
           setTimeout(() => {
-            btnElement.textContent = origText;
+            restoreState(origText);
             btnElement.style.borderColor = '';
           }, 2000);
         }
@@ -210,9 +223,10 @@ document.addEventListener('DOMContentLoaded', () => {
         if (btnElement) {
           const origText = btnElement.textContent;
           btnElement.textContent = 'Copied!';
+          btnElement.setAttribute('aria-label', 'Copied to clipboard!');
           btnElement.classList.add('copied');
           setTimeout(() => {
-            btnElement.textContent = origText;
+            restoreState(origText);
             btnElement.classList.remove('copied');
           }, 1500);
         }
@@ -221,9 +235,10 @@ document.addEventListener('DOMContentLoaded', () => {
         if (btnElement) {
           const origText = btnElement.textContent;
           btnElement.textContent = 'Copy Failed';
+          btnElement.setAttribute('aria-label', 'Copy failed');
           btnElement.style.borderColor = 'var(--status-failed-border)';
           setTimeout(() => {
-            btnElement.textContent = origText;
+            restoreState(origText);
             btnElement.style.borderColor = '';
           }, 2000);
         }
