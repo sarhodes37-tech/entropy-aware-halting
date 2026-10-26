@@ -26,6 +26,7 @@ from epistemicos.gates import (
 )
 from epistemicos.shower_curtain.gate import ShowerCurtainGate
 from epistemicos.shower_curtain.engine import ShowerCurtainEngine
+from epistemicos.containment import ContainmentGuard
 from epistemicos.authorization import AuthorizationAuthority, Policy, Capability, HumanApprovalRecord, get_callable_identity
 from epistemicos.provenance import (
     TrustedExecutionBoundary,

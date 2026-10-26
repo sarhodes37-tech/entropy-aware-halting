@@ -76,6 +76,7 @@ from epistemicos.containment import (
     ContainmentViolationType,
     EgressPolicy,
     EgressTransportBroker,
+    ControlledEgressTransport,
     normalize_destination_host
 )
 
@@ -139,6 +140,7 @@ __all__.extend([
     "ContainmentViolationType",
     "EgressPolicy",
     "EgressTransportBroker",
+    "ControlledEgressTransport",
     "normalize_destination_host",
     "ActionCategory",
     "ActionRegistry",

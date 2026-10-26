@@ -22,6 +22,7 @@ from functools import lru_cache
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union
+from epistemicos.gates import ControlPlaneGate, GateConfig, GateInput, GateOutcome, GateDecision, GateAction, GateResult
 
 
 _enforce_safe_dns = contextvars.ContextVar("enforce_safe_dns", default=False)
@@ -88,6 +89,50 @@ class ActionCategory(Enum):
     STATE_MUTATION = "STATE_MUTATION"
 
 
+def extract_url_components(target: str, default_protocol: str = "https", default_port: int = 443) -> Tuple[str, int]:
+    """
+    Extracts (protocol, port) from a target URL or host string.
+    """
+    if not isinstance(target, str):
+        return default_protocol.lower(), default_port
+
+    s = target.strip()
+    protocol = default_protocol.lower()
+    port = default_port
+
+    if "://" in s:
+        scheme_part, rest = s.split("://", 1)
+        if scheme_part.strip():
+            protocol = scheme_part.strip().lower()
+            if protocol == "http" and default_port == 443:
+                port = 80
+            elif protocol == "https" and default_port == 80:
+                port = 443
+    elif s.startswith("//"):
+        rest = s[2:]
+    else:
+        rest = s
+
+    authority = rest.split("/", 1)[0].split("?", 1)[0].split("#", 1)[0]
+    unquoted = unquote(authority)
+    if "@" in unquoted:
+        host_port = unquoted.rsplit("@", 1)[1]
+    else:
+        host_port = unquoted
+
+    if host_port.startswith("["):
+        if "]" in host_port:
+            after_bracket = host_port.rsplit("]", 1)[1]
+            if after_bracket.startswith(":") and after_bracket[1:].isdigit():
+                port = int(after_bracket[1:])
+    elif ":" in host_port:
+        p_str = host_port.rsplit(":", 1)[1]
+        if p_str.isdigit():
+            port = int(p_str)
+
+    return protocol, port
+
+
 @dataclass
 class EgressPolicy:
     """
@@ -109,15 +154,16 @@ class EgressPolicy:
         if not self.allowed_destinations and not self.allowed_wildcards:
             return False, "Egress blocked: Absent or empty approved-egress policy."
 
-        if protocol.lower() not in self.allowed_protocols:
-            return False, f"Egress blocked: Protocol '{protocol}' is not authorized."
-
-        if port not in self.allowed_ports:
-            return False, f"Egress blocked: Port '{port}' is not authorized."
-
         norm_host = normalize_destination_host(hostname)
         if not norm_host:
             return False, f"Egress blocked: Destination host '{hostname}' could not be normalized."
+
+        eff_protocol, eff_port = extract_url_components(hostname, default_protocol=protocol, default_port=port)
+        if eff_protocol.lower() not in self.allowed_protocols:
+            return False, f"Egress blocked: Protocol '{eff_protocol}' is not authorized."
+
+        if eff_port not in self.allowed_ports:
+            return False, f"Egress blocked: Port '{eff_port}' is not authorized."
 
         if norm_host in self.allowed_destinations:
             return True, "Allowed by explicit destination match."
@@ -134,24 +180,40 @@ class EgressPolicy:
 def parse_ip_numeric(host_str: str) -> Optional[ipaddress.IPv4Address]:
     """
     Attempts to parse alternate numeric address encodings for IPv4
-    (decimal integer, hex, octal, dotted octal).
+    (decimal integer, hex, octal, dotted octal, 1/2/3/4-part dword).
     """
+    if not isinstance(host_str, str):
+        return None
     clean = host_str.strip()
     if not clean:
         return None
 
-    # Handle single integer or hex or octal value
-    if re.match(r'^(0x[0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)$', clean):
+    clean_no_dot = clean[:-1] if (clean.endswith('.') and len(clean) > 1 and not clean.startswith('.')) else clean
+
+    # First try socket.inet_aton for standard C-library IPv4 representations
+    try:
+        raw = socket.inet_aton(clean_no_dot)
+        return ipaddress.IPv4Address(raw)
+    except Exception:
+        pass
+
+    # Single integer/hex/octal without 0o
+    if re.match(r'^(0x[0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)$', clean_no_dot):
         try:
-            val = int(clean, 0) if (clean.startswith("0x") or (clean.startswith("0") and len(clean) > 1)) else int(clean)
+            if clean_no_dot.startswith(('0x', '0X')):
+                val = int(clean_no_dot, 16)
+            elif clean_no_dot.startswith('0') and len(clean_no_dot) > 1:
+                val = int(clean_no_dot, 8)
+            else:
+                val = int(clean_no_dot, 10)
             if 0 <= val <= 0xFFFFFFFF:
                 return ipaddress.IPv4Address(val)
         except Exception:
             pass
 
-    # Handle dotted representations with non-standard base encodings (e.g., 0177.0.0.1)
-    parts = clean.split(".")
-    if len(parts) == 4:
+    # Dotted representations with non-standard base encodings (e.g., 0177.0.0.1)
+    parts = clean_no_dot.split(".")
+    if 1 <= len(parts) <= 4:
         num_parts = []
         for p in parts:
             p_strip = p.strip()
@@ -182,7 +244,7 @@ def normalize_destination_host(target_url_or_host: str) -> str:
     """
     Strictly normalizes a target host/URL string into a canonical host representation.
     Handles userinfo, userinfo with `#` or `%23` bypass tricks, IPv6 brackets,
-    percent-encoded delimiters, alternate numeric IP encodings, trailing dots,
+    percent-encoded delimiters, alternate numeric IP encodings, trailing dots, IDNA,
     and converts scheme-rest to lower case.
     Returns empty string if invalid or malformed authority.
     """
@@ -239,11 +301,7 @@ def normalize_destination_host(target_url_or_host: str) -> str:
     if host_clean.endswith(".") and len(host_clean) > 1:
         host_clean = host_clean[:-1]
 
-    if not host_clean:
-        return ""
-
-    # Reject whitespace
-    if any(c.isspace() for c in host_clean):
+    if not host_clean or any(c.isspace() for c in host_clean):
         return ""
 
     # IPv6 bracketed handling
@@ -260,11 +318,19 @@ def normalize_destination_host(target_url_or_host: str) -> str:
     # Check for direct IPv4 / IPv6 or alternate numeric IP encodings
     try:
         ip = ipaddress.ip_address(host_clean)
+        if getattr(ip, "ipv4_mapped", None):
+            return str(ip.ipv4_mapped)
         return str(ip)
     except ValueError:
         alt_ip = parse_ip_numeric(host_clean)
         if alt_ip:
             return str(alt_ip)
+
+    # Handle IDNA (internationalized domain names)
+    try:
+        host_clean = host_clean.encode('idna').decode('ascii')
+    except Exception:
+        pass
 
     # Validate standard domain name character set
     if not re.match(r'^[a-z0-9\-\.]+$', host_clean):
@@ -273,7 +339,7 @@ def normalize_destination_host(target_url_or_host: str) -> str:
     return host_clean
 
 
-class ContainmentGuard:
+class ContainmentGuard(ControlPlaneGate):
     """Active LLM Context & Tool Execution Guardrail Engine."""
 
     # Default Restricted Networks / Protocols
@@ -341,7 +407,9 @@ class ContainmentGuard:
         blocked_hosts: Optional[Set[str]] = None,
         custom_forbidden_commands: Optional[List[str]] = None,
         strict_mode: bool = True,
+        config: Optional[GateConfig] = None
     ):
+        super().__init__(config=config or GateConfig(version="1.0.0", is_critical=True))
         self.allowed_domains = set(allowed_egress_domains or [])
         self.egress_policy = egress_policy
         if self.egress_policy is None:
@@ -358,6 +426,60 @@ class ContainmentGuard:
             )
 
         self.strict_mode = strict_mode
+
+    def evaluate_contract(self, gate_input: GateInput) -> GateOutcome:
+        t0 = time.perf_counter()
+        payload = gate_input.payload
+        context = gate_input.context
+
+        all_inputs = [payload, context]
+        extracted_strings, extracted_urls = self._extract_all_strings_and_urls(all_inputs)
+
+        original_goal = context.get("original_goal") or (payload.get("original_goal") if isinstance(payload, dict) else getattr(payload, "original_goal", None))
+        for str_val in extracted_strings:
+            cmd_receipt = self.inspect_tool_command(str_val)
+            if not cmd_receipt.passed:
+                return GateOutcome(
+                    decision=GateDecision.HALT,
+                    reason_code=cmd_receipt.reason or "Forbidden command execution detected by ContainmentGuard",
+                    gate_name=self.gate_name,
+                    gate_version=self.config.version,
+                    evidence={"status": "HALTED", "confidence": 0.0, "vectors_revoked": 1},
+                    latency_ms=(time.perf_counter() - t0) * 1000
+                )
+
+            if original_goal:
+                goal_receipt = self.inspect_goal_integrity(original_goal, str_val)
+                if not goal_receipt.passed:
+                    return GateOutcome(
+                        decision=GateDecision.HALT,
+                        reason_code=goal_receipt.reason or "Goal integrity violation detected by ContainmentGuard",
+                        gate_name=self.gate_name,
+                        gate_version=self.config.version,
+                        evidence={"status": "HALTED", "confidence": 0.0, "vectors_revoked": 1},
+                        latency_ms=(time.perf_counter() - t0) * 1000
+                    )
+
+        for url_val in extracted_urls:
+            egress_receipt = self.inspect_network_egress(url_val)
+            if not egress_receipt.passed:
+                return GateOutcome(
+                    decision=GateDecision.HALT,
+                    reason_code=egress_receipt.reason or "Unauthorized network egress attempt detected by ContainmentGuard",
+                    gate_name=self.gate_name,
+                    gate_version=self.config.version,
+                    evidence={"status": "HALTED", "confidence": 0.0, "vectors_revoked": 1},
+                    latency_ms=(time.perf_counter() - t0) * 1000
+                )
+
+        return GateOutcome(
+            decision=GateDecision.ALLOW,
+            reason_code="CONTAINMENT_GUARDRAILS_PASSED",
+            gate_name=self.gate_name,
+            gate_version=self.config.version,
+            evidence={"status": "ALLOWED"},
+            latency_ms=(time.perf_counter() - t0) * 1000
+        )
 
     def _is_restricted_target(self, hostname: str) -> bool:
         """Parses and checks if a hostname or IP resolves to private, loopback, or cloud metadata ranges."""
@@ -543,11 +665,6 @@ class ContainmentGuard:
         if not norm:
             return False
 
-        if key_context:
-            k = key_context.lower()
-            if any(term in k for term in ("url", "host", "endpoint", "target", "uri", "dest", "server", "address", "link")):
-                return True
-
         if "://" in s or s.startswith("//") or s.startswith(("http://", "https://", "ftp://")):
             return True
 
@@ -640,17 +757,19 @@ class ContainmentGuard:
                 return False, None, egress_receipt
 
         try:
-            with self._safe_dns_resolution():
+            broker = EgressTransportBroker(policy=self.egress_policy)
+            with broker.enforce_socket_boundary():
                 result = tool_func(*tool_args, **tool_kwargs)
             return True, result, ContainmentReceipt(passed=True)
         except Exception as e:
+            err_msg = str(e)
             return (
                 False,
                 None,
                 ContainmentReceipt(
                     passed=False,
-                    violation_type=ContainmentViolationType.NONE,
-                    reason=f"Tool transport error: {str(e)}",
+                    violation_type=ContainmentViolationType.UNAUTHORIZED_EGRESS_ATTEMPT if "Egress blocked" in err_msg else ContainmentViolationType.NONE,
+                    reason=f"Tool transport error: {err_msg}",
                 ),
             )
 
@@ -813,7 +932,7 @@ class EgressTransportBroker:
             return False, reason, None
 
         # Check policy
-        allowed, pol_reason = self.policy.is_destination_allowed(norm_host, category=category)
+        allowed, pol_reason = self.policy.is_destination_allowed(target_url, category=category)
         if not allowed:
             self._record_egress_event(correlation_id, request_id, action_name, target_url, norm_host, valid_ips[0], False, pol_reason)
             return False, pol_reason, None
@@ -836,6 +955,155 @@ class EgressTransportBroker:
         return self.establish_connection(
             target_url=redirect_url,
             action_name=f"{action_name}_redirect",
+            correlation_id=correlation_id,
+            request_id=request_id,
+            category=category
+        )
+
+    @contextlib.contextmanager
+    def enforce_socket_boundary(
+        self,
+        correlation_id: str = "DEFAULT-CORR",
+        request_id: str = "DEFAULT-REQ",
+        action_name: str = "socket_connect",
+        category: Optional[ActionCategory] = None
+    ):
+        """
+        Thread-safe context manager patching socket.socket.connect during protected execution.
+        Intercepts direct socket.connect calls, normalizes target host/IP, resolves DNS,
+        and enforces EgressPolicy before socket connection establishment.
+        """
+        orig_connect = socket.socket.connect
+
+        def _patched_connect(sock_self, address):
+            if isinstance(address, (tuple, list)) and len(address) >= 2:
+                target_host, target_port = str(address[0]), int(address[1])
+                allowed, reason, pinned_ip = self.establish_connection(
+                    target_url=f"{target_host}:{target_port}",
+                    action_name=action_name,
+                    correlation_id=correlation_id,
+                    request_id=request_id,
+                    category=category
+                )
+                if not allowed:
+                    raise socket.error(f"Egress blocked: Socket connection to '{target_host}:{target_port}' denied by policy ({reason}).")
+                if pinned_ip and not target_host.startswith("["):
+                    new_addr = (pinned_ip, target_port) + tuple(address[2:])
+                    return orig_connect(sock_self, new_addr)
+            return orig_connect(sock_self, address)
+
+        socket.socket.connect = _patched_connect
+        token = _enforce_safe_dns.set(True)
+        try:
+            yield
+        finally:
+            _enforce_safe_dns.reset(token)
+            socket.socket.connect = orig_connect
+
+
+class ControlledEgressTransport:
+    """
+    Authoritative transport-level client wrapper enforcing EgressTransportBroker policy,
+    DNS re-validation, connection-time IP pinning, and redirect re-validation.
+    """
+
+    def __init__(
+        self,
+        broker: Optional[EgressTransportBroker] = None,
+        policy: Optional[EgressPolicy] = None,
+        timeout: float = 10.0
+    ):
+        if broker is not None:
+            self.broker = broker
+        else:
+            self.broker = EgressTransportBroker(policy=policy or EgressPolicy())
+        self.timeout = timeout
+
+    def request(
+        self,
+        method: str,
+        url: str,
+        headers: Optional[Dict[str, str]] = None,
+        body: Optional[Union[bytes, str]] = None,
+        correlation_id: str = "DEFAULT-CORR",
+        request_id: str = "DEFAULT-REQ",
+        category: Optional[ActionCategory] = None,
+        max_redirects: int = 5,
+        redirect_handler: Optional[Callable[[str], Dict[str, Any]]] = None
+    ) -> Dict[str, Any]:
+        """
+        Executes an outbound HTTP request through transport-boundary policy enforcement.
+        Validates initial destination and re-validates every redirect hop.
+        """
+        from urllib.parse import urljoin
+
+        current_url = url
+        current_method = method.upper()
+        current_headers = dict(headers or {})
+        redirect_count = 0
+
+        while True:
+            allowed, reason, pinned_ip = self.broker.establish_connection(
+                target_url=current_url,
+                action_name=f"http_{current_method.lower()}",
+                correlation_id=correlation_id,
+                request_id=request_id,
+                category=category
+            )
+            if not allowed:
+                raise PermissionError(f"Egress transport blocked request to '{current_url}': {reason}")
+
+            if redirect_handler:
+                res = redirect_handler(current_url)
+            else:
+                res = {
+                    "status": 200,
+                    "url": current_url,
+                    "pinned_ip": pinned_ip,
+                    "headers": current_headers,
+                    "body": body
+                }
+
+            loc = res.get("headers", {}).get("Location") or res.get("headers", {}).get("location")
+            if res.get("status") in (301, 302, 303, 307, 308) and loc:
+                redirect_count += 1
+                if redirect_count > max_redirects:
+                    raise PermissionError(f"Egress transport blocked: Exceeded maximum redirect limit of {max_redirects}")
+
+                next_url = urljoin(current_url, loc)
+                redir_allowed, redir_reason, redir_ip = self.broker.revalidate_redirect(
+                    original_url=current_url,
+                    redirect_url=next_url,
+                    correlation_id=correlation_id,
+                    request_id=request_id,
+                    category=category
+                )
+                if not redir_allowed:
+                    raise PermissionError(f"Egress transport blocked redirect to '{next_url}': {redir_reason}")
+
+                current_url = next_url
+                if res.get("status") in (301, 302, 303):
+                    current_method = "GET"
+                    body = None
+                continue
+
+            return res
+
+    def urlopen(
+        self,
+        url: str,
+        data: Optional[bytes] = None,
+        timeout: float = 10.0,
+        correlation_id: str = "DEFAULT-CORR",
+        request_id: str = "DEFAULT-REQ",
+        category: Optional[ActionCategory] = None
+    ) -> Dict[str, Any]:
+        method = "POST" if data is not None else "GET"
+        return self.request(
+            method=method,
+            url=url,
+            body=data,
+            timeout=timeout,
             correlation_id=correlation_id,
             request_id=request_id,
             category=category
