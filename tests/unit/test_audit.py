@@ -704,6 +704,7 @@ def test_sanitize_sensitive_data_deep_structures_and_text():
 
     raw_data = {
         "x-api-key": "sk-123456789012345678901234",
+        "github_token": "github_pat_11AAAAAAA0123456789abcdef_ghijklmnopqrstuvwxyz0123456789abcdef0123456789abcdef012",
         "headers": {
             "Authorization": "Bearer my_secret_bearer_token_123",
             "Credential_Token": "secret_pass_123"
@@ -715,6 +716,7 @@ def test_sanitize_sensitive_data_deep_structures_and_text():
     sanitized = _sanitize_sensitive_data(raw_data)
 
     assert sanitized["x-api-key"] == "[REDACTED]"
+    assert sanitized["github_token"] == "[REDACTED]"
     assert sanitized["headers"]["Authorization"] == "[REDACTED]"
     assert sanitized["headers"]["Credential_Token"] == "[REDACTED]"
     assert "password=[REDACTED]" in sanitized["tags_set"]
