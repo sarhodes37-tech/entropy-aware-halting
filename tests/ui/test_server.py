@@ -333,3 +333,18 @@ def test_dynamic_buttons_aria_accessibility_completeness():
     assert "retryBtn.setAttribute('aria-label', 'Retry loading benchmark artifacts');" in js_content
     assert "copyCorrBtn.setAttribute('aria-label', 'Copy Correlation ID');" in js_content
     assert '<span class="arrow" aria-hidden="true">➔</span>' in js_content
+
+
+def test_search_input_keyboard_shortcut_aria_attributes():
+    """Verifies that search inputs contain aria-keyshortcuts="/" attributes and app.js implements the global '/' focus shortcut."""
+    import pathlib
+    index_path = pathlib.Path("epistemicos/ui/static/index.html")
+    index_content = index_path.read_text(encoding="utf-8")
+    assert 'aria-keyshortcuts="/"' in index_content
+    assert 'title="Press \'/\' to focus search"' in index_content
+
+    js_path = pathlib.Path("epistemicos/ui/static/app.js")
+    js_content = js_path.read_text(encoding="utf-8")
+    assert "e.key === '/'" in js_content
+    assert "['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName)" in js_content
+    assert "searchInput.focus()" in js_content
