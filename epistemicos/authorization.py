@@ -449,8 +449,9 @@ class CapabilityRegistry:
                 if has_fcntl:
                     try:
                         fcntl.flock(f.fileno(), fcntl.LOCK_SH)
-                    except (OSError, IOError):
-                        pass
+                    except (OSError, IOError) as flock_err:
+                        if self.fail_closed_persistence:
+                            raise RuntimeError(f"Lock acquisition failure loading persistent denial log: {str(flock_err)}") from flock_err
                 try:
                     for line in f:
                         line_str = line.strip()
@@ -478,8 +479,9 @@ class CapabilityRegistry:
                     if has_fcntl:
                         try:
                             fcntl.flock(f.fileno(), fcntl.LOCK_UN)
-                        except (OSError, IOError):
-                            pass
+                        except (OSError, IOError) as unlock_err:
+                            if self.fail_closed_persistence:
+                                raise RuntimeError(f"Lock release failure loading persistent denial log: {str(unlock_err)}") from unlock_err
         except Exception as e:
             if self.fail_closed_persistence:
                 raise RuntimeError(f"Failed to load persistent denial log: {str(e)}") from e

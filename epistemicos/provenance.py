@@ -183,10 +183,7 @@ class LocalProvenanceStore(ProvenanceStore):
 
                         f.write(json.dumps(event_dict) + "\n")
                         f.flush()
-                        try:
-                            os.fsync(f.fileno())
-                        except OSError:
-                            pass
+                        os.fsync(f.fileno())
                         return event_dict
                     finally:
                         if HAS_FCNTL:
