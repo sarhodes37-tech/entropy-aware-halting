@@ -329,18 +329,24 @@ def test_provenance_digest_abstract_and_store_fallbacks(tmp_path):
     import epistemicos.provenance
     importlib.reload(epistemicos.provenance)
 
-    # Lines 167-168: fsync OSError suppression
+    # Lines 167-168: fsync OSError handling
     log_file = tmp_path / "prov_fsync.jsonl"
-    store = LocalProvenanceStore(log_path=str(log_file))
+    store_fc_false = LocalProvenanceStore(log_path=str(log_file), fail_closed=False)
     with patch("os.fsync", side_effect=OSError("Not supported")):
-        store.record_event(evt)
+        res_fc_false = store_fc_false.record_event(evt)
+        assert res_fc_false == {}
+
+    store_fc_true = LocalProvenanceStore(log_path=str(log_file), fail_closed=True)
+    with patch("os.fsync", side_effect=OSError("Not supported")):
+        with pytest.raises(RuntimeError, match="Provenance recording failed"):
+            store_fc_true.record_event(evt)
 
     # Lines 190, 227: blank lines skipping
     evt_blank = ProvenanceEvent("1.0.0", "e_b", ProvenanceEventType.ACTION_PROPOSED.value, ProvenanceSource.AGENT_ADAPTER.value, "c_blank", "r1", "A", "T", "dig", "ts")
-    store.record_event(evt_blank)
+    store_fc_true.record_event(evt_blank)
     with open(log_file, "r") as f: c = f.read()
     with open(log_file, "w") as f: f.write("\n\n" + c + "\n\n  \n")
-    assert len(store.get_events_for_correlation("c_blank")) == 1
+    assert len(store_fc_true.get_events_for_correlation("c_blank")) == 1
 
     # Line 221: missing log_path return
     missing_store = LocalProvenanceStore(log_path=str(tmp_path / "missing.jsonl"))

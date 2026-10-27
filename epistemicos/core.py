@@ -445,8 +445,11 @@ class EpistemicOrchestrator:
                     else:
                         active_policy = None
 
-                # Evaluate against AuthorizationAuthority and issue capability
+                # Evaluate against AuthorizationAuthority and issue capability, forwarding task_contract and task_id
                 executor_id = exec_func if exec_func else "default_executor"
+                task_contract_val = context.get("task_contract") or raw_payload.get("task_contract")
+                task_id_val = context.get("task_id") or raw_payload.get("task_id")
+
                 cap, cap_reason = self.authority.evaluate_and_issue_capability(
                     action_name=action_name,
                     target=target,
@@ -456,7 +459,9 @@ class EpistemicOrchestrator:
                     request_id=req_id,
                     executor_id=executor_id,
                     policy=active_policy,
-                    human_approval_input=context.get("human_approval") or context.get("human_approval_record")
+                    human_approval_input=context.get("human_approval") or context.get("human_approval_record"),
+                    task_contract=task_contract_val,
+                    task_id=task_id_val
                 )
 
                 if not cap:
@@ -600,7 +605,10 @@ class EpistemicOrchestrator:
                         authorized_digest=valid_grant_event.canonical_request_digest,
                         authorization_granted=True,
                         execution_attempt_id=context.get("execution_attempt_id"),
-                        policy_version=getattr(valid_grant_event, "policy_version", None) or cap.policy_version
+                        policy_version=getattr(valid_grant_event, "policy_version", None) or cap.policy_version,
+                        task_id=cap.task_id,
+                        contract_version=cap.contract_version,
+                        required_success_evidence=set(cap.required_success_evidence) if cap and cap.required_success_evidence else set()
                     )
 
                     try:
@@ -611,8 +619,34 @@ class EpistemicOrchestrator:
                             executor_func=exec_func,
                             context=exec_ctx
                         )
-                        if isinstance(execution_outcome, dict) and execution_outcome.get("status") == "EXECUTION_OUTCOME_UNKNOWN":
-                            execution_status = "EXECUTION_OUTCOME_UNKNOWN"
+                        if isinstance(execution_outcome, dict):
+                            out_status = execution_outcome.get("status")
+                            if out_status == "EXECUTION_OUTCOME_UNKNOWN":
+                                execution_status = "EXECUTION_OUTCOME_UNKNOWN"
+                            elif out_status == "UNVERIFIED_SUCCESS":
+                                execution_status = "UNVERIFIED_SUCCESS"
+                                telemetry = profiler.get_telemetry()
+                                revoked_ids = self.vector_manager.revoke_trajectory(traj_id)
+                                actual_revoked_count = len(revoked_ids)
+                                reason_msg = f"Execution boundary verification failed: {execution_outcome.get('reason', 'Missing required evidence')}"
+                                self._log_pipeline_event(
+                                    event_type=AuditLogLevel.HALT,
+                                    gate_name="TrustedExecutionBoundary",
+                                    reason=f"{reason_msg} | Vectors Revoked: {actual_revoked_count}",
+                                    masked_payload=masked_payload,
+                                    cpr=cpr,
+                                    telemetry=telemetry
+                                )
+                                return {
+                                    "status": "HALTED",
+                                    "execution_status": "UNVERIFIED_SUCCESS",
+                                    "gate": "TrustedExecutionBoundary",
+                                    "reason": reason_msg,
+                                    "execution_outcome": execution_outcome,
+                                    "vectors_revoked": actual_revoked_count
+                                }
+                            else:
+                                execution_status = "EXECUTED"
                         else:
                             execution_status = "EXECUTED"
                     except Exception as e:

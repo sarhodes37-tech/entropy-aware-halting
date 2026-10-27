@@ -61,9 +61,15 @@ class ExecutionContext:
     authorization_granted: bool = True
     execution_attempt_id: Optional[str] = None
     policy_version: str = "1.0.0"
+    task_id: Optional[str] = None
+    contract_version: Optional[str] = None
+    required_success_evidence: Set[str] = field(default_factory=set)
 
     def to_dict(self) -> Dict[str, Any]:
-        return asdict(self)
+        data = asdict(self)
+        if isinstance(data.get("required_success_evidence"), set):
+            data["required_success_evidence"] = list(data["required_success_evidence"])
+        return data
 
 
 @dataclass
@@ -177,10 +183,7 @@ class LocalProvenanceStore(ProvenanceStore):
 
                         f.write(json.dumps(event_dict) + "\n")
                         f.flush()
-                        try:
-                            os.fsync(f.fileno())
-                        except OSError:
-                            pass
+                        os.fsync(f.fileno())
                         return event_dict
                     finally:
                         if HAS_FCNTL:
@@ -407,6 +410,37 @@ class TrustedExecutionBoundary:
         )
         self.store.record_event(start_event)
 
+        # Success evidence verification helper
+        def _verify_success_evidence(result_obj: Any) -> Tuple[bool, Optional[str]]:
+            cap_obj = self.registry.get_capability(auth_token_id)
+            req_keys = set()
+            if context and context.required_success_evidence:
+                req_keys.update(context.required_success_evidence)
+            if cap_obj and cap_obj.required_success_evidence:
+                req_keys.update(cap_obj.required_success_evidence)
+
+            if not req_keys:
+                return True, None
+
+            # Verify result_obj contains non-null, non-empty values for required evidence keys or attributes
+            for k in req_keys:
+                found = False
+                val = None
+                if isinstance(result_obj, dict):
+                    if k in result_obj:
+                        val = result_obj[k]
+                        found = True
+                elif hasattr(result_obj, k):
+                    val = getattr(result_obj, k)
+                    found = True
+
+                if not found or val is None:
+                    return False, f"Missing required success evidence key '{k}' in execution outcome"
+
+                if isinstance(val, (str, list, dict, set, tuple, bytes)) and len(val) == 0:
+                    return False, f"Empty required success evidence for key '{k}' in execution outcome"
+            return True, None
+
         # Execute under BaseException catching to handle interruptions and errors
         try:
             result = executor_func()
@@ -458,6 +492,35 @@ class TrustedExecutionBoundary:
             raise
 
         end_ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        ev_ok, ev_msg = _verify_success_evidence(result)
+        if not ev_ok:
+            fail_ev_event = ProvenanceEvent(
+                schema_version="1.0.0",
+                event_id=str(uuid.uuid4()),
+                event_type=ProvenanceEventType.EXECUTION_FAILED.value,
+                provenance_source=ProvenanceSource.EXECUTOR.value,
+                correlation_id=corr_id,
+                request_id=req_id,
+                action_name=action_name,
+                target=target,
+                canonical_request_digest=current_digest,
+                timestamp=end_ts,
+                authorization_token_id=auth_token_id,
+                execution_attempt_id=attempt_id,
+                policy_version=pol_version,
+                outcome={"status": "UNVERIFIED_SUCCESS", "reason": ev_msg, "result": _sanitize_sensitive_data(result)}
+            )
+            try:
+                self.store.record_event(fail_ev_event)
+            except Exception:
+                pass
+            return {
+                "status": "UNVERIFIED_SUCCESS",
+                "result": result,
+                "attempt_id": attempt_id,
+                "reason": ev_msg
+            }
+
         success_event = ProvenanceEvent(
             schema_version="1.0.0",
             event_id=str(uuid.uuid4()),
