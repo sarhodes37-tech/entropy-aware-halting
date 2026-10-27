@@ -210,6 +210,7 @@ document.addEventListener('DOMContentLoaded', () => {
     copyToClipboard(text, btnElement) {
       if (!text) return;
       const origAriaLabel = btnElement ? btnElement.getAttribute('aria-label') : null;
+      const origTitle = btnElement ? btnElement.getAttribute('title') : null;
 
       const restoreState = (origText) => {
         if (!btnElement) return;
@@ -219,6 +220,11 @@ document.addEventListener('DOMContentLoaded', () => {
         } else {
           btnElement.removeAttribute('aria-label');
         }
+        if (origTitle !== null) {
+          btnElement.setAttribute('title', origTitle);
+        } else {
+          btnElement.removeAttribute('title');
+        }
       };
 
       if (!navigator.clipboard || !navigator.clipboard.writeText) {
@@ -226,6 +232,7 @@ document.addEventListener('DOMContentLoaded', () => {
           const origText = btnElement.textContent;
           btnElement.textContent = 'Copy Unavailable';
           btnElement.setAttribute('aria-label', 'Copy unavailable');
+          btnElement.setAttribute('title', 'Copy unavailable in this browser context');
           btnElement.style.borderColor = 'var(--status-failed-border)';
           setTimeout(() => {
             restoreState(origText);
@@ -238,8 +245,9 @@ document.addEventListener('DOMContentLoaded', () => {
       navigator.clipboard.writeText(text).then(() => {
         if (btnElement) {
           const origText = btnElement.textContent;
-          btnElement.textContent = 'Copied!';
+          btnElement.textContent = '✓ Copied!';
           btnElement.setAttribute('aria-label', 'Copied to clipboard!');
+          btnElement.setAttribute('title', 'Copied to clipboard!');
           btnElement.classList.add('copied');
           setTimeout(() => {
             restoreState(origText);
@@ -252,6 +260,7 @@ document.addEventListener('DOMContentLoaded', () => {
           const origText = btnElement.textContent;
           btnElement.textContent = 'Copy Failed';
           btnElement.setAttribute('aria-label', 'Copy failed');
+          btnElement.setAttribute('title', 'Copy action failed');
           btnElement.style.borderColor = 'var(--status-failed-border)';
           setTimeout(() => {
             restoreState(origText);
@@ -307,6 +316,7 @@ document.addEventListener('DOMContentLoaded', () => {
       if (btnRefresh) {
         btnRefresh.disabled = true;
         btnRefresh.setAttribute('aria-busy', 'true');
+        btnRefresh.setAttribute('title', 'Refreshing overview metrics...');
       }
       if (refreshIcon) {
         refreshIcon.classList.add('spin');
@@ -334,6 +344,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (btnRefresh) {
           btnRefresh.disabled = false;
           btnRefresh.removeAttribute('aria-busy');
+          btnRefresh.setAttribute('title', 'Refresh overview metrics');
         }
         if (refreshIcon) {
           refreshIcon.classList.remove('spin');
@@ -599,6 +610,7 @@ document.addEventListener('DOMContentLoaded', () => {
       retryBtn.className = 'btn-refresh';
       retryBtn.textContent = 'Retry Loading Traces';
       retryBtn.setAttribute('aria-label', 'Retry loading execution traces');
+      retryBtn.setAttribute('title', 'Retry loading execution traces');
       retryBtn.addEventListener('click', () => this.loadTraces());
 
       errLi.appendChild(msgSpan);
@@ -657,6 +669,7 @@ document.addEventListener('DOMContentLoaded', () => {
           clearBtn.className = 'btn-refresh';
           clearBtn.textContent = 'Clear Filters';
           clearBtn.setAttribute('aria-label', 'Clear search query and status filter');
+          clearBtn.setAttribute('title', 'Clear active search query and status filter');
           clearBtn.addEventListener('click', () => {
             this.state.traceSearchQuery = '';
             this.state.traceFilterStatus = 'ALL';
@@ -802,10 +815,12 @@ document.addEventListener('DOMContentLoaded', () => {
       p.textContent = `Server response: ${errorMsg}`;
 
       const retryBtn = document.createElement('button');
+      retryBtn.type = 'button';
       retryBtn.className = 'btn-refresh';
       retryBtn.style.marginTop = '1rem';
       retryBtn.textContent = 'Retry Selection';
       retryBtn.setAttribute('aria-label', `Retry selection for trace ${correlationId}`);
+      retryBtn.setAttribute('title', `Retry selection for trace ${correlationId}`);
       retryBtn.addEventListener('click', () => this.selectTrace(correlationId));
 
       errCard.appendChild(errHeader);
@@ -838,9 +853,11 @@ document.addEventListener('DOMContentLoaded', () => {
       titleGroup.appendChild(title);
 
       const copyCorrBtn = document.createElement('button');
+      copyCorrBtn.type = 'button';
       copyCorrBtn.className = 'copy-btn';
       copyCorrBtn.textContent = 'Copy Correlation ID';
       copyCorrBtn.setAttribute('aria-label', 'Copy Correlation ID');
+      copyCorrBtn.setAttribute('title', 'Copy Correlation ID to clipboard');
       copyCorrBtn.addEventListener('click', () => this.copyToClipboard(trace.correlation_id, copyCorrBtn));
 
       headerBar.appendChild(titleGroup);
@@ -1190,9 +1207,11 @@ document.addEventListener('DOMContentLoaded', () => {
           inspTitle.textContent = `Evidence Inspector: Event #${selectedEv.sequence_number} (${selectedEv.event_type})`;
 
           const inspCopyBtn = document.createElement('button');
+          inspCopyBtn.type = 'button';
           inspCopyBtn.className = 'copy-btn';
           inspCopyBtn.textContent = 'Copy Event Payload JSON';
           inspCopyBtn.setAttribute('aria-label', `Copy full JSON payload for event sequence ${selectedEv.sequence_number}`);
+          inspCopyBtn.setAttribute('title', `Copy JSON payload for event sequence ${selectedEv.sequence_number}`);
           inspCopyBtn.addEventListener('click', () => {
             this.copyToClipboard(JSON.stringify(selectedEv, null, 2), inspCopyBtn);
           });
@@ -1253,12 +1272,14 @@ document.addEventListener('DOMContentLoaded', () => {
 
               if (item.copyable) {
                 const btn = document.createElement('button');
+                btn.type = 'button';
                 btn.className = 'copy-btn';
                 btn.style.marginLeft = '0.4rem';
                 btn.style.padding = '0.1rem 0.35rem';
                 btn.style.fontSize = '0.65rem';
                 btn.textContent = 'Copy';
                 btn.setAttribute('aria-label', `Copy ${item.label}`);
+                btn.setAttribute('title', `Copy ${item.label} to clipboard`);
                 btn.addEventListener('click', () => this.copyToClipboard(String(item.value), btn));
                 row.appendChild(btn);
               }
@@ -1352,6 +1373,7 @@ document.addEventListener('DOMContentLoaded', () => {
         retryBtn.className = 'btn-refresh';
         retryBtn.textContent = 'Retry Loading Provenance';
         retryBtn.setAttribute('aria-label', 'Retry loading provenance records');
+        retryBtn.setAttribute('title', 'Retry loading provenance records');
         retryBtn.addEventListener('click', () => this.loadProvenance());
 
         errLi.appendChild(msgSpan);
@@ -1551,6 +1573,7 @@ document.addEventListener('DOMContentLoaded', () => {
           clearBtn.className = 'btn-refresh';
           clearBtn.textContent = 'Clear Filters';
           clearBtn.setAttribute('aria-label', 'Clear search query and event type filter');
+          clearBtn.setAttribute('title', 'Clear active search query and event type filter');
           clearBtn.addEventListener('click', () => {
             this.state.provenanceSearchQuery = '';
             this.state.provenanceFilterType = 'ALL';
@@ -1704,10 +1727,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
       if (matchingTrace) {
         const traceBtn = document.createElement('button');
+        traceBtn.type = 'button';
         traceBtn.className = 'quick-entry-btn';
         traceBtn.style.padding = '0.25rem 0.6rem';
         traceBtn.style.fontSize = '0.75rem';
         traceBtn.setAttribute('aria-label', `Navigate to related execution trace ${corrId}`);
+        traceBtn.setAttribute('title', `Navigate to related execution trace ${corrId}`);
         traceBtn.innerHTML = `<span>View Related Trace</span> <span class="arrow" aria-hidden="true">➔</span>`;
         traceBtn.addEventListener('click', () => {
           this.state.selectedTraceId = corrId;
@@ -1718,9 +1743,11 @@ document.addEventListener('DOMContentLoaded', () => {
       }
 
       const copyRecordBtn = document.createElement('button');
+      copyRecordBtn.type = 'button';
       copyRecordBtn.className = 'copy-btn';
       copyRecordBtn.textContent = 'Copy Record JSON';
       copyRecordBtn.setAttribute('aria-label', `Copy JSON payload for record sequence ${record.sequence_number}`);
+      copyRecordBtn.setAttribute('title', `Copy JSON payload for record sequence ${record.sequence_number}`);
       copyRecordBtn.addEventListener('click', () => this.copyToClipboard(JSON.stringify(record, null, 2), copyRecordBtn));
       actionBtnGroup.appendChild(copyRecordBtn);
 
@@ -1773,12 +1800,14 @@ document.addEventListener('DOMContentLoaded', () => {
 
           if (item.copyable) {
             const btn = document.createElement('button');
+              btn.type = 'button';
             btn.className = 'copy-btn';
             btn.style.marginLeft = '0.4rem';
             btn.style.padding = '0.1rem 0.35rem';
             btn.style.fontSize = '0.65rem';
             btn.textContent = 'Copy';
             btn.setAttribute('aria-label', `Copy ${item.label}`);
+              btn.setAttribute('title', `Copy ${item.label} to clipboard`);
             btn.addEventListener('click', () => this.copyToClipboard(String(item.value), btn));
             row.appendChild(btn);
           }
@@ -1819,12 +1848,14 @@ document.addEventListener('DOMContentLoaded', () => {
 
       if (record.prev_hash) {
         const copyPrevBtn = document.createElement('button');
+        copyPrevBtn.type = 'button';
         copyPrevBtn.className = 'copy-btn';
         copyPrevBtn.style.marginLeft = '0.4rem';
         copyPrevBtn.style.padding = '0.1rem 0.35rem';
         copyPrevBtn.style.fontSize = '0.65rem';
         copyPrevBtn.textContent = 'Copy';
         copyPrevBtn.setAttribute('aria-label', 'Copy predecessor entry hash');
+        copyPrevBtn.setAttribute('title', 'Copy predecessor entry hash to clipboard');
         copyPrevBtn.addEventListener('click', () => this.copyToClipboard(record.prev_hash, copyPrevBtn));
         prevRow.appendChild(copyPrevBtn);
       }
@@ -1847,12 +1878,14 @@ document.addEventListener('DOMContentLoaded', () => {
 
       if (record.entry_hash) {
         const copyCurrBtn = document.createElement('button');
+        copyCurrBtn.type = 'button';
         copyCurrBtn.className = 'copy-btn';
         copyCurrBtn.style.marginLeft = '0.4rem';
         copyCurrBtn.style.padding = '0.1rem 0.35rem';
         copyCurrBtn.style.fontSize = '0.65rem';
         copyCurrBtn.textContent = 'Copy';
         copyCurrBtn.setAttribute('aria-label', 'Copy current entry hash');
+        copyCurrBtn.setAttribute('title', 'Copy current entry hash to clipboard');
         copyCurrBtn.addEventListener('click', () => this.copyToClipboard(record.entry_hash, copyCurrBtn));
         currRow.appendChild(copyCurrBtn);
       }
@@ -1933,6 +1966,7 @@ document.addEventListener('DOMContentLoaded', () => {
         retryBtn.className = 'btn-refresh';
         retryBtn.textContent = 'Retry Loading Benchmarks';
         retryBtn.setAttribute('aria-label', 'Retry loading benchmark artifacts');
+        retryBtn.setAttribute('title', 'Retry loading benchmark artifacts');
         retryBtn.addEventListener('click', () => this.loadBenchmarks());
 
         errLi.appendChild(msgSpan);
@@ -2105,12 +2139,14 @@ document.addEventListener('DOMContentLoaded', () => {
         textSpan.title = fullDigest;
 
         const copyBtn = document.createElement('button');
+        copyBtn.type = 'button';
         copyBtn.className = 'copy-btn';
         copyBtn.style.marginLeft = '0.4rem';
         copyBtn.style.padding = '0.1rem 0.35rem';
         copyBtn.style.fontSize = '0.65rem';
         copyBtn.textContent = 'Copy';
         copyBtn.setAttribute('aria-label', `Copy ${elementId}`);
+        copyBtn.setAttribute('title', `Copy ${elementId} to clipboard`);
         copyBtn.addEventListener('click', () => this.copyToClipboard(fullDigest, copyBtn));
 
         el.appendChild(textSpan);
@@ -2457,6 +2493,7 @@ document.addEventListener('DOMContentLoaded', () => {
           clearBtn.className = 'btn-refresh';
           clearBtn.textContent = 'Clear Case Filters';
           clearBtn.setAttribute('aria-label', 'Clear case search query and filters');
+          clearBtn.setAttribute('title', 'Clear active case search query and filters');
           clearBtn.addEventListener('click', () => {
             this.state.caseSearchQuery = '';
             this.state.caseBaselineFilter = 'ALL';
@@ -2611,16 +2648,20 @@ document.addEventListener('DOMContentLoaded', () => {
       actionBtnGroup.style.gap = '0.5rem';
 
       const copyIdBtn = document.createElement('button');
+      copyIdBtn.type = 'button';
       copyIdBtn.className = 'copy-btn';
       copyIdBtn.textContent = 'Copy Case ID';
       copyIdBtn.setAttribute('aria-label', `Copy Case ID ${c.case_id}`);
+      copyIdBtn.setAttribute('title', `Copy Case ID ${c.case_id} to clipboard`);
       copyIdBtn.addEventListener('click', () => this.copyToClipboard(c.case_id, copyIdBtn));
       actionBtnGroup.appendChild(copyIdBtn);
 
       const copyJsonBtn = document.createElement('button');
+      copyJsonBtn.type = 'button';
       copyJsonBtn.className = 'copy-btn';
       copyJsonBtn.textContent = 'Copy Record JSON';
       copyJsonBtn.setAttribute('aria-label', `Copy full JSON payload for case ${c.case_id}`);
+      copyJsonBtn.setAttribute('title', `Copy JSON payload for case ${c.case_id}`);
       copyJsonBtn.addEventListener('click', () => this.copyToClipboard(JSON.stringify(c, null, 2), copyJsonBtn));
       actionBtnGroup.appendChild(copyJsonBtn);
 
@@ -2672,12 +2713,14 @@ document.addEventListener('DOMContentLoaded', () => {
 
           if (item.copyable) {
             const btn = document.createElement('button');
+              btn.type = 'button';
             btn.className = 'copy-btn';
             btn.style.marginLeft = '0.4rem';
             btn.style.padding = '0.1rem 0.35rem';
             btn.style.fontSize = '0.65rem';
             btn.textContent = 'Copy';
             btn.setAttribute('aria-label', `Copy ${item.label}`);
+              btn.setAttribute('title', `Copy ${item.label} to clipboard`);
             btn.addEventListener('click', () => this.copyToClipboard(String(item.value), btn));
             row.appendChild(btn);
           }
