@@ -28,11 +28,11 @@ Covers Stage B & Stage C PR #281 review feedback:
    - Includes distinct permitted-operation control ('local_read' on '/public_docs') to catch overbroad denial inheritance.
 """
 
+import json
 import os
-import uuid
 import socket
 import threading
-import time
+import uuid
 from unittest.mock import MagicMock
 import pytest
 
@@ -41,23 +41,17 @@ from epistemicos.gates import PermissionGate
 from epistemicos.authorization import (
     AuthorizationAuthority,
     Policy,
-    CapabilityRegistry,
-    HumanApprovalRecord
+    CapabilityRegistry
 )
 from epistemicos.containment import (
     EgressPolicy,
-    EgressTransportBroker,
-    ControlledEgressTransport,
-    ContainmentViolationType
+    EgressTransportBroker
 )
 from epistemicos.provenance import (
-    ProvenanceEvent,
     ProvenanceEventType,
-    ProvenanceSource,
     ExecutionContext,
     LocalProvenanceStore
 )
-from epistemicos.action_policy import SideEffectPolicyEngine, ActionRegistry
 
 
 # -----------------------------------------------------------------------------
@@ -111,12 +105,20 @@ def test_1_narration_action_mismatch_rejects_unauthorized_action(tmp_path):
     assert res["status"] == "HALTED"
     assert "delete_database" in res["reason"]
 
-    # 3. Assert concrete rejection evidence recorded in audit trail
+    # 3. Assert concrete rejection evidence recorded in audit trail for this specific request
     assert os.path.exists(audit_path)
+    matching_audit_event_found = False
     with open(audit_path, "r", encoding="utf-8") as f:
-        log_content = f.read()
-    assert "PermissionGate" in log_content
-    assert "delete_database" in log_content
+        for line in f:
+            if not line.strip():
+                continue
+            record = json.loads(line)
+            if record.get("gate_name") == "PermissionGate" and "delete_database" in record.get("reason", ""):
+                snippet = record.get("payload_snippet", "")
+                if "POL-2026-NARRATION-MISMATCH" in snippet:
+                    matching_audit_event_found = True
+                    break
+    assert matching_audit_event_found is True
 
 
 def test_1_narration_action_mismatch_paired_control():
@@ -367,13 +369,13 @@ def test_4_alternate_privilege_route_authority_denial_enforcement():
     - Demonstrates durable denial enforcement through AuthorizationAuthority.
     - Initial attempt to '/critical_db' is denied by policy and recorded in durable denial registry.
     - Re-attempt to exact target '/critical_db' is blocked directly by durable denial (`AUTHORIZATION_DENIED_DURABLE_DENIAL_ACTIVE`).
-    - Child path attempt '/critical_db/users' is evaluated by policy; if not in policy allowed_resources, policy denies it (`AUTHORIZATION_DENIED_TARGET_NOT_ALLOWED`).
+    - Attempt to child path '/critical_db/users' demonstrates exact-target keying behavior: since '/critical_db/users' is in policy allowed_resources, capability IS granted (`AUTHORIZATION_GRANTED`), establishing that hierarchical child path denial inheritance is an unsupported architectural limitation (exact-target keying design).
     """
     task_id = f"TASK-AUTH-ALT-{uuid.uuid4()}"
     policy = Policy(
         policy_id="pol-alt",
         allowed_operations={"delete_db"},
-        allowed_resources={"/critical_db/users"}  # /critical_db is NOT allowed
+        allowed_resources={"/critical_db/users"}  # /critical_db is NOT allowed, but /critical_db/users IS
     )
     authority = AuthorizationAuthority(default_policy=policy)
 
@@ -396,6 +398,48 @@ def test_4_alternate_privilege_route_authority_denial_enforcement():
     )
     assert cap2 is None
     assert "AUTHORIZATION_DENIED_DURABLE_DENIAL_ACTIVE" in reason2
+
+    # 3. Attempt on child path /critical_db/users demonstrates exact-target keying outcome
+    cap3, reason3 = authority.evaluate_and_issue_capability(
+        action_name="delete_db",
+        target="/critical_db/users",
+        canonical_request_digest="digest1",
+        task_id=task_id
+    )
+    assert cap3 is not None
+    assert reason3 == "AUTHORIZATION_GRANTED"
+
+
+def test_4_alternate_privilege_route_pipeline_rejection():
+    """
+    4. Alternate privilege route (pipeline end-to-end rejection test):
+    - Submits an unauthorized alternate route ('delete_db' on '/critical_db/users') through EpistemicOrchestrator when '/critical_db/users' is NOT in policy allowed_resources.
+    - Demonstrates end-to-end rejection (`HALTED`), verifying execution callback remains uncalled (0 calls).
+    """
+    execution_callback = MagicMock(return_value={"status": "BYPASSED"})
+    orchestrator = EpistemicOrchestrator()
+    perm_gate = PermissionGate(
+        trusted_scope={
+            "allowed_operations": ["read_only"],
+            "allowed_resources": ["/public_docs"]
+        }
+    )
+    orchestrator.gates = [perm_gate]
+
+    raw_payload = {"policy_id": "POL-2026-ALT-PIPELINE", "primary_metric": 80.0}
+    corr_id = f"corr-alt-pipe-{uuid.uuid4()}"
+
+    context = {
+        "correlation_id": corr_id,
+        "proposed_actions": [{"action": {"op": "delete_db", "endpoint": "/critical_db/users"}}],
+        "actual_executable": execution_callback
+    }
+
+    res = orchestrator.process_submission(raw_payload, context)
+
+    assert res["status"] == "HALTED"
+    assert "delete_db" in res["reason"]
+    assert execution_callback.call_count == 0
 
 
 def test_4_alternate_privilege_route_permitted_control():
