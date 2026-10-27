@@ -417,6 +417,85 @@ def test_clearance_approval_mismatched_target_rejected(tmp_path):
     assert "does not match" in msg
 
 
+def test_clearance_approval_mismatched_task_id_rejected(tmp_path):
+    denial_log = tmp_path / "clearance_taskid.jsonl"
+    registry = CapabilityRegistry(denial_log_path=str(denial_log))
+    authority = AuthorizationAuthority(registry=registry)
+
+    registry.record_denial("TASK-ORIGINAL-01", "write_file", "/target", "Initial denial")
+
+    # Clearance approval explicitly bound to TASK-OTHER-02
+    clearance_app = HumanApprovalRecord(
+        approval_id="APP-CLEAR-TASK-DIFF",
+        approver_id="security_admin",
+        action_name="CLEAR_DENIAL:write_file",
+        target="/target",
+        action_digest="dig1",
+        request_id="REQ-CLEAR-03",
+        task_id="TASK-OTHER-02"
+    )
+    clearance_app.sign(authority.approval_signing_secret)
+
+    cleared, msg = authority.clear_denial_with_approval("TASK-ORIGINAL-01", "write_file", "/target", clearance_app)
+    assert cleared is False
+    assert "task_id mismatch" in msg
+
+
+def test_concurrent_authorization_and_clearance_no_deadlock(tmp_path):
+    import concurrent.futures
+    denial_log = tmp_path / "concurrent_auth.jsonl"
+    registry = CapabilityRegistry(denial_log_path=str(denial_log))
+    authority = AuthorizationAuthority(
+        default_policy=Policy(policy_id="p1", allowed_operations={"*"}, allowed_resources={"*"}),
+        registry=registry
+    )
+
+    contract = TrustedTaskContract(task_id="TASK-CONCUR-01", permitted_actions={"read_data"}, resource_scope={"/data"})
+    contract.sign(authority.contract_signing_secret)
+
+    def worker_auth(i: int):
+        cap, reason = authority.evaluate_and_issue_capability(
+            action_name="read_data",
+            target="/data",
+            canonical_request_digest=f"dig_{i}",
+            task_contract=contract,
+            task_id="TASK-CONCUR-01"
+        )
+        return cap, reason
+
+    # Submit 20 concurrent authorization tasks to worker pool with timeout = 5 seconds to assert zero deadlock
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+        futures = [executor.submit(worker_auth, i) for i in range(20)]
+        results = [f.result(timeout=5.0) for f in futures]
+
+    assert len(results) == 20
+    for cap, reason in results:
+        assert cap is not None
+        assert reason == "AUTHORIZATION_GRANTED"
+
+
+def test_production_configuration_enforcement(monkeypatch):
+    monkeypatch.setenv("EPISTEMICOS_ENV", "production")
+
+    # Missing secrets raises ValueError
+    with pytest.raises(ValueError) as exc:
+        AuthorizationAuthority()
+    assert "EPISTEMICOS_APPROVAL_SECRET" in str(exc.value)
+
+    monkeypatch.setenv("EPISTEMICOS_APPROVAL_SECRET", "prod_app_secret_123")
+    monkeypatch.setenv("EPISTEMICOS_CONTRACT_SECRET", "prod_contract_secret_123")
+
+    # Explicitly trying to disable task contracts in production mode raises ValueError
+    with pytest.raises(ValueError) as exc2:
+        AuthorizationAuthority(require_task_contract=False)
+    assert "cannot be disabled in production mode" in str(exc2.value)
+
+    # Valid production initialization succeeds
+    auth = AuthorizationAuthority()
+    assert auth.is_production is True
+    assert auth.require_task_contract is True
+
+
 def test_contract_required_execution_mode():
     authority = AuthorizationAuthority(
         default_policy=Policy(policy_id="p1", allowed_operations={"read"}, allowed_resources={"/data"}),

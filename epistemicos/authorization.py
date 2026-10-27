@@ -50,10 +50,11 @@ class HumanApprovalRecord:
     policy_version: str = "1.0.0"
     timestamp: str = field(default_factory=lambda: time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
     expires_at: Optional[float] = None
+    task_id: Optional[str] = None
     signature: Optional[str] = None
 
     def compute_signature_payload(self) -> str:
-        return f"{self.approval_id}:{self.approver_id}:{self.action_name}:{self.target}:{self.action_digest}:{self.request_id}:{self.policy_version}:{self.expires_at}"
+        return f"{self.approval_id}:{self.approver_id}:{self.action_name}:{self.target}:{self.action_digest}:{self.request_id}:{self.policy_version}:{self.expires_at}:{self.task_id or ''}"
 
     def sign(self, signing_secret: bytes) -> str:
         payload = self.compute_signature_payload()
@@ -131,6 +132,7 @@ class HumanApprovalRecord:
                 policy_version=str(val.get("policy_version", "1.0.0")),
                 timestamp=str(val.get("timestamp", time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))),
                 expires_at=exp_val,
+                task_id=str(val["task_id"]) if val.get("task_id") is not None else None,
                 signature=val.get("signature")
             )
 
@@ -350,13 +352,17 @@ class Capability:
         return data
 
 
+import contextlib
+
+
 class CapabilityRegistry:
     """
     Thread-safe, persistent server-side capability registry and single-use token manager.
 
     Deployment Replay Guarantee Notice:
-    Cross-process durable denial tracking uses atomic append-only file persistence with fsync and file locking.
-    Single-use capability token consumption and approval replay tracking are thread-safe within the process.
+    Cross-process durable denial tracking and clearance serialization use atomic append-only file persistence
+    with fsync and file locking (fcntl.flock). Single-use capability token consumption and approval replay tracking
+    are thread-safe and process-synchronous.
     """
 
     def __init__(
@@ -373,8 +379,59 @@ class CapabilityRegistry:
         self._denied_records: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
         self.denial_log_path = denial_log_path
         self.fail_closed_persistence = fail_closed_persistence
+
+        if self.fail_closed_persistence and not self.denial_log_path:
+            raise ValueError("Configuration error: denial_log_path is required when fail_closed_persistence=True")
+
         self.signing_secret = signing_secret or hashlib.sha256(f"EPISTEMICOS_CAP_KEY_{uuid.uuid4()}".encode("utf-8")).digest()
         self._load_persistent_denials()
+
+    @contextlib.contextmanager
+    def lock_registry(self):
+        """
+        Acquires both thread-level lock (_lock) and interprocess file-level lock (fcntl.flock)
+        on the denial log lockfile to ensure strict atomicity across processes during authorization evaluations.
+        """
+        import os
+        try:
+            import fcntl
+            has_fcntl = True
+        except ImportError:
+            has_fcntl = False
+
+        lock_file_obj = None
+        lock_path = (self.denial_log_path + ".lock") if self.denial_log_path else None
+
+        with self._lock:
+            if has_fcntl and lock_path:
+                try:
+                    os.makedirs(os.path.dirname(lock_path) or ".", exist_ok=True)
+                    lock_file_obj = open(lock_path, "a", encoding="utf-8")
+                    fcntl.flock(lock_file_obj.fileno(), fcntl.LOCK_EX)
+                except Exception as e:
+                    if lock_file_obj:
+                        try:
+                            lock_file_obj.close()
+                        except Exception:
+                            pass
+                    if self.fail_closed_persistence:
+                        raise RuntimeError(f"Lock registry failure: unable to acquire interprocess file lock ({str(e)})") from e
+
+            try:
+                yield
+            finally:
+                if lock_file_obj:
+                    try:
+                        if has_fcntl:
+                            fcntl.flock(lock_file_obj.fileno(), fcntl.LOCK_UN)
+                    except Exception as e:
+                        if self.fail_closed_persistence:
+                            raise RuntimeError(f"Lock registry release failure ({str(e)})") from e
+                    finally:
+                        try:
+                            lock_file_obj.close()
+                        except Exception:
+                            pass
 
     def _load_persistent_denials(self) -> None:
         import os
@@ -431,7 +488,7 @@ class CapabilityRegistry:
         payload = f"{cap.token_id}:{cap.principal_id}:{cap.correlation_id}:{cap.request_id}:{cap.action_name}:{cap.target}:{cap.canonical_request_digest}:{cap.executor_id}:{cap.policy_version}:{cap.task_id or ''}:{cap.contract_version or ''}:{cap.contract_digest or ''}:{cap.expires_at}"
         return hmac.new(self.signing_secret, payload.encode("utf-8"), hashlib.sha256).hexdigest()
 
-    def record_denial(
+    def _record_denial_unlocked(
         self,
         task_id: str,
         action_name: str,
@@ -447,35 +504,58 @@ class CapabilityRegistry:
         except ImportError:
             has_fcntl = False
 
-        with self._lock:
-            key = (str(task_id), str(action_name), str(target))
-            rec = {
-                "task_id": str(task_id),
-                "action_name": str(action_name),
-                "target": str(target),
-                "reason": str(reason),
-                "contract_version": str(contract_version),
-                "policy_version": str(policy_version),
-                "status": "ACTIVE",
-                "timestamp": time.time()
-            }
-            self._denied_records[key] = rec
-            if self.denial_log_path:
-                try:
-                    os.makedirs(os.path.dirname(self.denial_log_path) or ".", exist_ok=True)
-                    with open(self.denial_log_path, "a", encoding="utf-8") as f:
+        rec = {
+            "task_id": str(task_id),
+            "action_name": str(action_name),
+            "target": str(target),
+            "reason": str(reason),
+            "contract_version": str(contract_version),
+            "policy_version": str(policy_version),
+            "status": "ACTIVE",
+            "timestamp": time.time()
+        }
+
+        # Transactional Persistence Ordering: Write, flush, and fsync to durable log FIRST
+        if self.denial_log_path:
+            try:
+                os.makedirs(os.path.dirname(self.denial_log_path) or ".", exist_ok=True)
+                with open(self.denial_log_path, "a", encoding="utf-8") as f:
+                    if has_fcntl:
+                        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+                    try:
+                        f.write(json.dumps(rec) + "\n")
+                        f.flush()
+                        os.fsync(f.fileno())
+                    finally:
                         if has_fcntl:
-                            fcntl.flock(f.fileno(), fcntl.LOCK_EX)
-                        try:
-                            f.write(json.dumps(rec) + "\n")
-                            f.flush()
-                            os.fsync(f.fileno())
-                        finally:
-                            if has_fcntl:
-                                fcntl.flock(f.fileno(), fcntl.LOCK_UN)
-                except Exception as e:
-                    if self.fail_closed_persistence:
-                        raise RuntimeError(f"Denial persistence failure: unable to durably record security decision ({str(e)})") from e
+                            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+            except Exception as e:
+                # If write fails: DO NOT MUTATE IN-MEMORY STATE, fail closed
+                if self.fail_closed_persistence:
+                    raise RuntimeError(f"Denial persistence failure: unable to durably record security decision ({str(e)})") from e
+
+        # Durable file write succeeded -> Commit in-memory state mutation
+        key = (str(task_id), str(action_name), str(target))
+        self._denied_records[key] = rec
+
+    def record_denial(
+        self,
+        task_id: str,
+        action_name: str,
+        target: str,
+        reason: str,
+        contract_version: str = "1.0.0",
+        policy_version: str = "1.0.0"
+    ) -> None:
+        with self._lock:
+            self._record_denial_unlocked(
+                task_id=task_id,
+                action_name=action_name,
+                target=target,
+                reason=reason,
+                contract_version=contract_version,
+                policy_version=policy_version
+            )
 
     def clear_denial_with_approval(
         self,
@@ -496,32 +576,39 @@ class CapabilityRegistry:
         if not reauthorization_record or not isinstance(reauthorization_record, HumanApprovalRecord):
             return False, "Invalid or missing reauthorization record"
 
-        # 1. Mandatory signature verification against trusted approval signing secret
-        if not reauthorization_record.verify_signature(signing_secret, current_time=current_time):
-            return False, "Reauthorization approval signature verification failed"
+        with self.lock_registry():
+            # 1. Mandatory signature verification against trusted approval signing secret
+            if not reauthorization_record.verify_signature(signing_secret, current_time=current_time):
+                return False, "Reauthorization approval signature verification failed"
 
-        # 2. Check replay prevention
-        if self.is_approval_consumed(reauthorization_record.approval_id):
-            return False, "Reauthorization approval record already consumed (replay attempt)"
+            # 2. Check task_id binding if present on reauthorization record
+            if reauthorization_record.task_id and reauthorization_record.task_id != task_id:
+                return False, f"Reauthorization approval task_id mismatch: bound to '{reauthorization_record.task_id}', requested '{task_id}'"
 
-        # 3. Check explicit clearance intent and strict field bindings
-        has_clearance_intent = (
-            "CLEAR_DENIAL" in reauthorization_record.action_name
-            or "CLEAR_DENIAL" in reauthorization_record.target
-        )
-        if not has_clearance_intent:
-            return False, "Approval record is an ordinary action approval and cannot be repurposed as denial clearance authorization"
+            # 3. Re-sync persistent state inside lock
+            self._load_persistent_denials()
 
-        action_match = (
-            reauthorization_record.action_name in (f"CLEAR_DENIAL:{action_name}", "CLEAR_DENIAL", action_name)
-        )
-        target_match = (
-            reauthorization_record.target in (f"CLEAR_DENIAL:{target}", "CLEAR_DENIAL", target)
-        )
-        if not (action_match and target_match):
-            return False, "Approval record does not match action_name and target for denial clearance"
+            # 4. Check replay prevention inside critical section
+            if reauthorization_record.approval_id in self._consumed_approvals:
+                return False, "Reauthorization approval record already consumed (replay attempt)"
 
-        with self._lock:
+            # 5. Check explicit clearance intent and strict field bindings
+            has_clearance_intent = (
+                "CLEAR_DENIAL" in reauthorization_record.action_name
+                or "CLEAR_DENIAL" in reauthorization_record.target
+            )
+            if not has_clearance_intent:
+                return False, "Approval record is an ordinary action approval and cannot be repurposed as denial clearance authorization"
+
+            action_match = (
+                reauthorization_record.action_name in (f"CLEAR_DENIAL:{action_name}", "CLEAR_DENIAL", action_name)
+            )
+            target_match = (
+                reauthorization_record.target in (f"CLEAR_DENIAL:{target}", "CLEAR_DENIAL", target)
+            )
+            if not (action_match and target_match):
+                return False, "Approval record does not match action_name and target for denial clearance"
+
             key = (str(task_id), str(action_name), str(target))
             rec = {
                 "task_id": str(task_id),
@@ -557,6 +644,24 @@ class CapabilityRegistry:
             self._consumed_approvals.add(reauthorization_record.approval_id)
             return True, "Denial successfully cleared with authenticated reauthorization"
 
+    def _check_denial_unlocked(
+        self,
+        task_id: str,
+        action_name: str,
+        target: str,
+        contract_version: str = "1.0.0",
+        policy_version: str = "1.0.0"
+    ) -> Tuple[bool, Optional[Dict[str, Any]]]:
+        # Re-sync from persistent storage to enforce cross-process durability
+        self._load_persistent_denials()
+
+        key = (str(task_id), str(action_name), str(target))
+        rec = self._denied_records.get(key)
+        if rec and rec.get("status") == "ACTIVE":
+            # Denial is active regardless of contract_version changes, unless explicitly cleared
+            return True, rec
+        return False, None
+
     def check_denial(
         self,
         task_id: str,
@@ -566,15 +671,13 @@ class CapabilityRegistry:
         policy_version: str = "1.0.0"
     ) -> Tuple[bool, Optional[Dict[str, Any]]]:
         with self._lock:
-            # Re-sync from persistent storage to enforce cross-process durability
-            self._load_persistent_denials()
-
-            key = (str(task_id), str(action_name), str(target))
-            rec = self._denied_records.get(key)
-            if rec and rec.get("status") == "ACTIVE":
-                # Denial is active regardless of contract_version changes, unless explicitly cleared
-                return True, rec
-            return False, None
+            return self._check_denial_unlocked(
+                task_id=task_id,
+                action_name=action_name,
+                target=target,
+                contract_version=contract_version,
+                policy_version=policy_version
+            )
 
     def register_capability(self, cap: Capability) -> None:
         with self._lock:
@@ -660,8 +763,26 @@ class AuthorizationAuthority:
         self.default_policy = default_policy
         self.registry = registry or CapabilityRegistry()
 
+        env_mode = os.getenv("EPISTEMICOS_ENV", os.getenv("ENVIRONMENT", "development")).strip().lower()
+        self.is_production = env_mode in ("production", "prod")
+
         env_approval_sec = os.getenv("EPISTEMICOS_APPROVAL_SECRET")
         env_contract_sec = os.getenv("EPISTEMICOS_CONTRACT_SECRET")
+
+        if self.is_production:
+            if not env_approval_sec and not approval_signing_secret:
+                raise ValueError("Production configuration error: EPISTEMICOS_APPROVAL_SECRET must be explicitly set in production mode")
+            if not env_contract_sec and not contract_signing_secret:
+                raise ValueError("Production configuration error: EPISTEMICOS_CONTRACT_SECRET must be explicitly set in production mode")
+            if require_task_contract is False:
+                raise ValueError("Production configuration error: task contract enforcement (require_task_contract) cannot be disabled in production mode")
+            self.require_task_contract = True
+        else:
+            if require_task_contract is not None:
+                self.require_task_contract = require_task_contract
+            else:
+                env_req = os.getenv("EPISTEMICOS_REQUIRE_TASK_CONTRACT", "").strip().lower()
+                self.require_task_contract = env_req in ("1", "true", "yes", "on")
 
         if approval_signing_secret:
             self.approval_signing_secret = approval_signing_secret
@@ -678,12 +799,6 @@ class AuthorizationAuthority:
             self.contract_signing_secret = hashlib.sha256(f"EPISTEMICOS_CONTRACT_KEY_{uuid.uuid4()}".encode("utf-8")).digest()
 
         self.executor_registry: Dict[str, Any] = dict(executor_registry or {})
-
-        if require_task_contract is not None:
-            self.require_task_contract = require_task_contract
-        else:
-            env_req = os.getenv("EPISTEMICOS_REQUIRE_TASK_CONTRACT", "").strip().lower()
-            self.require_task_contract = env_req in ("1", "true", "yes", "on")
 
     def clear_denial_with_approval(
         self,
@@ -764,11 +879,11 @@ class AuthorizationAuthority:
             return None, "AUTHORIZATION_DENIED_INVALID_TARGET"
 
         # Begin atomic critical section for checking denial, contract, policy, recording denial, and registering capability
-        with self.registry._lock:
+        with self.registry.lock_registry():
             # Check durable denial registry if effective_task_id is known
             if effective_task_id:
                 c_ver = contract_obj.contract_version if contract_obj else "1.0.0"
-                is_denied, prev_denial = self.registry.check_denial(effective_task_id, action_name, target, c_ver, active_policy.version)
+                is_denied, prev_denial = self.registry._check_denial_unlocked(effective_task_id, action_name, target, c_ver, active_policy.version)
                 if is_denied and prev_denial:
                     return None, f"AUTHORIZATION_DENIED_DURABLE_DENIAL_ACTIVE:{prev_denial['reason']}"
 
@@ -784,27 +899,27 @@ class AuthorizationAuthority:
                 if contract_obj.is_action_prohibited(action_name, target):
                     reason = f"AUTHORIZATION_DENIED_CONTRACT_EXPLICIT_PROHIBITION:{action_name}:{target}"
                     if effective_task_id:
-                        self.registry.record_denial(effective_task_id, action_name, target, reason, contract_obj.contract_version, active_policy.version)
+                        self.registry._record_denial_unlocked(effective_task_id, action_name, target, reason, contract_obj.contract_version, active_policy.version)
                     return None, reason
 
                 if not contract_obj.is_action_permitted(action_name, target):
                     reason = f"AUTHORIZATION_DENIED_CONTRACT_SCOPE_VIOLATION:{action_name}:{target}"
                     if effective_task_id:
-                        self.registry.record_denial(effective_task_id, action_name, target, reason, contract_obj.contract_version, active_policy.version)
+                        self.registry._record_denial_unlocked(effective_task_id, action_name, target, reason, contract_obj.contract_version, active_policy.version)
                     return None, reason
 
             if not active_policy.is_operation_allowed(action_name):
                 reason = f"AUTHORIZATION_DENIED_OPERATION_NOT_ALLOWED:{action_name}"
                 if effective_task_id:
                     c_ver = contract_obj.contract_version if contract_obj else "1.0.0"
-                    self.registry.record_denial(effective_task_id, action_name, target, reason, c_ver, active_policy.version)
+                    self.registry._record_denial_unlocked(effective_task_id, action_name, target, reason, c_ver, active_policy.version)
                 return None, reason
 
             if not active_policy.is_target_allowed(target):
                 reason = f"AUTHORIZATION_DENIED_TARGET_NOT_ALLOWED:{target}"
                 if effective_task_id:
                     c_ver = contract_obj.contract_version if contract_obj else "1.0.0"
-                    self.registry.record_denial(effective_task_id, action_name, target, reason, c_ver, active_policy.version)
+                    self.registry._record_denial_unlocked(effective_task_id, action_name, target, reason, c_ver, active_policy.version)
                 return None, reason
 
             if not active_policy.is_principal_allowed(principal_id):
