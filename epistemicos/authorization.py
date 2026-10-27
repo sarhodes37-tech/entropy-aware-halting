@@ -356,10 +356,15 @@ class CapabilityRegistry:
 
     Deployment Replay Guarantee Notice:
     Single-use token consumption and replay prevention is thread-safe and file/memory-backed within this registry.
-    Cross-worker replay prevention across independent processes or workers uses an append-only persistent audit log file.
+    Cross-worker replay prevention across independent processes uses atomic append-only file persistence with fsync and file locking.
     """
 
-    def __init__(self, signing_secret: Optional[bytes] = None, denial_log_path: str = "logs/denial_registry.jsonl"):
+    def __init__(
+        self,
+        signing_secret: Optional[bytes] = None,
+        denial_log_path: str = "logs/denial_registry.jsonl",
+        fail_closed_persistence: bool = True
+    ):
         self._lock = threading.Lock()
         self._capabilities: Dict[str, Capability] = {}
         self._consumed_tokens: Set[str] = set()
@@ -367,6 +372,7 @@ class CapabilityRegistry:
         self._revoked_tokens: Set[str] = set()
         self._denied_records: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
         self.denial_log_path = denial_log_path
+        self.fail_closed_persistence = fail_closed_persistence
         self.signing_secret = signing_secret or hashlib.sha256(f"EPISTEMICOS_CAP_KEY_{uuid.uuid4()}".encode("utf-8")).digest()
         self._load_persistent_denials()
 
@@ -380,11 +386,20 @@ class CapabilityRegistry:
                     line_str = line.strip()
                     if not line_str:
                         continue
-                    rec = json.loads(line_str)
-                    key = (str(rec["task_id"]), str(rec["action_name"]), str(rec["target"]))
-                    self._denied_records[key] = rec
-        except Exception:
-            pass
+                    try:
+                        rec = json.loads(line_str)
+                        if not isinstance(rec, dict) or "task_id" not in rec:
+                            continue
+                        key = (str(rec["task_id"]), str(rec["action_name"]), str(rec["target"]))
+                        if rec.get("status") == "CLEARED":
+                            self._denied_records.pop(key, None)
+                        else:
+                            self._denied_records[key] = rec
+                    except Exception:
+                        continue
+        except Exception as e:
+            if self.fail_closed_persistence:
+                raise RuntimeError(f"Failed to load persistent denial log: {str(e)}") from e
 
     def sign_capability(self, cap: Capability) -> str:
         payload = f"{cap.token_id}:{cap.principal_id}:{cap.correlation_id}:{cap.request_id}:{cap.action_name}:{cap.target}:{cap.canonical_request_digest}:{cap.executor_id}:{cap.policy_version}:{cap.task_id or ''}:{cap.contract_version or ''}:{cap.contract_digest or ''}:{cap.expires_at}"
@@ -400,6 +415,12 @@ class CapabilityRegistry:
         policy_version: str = "1.0.0"
     ) -> None:
         import os
+        try:
+            import fcntl
+            has_fcntl = True
+        except ImportError:
+            has_fcntl = False
+
         with self._lock:
             key = (str(task_id), str(action_name), str(target))
             rec = {
@@ -409,6 +430,7 @@ class CapabilityRegistry:
                 "reason": str(reason),
                 "contract_version": str(contract_version),
                 "policy_version": str(policy_version),
+                "status": "ACTIVE",
                 "timestamp": time.time()
             }
             self._denied_records[key] = rec
@@ -416,10 +438,82 @@ class CapabilityRegistry:
                 try:
                     os.makedirs(os.path.dirname(self.denial_log_path) or ".", exist_ok=True)
                     with open(self.denial_log_path, "a", encoding="utf-8") as f:
-                        f.write(json.dumps(rec) + "\n")
-                        f.flush()
-                except Exception:
-                    pass
+                        if has_fcntl:
+                            try:
+                                fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+                            except (OSError, IOError):
+                                pass
+                        try:
+                            f.write(json.dumps(rec) + "\n")
+                            f.flush()
+                            try:
+                                os.fsync(f.fileno())
+                            except OSError:
+                                pass
+                        finally:
+                            if has_fcntl:
+                                try:
+                                    fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+                                except (OSError, IOError):
+                                    pass
+                except Exception as e:
+                    if self.fail_closed_persistence:
+                        raise RuntimeError(f"Denial persistence failure: unable to durably record security decision ({str(e)})") from e
+
+    def clear_denial_with_approval(
+        self,
+        task_id: str,
+        action_name: str,
+        target: str,
+        reauthorization_record: HumanApprovalRecord
+    ) -> bool:
+        import os
+        try:
+            import fcntl
+            has_fcntl = True
+        except ImportError:
+            has_fcntl = False
+
+        if not reauthorization_record or not reauthorization_record.approval_id:
+            return False
+
+        with self._lock:
+            key = (str(task_id), str(action_name), str(target))
+            rec = {
+                "task_id": str(task_id),
+                "action_name": str(action_name),
+                "target": str(target),
+                "status": "CLEARED",
+                "cleared_by_approval": reauthorization_record.approval_id,
+                "timestamp": time.time()
+            }
+            self._denied_records.pop(key, None)
+            if self.denial_log_path:
+                try:
+                    os.makedirs(os.path.dirname(self.denial_log_path) or ".", exist_ok=True)
+                    with open(self.denial_log_path, "a", encoding="utf-8") as f:
+                        if has_fcntl:
+                            try:
+                                fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+                            except (OSError, IOError):
+                                pass
+                        try:
+                            f.write(json.dumps(rec) + "\n")
+                            f.flush()
+                            try:
+                                os.fsync(f.fileno())
+                            except OSError:
+                                pass
+                        finally:
+                            if has_fcntl:
+                                try:
+                                    fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+                                except (OSError, IOError):
+                                    pass
+                except Exception as e:
+                    if self.fail_closed_persistence:
+                        raise RuntimeError(f"Denial persistence failure: unable to durably record reauthorization clearance ({str(e)})") from e
+            return True
 
     def check_denial(
         self,
@@ -430,12 +524,14 @@ class CapabilityRegistry:
         policy_version: str = "1.0.0"
     ) -> Tuple[bool, Optional[Dict[str, Any]]]:
         with self._lock:
+            # Re-sync from persistent storage to enforce cross-process durability
+            self._load_persistent_denials()
+
             key = (str(task_id), str(action_name), str(target))
             rec = self._denied_records.get(key)
-            if rec:
-                # Same contract version and policy version means denial is active
-                if rec.get("contract_version") == contract_version and rec.get("policy_version") == policy_version:
-                    return True, rec
+            if rec and rec.get("status") == "ACTIVE":
+                # Denial is active regardless of contract_version changes, unless explicitly cleared
+                return True, rec
             return False, None
 
     def register_capability(self, cap: Capability) -> None:
@@ -515,7 +611,8 @@ class AuthorizationAuthority:
         registry: Optional[CapabilityRegistry] = None,
         approval_signing_secret: Optional[bytes] = None,
         contract_signing_secret: Optional[bytes] = None,
-        executor_registry: Optional[Dict[str, Any]] = None
+        executor_registry: Optional[Dict[str, Any]] = None,
+        require_task_contract: bool = False
     ):
         self.default_policy = default_policy
         self.registry = registry or CapabilityRegistry()
@@ -523,6 +620,7 @@ class AuthorizationAuthority:
         self.approval_signing_secret = approval_signing_secret or hashlib.sha256(f"EPISTEMICOS_APPROVAL_KEY_{uuid.uuid4()}".encode("utf-8")).digest()
         self.contract_signing_secret = contract_signing_secret or hashlib.sha256(f"EPISTEMICOS_CONTRACT_KEY_{uuid.uuid4()}".encode("utf-8")).digest()
         self.executor_registry: Dict[str, Any] = dict(executor_registry or {})
+        self.require_task_contract = require_task_contract
 
     def register_executor(self, executor_id: str, executor_func: Any) -> None:
         """Registers an authoritative callable identity in the authority executor registry."""
@@ -553,6 +651,10 @@ class AuthorizationAuthority:
         active_policy = policy or self.default_policy
         if not active_policy:
             return None, "AUTHORIZATION_DENIED_NO_TRUSTED_POLICY"
+
+        # If authority requires a task contract and none is provided, fail closed
+        if self.require_task_contract and task_contract is None:
+            return None, "AUTHORIZATION_DENIED_CONTRACT_REQUIRED"
 
         # Parse task contract if provided as dict
         contract_obj: Optional[TrustedTaskContract] = None

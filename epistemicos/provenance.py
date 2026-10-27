@@ -425,17 +425,23 @@ class TrustedExecutionBoundary:
             if not req_keys:
                 return True, None
 
-            # Verify result_obj contains all required evidence keys or attributes
+            # Verify result_obj contains non-null, non-empty values for required evidence keys or attributes
             for k in req_keys:
                 found = False
+                val = None
                 if isinstance(result_obj, dict):
-                    found = (k in result_obj and result_obj[k] is not None)
+                    if k in result_obj:
+                        val = result_obj[k]
+                        found = True
                 elif hasattr(result_obj, k):
                     val = getattr(result_obj, k)
-                    found = (val is not None)
+                    found = True
 
-                if not found:
+                if not found or val is None:
                     return False, f"Missing required success evidence key '{k}' in execution outcome"
+
+                if isinstance(val, (str, list, dict, set, tuple, bytes)) and len(val) == 0:
+                    return False, f"Empty required success evidence for key '{k}' in execution outcome"
             return True, None
 
         # Execute under BaseException catching to handle interruptions and errors

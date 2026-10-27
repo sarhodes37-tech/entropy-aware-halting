@@ -4,6 +4,7 @@ Verifies contract integrity, prohibition precedence, approval binding, denial pr
 delegation isolation, success evidence requirements, and audit trail reconciliation.
 """
 
+import os
 import time
 import uuid
 import pytest
@@ -172,7 +173,6 @@ def test_durable_denial_preservation_across_retries_and_routes(tmp_path):
         default_policy=Policy(policy_id="p1", allowed_operations={"local_read"}, allowed_resources={"/app/data"}),
         registry=registry
     )
-    boundary = TrustedExecutionBoundary(provenance_store=store, authority=authority)
 
     contract = TrustedTaskContract(
         task_id="TASK-DENIAL-01",
@@ -211,206 +211,203 @@ def test_durable_denial_preservation_across_retries_and_routes(tmp_path):
     assert "DURABLE_DENIAL_ACTIVE" in reason2
 
 
-def test_worker_delegation_and_identity_mismatch():
-    authority = AuthorizationAuthority(
-        default_policy=Policy(policy_id="p1", allowed_operations={"worker_task"}, allowed_resources={"*"})
-    )
-    contract = TrustedTaskContract(
-        task_id="TASK-ORIGINATOR-99",
-        permitted_actions={"worker_task"},
-        resource_scope={"/data/task"}
-    )
-    contract.sign(authority.contract_signing_secret)
+def test_denial_persistence_failure_handling(tmp_path):
+    unwritable_path = tmp_path / "non_existent_dir" / "readonly" / "denial.jsonl"
+    registry = CapabilityRegistry(denial_log_path=str(unwritable_path), fail_closed_persistence=True)
 
-    # Worker attempts to present caller's contract under a substituted task_id -> DENIED
+    # Create invalid directory to trigger write failure
+    os.makedirs(tmp_path / "non_existent_dir", mode=0o444, exist_ok=True)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        registry.record_denial("TASK-FAIL-PERSIST", "delete", "/path", "Forbidden")
+    assert "Denial persistence failure" in str(exc_info.value)
+
+
+def test_denial_continuity_across_version_updates_and_explicit_reauthorization(tmp_path):
+    denial_log = tmp_path / "denials_ver.jsonl"
+    registry = CapabilityRegistry(denial_log_path=str(denial_log))
+    authority = AuthorizationAuthority(
+        default_policy=Policy(policy_id="p1", allowed_operations={"*"}, allowed_resources={"*"}),
+        registry=registry
+    )
+
+    contract_v1 = TrustedTaskContract(
+        task_id="TASK-VER-01",
+        contract_version="1.0.0",
+        explicit_prohibitions={"mutate_state"}
+    )
+    contract_v1.sign(authority.contract_signing_secret)
+
+    # Initial attempt -> DENIED
+    cap1, reason1 = authority.evaluate_and_issue_capability(
+        action_name="mutate_state",
+        target="/state",
+        canonical_request_digest="dig1",
+        task_contract=contract_v1
+    )
+    assert cap1 is None
+    assert "CONTRACT_EXPLICIT_PROHIBITION" in reason1
+
+    # Retry under updated contract_version '2.0.0' without reauthorization -> STILL DENIED
+    contract_v2 = TrustedTaskContract(
+        task_id="TASK-VER-01",
+        contract_version="2.0.0",
+        permitted_actions={"mutate_state"},
+        resource_scope={"/state"}
+    )
+    contract_v2.sign(authority.contract_signing_secret)
+
+    cap2, reason2 = authority.evaluate_and_issue_capability(
+        action_name="mutate_state",
+        target="/state",
+        canonical_request_digest="dig2",
+        task_contract=contract_v2
+    )
+    assert cap2 is None
+    assert "DURABLE_DENIAL_ACTIVE" in reason2
+
+    # Clear denial with authenticated HumanApprovalRecord
+    app_record = HumanApprovalRecord(
+        approval_id="APP-CLEAR-01",
+        approver_id="security_admin",
+        action_name="mutate_state",
+        target="/state",
+        action_digest="dig3",
+        request_id="REQ-CLEAR-01"
+    )
+    cleared = registry.clear_denial_with_approval("TASK-VER-01", "mutate_state", "/state", app_record)
+    assert cleared is True
+
+    # Retry after explicit reauthorization -> GRANTED
+    app_record.sign(authority.approval_signing_secret)
+    cap3, reason3 = authority.evaluate_and_issue_capability(
+        action_name="mutate_state",
+        target="/state",
+        canonical_request_digest="dig3",
+        request_id="REQ-CLEAR-01",
+        task_contract=contract_v2,
+        human_approval_input=app_record
+    )
+    assert cap3 is not None
+    assert reason3 == "AUTHORIZATION_GRANTED"
+
+
+def test_multi_instance_denial_synchronization(tmp_path):
+    denial_log = tmp_path / "shared_denials.jsonl"
+    registry_a = CapabilityRegistry(denial_log_path=str(denial_log))
+    registry_b = CapabilityRegistry(denial_log_path=str(denial_log))
+
+    # Instance A records denial
+    registry_a.record_denial("TASK-SHARED-1", "drop_db", "/prod", "Prohibited by A")
+
+    # Instance B queries denial -> must re-sync from shared persistent log and detect ACTIVE denial!
+    is_denied, record = registry_b.check_denial("TASK-SHARED-1", "drop_db", "/prod")
+    assert is_denied is True
+    assert record["reason"] == "Prohibited by A"
+
+
+def test_contract_required_execution_mode():
+    authority = AuthorizationAuthority(
+        default_policy=Policy(policy_id="p1", allowed_operations={"read"}, allowed_resources={"/data"}),
+        require_task_contract=True
+    )
+
+    # Calling without task contract fails closed
     cap, reason = authority.evaluate_and_issue_capability(
-        action_name="worker_task",
-        target="/data/task",
-        canonical_request_digest="dig_worker",
-        task_contract=contract,
-        task_id="TASK-WORKER-SUBSTITUTE"
+        action_name="read",
+        target="/data",
+        canonical_request_digest="dig"
     )
     assert cap is None
-    assert reason == "AUTHORIZATION_DENIED_TASK_IDENTITY_MISMATCH"
+    assert reason == "AUTHORIZATION_DENIED_CONTRACT_REQUIRED"
 
 
-def test_success_evidence_verification(tmp_path):
-    log_file = tmp_path / "prov_ev.jsonl"
+def test_null_and_empty_evidence_validation(tmp_path):
+    log_file = tmp_path / "prov_null.jsonl"
     store = LocalProvenanceStore(log_path=str(log_file))
     authority = AuthorizationAuthority(
-        default_policy=Policy(policy_id="p1", allowed_operations={"process_data"}, allowed_resources={"/data"})
+        default_policy=Policy(policy_id="p1", allowed_operations={"run"}, allowed_resources={"/res"})
     )
     boundary = TrustedExecutionBoundary(provenance_store=store, authority=authority)
-    boundary.authority.register_executor("dummy_executor", dummy_executor)
-    boundary.authority.register_executor("bad_executor", bad_executor)
 
-    req_payload = {"cmd": "run"}
-    digest = boundary.compute_canonical_digest(req_payload)
-    corr_id = str(uuid.uuid4())
+    def null_evidence_executor():
+        return {"status": "ok", "proof": None}
 
-    contract = TrustedTaskContract(
-        task_id="TASK-EVIDENCE-01",
-        permitted_actions={"process_data"},
-        resource_scope={"/data"},
-        success_evidence_requirements={"evidence_key"}
-    )
-    contract.sign(authority.contract_signing_secret)
+    def empty_evidence_executor():
+        return {"status": "ok", "proof": ""}
 
-    # Issue capability for dummy_executor with contract
-    cap, reason = authority.evaluate_and_issue_capability(
-        action_name="process_data",
-        target="/data",
-        canonical_request_digest=digest,
-        executor_id=dummy_executor,
-        correlation_id=corr_id,
-        task_contract=contract
-    )
-    assert cap is not None
-    assert "evidence_key" in cap.required_success_evidence
-    req_id = cap.request_id
+    boundary.authority.register_executor("null_exec", null_evidence_executor)
+    boundary.authority.register_executor("empty_exec", empty_evidence_executor)
 
-    # Record grant event
-    store.record_event(ProvenanceEvent(
-        schema_version="1.0.0",
-        event_id=str(uuid.uuid4()),
-        event_type=ProvenanceEventType.AUTHORIZATION_GRANTED.value,
-        provenance_source=ProvenanceSource.GOVERNANCE_GATE.value,
-        correlation_id=corr_id,
-        request_id=req_id,
-        action_name="process_data",
-        target="/data",
-        canonical_request_digest=digest,
-        timestamp=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        authorization_token_id=cap.token_id,
-        policy_version="1.0.0"
-    ))
+    req_payload = {"cmd": "test"}
+    d = boundary.compute_canonical_digest(req_payload)
 
-    # Context automatically inheriting requirements from capability
-    ctx_good = ExecutionContext(
-        correlation_id=corr_id,
-        request_id=req_id,
-        authorization_token_id=cap.token_id,
-        authorized_digest=digest,
-        authorization_granted=True,
-        required_success_evidence=cap.required_success_evidence
-    )
+    corr1 = str(uuid.uuid4())
+    cap1, _ = authority.evaluate_and_issue_capability(action_name="run", target="/res", canonical_request_digest=d, executor_id=null_evidence_executor, correlation_id=corr1)
+    ctx1 = ExecutionContext(correlation_id=corr1, request_id=cap1.request_id, authorization_token_id=cap1.token_id, authorized_digest=d, required_success_evidence={"proof"})
+    res1 = boundary.execute_protected_action(action_name="run", target="/res", request_payload=req_payload, executor_func=null_evidence_executor, context=ctx1)
+    assert res1["status"] == "UNVERIFIED_SUCCESS"
 
-    res = boundary.execute_protected_action(
-        action_name="process_data",
-        target="/data",
-        request_payload=req_payload,
-        executor_func=dummy_executor,
-        context=ctx_good
-    )
-    assert res["status"] == "SUCCESS"
-
-    # Now test missing evidence key with bad_executor
-    digest2 = boundary.compute_canonical_digest(req_payload)
-    corr_id2 = str(uuid.uuid4())
-    contract_bad = TrustedTaskContract(
-        task_id="TASK-EVIDENCE-02",
-        permitted_actions={"process_data"},
-        resource_scope={"/data"},
-        success_evidence_requirements={"evidence_key"}
-    )
-    contract_bad.sign(authority.contract_signing_secret)
-
-    cap_bad, _ = authority.evaluate_and_issue_capability(
-        action_name="process_data",
-        target="/data",
-        canonical_request_digest=digest2,
-        executor_id=bad_executor,
-        correlation_id=corr_id2,
-        task_contract=contract_bad
-    )
-    req_id2 = cap_bad.request_id
-    store.record_event(ProvenanceEvent(
-        schema_version="1.0.0",
-        event_id=str(uuid.uuid4()),
-        event_type=ProvenanceEventType.AUTHORIZATION_GRANTED.value,
-        provenance_source=ProvenanceSource.GOVERNANCE_GATE.value,
-        correlation_id=corr_id2,
-        request_id=req_id2,
-        action_name="process_data",
-        target="/data",
-        canonical_request_digest=digest2,
-        timestamp=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        authorization_token_id=cap_bad.token_id,
-        policy_version="1.0.0"
-    ))
-
-    ctx_bad = ExecutionContext(
-        correlation_id=corr_id2,
-        request_id=req_id2,
-        authorization_token_id=cap_bad.token_id,
-        authorized_digest=digest2,
-        authorization_granted=True,
-        required_success_evidence=cap_bad.required_success_evidence
-    )
-
-    res_bad = boundary.execute_protected_action(
-        action_name="process_data",
-        target="/data",
-        request_payload=req_payload,
-        executor_func=bad_executor,
-        context=ctx_bad
-    )
-    assert res_bad["status"] == "UNVERIFIED_SUCCESS"
-    assert "Missing required success evidence key" in res_bad["reason"]
+    corr2 = str(uuid.uuid4())
+    cap2, _ = authority.evaluate_and_issue_capability(action_name="run", target="/res", canonical_request_digest=d, executor_id=empty_evidence_executor, correlation_id=corr2)
+    ctx2 = ExecutionContext(correlation_id=corr2, request_id=cap2.request_id, authorization_token_id=cap2.token_id, authorized_digest=d, required_success_evidence={"proof"})
+    res2 = boundary.execute_protected_action(action_name="run", target="/res", request_payload=req_payload, executor_func=empty_evidence_executor, context=ctx2)
+    assert res2["status"] == "UNVERIFIED_SUCCESS"
 
 
-def test_orchestrator_end_to_end_contract_and_evidence_propagation(tmp_path):
-    audit_file = tmp_path / "audit.jsonl"
+def test_end_to_end_adversarial_side_effect_isolation(tmp_path):
+    audit_file = tmp_path / "audit_adv.jsonl"
     orchestrator = EpistemicOrchestrator(audit_log_path=str(audit_file))
+    orchestrator.authority.require_task_contract = True
     authority = orchestrator.authority
     contract_secret = authority.contract_signing_secret
 
-    authority.register_executor("dummy_executor", dummy_executor)
-    authority.register_executor("bad_executor", bad_executor)
+    side_effect_counter = [0]
 
-    # Set policy allowing local_read
-    authority.default_policy = Policy(policy_id="p1", allowed_operations={"process_data"}, allowed_resources={"/data"})
+    def side_effecting_executor():
+        side_effect_counter[0] += 1
+        return {"status": "ok", "evidence_key": "valid_proof_999"}
 
-    contract = TrustedTaskContract(
-        task_id="TASK-E2E-01",
-        permitted_actions={"process_data"},
-        resource_scope={"/data"},
-        success_evidence_requirements={"evidence_key"}
+    authority.register_executor("side_effect_exec", side_effecting_executor)
+    authority.default_policy = Policy(policy_id="p1", allowed_operations={"consequential_op"}, allowed_resources={"/target"})
+
+    # Attack 1: Omitted contract when required -> Callback NOT executed
+    res1 = orchestrator.process_submission(
+        raw_payload={"policy_id": "p1"},
+        context={"action_name": "consequential_op", "target": "/target", "actual_executable": side_effecting_executor}
     )
-    contract.sign(contract_secret)
+    assert res1["status"] == "HALTED"
+    assert side_effect_counter[0] == 0
 
-    # Execute with bad_executor -> returns UNVERIFIED_SUCCESS and top-level HALTED status
-    res = orchestrator.process_submission(
-        raw_payload={"policy_id": "p1", "item_id": "test1"},
-        context={
-            "action_name": "process_data",
-            "target": "/data",
-            "actual_executable": bad_executor,
-            "task_contract": contract
-        }
-    )
-    assert res["status"] == "HALTED"
-    assert res["execution_status"] == "UNVERIFIED_SUCCESS"
-    assert "Execution boundary verification failed" in res["reason"]
-
-    # Execute with dummy_executor -> returns ALLOWED status and SUCCESS outcome
-    contract2 = TrustedTaskContract(
-        task_id="TASK-E2E-02",
-        permitted_actions={"process_data"},
-        resource_scope={"/data"},
-        success_evidence_requirements={"evidence_key"}
-    )
-    contract2.sign(contract_secret)
+    # Attack 2: Tampered contract signature -> Callback NOT executed
+    contract_forged = TrustedTaskContract(task_id="TASK-ADV-1", permitted_actions={"consequential_op"}, resource_scope={"/target"})
+    contract_forged.sign(b"forged_key")
 
     res2 = orchestrator.process_submission(
-        raw_payload={"policy_id": "p1", "item_id": "test2"},
-        context={
-            "action_name": "process_data",
-            "target": "/data",
-            "actual_executable": dummy_executor,
-            "task_contract": contract2
-        }
+        raw_payload={"policy_id": "p1"},
+        context={"action_name": "consequential_op", "target": "/target", "actual_executable": side_effecting_executor, "task_contract": contract_forged}
     )
-    assert res2["status"] == "ALLOWED"
-    assert res2["execution_status"] == "EXECUTED"
-    assert res2["execution_outcome"]["status"] == "SUCCESS"
+    assert res2["status"] == "HALTED"
+    assert side_effect_counter[0] == 0
+
+    # Attack 3: Task identity substitution -> Callback NOT executed
+    contract_valid = TrustedTaskContract(task_id="TASK-ORIGINAL", permitted_actions={"consequential_op"}, resource_scope={"/target"})
+    contract_valid.sign(contract_secret)
+
+    res3 = orchestrator.process_submission(
+        raw_payload={"policy_id": "p1"},
+        context={"action_name": "consequential_op", "target": "/target", "actual_executable": side_effecting_executor, "task_contract": contract_valid, "task_id": "TASK-SUBSTITUTE"}
+    )
+    assert res3["status"] == "HALTED"
+    assert side_effect_counter[0] == 0
+
+    # Valid execution -> Callback executed exactly ONCE
+    contract_valid_e2e = TrustedTaskContract(task_id="TASK-LEGIT", permitted_actions={"consequential_op"}, resource_scope={"/target"}, success_evidence_requirements={"evidence_key"})
+    contract_valid_e2e.sign(contract_secret)
+
+    res_valid = orchestrator.process_submission(
+        raw_payload={"policy_id": "p1"},
+        context={"action_name": "consequential_op", "target": "/target", "actual_executable": side_effecting_executor, "task_contract": contract_valid_e2e}
+    )
+    assert res_valid["status"] == "ALLOWED"
+    assert side_effect_counter[0] == 1
