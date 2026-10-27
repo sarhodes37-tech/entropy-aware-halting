@@ -533,13 +533,22 @@ class CapabilityRegistry:
         if self.denial_log_path:
             try:
                 os.makedirs(os.path.dirname(self.denial_log_path) or ".", exist_ok=True)
-                with open(self.denial_log_path, "a", encoding="utf-8") as f:
+                with open(self.denial_log_path, "a+", encoding="utf-8") as f:
                     if has_fcntl:
                         fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+                    pre_pos = f.tell()
                     try:
                         f.write(json.dumps(rec) + "\n")
                         f.flush()
                         os.fsync(f.fileno())
+                    except Exception:
+                        try:
+                            f.seek(pre_pos)
+                            f.truncate(pre_pos)
+                            f.flush()
+                        except Exception:
+                            pass
+                        raise
                     finally:
                         if has_fcntl:
                             fcntl.flock(f.fileno(), fcntl.LOCK_UN)
@@ -640,13 +649,22 @@ class CapabilityRegistry:
             if self.denial_log_path:
                 try:
                     os.makedirs(os.path.dirname(self.denial_log_path) or ".", exist_ok=True)
-                    with open(self.denial_log_path, "a", encoding="utf-8") as f:
+                    with open(self.denial_log_path, "a+", encoding="utf-8") as f:
                         if has_fcntl:
                             fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+                        pre_pos = f.tell()
                         try:
                             f.write(json.dumps(rec) + "\n")
                             f.flush()
                             os.fsync(f.fileno())
+                        except Exception:
+                            try:
+                                f.seek(pre_pos)
+                                f.truncate(pre_pos)
+                                f.flush()
+                            except Exception:
+                                pass
+                            raise
                         finally:
                             if has_fcntl:
                                 fcntl.flock(f.fileno(), fcntl.LOCK_UN)
@@ -903,6 +921,15 @@ class AuthorizationAuthority:
                 is_denied, prev_denial = self.registry._check_denial_unlocked(effective_task_id, action_name, target, c_ver, active_policy.version)
                 if is_denied and prev_denial:
                     return None, f"AUTHORIZATION_DENIED_DURABLE_DENIAL_ACTIVE:{prev_denial['reason']}"
+
+            # Execute test/synchronization hook if present
+            if getattr(self, "_pre_issuance_hook", None) and callable(self._pre_issuance_hook):
+                self._pre_issuance_hook()
+                if effective_task_id:
+                    c_ver = contract_obj.contract_version if contract_obj else "1.0.0"
+                    is_denied, prev_denial = self.registry._check_denial_unlocked(effective_task_id, action_name, target, c_ver, active_policy.version)
+                    if is_denied and prev_denial:
+                        return None, f"AUTHORIZATION_DENIED_DURABLE_DENIAL_ACTIVE:{prev_denial['reason']}"
 
             # Validate against TrustedTaskContract if present
             if contract_obj:

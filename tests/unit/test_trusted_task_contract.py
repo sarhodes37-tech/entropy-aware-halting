@@ -618,19 +618,110 @@ def test_multiprocess_concurrent_clearance(tmp_path):
     assert "already consumed" in failed_msg
 
 
-def test_fsync_failure_injection_preserves_clean_in_memory_state(tmp_path):
+def _proc_record_and_signal(log_path, event_started, event_done, result_q):
+    try:
+        event_started.wait(timeout=5.0)
+        reg = CapabilityRegistry(denial_log_path=log_path)
+        reg.record_denial("TASK-INTERLEAVE-01", "write_file", "/target", "Interleaved denial")
+        event_done.set()
+        result_q.put(("SUCCESS", None))
+    except Exception as e:
+        result_q.put(("ERROR", str(e)))
+
+
+def test_multiprocess_interprocess_lock_serialization(tmp_path):
+    import multiprocessing
+    denial_log = str(tmp_path / "interleave_denial_log.jsonl")
+
+    reg_a = CapabilityRegistry(denial_log_path=denial_log)
+    authority_a = AuthorizationAuthority(
+        default_policy=Policy(policy_id="p1", allowed_operations={"*"}, allowed_resources={"*"}),
+        registry=reg_a
+    )
+
+    contract = TrustedTaskContract(task_id="TASK-INTERLEAVE-01", permitted_actions={"write_file"}, resource_scope={"/target"})
+    contract.sign(authority_a.contract_signing_secret)
+
+    ev_start = multiprocessing.Event()
+    ev_done = multiprocessing.Event()
+    q = multiprocessing.Queue()
+
+    proc_b = multiprocessing.Process(target=_proc_record_and_signal, args=(denial_log, ev_start, ev_done, q))
+    proc_b.start()
+
+    # Process A enters lock_registry() first
+    with reg_a.lock_registry():
+        ev_start.set()
+        # Process B tries to call record_denial() in background, but MUST block because reg_a holds lock_registry()
+        time.sleep(0.1)
+        assert ev_done.is_set() is False, "Process B should be blocked waiting for lock_registry()"
+
+    # Process A releases lock -> Process B acquires lock and completes write
+    proc_b.join(timeout=5.0)
+    status_b, err_b = q.get(timeout=2.0)
+    assert status_b == "SUCCESS", f"Process B error: {err_b}"
+    assert ev_done.is_set() is True
+
+    # Process A's subsequent capability check re-syncs and observes Process B's recorded denial
+    cap, reason = authority_a.evaluate_and_issue_capability(
+        action_name="write_file", target="/target", canonical_request_digest="d_interleave", task_contract=contract
+    )
+    assert cap is None
+    assert "DURABLE_DENIAL_ACTIVE" in reason
+
+
+def test_persistence_failure_injection_write_flush_fsync(tmp_path):
+    import io
     from unittest.mock import patch
-    denial_log = str(tmp_path / "fsync_fail.jsonl")
+    denial_log = str(tmp_path / "fail_inj.jsonl")
     registry = CapabilityRegistry(denial_log_path=denial_log, fail_closed_persistence=True)
 
-    with patch("os.fsync", side_effect=OSError("Disk write I/O error")):
-        with pytest.raises(RuntimeError) as exc_info:
-            registry.record_denial("TASK-FSYNC-1", "write_file", "/target", "Denied reason")
-        assert "Denial persistence failure" in str(exc_info.value) or "Disk write I/O error" in str(exc_info.value)
+    # 1. Write failure
+    with patch("json.dumps", side_effect=IOError("Write failed")):
+        with pytest.raises(RuntimeError) as exc1:
+            registry.record_denial("TASK-INJ-1", "write_file", "/target", "Reason")
+        assert "Denial persistence failure" in str(exc1.value) or "Write failed" in str(exc1.value)
 
-    # In-memory map MUST NOT contain the failed denial
-    key = ("TASK-FSYNC-1", "write_file", "/target")
-    assert key not in registry._denied_records
+    # 2. Flush failure
+    original_open = open
+    def mock_open_with_faulty_flush(*args, **kwargs):
+        f = original_open(*args, **kwargs)
+        if len(args) > 1 and "a" in args[1]:
+            def faulty_flush():
+                raise IOError("Flush failed")
+            f.flush = faulty_flush
+        return f
+
+    with patch("builtins.open", side_effect=mock_open_with_faulty_flush):
+        with pytest.raises(RuntimeError) as exc2:
+            registry.record_denial("TASK-INJ-2", "write_file", "/target", "Reason")
+        assert "Denial persistence failure" in str(exc2.value) or "Flush failed" in str(exc2.value)
+
+    # 3. fsync failure & reloaded registry state reconciliation
+    authority = AuthorizationAuthority(registry=registry)
+    app = HumanApprovalRecord(
+        approval_id="APP-FSYNC-FAIL",
+        approver_id="admin",
+        action_name="CLEAR_DENIAL:write_file",
+        target="/target",
+        action_digest="dig",
+        request_id="req",
+        task_id="TASK-INJ-3"
+    )
+    app.sign(authority.approval_signing_secret)
+
+    registry.record_denial("TASK-INJ-3", "write_file", "/target", "Initial denial")
+
+    with patch("os.fsync", side_effect=OSError("Disk full fsync error")):
+        with pytest.raises(RuntimeError) as exc3:
+            registry.clear_denial_with_approval("TASK-INJ-3", "write_file", "/target", app, authority.approval_signing_secret)
+        assert "Denial persistence failure" in str(exc3.value) or "Disk full fsync error" in str(exc3.value)
+
+    # Reloaded registry from disk MUST reflect active denial and unconsumed approval
+    reloaded_registry = CapabilityRegistry(denial_log_path=denial_log)
+    is_denied, record = reloaded_registry.check_denial("TASK-INJ-3", "write_file", "/target")
+    assert is_denied is True
+    assert reloaded_registry.is_approval_consumed("APP-FSYNC-FAIL") is False
 
 
 def test_production_configuration_enforcement(monkeypatch):
