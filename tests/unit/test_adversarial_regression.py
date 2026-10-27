@@ -22,9 +22,8 @@ Covers Stage B & Stage C PR #281 review feedback:
 
 4. Alternate privilege route:
    - Separates direct registry checks from pipeline execution behavior.
-   - Tests exact-target denial registry behavior on '/critical_db' vs '/critical_db/users'.
-   - Demonstrates end-to-end authorization denial behavior through AuthorizationAuthority (`AUTHORIZATION_DENIED_DURABLE_DENIAL_ACTIVE`).
-   - Documents exact-target denial keying design boundary.
+   - Tests CapabilityRegistry denial inheritance behavior on '/critical_db' vs '/critical_db/users'.
+   - Demonstrates subpath restriction inheritance through AuthorizationAuthority (`AUTHORIZATION_DENIED_DURABLE_DENIAL_ACTIVE`).
    - Includes distinct permitted-operation control ('local_read' on '/public_docs') to catch overbroad denial inheritance.
 """
 
@@ -342,11 +341,12 @@ def test_3_network_egress_offline_receiver_rejection():
 
 def test_4_alternate_privilege_route_registry_boundary():
     """
-    4. Alternate privilege route (registry boundary test):
-    - Tests direct CapabilityRegistry denial behavior.
-    - Documented Boundary: CapabilityRegistry uses exact (task_id, action_name, target) lookup keys.
-      A denial recorded for '/critical_db' does not automatically block target '/critical_db/users'
-      unless evaluated via full policy matching.
+    4. Alternate privilege route (registry subpath restriction inheritance test):
+    - Tests CapabilityRegistry denial inheritance behavior.
+    - CapabilityRegistry enforces subpath restriction inheritance:
+      A denial recorded for parent target '/critical_db' automatically restricts attempts
+      on child endpoints such as '/critical_db/users' for the same task and action category,
+      while leaving unrelated targets ('/unrelated_db') unrestricted.
     """
     reg = CapabilityRegistry()
     task_id = f"TASK-REG-{uuid.uuid4()}"
@@ -360,24 +360,26 @@ def test_4_alternate_privilege_route_registry_boundary():
 
     is_denied_exact, _ = reg.check_denial(task_id, "delete_db", "/critical_db")
     is_denied_child, _ = reg.check_denial(task_id, "delete_db", "/critical_db/users")
+    is_denied_unrelated, _ = reg.check_denial(task_id, "delete_db", "/unrelated_db")
 
     assert is_denied_exact is True
-    assert is_denied_child is False  # Registry alone enforces exact key target matching
+    assert is_denied_child is True  # Subpath inheritance enforces restriction on child endpoints
+    assert is_denied_unrelated is False  # Unrelated targets remain unrestricted
 
 
 def test_4_alternate_privilege_route_authority_denial_enforcement():
     """
-    4. Alternate privilege route (authoritative denial path test):
-    - Demonstrates durable denial enforcement through AuthorizationAuthority.
+    4. Alternate privilege route (authoritative subpath denial enforcement test):
+    - Demonstrates durable denial enforcement through AuthorizationAuthority across alternative execution paths.
     - Initial attempt to '/critical_db' is denied by policy and recorded in durable denial registry.
     - Re-attempt to exact target '/critical_db' is blocked directly by durable denial (`AUTHORIZATION_DENIED_DURABLE_DENIAL_ACTIVE`).
-    - Attempt to child path '/critical_db/users' demonstrates exact-target keying behavior: since '/critical_db/users' is in policy allowed_resources, capability IS granted (`AUTHORIZATION_GRANTED`), establishing that hierarchical child path denial inheritance is an unsupported architectural limitation (exact-target keying design).
+    - Attempt to child path '/critical_db/users' via an alternate route is ALSO blocked by subpath restriction inheritance (`AUTHORIZATION_DENIED_DURABLE_DENIAL_ACTIVE`).
     """
     task_id = f"TASK-AUTH-ALT-{uuid.uuid4()}"
     policy = Policy(
         policy_id="pol-alt",
         allowed_operations={"delete_db"},
-        allowed_resources={"/critical_db/users"}  # /critical_db is NOT allowed, but /critical_db/users IS
+        allowed_resources={"/critical_db/users"}  # /critical_db is NOT allowed, but /critical_db/users IS in broad policy
     )
     authority = AuthorizationAuthority(default_policy=policy)
 
@@ -401,15 +403,15 @@ def test_4_alternate_privilege_route_authority_denial_enforcement():
     assert cap2 is None
     assert "AUTHORIZATION_DENIED_DURABLE_DENIAL_ACTIVE" in reason2
 
-    # 3. Attempt on child path /critical_db/users demonstrates exact-target keying outcome
+    # 3. Attempt on child path /critical_db/users is blocked via subpath restriction inheritance
     cap3, reason3 = authority.evaluate_and_issue_capability(
         action_name="delete_db",
         target="/critical_db/users",
         canonical_request_digest="digest1",
         task_id=task_id
     )
-    assert cap3 is not None
-    assert reason3 == "AUTHORIZATION_GRANTED"
+    assert cap3 is None
+    assert "AUTHORIZATION_DENIED_DURABLE_DENIAL_ACTIVE" in reason3
 
 
 def test_4_alternate_privilege_route_pipeline_rejection():

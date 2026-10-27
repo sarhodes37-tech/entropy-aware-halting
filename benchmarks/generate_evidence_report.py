@@ -50,11 +50,8 @@ def run_layer_a_deterministic_tests(fast_mode: bool = False) -> Dict[str, Any]:
     test_targets = ["tests/unit/test_evidence_architecture.py", "-k", "test_dataset_manifest_integrity"] if fast_mode else ["tests/unit/", "tests/e2e_security/"]
 
     pytest_bin = "pytest"
-    existing_pythonpath = env.get("PYTHONPATH", "")
-    paths = [PROJECT_ROOT] + [p for p in sys.path if p]
-    if existing_pythonpath:
-        paths.insert(0, existing_pythonpath)
-    env["PYTHONPATH"] = os.pathsep.join(paths)
+    if not env.get("PYTHONPATH"):
+        env["PYTHONPATH"] = os.pathsep.join([PROJECT_ROOT] + [p for p in sys.path if p])
 
     cmd = [sys.executable, "-m", "pytest", *test_targets, "-q", "--tb=no"]
 

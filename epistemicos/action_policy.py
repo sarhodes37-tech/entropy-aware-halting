@@ -67,6 +67,30 @@ class ActionRegistry:
             allowed_resources={"*"},
             is_externally_consequential=False
         ),
+        "read_table": RegisteredActionDefinition(
+            operation_id="read_table",
+            category=ActionCategory.READ_ONLY_LOCAL,
+            description="Read database table contents",
+            requires_human_approval=False,
+            allowed_resources={"*"},
+            is_externally_consequential=False
+        ),
+        "read_only": RegisteredActionDefinition(
+            operation_id="read_only",
+            category=ActionCategory.READ_ONLY_LOCAL,
+            description="Read-only operations",
+            requires_human_approval=False,
+            allowed_resources={"*"},
+            is_externally_consequential=False
+        ),
+        "read_logs": RegisteredActionDefinition(
+            operation_id="read_logs",
+            category=ActionCategory.READ_ONLY_LOCAL,
+            description="Read system logs",
+            requires_human_approval=False,
+            allowed_resources={"*"},
+            is_externally_consequential=False
+        ),
         "network_read": RegisteredActionDefinition(
             operation_id="network_read",
             category=ActionCategory.NETWORK_READ,
@@ -119,6 +143,14 @@ class ActionRegistry:
             operation_id="credential_use",
             category=ActionCategory.CREDENTIAL_USAGE,
             description="Using discovered credentials, another agent's account, or cross-agent resources",
+            requires_human_approval=True,
+            allowed_resources={"*"},
+            is_externally_consequential=True
+        ),
+        "delete_db": RegisteredActionDefinition(
+            operation_id="delete_db",
+            category=ActionCategory.DESTRUCTIVE_COMMAND,
+            description="Destructive database operations",
             requires_human_approval=True,
             allowed_resources={"*"},
             is_externally_consequential=True
