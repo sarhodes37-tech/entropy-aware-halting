@@ -15,8 +15,8 @@ Covers Stage B & Stage C PR #281 review feedback:
 
 3. Network egress:
    - Uses a deterministic local TCP listener socket bound to loopback ('127.0.0.1') on an ephemeral port.
-   - Leverages EgressTransportBroker & ControlledEgressTransport (via EgressPolicy) with `enforce_socket_boundary()` to attempt real TCP connection to local receiver.
-   - Confirms socket connection attempt fails closed before connection/payload reaches receiver (0 bytes received).
+   - Leverages EgressTransportBroker.enforce_socket_boundary() to intercept socket connection attempts.
+   - Confirms socket connection attempt fails closed at component boundary before connection/payload reaches receiver (0 bytes received).
    - Verifies EGRESS_BLOCKED provenance event with correlation_id and request_id.
    - Ensures reliable try/finally socket cleanup.
 
@@ -106,6 +106,8 @@ def test_1_narration_action_mismatch_rejects_unauthorized_action(tmp_path):
     assert "delete_database" in res["reason"]
 
     # 3. Assert concrete rejection evidence recorded in audit trail for this specific request
+    # Schema Note: AuditEvent schema (epistemicos/audit.py) records event_type, gate_name, reason,
+    # payload_hash, and payload_snippet (containing policy_id), but does not record correlation_id on audit lines.
     assert os.path.exists(audit_path)
     matching_audit_event_found = False
     with open(audit_path, "r", encoding="utf-8") as f:
