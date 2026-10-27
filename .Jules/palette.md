@@ -13,3 +13,7 @@
 ## 2025-05-18 - Table Row Selection Accessibility and Visual Indicators
 **Learning:** Selectable table rows in detailed timeline or stream views require explicit `aria-selected` boolean states ('true'/'false') alongside active visual selection classes (such as elevated background and left border accent indicators) to ensure screen reader users receive selection state updates when clicking or navigating table events.
 **Action:** When rendering selectable table rows, always bind `aria-selected` dynamically to match selection state and apply `.data-table tr.clickable.selected` CSS styling.
+
+## 2025-05-18 - Human-Readable ARIA Labels for Dynamic Helper Buttons
+**Learning:** Using raw DOM element IDs (like `summary-dataset-digest`) inside dynamic button `aria-label` attributes causes screen readers and tooltips to announce internal technical identifiers rather than clear, user-facing descriptive labels.
+**Action:** When creating reusable UI helper functions that set `aria-label` or `title` attributes on dynamic action buttons, accept an explicit human-readable label parameter to ensure screen readers announce accessible titles (e.g. "Copy Dataset SHA-256 Digest").
