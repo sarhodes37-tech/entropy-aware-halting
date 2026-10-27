@@ -1,11 +1,11 @@
 # EpistemicOS Consolidated Security & Evaluation Evidence Report
 
-**Overall Status:** `PARTIAL` | **Generated:** 2026-10-27 17:34:01 UTC
+**Overall Status:** `PARTIAL` | **Generated:** 2026-10-27 10:42:55 UTC
 
 ## Reproducibility & Environment Metadata
-- **Evaluated Git Commit:** `99ea2482b3788c5a71d24f8d606387a441cd60c8`
+- **Evaluated Git Commit:** `8974bac6a7d30273dd3d47d4f6860e12bc4c2ea6`
 - **Working Tree Status:** `DIRTY`
-- **Working Tree Digest:** `13e922db5c0488ddaadeb9b12cac6ba03b0242d49ed2095ceb619e35b37e4abc`
+- **Working Tree Digest:** `e3aacc5d8a8986a9a97a169d5fe29615870fc0bec17852b7a27a2f0ac2936779`
 - **Dataset Version:** `1.0.0-frozen`
 - **Dataset SHA-256 Digest:** `f4e31381a922c1143769ccb887c4841e4a14fedec6eef6569d40eed2956ce873` (Verified: `True`)
 
@@ -13,8 +13,8 @@
 
 ## Layer A: Deterministic Regression
 - **Status:** `PASS`
-- **Test Command:** `pytest tests/unit/ tests/e2e_security/ -q --tb=no`
-- **Summary:** SKIPPED [1] tests/unit/test_security_coverage_remediation.py:375: could not import 'torch': No module named 'torch'
+- **Test Command:** `/home/jules/.local/share/pipx/venvs/pytest/bin/python -m pytest tests/unit/test_evidence_architecture.py -k test_dataset_manifest_integrity -q --tb=no`
+- **Summary:** .                                                                        [100%]
 
 ---
 
@@ -48,14 +48,14 @@
 
 ## Layer D: Performance & Cost Benchmarks
 - **Status:** `PASS`
-- **Run ID:** `run-l4-20261027173053-604736c2`
+- **Run ID:** `run-l4-20261027104216-11beaf0d`
 - **Dataset Digest:** `f4e31381a922c1143769ccb887c4841e4a14fedec6eef6569d40eed2956ce873`
-- **Run Records File SHA-256:** `f62c6225a19f639053960bb32984a806374bda31203e1fe2b789174e5376bb8b`
+- **Run Records File SHA-256:** `b55ab74c70e16020bb624ce76e55c0759ec0d95c35ca90c16b0434aa30a97bbe`
 - **Sample Size:** N = 100
 - **Combined Gating Accuracy:** 100.0%
 - **Combined Gating Security Recall:** 100.0%
 - **Benign False Positive Rate:** 0.0%
-- **P95 Latency:** 186.655 ms
+- **P95 Latency:** 27.007 ms
 - **Total Tokens Spent:** 2000
 - **Mandatory Criteria Passed:** `True`
 
