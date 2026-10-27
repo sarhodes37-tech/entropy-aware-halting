@@ -604,6 +604,7 @@ class CapabilityRegistry:
         target: str,
         reauthorization_record: HumanApprovalRecord,
         signing_secret: bytes,
+        expected_action_digest: Optional[str] = None,
         current_time: Optional[float] = None
     ) -> Tuple[bool, str]:
         import os
@@ -655,6 +656,14 @@ class CapabilityRegistry:
             )
             if not (action_match and target_match):
                 return False, "Approval record does not match action_name and target for denial clearance"
+
+            # Action digest validation: fail closed if expected_action_digest is supplied
+            if expected_action_digest:
+                rec_digest = getattr(reauthorization_record, "action_digest", None)
+                if not rec_digest or not str(rec_digest).strip():
+                    return False, "Reauthorization approval record missing required action_digest"
+                if str(rec_digest).strip() != str(expected_action_digest).strip():
+                    return False, f"Reauthorization approval action_digest mismatch: expected '{expected_action_digest}', got '{reauthorization_record.action_digest}'"
 
             key = (task_id, action_name, target)
             rec = {
@@ -730,6 +739,87 @@ class CapabilityRegistry:
         if rec and rec.get("status") == "ACTIVE":
             # Denial is active regardless of contract_version changes, unless explicitly cleared
             return True, rec
+
+        # Restriction Inheritance Check across alternative execution paths/endpoints for same task
+        from urllib.parse import urlparse
+        from epistemicos.action_policy import ActionRegistry, ActionCategory
+
+        registry = getattr(self, "_action_registry", None) or ActionRegistry()
+        req_cat = registry.classify_action(action_name)
+
+        import os
+        from urllib.parse import urlparse, unquote
+
+        def normalize_target_path(raw_target: str) -> tuple[str, str]:
+            if not raw_target:
+                return "", "/"
+            str_target = str(raw_target).strip()
+            if "://" in str_target:
+                parsed = urlparse(str_target)
+                netloc = parsed.netloc.lower().strip() if parsed.netloc else ""
+                raw_path = parsed.path or "/"
+            else:
+                netloc = ""
+                raw_path = str_target if str_target.startswith("/") else "/" + str_target
+                if "?" in raw_path or "#" in raw_path:
+                    parsed = urlparse("http://localhost" + raw_path)
+                    raw_path = parsed.path or "/"
+
+            # Unquote percent-encoded separators (%2F, %5C) to resolve encoded traversal paths
+            unquoted_path = unquote(raw_path)
+
+            # Collapse backslashes to forward slashes and eliminate dot segments
+            clean_path = unquoted_path.replace("\\", "/")
+            norm_path = os.path.normpath(clean_path)
+            if norm_path in (".", "", "/"):
+                norm_path = "/"
+            else:
+                norm_path = norm_path.rstrip("/")
+            return netloc, norm_path
+
+        target_host, target_norm = normalize_target_path(target)
+
+        for (d_task_id, d_action, d_target), d_rec in self._denied_records.items():
+            if d_rec.get("status") != "ACTIVE" or d_task_id != task_id:
+                continue
+
+            d_host, d_target_norm = normalize_target_path(d_target)
+
+            # Strict host matching: exact match or explicit wildcard
+            host_matches = (
+                target_host == d_host
+                or d_host == "*"
+                or target_host == "*"
+                or d_target == "*"
+                or target == "*"
+            )
+
+            # Downward path inheritance: a restriction on a parent path or exact path/wildcard applies to subpaths
+            path_matches = (
+                d_target == target
+                or d_target == "*"
+                or target == "*"
+                or d_target_norm == target_norm
+                or (d_target_norm == "/" and target_norm.startswith("/"))
+                or (d_target_norm != "/" and target_norm.startswith(d_target_norm + "/"))
+            )
+
+            target_matches = host_matches and path_matches
+
+            d_cat = registry.classify_action(d_action)
+            same_action = (d_action == action_name)
+            same_category = (req_cat == d_cat and req_cat is not None)
+            wildcard_action = (d_action == "*")
+
+            if target_matches and (same_action or same_category or wildcard_action):
+                inherited_rec = dict(d_rec)
+                inherited_rec["inherited_from"] = {
+                    "action_name": d_action,
+                    "target": d_target,
+                    "reason": d_rec.get("reason")
+                }
+                return True, inherited_rec
+
         return False, None
 
     def check_denial(
@@ -876,6 +966,7 @@ class AuthorizationAuthority:
         action_name: str,
         target: str,
         reauthorization_record: Any,
+        expected_action_digest: Optional[str] = None,
         current_time: Optional[float] = None
     ) -> Tuple[bool, str]:
         rec = HumanApprovalRecord.from_input(reauthorization_record)
@@ -887,6 +978,7 @@ class AuthorizationAuthority:
             target=target,
             reauthorization_record=rec,
             signing_secret=self.approval_signing_secret,
+            expected_action_digest=expected_action_digest,
             current_time=current_time
         )
 
