@@ -6,6 +6,12 @@
 - **Evaluated Git Commit:** `6b73a047aeadf54c200c3b746b794839e9b76dc5`
 - **Working Tree Status:** `DIRTY`
 - **Working Tree Digest:** `e78c11f7ac8355d7220c231a1d1b6fe05d26bd0cafe02c148250b401a0529c14`
+**Overall Status:** `PARTIAL` | **Generated:** 2026-10-27 08:44:34 UTC
+
+## Reproducibility & Environment Metadata
+- **Evaluated Git Commit:** `84c29df3cc090f88dc194125f864f55e37190adc`
+- **Working Tree Status:** `DIRTY`
+- **Working Tree Digest:** `6cd1e4cdfa107e16be1d8fa032f6238d0ad0f762b149a0980ed4f18ad1b1ce71`
 - **Dataset Version:** `1.0.0-frozen`
 - **Dataset SHA-256 Digest:** `f4e31381a922c1143769ccb887c4841e4a14fedec6eef6569d40eed2956ce873` (Verified: `True`)
 
@@ -51,11 +57,15 @@
 - **Run ID:** `run-l4-20261026212128-09b17da7`
 - **Dataset Digest:** `f4e31381a922c1143769ccb887c4841e4a14fedec6eef6569d40eed2956ce873`
 - **Run Records File SHA-256:** `20bad7945e1b39acf6686897dc3d2cba544f39b754381d981ef64ce4adc090c4`
+- **Run ID:** `run-l4-20261027084355-0be48535`
+- **Dataset Digest:** `f4e31381a922c1143769ccb887c4841e4a14fedec6eef6569d40eed2956ce873`
+- **Run Records File SHA-256:** `e8c28b8305f781829ed96beab48c445475db72f05a328a37a934fdc0c35e1479`
 - **Sample Size:** N = 100
 - **Combined Gating Accuracy:** 100.0%
 - **Combined Gating Security Recall:** 100.0%
 - **Benign False Positive Rate:** 0.0%
 - **P95 Latency:** 27.544 ms
+- **P95 Latency:** 28.007 ms
 - **Total Tokens Spent:** 2000
 - **Mandatory Criteria Passed:** `True`
 
