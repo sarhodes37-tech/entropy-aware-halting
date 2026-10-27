@@ -77,6 +77,16 @@ Externally consequential side effects require explicit typed human approval:
 Exhausting in-scope routes does not expand the egress allowlist. Every alternate route or discovered target requires its own authorization check.
 Repeated scope violations increment a supervisory counter (`SideEffectPolicyEngine.get_violation_count`) for audit alerting.
 
+### 4.4 Restriction Inheritance across Alternative Execution Paths
+When a consequential or protected operation is denied for a specific task, EpistemicOS enforces **Persistent Denial and Restriction Inheritance**:
+- **Invariant**: An execution restriction or denial governing a task or target resource cannot be bypassed merely by switching tools, endpoints (e.g. trailing slash `/api/v1/user/delete/` vs `/api/v1/user/delete` or subpaths), or execution methods (`delete_db` vs `destructive_shell`).
+- **Enforcement Mechanics**:
+  1. `CapabilityRegistry._check_denial_unlocked` checks active task denials recorded in durable append-only persistence (`logs/denial_registry.jsonl`).
+  2. Target matching normalizes resource strings (stripping trailing slashes and checking subpath overlaps).
+  3. Action classification via `ActionRegistry.classify_action` matches action categories to prevent category evasion (e.g., retrying a denied database deletion via raw shell commands).
+  4. Non-consequential local read operations (`READ_ONLY_LOCAL`, `NETWORK_READ`) are not blocked by restrictions on unrelated targets.
+- **Reauthorization**: Active persistent denials can be cleared if and only if an authorized principal provides a cryptographically authenticated `HumanApprovalRecord` with explicit clearance intent (`CLEAR_DENIAL`), bound to the specific `task_id`, `action_name`, `target`, and `action_digest`.
+
 ---
 
 ## 5. ShowerCurtain Outbound Inference Egress Path

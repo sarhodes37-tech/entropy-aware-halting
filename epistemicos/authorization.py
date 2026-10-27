@@ -730,6 +730,54 @@ class CapabilityRegistry:
         if rec and rec.get("status") == "ACTIVE":
             # Denial is active regardless of contract_version changes, unless explicitly cleared
             return True, rec
+
+        # Restriction Inheritance Check across alternative execution paths/endpoints for same task
+        from urllib.parse import urlparse
+        from epistemicos.action_policy import ActionRegistry, ActionCategory
+
+        registry = getattr(self, "_action_registry", None) or ActionRegistry()
+        req_cat = registry.classify_action(action_name)
+
+        def normalize_target_path(raw_target: str) -> str:
+            if not raw_target:
+                return "/"
+            parsed = urlparse(raw_target)
+            path = parsed.path or raw_target
+            norm = path.rstrip("/")
+            return norm if norm else "/"
+
+        target_norm = normalize_target_path(target)
+
+        for (d_task_id, d_action, d_target), d_rec in self._denied_records.items():
+            if d_rec.get("status") != "ACTIVE" or d_task_id != task_id:
+                continue
+
+            d_target_norm = normalize_target_path(d_target)
+
+            # Downward path inheritance: a restriction on a parent path or exact path/wildcard applies to subpaths
+            target_matches = (
+                d_target == target
+                or d_target == "*"
+                or target == "*"
+                or d_target_norm == target_norm
+                or (d_target_norm == "/" and target_norm.startswith("/"))
+                or (d_target_norm != "/" and target_norm.startswith(d_target_norm + "/"))
+            )
+
+            d_cat = registry.classify_action(d_action)
+            same_action = (d_action == action_name)
+            same_category = (req_cat == d_cat and req_cat is not None)
+            wildcard_action = (d_action == "*")
+
+            if target_matches and (same_action or same_category or wildcard_action):
+                inherited_rec = dict(d_rec)
+                inherited_rec["inherited_from"] = {
+                    "action_name": d_action,
+                    "target": d_target,
+                    "reason": d_rec.get("reason")
+                }
+                return True, inherited_rec
+
         return False, None
 
     def check_denial(
