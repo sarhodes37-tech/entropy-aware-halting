@@ -355,8 +355,8 @@ class CapabilityRegistry:
     Thread-safe, persistent server-side capability registry and single-use token manager.
 
     Deployment Replay Guarantee Notice:
-    Single-use token consumption and replay prevention is thread-safe and file/memory-backed within this registry.
-    Cross-worker replay prevention across independent processes uses atomic append-only file persistence with fsync and file locking.
+    Cross-process durable denial tracking uses atomic append-only file persistence with fsync and file locking.
+    Single-use capability token consumption and approval replay tracking are thread-safe within the process.
     """
 
     def __init__(
@@ -365,7 +365,7 @@ class CapabilityRegistry:
         denial_log_path: str = "logs/denial_registry.jsonl",
         fail_closed_persistence: bool = True
     ):
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._capabilities: Dict[str, Capability] = {}
         self._consumed_tokens: Set[str] = set()
         self._consumed_approvals: Set[str] = set()
@@ -402,13 +402,20 @@ class CapabilityRegistry:
                         try:
                             rec = json.loads(line_str)
                             if not isinstance(rec, dict) or "task_id" not in rec:
+                                if self.fail_closed_persistence:
+                                    raise RuntimeError(f"Corrupted record in denial log: {line_str}")
                                 continue
                             key = (str(rec["task_id"]), str(rec["action_name"]), str(rec["target"]))
                             if rec.get("status") == "CLEARED":
                                 self._denied_records.pop(key, None)
+                                cleared_by = rec.get("cleared_by_approval")
+                                if cleared_by and isinstance(cleared_by, str):
+                                    self._consumed_approvals.add(cleared_by)
                             else:
                                 self._denied_records[key] = rec
-                        except Exception:
+                        except Exception as parse_err:
+                            if self.fail_closed_persistence:
+                                raise RuntimeError(f"Failed to parse persistent denial log record: {str(parse_err)}") from parse_err
                             continue
                 finally:
                     if has_fcntl:
@@ -497,13 +504,22 @@ class CapabilityRegistry:
         if self.is_approval_consumed(reauthorization_record.approval_id):
             return False, "Reauthorization approval record already consumed (replay attempt)"
 
-        # 3. Check explicit clearance intent (ordinary action approval cannot be repurposed)
-        is_clearance_intent = (
-            reauthorization_record.action_name in (f"CLEAR_DENIAL:{action_name}", "CLEAR_DENIAL")
-            or reauthorization_record.target in (f"CLEAR_DENIAL:{target}", "CLEAR_DENIAL")
+        # 3. Check explicit clearance intent and strict field bindings
+        has_clearance_intent = (
+            "CLEAR_DENIAL" in reauthorization_record.action_name
+            or "CLEAR_DENIAL" in reauthorization_record.target
         )
-        if not is_clearance_intent:
+        if not has_clearance_intent:
             return False, "Approval record is an ordinary action approval and cannot be repurposed as denial clearance authorization"
+
+        action_match = (
+            reauthorization_record.action_name in (f"CLEAR_DENIAL:{action_name}", "CLEAR_DENIAL", action_name)
+        )
+        target_match = (
+            reauthorization_record.target in (f"CLEAR_DENIAL:{target}", "CLEAR_DENIAL", target)
+        )
+        if not (action_match and target_match):
+            return False, "Approval record does not match action_name and target for denial clearance"
 
         with self._lock:
             key = (str(task_id), str(action_name), str(target))
@@ -714,6 +730,7 @@ class AuthorizationAuthority:
         """
         Evaluates authorization request against explicit policy and trusted task contract, returning (Capability, reason_code).
         Fails closed on missing policy, missing fields, explicit prohibitions, scope violations, or failed human approval.
+        Atomic critical section across check_denial, policy evaluation, recording denial, and issuing capability.
         """
         active_policy = policy or self.default_policy
         if not active_policy:
@@ -746,128 +763,130 @@ class AuthorizationAuthority:
         if not target or not isinstance(target, str) or not target.strip():
             return None, "AUTHORIZATION_DENIED_INVALID_TARGET"
 
-        # Validate against TrustedTaskContract if present
-        if contract_obj:
-            # Mandatory contract signature verification against server-controlled contract signing secret
-            if not contract_obj.verify_signature(self.contract_signing_secret, current_time=current_time):
-                return None, "AUTHORIZATION_DENIED_CONTRACT_SIGNATURE_INVALID"
-
-            if contract_obj.is_expired(current_time=current_time):
-                return None, "AUTHORIZATION_DENIED_EXPIRED_TASK_CONTRACT"
-
-            if contract_obj.is_action_prohibited(action_name, target):
-                reason = f"AUTHORIZATION_DENIED_CONTRACT_EXPLICIT_PROHIBITION:{action_name}:{target}"
-                if effective_task_id:
-                    self.registry.record_denial(effective_task_id, action_name, target, reason, contract_obj.contract_version, active_policy.version)
-                return None, reason
-
-            if not contract_obj.is_action_permitted(action_name, target):
-                reason = f"AUTHORIZATION_DENIED_CONTRACT_SCOPE_VIOLATION:{action_name}:{target}"
-                if effective_task_id:
-                    self.registry.record_denial(effective_task_id, action_name, target, reason, contract_obj.contract_version, active_policy.version)
-                return None, reason
-
-        # Check durable denial registry if effective_task_id is known
-        if effective_task_id:
-            c_ver = contract_obj.contract_version if contract_obj else "1.0.0"
-            is_denied, prev_denial = self.registry.check_denial(effective_task_id, action_name, target, c_ver, active_policy.version)
-            if is_denied and prev_denial:
-                return None, f"AUTHORIZATION_DENIED_DURABLE_DENIAL_ACTIVE:{prev_denial['reason']}"
-
-        if not active_policy.is_operation_allowed(action_name):
-            reason = f"AUTHORIZATION_DENIED_OPERATION_NOT_ALLOWED:{action_name}"
+        # Begin atomic critical section for checking denial, contract, policy, recording denial, and registering capability
+        with self.registry._lock:
+            # Check durable denial registry if effective_task_id is known
             if effective_task_id:
                 c_ver = contract_obj.contract_version if contract_obj else "1.0.0"
-                self.registry.record_denial(effective_task_id, action_name, target, reason, c_ver, active_policy.version)
-            return None, reason
+                is_denied, prev_denial = self.registry.check_denial(effective_task_id, action_name, target, c_ver, active_policy.version)
+                if is_denied and prev_denial:
+                    return None, f"AUTHORIZATION_DENIED_DURABLE_DENIAL_ACTIVE:{prev_denial['reason']}"
 
-        if not active_policy.is_target_allowed(target):
-            reason = f"AUTHORIZATION_DENIED_TARGET_NOT_ALLOWED:{target}"
-            if effective_task_id:
-                c_ver = contract_obj.contract_version if contract_obj else "1.0.0"
-                self.registry.record_denial(effective_task_id, action_name, target, reason, c_ver, active_policy.version)
-            return None, reason
+            # Validate against TrustedTaskContract if present
+            if contract_obj:
+                # Mandatory contract signature verification against server-controlled contract signing secret
+                if not contract_obj.verify_signature(self.contract_signing_secret, current_time=current_time):
+                    return None, "AUTHORIZATION_DENIED_CONTRACT_SIGNATURE_INVALID"
 
-        if not active_policy.is_principal_allowed(principal_id):
-            return None, f"AUTHORIZATION_DENIED_PRINCIPAL_NOT_ALLOWED:{principal_id}"
+                if contract_obj.is_expired(current_time=current_time):
+                    return None, "AUTHORIZATION_DENIED_EXPIRED_TASK_CONTRACT"
 
-        if not active_policy.is_executor_allowed(executor_id):
-            return None, f"AUTHORIZATION_DENIED_EXECUTOR_NOT_ALLOWED:{executor_id}"
+                if contract_obj.is_action_prohibited(action_name, target):
+                    reason = f"AUTHORIZATION_DENIED_CONTRACT_EXPLICIT_PROHIBITION:{action_name}:{target}"
+                    if effective_task_id:
+                        self.registry.record_denial(effective_task_id, action_name, target, reason, contract_obj.contract_version, active_policy.version)
+                    return None, reason
 
-        corr_id = correlation_id or str(uuid.uuid4())
-        req_id = request_id or str(uuid.uuid4())
+                if not contract_obj.is_action_permitted(action_name, target):
+                    reason = f"AUTHORIZATION_DENIED_CONTRACT_SCOPE_VIOLATION:{action_name}:{target}"
+                    if effective_task_id:
+                        self.registry.record_denial(effective_task_id, action_name, target, reason, contract_obj.contract_version, active_policy.version)
+                    return None, reason
 
-        # Check human approval requirement from policy OR task contract
-        requires_approval = active_policy.requires_human_approval(action_name) or (contract_obj.requires_human_approval(action_name) if contract_obj else False)
-        approval_record = None
-        if requires_approval:
-            approval_record = HumanApprovalRecord.from_input(human_approval_input)
-            if not approval_record:
-                return None, "STOP_AND_ESCALATE_HUMAN_APPROVAL_REQUIRED"
+            if not active_policy.is_operation_allowed(action_name):
+                reason = f"AUTHORIZATION_DENIED_OPERATION_NOT_ALLOWED:{action_name}"
+                if effective_task_id:
+                    c_ver = contract_obj.contract_version if contract_obj else "1.0.0"
+                    self.registry.record_denial(effective_task_id, action_name, target, reason, c_ver, active_policy.version)
+                return None, reason
 
-            # Validate untrusted approver ID against policy allowed_approvers
-            if active_policy.allowed_approvers is not None and "*" not in active_policy.allowed_approvers:
-                if approval_record.approver_id not in active_policy.allowed_approvers:
-                    return None, f"AUTHORIZATION_DENIED_HUMAN_APPROVAL_UNTRUSTED_APPROVER:{approval_record.approver_id}"
+            if not active_policy.is_target_allowed(target):
+                reason = f"AUTHORIZATION_DENIED_TARGET_NOT_ALLOWED:{target}"
+                if effective_task_id:
+                    c_ver = contract_obj.contract_version if contract_obj else "1.0.0"
+                    self.registry.record_denial(effective_task_id, action_name, target, reason, c_ver, active_policy.version)
+                return None, reason
 
-            # Validate human approval binding
-            if approval_record.approver_id == principal_id:
-                return None, "AUTHORIZATION_DENIED_HUMAN_APPROVAL_SELF_APPROVAL_REJECTED"
+            if not active_policy.is_principal_allowed(principal_id):
+                return None, f"AUTHORIZATION_DENIED_PRINCIPAL_NOT_ALLOWED:{principal_id}"
 
-            if approval_record.action_name != action_name or approval_record.target != target:
-                return None, "AUTHORIZATION_DENIED_HUMAN_APPROVAL_BINDING_MISMATCH"
+            if not active_policy.is_executor_allowed(executor_id):
+                return None, f"AUTHORIZATION_DENIED_EXECUTOR_NOT_ALLOWED:{executor_id}"
 
-            if approval_record.action_digest != canonical_request_digest:
-                return None, "AUTHORIZATION_DENIED_HUMAN_APPROVAL_DIGEST_MISMATCH"
+            corr_id = correlation_id or str(uuid.uuid4())
+            req_id = request_id or str(uuid.uuid4())
 
-            if approval_record.request_id != req_id:
-                return None, "AUTHORIZATION_DENIED_HUMAN_APPROVAL_REQUEST_ID_MISMATCH"
+            # Check human approval requirement from policy OR task contract
+            requires_approval = active_policy.requires_human_approval(action_name) or (contract_obj.requires_human_approval(action_name) if contract_obj else False)
+            approval_record = None
+            if requires_approval:
+                approval_record = HumanApprovalRecord.from_input(human_approval_input)
+                if not approval_record:
+                    return None, "STOP_AND_ESCALATE_HUMAN_APPROVAL_REQUIRED"
 
-            # Mandatory signature verification against trusted approval signing key
-            if not approval_record.signature:
-                return None, "AUTHORIZATION_DENIED_HUMAN_APPROVAL_MISSING_SIGNATURE"
+                # Validate untrusted approver ID against policy allowed_approvers
+                if active_policy.allowed_approvers is not None and "*" not in active_policy.allowed_approvers:
+                    if approval_record.approver_id not in active_policy.allowed_approvers:
+                        return None, f"AUTHORIZATION_DENIED_HUMAN_APPROVAL_UNTRUSTED_APPROVER:{approval_record.approver_id}"
 
-            if not approval_record.verify_signature(self.approval_signing_secret, current_time=current_time):
-                return None, "AUTHORIZATION_DENIED_HUMAN_APPROVAL_AUTHENTICATION_FAILED"
+                # Validate human approval binding
+                if approval_record.approver_id == principal_id:
+                    return None, "AUTHORIZATION_DENIED_HUMAN_APPROVAL_SELF_APPROVAL_REJECTED"
 
-            if self.registry.is_approval_consumed(approval_record.approval_id):
-                return None, "AUTHORIZATION_DENIED_HUMAN_APPROVAL_REPLAYED"
+                if approval_record.action_name != action_name or approval_record.target != target:
+                    return None, "AUTHORIZATION_DENIED_HUMAN_APPROVAL_BINDING_MISMATCH"
 
-        now = current_time if current_time is not None else time.time()
-        token_id = f"AUTH-CAP-{uuid.uuid4()}"
-        expires_at = now + active_policy.token_ttl_seconds
+                if approval_record.action_digest != canonical_request_digest:
+                    return None, "AUTHORIZATION_DENIED_HUMAN_APPROVAL_DIGEST_MISMATCH"
 
-        if callable(executor_id):
-            exec_obj = executor_id
-            executor_id_str = get_callable_identity(exec_obj)
-            self.executor_registry[token_id] = exec_obj
-            self.executor_registry[executor_id_str] = exec_obj
-        else:
-            executor_id_str = get_callable_identity(executor_id)
-            if executor_id_str in self.executor_registry:
-                self.executor_registry[token_id] = self.executor_registry[executor_id_str]
+                if approval_record.request_id != req_id:
+                    return None, "AUTHORIZATION_DENIED_HUMAN_APPROVAL_REQUEST_ID_MISMATCH"
 
-        cap = Capability(
-            token_id=token_id,
-            principal_id=principal_id,
-            correlation_id=corr_id,
-            request_id=req_id,
-            action_name=action_name,
-            target=target,
-            canonical_request_digest=canonical_request_digest,
-            executor_id=executor_id_str,
-            policy_version=active_policy.version,
-            created_at=now,
-            expires_at=expires_at,
-            task_id=effective_task_id,
-            contract_version=contract_obj.contract_version if contract_obj else None,
-            contract_digest=contract_obj.compute_contract_digest() if contract_obj else None,
-            required_success_evidence=set(contract_obj.success_evidence_requirements) if contract_obj else set(),
-            human_approval=approval_record
-        )
+                # Mandatory signature verification against trusted approval signing key
+                if not approval_record.signature:
+                    return None, "AUTHORIZATION_DENIED_HUMAN_APPROVAL_MISSING_SIGNATURE"
 
-        self.registry.register_capability(cap)
-        return cap, "AUTHORIZATION_GRANTED"
+                if not approval_record.verify_signature(self.approval_signing_secret, current_time=current_time):
+                    return None, "AUTHORIZATION_DENIED_HUMAN_APPROVAL_AUTHENTICATION_FAILED"
+
+                if self.registry.is_approval_consumed(approval_record.approval_id):
+                    return None, "AUTHORIZATION_DENIED_HUMAN_APPROVAL_REPLAYED"
+
+            now = current_time if current_time is not None else time.time()
+            token_id = f"AUTH-CAP-{uuid.uuid4()}"
+            expires_at = now + active_policy.token_ttl_seconds
+
+            if callable(executor_id):
+                exec_obj = executor_id
+                executor_id_str = get_callable_identity(exec_obj)
+                self.executor_registry[token_id] = exec_obj
+                self.executor_registry[executor_id_str] = exec_obj
+            else:
+                executor_id_str = get_callable_identity(executor_id)
+                if executor_id_str in self.executor_registry:
+                    self.executor_registry[token_id] = self.executor_registry[executor_id_str]
+
+            cap = Capability(
+                token_id=token_id,
+                principal_id=principal_id,
+                correlation_id=corr_id,
+                request_id=req_id,
+                action_name=action_name,
+                target=target,
+                canonical_request_digest=canonical_request_digest,
+                executor_id=executor_id_str,
+                policy_version=active_policy.version,
+                created_at=now,
+                expires_at=expires_at,
+                task_id=effective_task_id,
+                contract_version=contract_obj.contract_version if contract_obj else None,
+                contract_digest=contract_obj.compute_contract_digest() if contract_obj else None,
+                required_success_evidence=set(contract_obj.success_evidence_requirements) if contract_obj else set(),
+                human_approval=approval_record
+            )
+
+            self.registry.register_capability(cap)
+            return cap, "AUTHORIZATION_GRANTED"
 
     def verify_capability(
         self,

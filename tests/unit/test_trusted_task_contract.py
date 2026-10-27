@@ -347,6 +347,76 @@ def test_multi_instance_denial_synchronization(tmp_path):
     assert record["reason"] == "Prohibited by A"
 
 
+def test_corrupted_denial_log_line_fails_closed(tmp_path):
+    denial_log = tmp_path / "corrupted_denials.jsonl"
+    with open(denial_log, "w", encoding="utf-8") as f:
+        f.write('{"task_id": "T1", "action_name": "op", "target": "/res", "status": "ACTIVE"}\n')
+        f.write('INVALID_CORRUPTED_JSON_LINE\n')
+
+    with pytest.raises(RuntimeError) as exc_info:
+        CapabilityRegistry(denial_log_path=str(denial_log), fail_closed_persistence=True)
+    assert "Failed to load persistent denial log" in str(exc_info.value) or "Failed to parse" in str(exc_info.value)
+
+
+def test_clearance_approval_replay_prevention_preserved_on_persistent_reload(tmp_path):
+    denial_log = tmp_path / "clearance_reload.jsonl"
+    registry1 = CapabilityRegistry(denial_log_path=str(denial_log))
+    authority = AuthorizationAuthority(registry=registry1)
+
+    registry1.record_denial("TASK-RELOAD-1", "write_file", "/target", "Initial denial")
+
+    clearance_app = HumanApprovalRecord(
+        approval_id="APP-CLEAR-RELOAD",
+        approver_id="security_admin",
+        action_name="CLEAR_DENIAL:write_file",
+        target="/target",
+        action_digest="dig1",
+        request_id="REQ-CLEAR-01"
+    )
+    clearance_app.sign(authority.approval_signing_secret)
+
+    cleared, _ = authority.clear_denial_with_approval("TASK-RELOAD-1", "write_file", "/target", clearance_app)
+    assert cleared is True
+
+    # Now instantiate a NEW registry instance reading the same persistent log
+    registry2 = CapabilityRegistry(denial_log_path=str(denial_log))
+    authority2 = AuthorizationAuthority(registry=registry2)
+
+    # Attempting to reuse the consumed clearance approval in registry2 MUST fail due to replay prevention!
+    cleared_again, msg = registry2.clear_denial_with_approval(
+        task_id="TASK-RELOAD-1",
+        action_name="write_file",
+        target="/target",
+        reauthorization_record=clearance_app,
+        signing_secret=authority.approval_signing_secret
+    )
+    assert cleared_again is False
+    assert "already consumed" in msg
+
+
+def test_clearance_approval_mismatched_target_rejected(tmp_path):
+    denial_log = tmp_path / "clearance_target.jsonl"
+    registry = CapabilityRegistry(denial_log_path=str(denial_log))
+    authority = AuthorizationAuthority(registry=registry)
+
+    registry.record_denial("TASK-TARGET-1", "drop_db", "/prod_db", "Prohibited target")
+
+    # Clearance approval issued for /dev_db instead of /prod_db
+    clearance_app = HumanApprovalRecord(
+        approval_id="APP-CLEAR-TARGET",
+        approver_id="security_admin",
+        action_name="CLEAR_DENIAL",
+        target="/dev_db",
+        action_digest="dig1",
+        request_id="REQ-CLEAR-02"
+    )
+    clearance_app.sign(authority.approval_signing_secret)
+
+    cleared, msg = authority.clear_denial_with_approval("TASK-TARGET-1", "drop_db", "/prod_db", clearance_app)
+    assert cleared is False
+    assert "does not match" in msg
+
+
 def test_contract_required_execution_mode():
     authority = AuthorizationAuthority(
         default_policy=Policy(policy_id="p1", allowed_operations={"read"}, allowed_resources={"/data"}),
