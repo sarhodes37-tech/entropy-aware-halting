@@ -748,20 +748,22 @@ class CapabilityRegistry:
         req_cat = registry.classify_action(action_name)
 
         import os
-        from urllib.parse import urlparse
-
-        from urllib.parse import unquote
+        from urllib.parse import urlparse, unquote
 
         def normalize_target_path(raw_target: str) -> tuple[str, str]:
             if not raw_target:
                 return "", "/"
             str_target = str(raw_target).strip()
-            if "://" not in str_target and not str_target.startswith("/"):
-                str_target = "http://" + str_target
-
-            parsed = urlparse(str_target)
-            netloc = parsed.netloc.lower().strip() if parsed.netloc else ""
-            raw_path = parsed.path or "/"
+            if "://" in str_target:
+                parsed = urlparse(str_target)
+                netloc = parsed.netloc.lower().strip() if parsed.netloc else ""
+                raw_path = parsed.path or "/"
+            else:
+                netloc = ""
+                raw_path = str_target if str_target.startswith("/") else "/" + str_target
+                if "?" in raw_path or "#" in raw_path:
+                    parsed = urlparse("http://localhost" + raw_path)
+                    raw_path = parsed.path or "/"
 
             # Unquote percent-encoded separators (%2F, %5C) to resolve encoded traversal paths
             unquoted_path = unquote(raw_path)
@@ -783,13 +785,13 @@ class CapabilityRegistry:
 
             d_host, d_target_norm = normalize_target_path(d_target)
 
-            # Host matching: different explicit hosts do not match unless one is empty or wildcard
+            # Strict host matching: exact match or explicit wildcard
             host_matches = (
-                not target_host
-                or not d_host
-                or target_host == d_host
+                target_host == d_host
                 or d_host == "*"
                 or target_host == "*"
+                or d_target == "*"
+                or target == "*"
             )
 
             # Downward path inheritance: a restriction on a parent path or exact path/wildcard applies to subpaths

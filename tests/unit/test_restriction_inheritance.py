@@ -704,7 +704,7 @@ def test_root_path_and_subpath_inheritance(tmp_path):
     assert cap_e4 is None
     assert "DURABLE_DENIAL_ACTIVE" in reason_e4
 
-    # 5. Explicit Host Isolation
+    # 5. Explicit Host Isolation and Hostless-vs-Explicit Host matching
     contract_restrictive5 = TrustedTaskContract(
         task_id="TASK-HOST-01",
         permitted_actions={"read_only"},
@@ -737,6 +737,16 @@ def test_root_path_and_subpath_inheritance(tmp_path):
     )
     assert cap_h2 is not None
     assert reason_h2 == "AUTHORIZATION_GRANTED"
+
+    # Hostless path target "/data" vs explicit host "http://host-a.internal/data": strict host matching isolates explicit-host targets from hostless paths
+    cap_h3, reason_h3 = auth.evaluate_and_issue_capability(
+        action_name="delete_db",
+        target="/data",
+        canonical_request_digest="dig_h3",
+        task_contract=contract_permissive5
+    )
+    assert cap_h3 is not None
+    assert reason_h3 == "AUTHORIZATION_GRANTED"
 
 
 def test_malformed_authorization_context():
