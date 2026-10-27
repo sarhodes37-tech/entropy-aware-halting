@@ -704,7 +704,17 @@ def test_root_path_and_subpath_inheritance(tmp_path):
     assert cap_e4 is None
     assert "DURABLE_DENIAL_ACTIVE" in reason_e4
 
-    # 5. Explicit Host Isolation and Hostless-vs-Explicit Host matching
+    # Percent-encoded backslash attempt (%5C): /api%5Cv1%5Csecure
+    cap_e5, reason_e5 = auth.evaluate_and_issue_capability(
+        action_name="delete_db",
+        target="/api%5Cv1%5Csecure",
+        canonical_request_digest="dig_e5",
+        task_contract=contract_permissive4
+    )
+    assert cap_e5 is None
+    assert "DURABLE_DENIAL_ACTIVE" in reason_e5
+
+    # 5. Explicit Host Isolation and Hostless-vs-Explicit Host matching (Both Directions)
     contract_restrictive5 = TrustedTaskContract(
         task_id="TASK-HOST-01",
         permitted_actions={"read_only"},
@@ -738,7 +748,7 @@ def test_root_path_and_subpath_inheritance(tmp_path):
     assert cap_h2 is not None
     assert reason_h2 == "AUTHORIZATION_GRANTED"
 
-    # Hostless path target "/data" vs explicit host "http://host-a.internal/data": strict host matching isolates explicit-host targets from hostless paths
+    # Direction 1: Denial on explicit host "http://host-a.internal/data" -> Request for hostless path "/data" is NOT blocked
     cap_h3, reason_h3 = auth.evaluate_and_issue_capability(
         action_name="delete_db",
         target="/data",
@@ -747,6 +757,38 @@ def test_root_path_and_subpath_inheritance(tmp_path):
     )
     assert cap_h3 is not None
     assert reason_h3 == "AUTHORIZATION_GRANTED"
+
+    # Direction 2: Denial on hostless path "/secret" -> Request for explicit host "http://host-a.internal/secret" is NOT blocked
+    contract_restrictive6 = TrustedTaskContract(
+        task_id="TASK-HOSTLESS-01",
+        permitted_actions={"read_only"},
+        resource_scope={"/secret"}
+    )
+    contract_restrictive6.sign(auth.contract_signing_secret)
+
+    cap_h4, _ = auth.evaluate_and_issue_capability(
+        action_name="delete_db",
+        target="/secret",
+        canonical_request_digest="dig_h4",
+        task_contract=contract_restrictive6
+    )
+    assert cap_h4 is None
+
+    contract_permissive6 = TrustedTaskContract(
+        task_id="TASK-HOSTLESS-01",
+        permitted_actions={"*"},
+        resource_scope={"*"}
+    )
+    contract_permissive6.sign(auth.contract_signing_secret)
+
+    cap_h5, reason_h5 = auth.evaluate_and_issue_capability(
+        action_name="delete_db",
+        target="http://host-a.internal/secret",
+        canonical_request_digest="dig_h5",
+        task_contract=contract_permissive6
+    )
+    assert cap_h5 is not None
+    assert reason_h5 == "AUTHORIZATION_GRANTED"
 
 
 def test_malformed_authorization_context():

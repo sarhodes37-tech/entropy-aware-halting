@@ -85,7 +85,9 @@ When a consequential or protected operation is denied for a specific task, Epist
   2. Target matching normalizes resource strings (stripping trailing slashes and checking subpath overlaps).
   3. Action classification via `ActionRegistry.classify_action` matches action categories to prevent category evasion (e.g., retrying a denied database deletion via raw shell commands).
   4. Non-consequential local read operations (`READ_ONLY_LOCAL`, `NETWORK_READ`) are not blocked by restrictions on unrelated targets.
-- **Reauthorization**: Active persistent denials can be cleared if and only if an authorized principal provides a cryptographically authenticated `HumanApprovalRecord` with explicit clearance intent (`CLEAR_DENIAL`), bound to the specific `task_id`, `action_name`, `target`, and `action_digest`.
+- **Reauthorization**:
+  - **Operation-Specific Reauthorization**: Clears a denial for a specific operation payload by providing an expected canonical request digest (`expected_action_digest`). When `expected_action_digest` is supplied to `clear_denial_with_approval()`, clearance fails closed if the `HumanApprovalRecord.action_digest` is missing, empty, or mismatched.
+  - **Task-Level Administrative Clearance**: When `expected_action_digest` is omitted, the approval record acts as a task-level administrative clearance bound strictly to `task_id`, `action_name`, `target`, and HMAC signature with explicit `CLEAR_DENIAL` intent.
 
 ---
 
