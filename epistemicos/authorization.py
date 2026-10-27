@@ -372,6 +372,8 @@ class CapabilityRegistry:
         fail_closed_persistence: bool = True
     ):
         self._lock = threading.RLock()
+        self._file_lock_count = 0
+        self._lock_file_obj = None
         self._capabilities: Dict[str, Capability] = {}
         self._consumed_tokens: Set[str] = set()
         self._consumed_approvals: Set[str] = set()
@@ -391,6 +393,7 @@ class CapabilityRegistry:
         """
         Acquires both thread-level lock (_lock) and interprocess file-level lock (fcntl.flock)
         on the denial log lockfile to ensure strict atomicity across processes during authorization evaluations.
+        Re-entrant for nested acquisitions on the same process thread.
         """
         import os
         try:
@@ -399,39 +402,48 @@ class CapabilityRegistry:
         except ImportError:
             has_fcntl = False
 
-        lock_file_obj = None
         lock_path = (self.denial_log_path + ".lock") if self.denial_log_path else None
 
         with self._lock:
-            if has_fcntl and lock_path:
-                try:
-                    os.makedirs(os.path.dirname(lock_path) or ".", exist_ok=True)
-                    lock_file_obj = open(lock_path, "a", encoding="utf-8")
-                    fcntl.flock(lock_file_obj.fileno(), fcntl.LOCK_EX)
-                except Exception as e:
-                    if lock_file_obj:
-                        try:
-                            lock_file_obj.close()
-                        except Exception:
-                            pass
+            if lock_path:
+                if not has_fcntl:
                     if self.fail_closed_persistence:
-                        raise RuntimeError(f"Lock registry failure: unable to acquire interprocess file lock ({str(e)})") from e
+                        raise RuntimeError("Lock registry failure: interprocess file locking (fcntl) is unsupported on this operating system")
+                else:
+                    if self._file_lock_count == 0:
+                        try:
+                            os.makedirs(os.path.dirname(lock_path) or ".", exist_ok=True)
+                            self._lock_file_obj = open(lock_path, "a", encoding="utf-8")
+                            fcntl.flock(self._lock_file_obj.fileno(), fcntl.LOCK_EX)
+                        except Exception as e:
+                            if self._lock_file_obj:
+                                try:
+                                    self._lock_file_obj.close()
+                                except Exception:
+                                    pass
+                                self._lock_file_obj = None
+                            if self.fail_closed_persistence:
+                                raise RuntimeError(f"Lock registry failure: unable to acquire interprocess file lock ({str(e)})") from e
+                    self._file_lock_count += 1
 
             try:
                 yield
             finally:
-                if lock_file_obj:
-                    try:
-                        if has_fcntl:
-                            fcntl.flock(lock_file_obj.fileno(), fcntl.LOCK_UN)
-                    except Exception as e:
-                        if self.fail_closed_persistence:
-                            raise RuntimeError(f"Lock registry release failure ({str(e)})") from e
-                    finally:
-                        try:
-                            lock_file_obj.close()
-                        except Exception:
-                            pass
+                with self._lock:
+                    if lock_path and has_fcntl and self._file_lock_count > 0:
+                        self._file_lock_count -= 1
+                        if self._file_lock_count == 0 and self._lock_file_obj:
+                            try:
+                                fcntl.flock(self._lock_file_obj.fileno(), fcntl.LOCK_UN)
+                            except Exception as e:
+                                if self.fail_closed_persistence:
+                                    raise RuntimeError(f"Lock registry release failure ({str(e)})") from e
+                            finally:
+                                try:
+                                    self._lock_file_obj.close()
+                                except Exception:
+                                    pass
+                                self._lock_file_obj = None
 
     def _load_persistent_denials(self) -> None:
         import os
@@ -549,7 +561,7 @@ class CapabilityRegistry:
         contract_version: str = "1.0.0",
         policy_version: str = "1.0.0"
     ) -> None:
-        with self._lock:
+        with self.lock_registry():
             self._record_denial_unlocked(
                 task_id=task_id,
                 action_name=action_name,
@@ -583,8 +595,11 @@ class CapabilityRegistry:
             if not reauthorization_record.verify_signature(signing_secret, current_time=current_time):
                 return False, "Reauthorization approval signature verification failed"
 
-            # 2. Check task_id binding if present on reauthorization record
-            if reauthorization_record.task_id and reauthorization_record.task_id != task_id:
+            # 2. Require non-empty task_id binding matching task_id
+            if not reauthorization_record.task_id or not reauthorization_record.task_id.strip():
+                return False, "Reauthorization approval record missing required task_id binding"
+
+            if reauthorization_record.task_id != task_id:
                 return False, f"Reauthorization approval task_id mismatch: bound to '{reauthorization_record.task_id}', requested '{task_id}'"
 
             # 3. Re-sync persistent state inside lock
@@ -672,7 +687,7 @@ class CapabilityRegistry:
         contract_version: str = "1.0.0",
         policy_version: str = "1.0.0"
     ) -> Tuple[bool, Optional[Dict[str, Any]]]:
-        with self._lock:
+        with self.lock_registry():
             return self._check_denial_unlocked(
                 task_id=task_id,
                 action_name=action_name,

@@ -220,7 +220,7 @@ def test_denial_persistence_failure_handling(tmp_path):
 
     with pytest.raises(RuntimeError) as exc_info:
         registry.record_denial("TASK-FAIL-PERSIST", "delete", "/path", "Forbidden")
-    assert "Denial persistence failure" in str(exc_info.value)
+    assert "Denial persistence failure" in str(exc_info.value) or "Lock registry failure" in str(exc_info.value)
 
 
 def test_denial_continuity_across_version_updates_and_explicit_reauthorization(tmp_path):
@@ -273,7 +273,8 @@ def test_denial_continuity_across_version_updates_and_explicit_reauthorization(t
         action_name="mutate_state",
         target="/state",
         action_digest="dig3",
-        request_id="REQ-CLEAR-01"
+        request_id="REQ-CLEAR-01",
+        task_id="TASK-VER-01"
     )
     ordinary_app.sign(authority.approval_signing_secret)
 
@@ -288,7 +289,8 @@ def test_denial_continuity_across_version_updates_and_explicit_reauthorization(t
         action_name="CLEAR_DENIAL:mutate_state",
         target="/state",
         action_digest="dig3",
-        request_id="REQ-CLEAR-01"
+        request_id="REQ-CLEAR-01",
+        task_id="TASK-VER-01"
     )
     cleared_unsigned, msg_unsigned = authority.clear_denial_with_approval("TASK-VER-01", "mutate_state", "/state", clearance_app)
     assert cleared_unsigned is False
@@ -371,7 +373,8 @@ def test_clearance_approval_replay_prevention_preserved_on_persistent_reload(tmp
         action_name="CLEAR_DENIAL:write_file",
         target="/target",
         action_digest="dig1",
-        request_id="REQ-CLEAR-01"
+        request_id="REQ-CLEAR-01",
+        task_id="TASK-RELOAD-1"
     )
     clearance_app.sign(authority.approval_signing_secret)
 
@@ -408,7 +411,8 @@ def test_clearance_approval_mismatched_target_rejected(tmp_path):
         action_name="CLEAR_DENIAL",
         target="/dev_db",
         action_digest="dig1",
-        request_id="REQ-CLEAR-02"
+        request_id="REQ-CLEAR-02",
+        task_id="TASK-TARGET-1"
     )
     clearance_app.sign(authority.approval_signing_secret)
 
@@ -439,6 +443,41 @@ def test_clearance_approval_mismatched_task_id_rejected(tmp_path):
     cleared, msg = authority.clear_denial_with_approval("TASK-ORIGINAL-01", "write_file", "/target", clearance_app)
     assert cleared is False
     assert "task_id mismatch" in msg
+
+
+def test_clearance_approval_missing_task_id_rejected(tmp_path):
+    denial_log = tmp_path / "clearance_no_taskid.jsonl"
+    registry = CapabilityRegistry(denial_log_path=str(denial_log))
+    authority = AuthorizationAuthority(registry=registry)
+
+    registry.record_denial("TASK-NEED-ID", "write_file", "/target", "Initial denial")
+
+    # Clearance approval without task_id
+    clearance_app = HumanApprovalRecord(
+        approval_id="APP-CLEAR-NO-TASKID",
+        approver_id="security_admin",
+        action_name="CLEAR_DENIAL:write_file",
+        target="/target",
+        action_digest="dig1",
+        request_id="REQ-CLEAR-04",
+        task_id=None
+    )
+    clearance_app.sign(authority.approval_signing_secret)
+
+    cleared, msg = authority.clear_denial_with_approval("TASK-NEED-ID", "write_file", "/target", clearance_app)
+    assert cleared is False
+    assert "missing required task_id" in msg
+
+
+def test_unsupported_fcntl_fails_closed(tmp_path):
+    denial_log = tmp_path / "nofcntl_denials.jsonl"
+    from unittest.mock import patch
+    with patch.dict("sys.modules", {"fcntl": None}):
+        registry = CapabilityRegistry(denial_log_path=str(denial_log), fail_closed_persistence=True)
+        with pytest.raises(RuntimeError) as exc_info:
+            with registry.lock_registry():
+                pass
+        assert "unsupported on this operating system" in str(exc_info.value)
 
 
 def test_concurrent_authorization_and_clearance_no_deadlock(tmp_path):
@@ -472,6 +511,126 @@ def test_concurrent_authorization_and_clearance_no_deadlock(tmp_path):
     for cap, reason in results:
         assert cap is not None
         assert reason == "AUTHORIZATION_GRANTED"
+
+
+def _proc_record_denial(log_path, result_queue):
+    try:
+        reg = CapabilityRegistry(denial_log_path=log_path)
+        reg.record_denial("TASK-MP-01", "write_file", "/target", "Denial by process B")
+        result_queue.put(("SUCCESS", None))
+    except Exception as e:
+        result_queue.put(("ERROR", str(e)))
+
+
+def test_multiprocess_denial_check_and_record_race(tmp_path):
+    import multiprocessing
+    denial_log = str(tmp_path / "mp_denial_log.jsonl")
+
+    reg_a = CapabilityRegistry(denial_log_path=denial_log)
+    authority_a = AuthorizationAuthority(
+        default_policy=Policy(policy_id="p1", allowed_operations={"*"}, allowed_resources={"*"}),
+        registry=reg_a
+    )
+
+    contract = TrustedTaskContract(task_id="TASK-MP-01", permitted_actions={"write_file"}, resource_scope={"/target"})
+    contract.sign(authority_a.contract_signing_secret)
+
+    # Initial check -> allowed
+    cap1, _ = authority_a.evaluate_and_issue_capability(
+        action_name="write_file", target="/target", canonical_request_digest="d1", task_contract=contract
+    )
+    assert cap1 is not None
+
+    # Spawn Process B to record denial concurrently
+    q = multiprocessing.Queue()
+    proc_b = multiprocessing.Process(target=_proc_record_denial, args=(denial_log, q))
+    proc_b.start()
+    proc_b.join(timeout=5.0)
+
+    status, err = q.get(timeout=2.0)
+    assert status == "SUCCESS", f"Process B failed: {err}"
+
+    # Subsequent check by Process A MUST observe Process B's durable denial and fail closed!
+    cap2, reason2 = authority_a.evaluate_and_issue_capability(
+        action_name="write_file", target="/target", canonical_request_digest="d2", task_contract=contract
+    )
+    assert cap2 is None
+    assert "DURABLE_DENIAL_ACTIVE" in reason2
+
+
+def _proc_clear_denial(log_path, signing_secret, reauth_dict, result_queue):
+    try:
+        reg = CapabilityRegistry(denial_log_path=log_path)
+        rec = HumanApprovalRecord.from_input(reauth_dict)
+        cleared, msg = reg.clear_denial_with_approval(
+            task_id="TASK-MP-CLEAR",
+            action_name="delete_data",
+            target="/database",
+            reauthorization_record=rec,
+            signing_secret=signing_secret
+        )
+        result_queue.put((cleared, msg))
+    except Exception as e:
+        result_queue.put((False, f"EXCEPTION: {str(e)}"))
+
+
+def test_multiprocess_concurrent_clearance(tmp_path):
+    import multiprocessing
+    denial_log = str(tmp_path / "mp_clearance_log.jsonl")
+
+    reg_main = CapabilityRegistry(denial_log_path=denial_log)
+    authority_main = AuthorizationAuthority(registry=reg_main)
+
+    reg_main.record_denial("TASK-MP-CLEAR", "delete_data", "/database", "Initial denial")
+
+    clearance_app = HumanApprovalRecord(
+        approval_id="APP-CLEAR-MP-01",
+        approver_id="security_admin",
+        action_name="CLEAR_DENIAL:delete_data",
+        target="/database",
+        action_digest="dig1",
+        request_id="REQ-CLEAR-MP",
+        task_id="TASK-MP-CLEAR"
+    )
+    clearance_app.sign(authority_main.approval_signing_secret)
+    reauth_dict = clearance_app.to_dict()
+
+    q1 = multiprocessing.Queue()
+    q2 = multiprocessing.Queue()
+
+    sec = authority_main.approval_signing_secret
+
+    p1 = multiprocessing.Process(target=_proc_clear_denial, args=(denial_log, sec, reauth_dict, q1))
+    p2 = multiprocessing.Process(target=_proc_clear_denial, args=(denial_log, sec, reauth_dict, q2))
+
+    p1.start()
+    p2.start()
+
+    p1.join(timeout=5.0)
+    p2.join(timeout=5.0)
+
+    res1, msg1 = q1.get(timeout=2.0)
+    res2, msg2 = q2.get(timeout=2.0)
+
+    # Exactly ONE process succeeds, the other process fails with replay error!
+    assert (res1 is True and res2 is False) or (res1 is False and res2 is True)
+    failed_msg = msg2 if res1 is True else msg1
+    assert "already consumed" in failed_msg
+
+
+def test_fsync_failure_injection_preserves_clean_in_memory_state(tmp_path):
+    from unittest.mock import patch
+    denial_log = str(tmp_path / "fsync_fail.jsonl")
+    registry = CapabilityRegistry(denial_log_path=denial_log, fail_closed_persistence=True)
+
+    with patch("os.fsync", side_effect=OSError("Disk write I/O error")):
+        with pytest.raises(RuntimeError) as exc_info:
+            registry.record_denial("TASK-FSYNC-1", "write_file", "/target", "Denied reason")
+        assert "Denial persistence failure" in str(exc_info.value) or "Disk write I/O error" in str(exc_info.value)
+
+    # In-memory map MUST NOT contain the failed denial
+    key = ("TASK-FSYNC-1", "write_file", "/target")
+    assert key not in registry._denied_records
 
 
 def test_production_configuration_enforcement(monkeypatch):
