@@ -323,6 +323,17 @@ def test_copy_to_clipboard_dynamic_aria_accessibility_update():
     assert "restoreState" in js_content
 
 
+def test_summary_digest_copy_button_human_readable_aria_labels():
+    """Verifies that app.js uses human-readable labels for summary digest copy button aria-labels rather than element IDs."""
+    import pathlib
+    js_path = pathlib.Path("epistemicos/ui/static/app.js")
+    js_content = js_path.read_text(encoding="utf-8")
+    assert "this.renderSummaryDigestValue('summary-dataset-digest', datasetDigest, 'Dataset SHA-256 Digest');" in js_content
+    assert "this.renderSummaryDigestValue('summary-records-digest', recordsDigest, 'Run Records SHA-256 Digest');" in js_content
+    assert "const displayLabel = label || elementId;" in js_content
+    assert "copyBtn.setAttribute('aria-label', `Copy ${displayLabel}`);" in js_content
+
+
 def test_dynamic_buttons_aria_accessibility_completeness():
     """Verifies that dynamically created retry buttons and copy buttons in app.js have explicit aria-label attributes."""
     import pathlib

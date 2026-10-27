@@ -2054,11 +2054,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
       // Dataset SHA256 Digest
       const datasetDigest = (ablData && ablData.dataset_sha256_digest) ? ablData.dataset_sha256_digest : ((pcData && pcData.length > 0 && pcData[0].dataset_sha256_digest) ? pcData[0].dataset_sha256_digest : null);
-      this.renderSummaryDigestValue('summary-dataset-digest', datasetDigest);
+      this.renderSummaryDigestValue('summary-dataset-digest', datasetDigest, 'Dataset SHA-256 Digest');
 
       // Run Records SHA256 Digest
       const recordsDigest = (ablData && ablData.run_records_sha256_digest) ? ablData.run_records_sha256_digest : null;
-      this.renderSummaryDigestValue('summary-records-digest', recordsDigest);
+      this.renderSummaryDigestValue('summary-records-digest', recordsDigest, 'Run Records SHA-256 Digest');
 
       // Version & Seed
       this.renderSummaryValue('summary-version', ablData ? ablData.version : null);
@@ -2125,7 +2125,7 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     },
 
-    renderSummaryDigestValue(elementId, digest) {
+    renderSummaryDigestValue(elementId, digest, label) {
       const el = document.getElementById(elementId);
       if (!el) return;
       el.innerHTML = '';
@@ -2138,6 +2138,7 @@ document.addEventListener('DOMContentLoaded', () => {
         textSpan.textContent = shortDigest;
         textSpan.title = fullDigest;
 
+        const displayLabel = label || elementId;
         const copyBtn = document.createElement('button');
         copyBtn.type = 'button';
         copyBtn.className = 'copy-btn';
@@ -2145,8 +2146,8 @@ document.addEventListener('DOMContentLoaded', () => {
         copyBtn.style.padding = '0.1rem 0.35rem';
         copyBtn.style.fontSize = '0.65rem';
         copyBtn.textContent = 'Copy';
-        copyBtn.setAttribute('aria-label', `Copy ${elementId}`);
-        copyBtn.setAttribute('title', `Copy ${elementId} to clipboard`);
+        copyBtn.setAttribute('aria-label', `Copy ${displayLabel}`);
+        copyBtn.setAttribute('title', `Copy ${displayLabel} to clipboard`);
         copyBtn.addEventListener('click', () => this.copyToClipboard(fullDigest, copyBtn));
 
         el.appendChild(textSpan);
