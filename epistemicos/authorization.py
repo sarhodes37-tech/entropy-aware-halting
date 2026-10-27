@@ -515,8 +515,8 @@ class CapabilityRegistry:
                 "cleared_by_approval": reauthorization_record.approval_id,
                 "timestamp": time.time()
             }
-            self._denied_records.pop(key, None)
-            self._consumed_approvals.add(reauthorization_record.approval_id)
+
+            # Transactional Ordering: WRITE TO DURABLE LOG FILE FIRST BEFORE MUTATING IN-MEMORY STATE
             if self.denial_log_path:
                 try:
                     os.makedirs(os.path.dirname(self.denial_log_path) or ".", exist_ok=True)
@@ -531,8 +531,14 @@ class CapabilityRegistry:
                             if has_fcntl:
                                 fcntl.flock(f.fileno(), fcntl.LOCK_UN)
                 except Exception as e:
+                    # Persistence failed -> DO NOT MUTATE IN-MEMORY DENIAL OR CONSUME APPROVAL
                     if self.fail_closed_persistence:
                         raise RuntimeError(f"Denial persistence failure: unable to durably record reauthorization clearance ({str(e)})") from e
+                    return False, f"Denial persistence failure: {str(e)}"
+
+            # Durable write succeeded! Now commit in-memory mutations
+            self._denied_records.pop(key, None)
+            self._consumed_approvals.add(reauthorization_record.approval_id)
             return True, "Denial successfully cleared with authenticated reauthorization"
 
     def check_denial(
