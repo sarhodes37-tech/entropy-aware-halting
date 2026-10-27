@@ -414,6 +414,43 @@ def test_reauthorization_action_digest_binding_cases(tmp_path):
     assert is_denied
     assert denial_rec is not None
 
+    # Case 4: Expected digest omitted -> Accepted for backwards compatibility
+    denial_log4 = tmp_path / "digest_cases_denial4.jsonl"
+    reg4 = CapabilityRegistry(denial_log_path=str(denial_log4))
+    auth4 = AuthorizationAuthority(
+        default_policy=Policy(policy_id="p1", allowed_operations={"*"}, allowed_resources={"*"}),
+        registry=reg4
+    )
+
+    cap_omit, _ = auth4.evaluate_and_issue_capability(
+        action_name="export_data",
+        target="/data/export",
+        canonical_request_digest="dig1",
+        task_contract=contract_restrictive
+    )
+    assert cap_omit is None
+
+    app_omitted = HumanApprovalRecord(
+        approval_id="appr-omit-01",
+        approver_id="admin",
+        action_name="CLEAR_DENIAL:export_data",
+        target="/data/export",
+        action_digest="dig_any",
+        request_id="req_omit",
+        task_id="TASK-DIGEST-01"
+    )
+    app_omitted.sign(auth4.approval_signing_secret)
+
+    cleared_omitted, msg_omitted = reg4.clear_denial_with_approval(
+        task_id="TASK-DIGEST-01",
+        action_name="export_data",
+        target="/data/export",
+        reauthorization_record=app_omitted,
+        signing_secret=auth4.approval_signing_secret,
+        expected_action_digest=None
+    )
+    assert cleared_omitted, f"Omitted digest clearance failed: {msg_omitted}"
+
     # Case 1: Matching expected and approval digests -> Accepted & Cleared
     app_match = HumanApprovalRecord(
         approval_id="appr-match-01",
