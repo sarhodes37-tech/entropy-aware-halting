@@ -670,6 +670,85 @@ def test_multiprocess_interprocess_lock_serialization(tmp_path):
     assert "DURABLE_DENIAL_ACTIVE" in reason
 
 
+def _proc_record_denial_event(log_path, ev_checked, ev_denied, q):
+    try:
+        ev_checked.wait(timeout=5.0)
+        reg = CapabilityRegistry(denial_log_path=log_path)
+        reg.record_denial("TASK-RACE-01", "write_file", "/target", "Denial by process B during pause")
+        ev_denied.set()
+        q.put(("SUCCESS", None))
+    except Exception as e:
+        q.put(("ERROR", str(e)))
+
+
+def test_multiprocess_deterministic_denial_interleaving_race(tmp_path):
+    import multiprocessing
+    denial_log = str(tmp_path / "race_denial_log.jsonl")
+
+    reg_a = CapabilityRegistry(denial_log_path=denial_log)
+    authority_a = AuthorizationAuthority(
+        default_policy=Policy(policy_id="p1", allowed_operations={"*"}, allowed_resources={"*"}),
+        registry=reg_a
+    )
+
+    contract = TrustedTaskContract(task_id="TASK-RACE-01", permitted_actions={"write_file"}, resource_scope={"/target"})
+    contract.sign(authority_a.contract_signing_secret)
+
+    event_a_checked = multiprocessing.Event()
+    event_b_denied = multiprocessing.Event()
+    result_q = multiprocessing.Queue()
+
+    proc_b = multiprocessing.Process(
+        target=_proc_record_denial_event,
+        args=(denial_log, event_a_checked, event_b_denied, result_q)
+    )
+    proc_b.start()
+
+    # Pre-issuance hook on Authority A: yields file lock, signals Process B to record denial and waits until B completes
+    def hook():
+        event_a_checked.set()
+        event_b_denied.wait(timeout=5.0)
+
+    authority_a._pre_issuance_hook = hook
+
+    cap, reason = authority_a.evaluate_and_issue_capability(
+        action_name="write_file",
+        target="/target",
+        canonical_request_digest="d_race",
+        task_contract=contract,
+        task_id="TASK-RACE-01"
+    )
+
+    proc_b.join(timeout=5.0)
+    status_b, err_b = result_q.get(timeout=2.0)
+    assert status_b == "SUCCESS", f"Process B error: {err_b}"
+
+    # Assert Process A was DENIED and NO capability was issued despite starting authorization before Process B recorded denial!
+    assert cap is None
+    assert "DURABLE_DENIAL_ACTIVE" in reason
+
+
+def test_rollback_truncation_failure_injection_handling(tmp_path):
+    from unittest.mock import patch
+    denial_log = str(tmp_path / "trunc_fail.jsonl")
+    registry = CapabilityRegistry(denial_log_path=denial_log, fail_closed_persistence=True)
+
+    original_open = open
+    def mock_open_with_faulty_truncate(*args, **kwargs):
+        f = original_open(*args, **kwargs)
+        if len(args) > 1 and "a+" in args[1]:
+            def faulty_truncate(pos=None):
+                raise OSError("Truncate error")
+            f.truncate = faulty_truncate
+        return f
+
+    with patch("os.fsync", side_effect=OSError("Disk fsync error")):
+        with patch("builtins.open", side_effect=mock_open_with_faulty_truncate):
+            with pytest.raises(RuntimeError) as exc:
+                registry.record_denial("TASK-TRUNC-FAIL", "write_file", "/target", "Initial denial")
+            assert "rollback truncation failure" in str(exc.value)
+
+
 def test_persistence_failure_injection_write_flush_fsync(tmp_path):
     import io
     from unittest.mock import patch

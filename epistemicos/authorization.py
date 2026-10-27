@@ -541,13 +541,17 @@ class CapabilityRegistry:
                         f.write(json.dumps(rec) + "\n")
                         f.flush()
                         os.fsync(f.fileno())
-                    except Exception:
+                    except Exception as primary_err:
+                        rollback_failed = False
                         try:
                             f.seek(pre_pos)
                             f.truncate(pre_pos)
                             f.flush()
                         except Exception:
-                            pass
+                            rollback_failed = True
+
+                        if rollback_failed and self.fail_closed_persistence:
+                            raise RuntimeError(f"Denial persistence failure and rollback truncation failure: on-disk state uncertain ({str(primary_err)})") from primary_err
                         raise
                     finally:
                         if has_fcntl:
@@ -555,6 +559,8 @@ class CapabilityRegistry:
             except Exception as e:
                 # If write fails: DO NOT MUTATE IN-MEMORY STATE, fail closed
                 if self.fail_closed_persistence:
+                    if isinstance(e, RuntimeError):
+                        raise
                     raise RuntimeError(f"Denial persistence failure: unable to durably record security decision ({str(e)})") from e
 
         # Durable file write succeeded -> Commit in-memory state mutation
@@ -657,13 +663,17 @@ class CapabilityRegistry:
                             f.write(json.dumps(rec) + "\n")
                             f.flush()
                             os.fsync(f.fileno())
-                        except Exception:
+                        except Exception as primary_err:
+                            rollback_failed = False
                             try:
                                 f.seek(pre_pos)
                                 f.truncate(pre_pos)
                                 f.flush()
                             except Exception:
-                                pass
+                                rollback_failed = True
+
+                            if rollback_failed and self.fail_closed_persistence:
+                                raise RuntimeError(f"Denial persistence failure and rollback truncation failure: on-disk clearance state uncertain ({str(primary_err)})") from primary_err
                             raise
                         finally:
                             if has_fcntl:
@@ -671,6 +681,8 @@ class CapabilityRegistry:
                 except Exception as e:
                     # Persistence failed -> DO NOT MUTATE IN-MEMORY DENIAL OR CONSUME APPROVAL
                     if self.fail_closed_persistence:
+                        if isinstance(e, RuntimeError):
+                            raise
                         raise RuntimeError(f"Denial persistence failure: unable to durably record reauthorization clearance ({str(e)})") from e
                     return False, f"Denial persistence failure: {str(e)}"
 
@@ -924,7 +936,26 @@ class AuthorizationAuthority:
 
             # Execute test/synchronization hook if present
             if getattr(self, "_pre_issuance_hook", None) and callable(self._pre_issuance_hook):
-                self._pre_issuance_hook()
+                try:
+                    import fcntl
+                    has_fcntl_local = True
+                except ImportError:
+                    has_fcntl_local = False
+
+                lock_file = getattr(self.registry, "_lock_file_obj", None)
+                if lock_file and has_fcntl_local:
+                    try:
+                        fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+                    except Exception:
+                        pass
+                try:
+                    self._pre_issuance_hook()
+                finally:
+                    if lock_file and has_fcntl_local:
+                        try:
+                            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+                        except Exception:
+                            pass
                 if effective_task_id:
                     c_ver = contract_obj.contract_version if contract_obj else "1.0.0"
                     is_denied, prev_denial = self.registry._check_denial_unlocked(effective_task_id, action_name, target, c_ver, active_policy.version)
