@@ -657,9 +657,12 @@ class CapabilityRegistry:
             if not (action_match and target_match):
                 return False, "Approval record does not match action_name and target for denial clearance"
 
-            # Optional action digest validation if specified
-            if expected_action_digest and reauthorization_record.action_digest:
-                if reauthorization_record.action_digest != expected_action_digest:
+            # Action digest validation: fail closed if expected_action_digest is supplied
+            if expected_action_digest:
+                rec_digest = getattr(reauthorization_record, "action_digest", None)
+                if not rec_digest or not str(rec_digest).strip():
+                    return False, "Reauthorization approval record missing required action_digest"
+                if str(rec_digest).strip() != str(expected_action_digest).strip():
                     return False, f"Reauthorization approval action_digest mismatch: expected '{expected_action_digest}', got '{reauthorization_record.action_digest}'"
 
             key = (task_id, action_name, target)
@@ -747,6 +750,8 @@ class CapabilityRegistry:
         import os
         from urllib.parse import urlparse
 
+        from urllib.parse import unquote
+
         def normalize_target_path(raw_target: str) -> tuple[str, str]:
             if not raw_target:
                 return "", "/"
@@ -758,8 +763,11 @@ class CapabilityRegistry:
             netloc = parsed.netloc.lower().strip() if parsed.netloc else ""
             raw_path = parsed.path or "/"
 
+            # Unquote percent-encoded separators (%2F, %5C) to resolve encoded traversal paths
+            unquoted_path = unquote(raw_path)
+
             # Collapse backslashes to forward slashes and eliminate dot segments
-            clean_path = raw_path.replace("\\", "/")
+            clean_path = unquoted_path.replace("\\", "/")
             norm_path = os.path.normpath(clean_path)
             if norm_path in (".", "", "/"):
                 norm_path = "/"

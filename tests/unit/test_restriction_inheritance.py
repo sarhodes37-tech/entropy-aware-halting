@@ -325,9 +325,120 @@ def test_scenario_e_legitimate_reauthorization(tmp_path):
         action_name="export_data",
         target="/data/export",
         reauthorization_record=approval,
-        signing_secret=auth.approval_signing_secret
+        signing_secret=auth.approval_signing_secret,
+        expected_action_digest="dig_clear"
     )
     assert cleared, f"Failed to clear denial: {clear_msg}"
+
+
+def test_reauthorization_action_digest_binding_cases(tmp_path):
+    """
+    Tests focused reauthorization action-digest binding cases:
+    1. Matching expected and approval digests -> Accepted
+    2. Mismatched digests -> Rejected
+    3. Expected digest supplied but approval digest missing/empty -> Rejected
+    4. Expected digest omitted -> Accepted for backwards compatibility
+    5. Rejected clearance does NOT clear active denial or prevent subsequent legitimate retry
+    """
+    denial_log = tmp_path / "digest_cases_denial.jsonl"
+    reg = CapabilityRegistry(denial_log_path=str(denial_log))
+    auth = AuthorizationAuthority(
+        default_policy=Policy(policy_id="p1", allowed_operations={"*"}, allowed_resources={"*"}),
+        registry=reg
+    )
+
+    contract_restrictive = TrustedTaskContract(
+        task_id="TASK-DIGEST-01",
+        permitted_actions={"read_only"},
+        resource_scope={"/data/export"}
+    )
+    contract_restrictive.sign(auth.contract_signing_secret)
+
+    # Trigger active denial
+    cap1, _ = auth.evaluate_and_issue_capability(
+        action_name="export_data",
+        target="/data/export",
+        canonical_request_digest="dig1",
+        task_contract=contract_restrictive
+    )
+    assert cap1 is None
+
+    # Case 2: Mismatched digests -> Rejected
+    app_mismatch = HumanApprovalRecord(
+        approval_id="appr-mis-01",
+        approver_id="admin",
+        action_name="CLEAR_DENIAL:export_data",
+        target="/data/export",
+        action_digest="dig_wrong",
+        request_id="req1",
+        task_id="TASK-DIGEST-01"
+    )
+    app_mismatch.sign(auth.approval_signing_secret)
+
+    cleared2, msg2 = reg.clear_denial_with_approval(
+        task_id="TASK-DIGEST-01",
+        action_name="export_data",
+        target="/data/export",
+        reauthorization_record=app_mismatch,
+        signing_secret=auth.approval_signing_secret,
+        expected_action_digest="dig_expected"
+    )
+    assert not cleared2
+    assert "action_digest mismatch" in msg2
+
+    # Case 3: Expected digest supplied but approval digest missing/empty -> Rejected
+    app_empty = HumanApprovalRecord(
+        approval_id="appr-empty-01",
+        approver_id="admin",
+        action_name="CLEAR_DENIAL:export_data",
+        target="/data/export",
+        action_digest="",
+        request_id="req2",
+        task_id="TASK-DIGEST-01"
+    )
+    app_empty.sign(auth.approval_signing_secret)
+
+    cleared3, msg3 = reg.clear_denial_with_approval(
+        task_id="TASK-DIGEST-01",
+        action_name="export_data",
+        target="/data/export",
+        reauthorization_record=app_empty,
+        signing_secret=auth.approval_signing_secret,
+        expected_action_digest="dig_expected"
+    )
+    assert not cleared3
+    assert "missing required action_digest" in msg3
+
+    # Verify Case 5: Denial remains active after rejected clearance attempts
+    is_denied, denial_rec = reg.check_denial("TASK-DIGEST-01", "export_data", "/data/export")
+    assert is_denied
+    assert denial_rec is not None
+
+    # Case 1: Matching expected and approval digests -> Accepted & Cleared
+    app_match = HumanApprovalRecord(
+        approval_id="appr-match-01",
+        approver_id="admin",
+        action_name="CLEAR_DENIAL:export_data",
+        target="/data/export",
+        action_digest="dig_expected",
+        request_id="req3",
+        task_id="TASK-DIGEST-01"
+    )
+    app_match.sign(auth.approval_signing_secret)
+
+    cleared1, msg1 = reg.clear_denial_with_approval(
+        task_id="TASK-DIGEST-01",
+        action_name="export_data",
+        target="/data/export",
+        reauthorization_record=app_match,
+        signing_secret=auth.approval_signing_secret,
+        expected_action_digest="dig_expected"
+    )
+    assert cleared1, f"Failed to clear denial: {msg1}"
+
+    # Verify denial is now cleared
+    is_denied_after, _ = reg.check_denial("TASK-DIGEST-01", "export_data", "/data/export")
+    assert not is_denied_after
 
     # 3. Subsequent attempt under updated contract -> PERMITTED
     contract_updated = TrustedTaskContract(
@@ -394,6 +505,8 @@ def test_root_path_and_subpath_inheritance(tmp_path):
     1. Root path denial ("/") inherits to subpaths ("/api/v1").
     2. Subpath denial ("/api/v1/users/123") does NOT inherit upward to parent ("/api/v1/users").
     3. Resource string prefix overlap without slash boundary ("/resource" vs "/resource-evil") does NOT match.
+    4. Encoded separators (%2F, %5C), dot segments (., ..), repeated slashes (//), backslashes.
+    5. URL vs path-only inputs and explicit host isolation (host-a vs host-b).
     """
     denial_log = tmp_path / "edge_cases_denial.jsonl"
     reg = CapabilityRegistry(denial_log_path=str(denial_log))
@@ -499,6 +612,94 @@ def test_root_path_and_subpath_inheritance(tmp_path):
     )
     assert cap_p2 is not None
     assert reason_p2 == "AUTHORIZATION_GRANTED"
+
+    # 4. Encoded separators (%2F, %5C), dot segments (..), backslashes, repeated slashes
+    contract_restrictive4 = TrustedTaskContract(
+        task_id="TASK-ENCODED-01",
+        permitted_actions={"read_only"},
+        resource_scope={"/api/v1/secure"}
+    )
+    contract_restrictive4.sign(auth.contract_signing_secret)
+
+    # Direct denial on /api/v1/secure
+    cap_e1, _ = auth.evaluate_and_issue_capability(
+        action_name="delete_db",
+        target="/api/v1/secure",
+        canonical_request_digest="dig_e1",
+        task_contract=contract_restrictive4
+    )
+    assert cap_e1 is None
+
+    contract_permissive4 = TrustedTaskContract(
+        task_id="TASK-ENCODED-01",
+        permitted_actions={"*"},
+        resource_scope={"*"}
+    )
+    contract_permissive4.sign(auth.contract_signing_secret)
+
+    # Percent-encoded slash attempt: /api%2Fv1%2Fsecure
+    cap_e2, reason_e2 = auth.evaluate_and_issue_capability(
+        action_name="delete_db",
+        target="/api%2Fv1%2Fsecure",
+        canonical_request_digest="dig_e2",
+        task_contract=contract_permissive4
+    )
+    assert cap_e2 is None
+    assert "DURABLE_DENIAL_ACTIVE" in reason_e2
+
+    # Traversal dot segment attempt: /api/v1/other/../secure
+    cap_e3, reason_e3 = auth.evaluate_and_issue_capability(
+        action_name="delete_db",
+        target="/api/v1/other/../secure",
+        canonical_request_digest="dig_e3",
+        task_contract=contract_permissive4
+    )
+    assert cap_e3 is None
+    assert "DURABLE_DENIAL_ACTIVE" in reason_e3
+
+    # Backslash attempt: /api\v1\secure
+    cap_e4, reason_e4 = auth.evaluate_and_issue_capability(
+        action_name="delete_db",
+        target="/api\\v1\\secure",
+        canonical_request_digest="dig_e4",
+        task_contract=contract_permissive4
+    )
+    assert cap_e4 is None
+    assert "DURABLE_DENIAL_ACTIVE" in reason_e4
+
+    # 5. Explicit Host Isolation
+    contract_restrictive5 = TrustedTaskContract(
+        task_id="TASK-HOST-01",
+        permitted_actions={"read_only"},
+        resource_scope={"http://host-a.internal/data"}
+    )
+    contract_restrictive5.sign(auth.contract_signing_secret)
+
+    # Denial on host-a.internal/data
+    cap_h1, _ = auth.evaluate_and_issue_capability(
+        action_name="delete_db",
+        target="http://host-a.internal/data",
+        canonical_request_digest="dig_h1",
+        task_contract=contract_restrictive5
+    )
+    assert cap_h1 is None
+
+    contract_permissive5 = TrustedTaskContract(
+        task_id="TASK-HOST-01",
+        permitted_actions={"*"},
+        resource_scope={"*"}
+    )
+    contract_permissive5.sign(auth.contract_signing_secret)
+
+    # Target http://host-b.internal/data should NOT be blocked by denial on host-a.internal
+    cap_h2, reason_h2 = auth.evaluate_and_issue_capability(
+        action_name="delete_db",
+        target="http://host-b.internal/data",
+        canonical_request_digest="dig_h2",
+        task_contract=contract_permissive5
+    )
+    assert cap_h2 is not None
+    assert reason_h2 == "AUTHORIZATION_GRANTED"
 
 
 def test_malformed_authorization_context():
