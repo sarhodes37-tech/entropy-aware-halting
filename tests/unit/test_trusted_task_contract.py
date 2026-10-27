@@ -266,27 +266,68 @@ def test_denial_continuity_across_version_updates_and_explicit_reauthorization(t
     assert cap2 is None
     assert "DURABLE_DENIAL_ACTIVE" in reason2
 
-    # Clear denial with authenticated HumanApprovalRecord
-    app_record = HumanApprovalRecord(
-        approval_id="APP-CLEAR-01",
+    # 1. Ordinary action approval cannot clear denial
+    ordinary_app = HumanApprovalRecord(
+        approval_id="APP-ORD-01",
         approver_id="security_admin",
         action_name="mutate_state",
         target="/state",
         action_digest="dig3",
         request_id="REQ-CLEAR-01"
     )
-    cleared = registry.clear_denial_with_approval("TASK-VER-01", "mutate_state", "/state", app_record)
+    ordinary_app.sign(authority.approval_signing_secret)
+
+    cleared_ord, msg_ord = authority.clear_denial_with_approval("TASK-VER-01", "mutate_state", "/state", ordinary_app)
+    assert cleared_ord is False
+    assert "cannot be repurposed" in msg_ord
+
+    # 2. Unsigned clearance approval fails
+    clearance_app = HumanApprovalRecord(
+        approval_id="APP-CLEAR-01",
+        approver_id="security_admin",
+        action_name="CLEAR_DENIAL:mutate_state",
+        target="/state",
+        action_digest="dig3",
+        request_id="REQ-CLEAR-01"
+    )
+    cleared_unsigned, msg_unsigned = authority.clear_denial_with_approval("TASK-VER-01", "mutate_state", "/state", clearance_app)
+    assert cleared_unsigned is False
+    assert "verification failed" in msg_unsigned
+
+    # 3. Forged clearance signature fails
+    clearance_app.sign(b"wrong_secret")
+    cleared_forged, msg_forged = authority.clear_denial_with_approval("TASK-VER-01", "mutate_state", "/state", clearance_app)
+    assert cleared_forged is False
+    assert "verification failed" in msg_forged
+
+    # 4. Properly signed clearance approval succeeds!
+    clearance_app.sign(authority.approval_signing_secret)
+    cleared, msg_success = authority.clear_denial_with_approval("TASK-VER-01", "mutate_state", "/state", clearance_app)
     assert cleared is True
+    assert "successfully cleared" in msg_success
+
+    # 5. Replaying the clearance approval fails
+    cleared_replay, msg_replay = authority.clear_denial_with_approval("TASK-VER-01", "mutate_state", "/state", clearance_app)
+    assert cleared_replay is False
+    assert "already consumed" in msg_replay
 
     # Retry after explicit reauthorization -> GRANTED
-    app_record.sign(authority.approval_signing_secret)
+    action_app = HumanApprovalRecord(
+        approval_id="APP-ACTION-01",
+        approver_id="security_admin",
+        action_name="mutate_state",
+        target="/state",
+        action_digest="dig3",
+        request_id="REQ-MUT-01"
+    )
+    action_app.sign(authority.approval_signing_secret)
     cap3, reason3 = authority.evaluate_and_issue_capability(
         action_name="mutate_state",
         target="/state",
         canonical_request_digest="dig3",
-        request_id="REQ-CLEAR-01",
+        request_id="REQ-MUT-01",
         task_contract=contract_v2,
-        human_approval_input=app_record
+        human_approval_input=action_app
     )
     assert cap3 is not None
     assert reason3 == "AUTHORIZATION_GRANTED"
