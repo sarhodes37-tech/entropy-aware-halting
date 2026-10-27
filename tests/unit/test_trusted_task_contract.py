@@ -803,6 +803,114 @@ def test_persistence_failure_injection_write_flush_fsync(tmp_path):
     assert reloaded_registry.is_approval_consumed("APP-FSYNC-FAIL") is False
 
 
+def test_security_boundary_four_key_questions(tmp_path):
+    # Tests all 4 core security boundary questions end-to-end via EpistemicOrchestrator.process_submission
+    audit_file = tmp_path / "four_q_audit.jsonl"
+    denial_log = tmp_path / "four_q_denial.jsonl"
+
+    reg = CapabilityRegistry(denial_log_path=str(denial_log))
+    auth = AuthorizationAuthority(
+        default_policy=Policy(policy_id="p1", allowed_operations={"*"}, allowed_resources={"*"}),
+        registry=reg,
+        require_task_contract=True
+    )
+    store = LocalProvenanceStore(log_path=str(tmp_path / "four_q_prov.jsonl"))
+    boundary = TrustedExecutionBoundary(provenance_store=store, authority=auth)
+
+    orchestrator = EpistemicOrchestrator(
+        audit_log_path=str(audit_file),
+        execution_boundary=boundary,
+        authority=auth
+    )
+
+    contract_secret = auth.contract_signing_secret
+
+    # Question 1: Contract Authentication - Forged signature rejected
+    def mock_exec():
+        return {"status": "ok", "evidence_token": "valid_123"}
+
+    auth.register_executor("mock_exec", mock_exec)
+
+    forged_contract = TrustedTaskContract(
+        task_id="TASK-Q1", permitted_actions={"run_op"}, resource_scope={"/target"}
+    )
+    forged_contract.sign(b"untrusted_key")
+
+    res_q1 = orchestrator.process_submission(
+        raw_payload={"policy_id": "p1"},
+        context={"action_name": "run_op", "target": "/target", "actual_executable": mock_exec, "task_contract": forged_contract}
+    )
+    assert res_q1["status"] == "HALTED"
+    assert "CONTRACT_SIGNATURE_INVALID" in res_q1["reason"]
+
+    # Question 2 & Question 4: Success-evidence propagation and UNVERIFIED_SUCCESS top-level HALTED status
+    contract_ev = TrustedTaskContract(
+        task_id="TASK-Q2",
+        permitted_actions={"run_op"},
+        resource_scope={"/target"},
+        success_evidence_requirements={"evidence_token"}
+    )
+    contract_ev.sign(contract_secret)
+
+    def missing_ev_exec():
+        return {"status": "ok"}  # Missing required 'evidence_token'
+
+    auth.register_executor("missing_ev_exec", missing_ev_exec)
+
+    res_q2 = orchestrator.process_submission(
+        raw_payload={"policy_id": "p1"},
+        context={"action_name": "run_op", "target": "/target", "actual_executable": missing_ev_exec, "task_contract": contract_ev}
+    )
+    # UNVERIFIED_SUCCESS MUST yield top-level HALTED status, NOT ALLOWED!
+    assert res_q2["status"] == "HALTED"
+    assert res_q2["execution_status"] == "UNVERIFIED_SUCCESS"
+    assert "Missing required success evidence" in res_q2["reason"]
+
+    # Question 3: Durable Denials across restarts
+    contract_denied = TrustedTaskContract(
+        task_id="TASK-Q3",
+        permitted_actions={"read_only"},
+        resource_scope={"/target"}
+    )
+    contract_denied.sign(contract_secret)
+
+    # Initial scope violation triggers recorded denial
+    res_q3_1 = orchestrator.process_submission(
+        raw_payload={"policy_id": "p1"},
+        context={"action_name": "write_forbidden", "target": "/target", "actual_executable": mock_exec, "task_contract": contract_denied}
+    )
+    assert res_q3_1["status"] == "HALTED"
+
+    # Instantiate a NEW orchestrator reading the same persistent denial log (simulating process restart)
+    reg_restarted = CapabilityRegistry(denial_log_path=str(denial_log))
+    auth_restarted = AuthorizationAuthority(
+        default_policy=Policy(policy_id="p1", allowed_operations={"*"}, allowed_resources={"*"}),
+        registry=reg_restarted,
+        contract_signing_secret=contract_secret
+    )
+    boundary_restarted = TrustedExecutionBoundary(provenance_store=store, authority=auth_restarted)
+    orchestrator_restarted = EpistemicOrchestrator(
+        audit_log_path=str(audit_file),
+        execution_boundary=boundary_restarted,
+        authority=auth_restarted
+    )
+
+    contract_permissive = TrustedTaskContract(
+        task_id="TASK-Q3",
+        permitted_actions={"write_forbidden"},
+        resource_scope={"/target"}
+    )
+    contract_permissive.sign(contract_secret)
+
+    # Retry after restart MUST still observe durable denial!
+    res_q3_2 = orchestrator_restarted.process_submission(
+        raw_payload={"policy_id": "p1"},
+        context={"action_name": "write_forbidden", "target": "/target", "actual_executable": mock_exec, "task_contract": contract_permissive}
+    )
+    assert res_q3_2["status"] == "HALTED"
+    assert "DURABLE_DENIAL_ACTIVE" in res_q3_2["reason"]
+
+
 def test_production_configuration_enforcement(monkeypatch):
     monkeypatch.setenv("EPISTEMICOS_ENV", "production")
 
