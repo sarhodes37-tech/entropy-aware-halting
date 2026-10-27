@@ -729,24 +729,26 @@ def test_multiprocess_deterministic_denial_interleaving_race(tmp_path):
 
 
 def test_rollback_truncation_failure_injection_handling(tmp_path):
+    import io
     from unittest.mock import patch
     denial_log = str(tmp_path / "trunc_fail.jsonl")
     registry = CapabilityRegistry(denial_log_path=denial_log, fail_closed_persistence=True)
 
     original_open = open
-    def mock_open_with_faulty_truncate(*args, **kwargs):
+    def mock_open_faulty_truncate(*args, **kwargs):
         f = original_open(*args, **kwargs)
         if len(args) > 1 and "a+" in args[1]:
             def faulty_truncate(pos=None):
-                raise OSError("Truncate error")
+                raise OSError("Stream truncate error")
             f.truncate = faulty_truncate
         return f
 
     with patch("os.fsync", side_effect=OSError("Disk fsync error")):
-        with patch("builtins.open", side_effect=mock_open_with_faulty_truncate):
-            with pytest.raises(RuntimeError) as exc:
-                registry.record_denial("TASK-TRUNC-FAIL", "write_file", "/target", "Initial denial")
-            assert "rollback truncation failure" in str(exc.value)
+        with patch("os.ftruncate", side_effect=OSError("OS ftruncate error")):
+            with patch("builtins.open", side_effect=mock_open_faulty_truncate):
+                with pytest.raises(RuntimeError) as exc:
+                    registry.record_denial("TASK-TRUNC-FAIL", "write_file", "/target", "Initial denial")
+                assert "rollback truncation failure" in str(exc.value)
 
 
 def test_persistence_failure_injection_write_flush_fsync(tmp_path):
@@ -909,6 +911,109 @@ def test_security_boundary_four_key_questions(tmp_path):
     )
     assert res_q3_2["status"] == "HALTED"
     assert "DURABLE_DENIAL_ACTIVE" in res_q3_2["reason"]
+
+
+def test_denial_canonicalization_whitespace_and_side_effect_isolation(tmp_path):
+    # Target 1: Verifies string canonicalization and actual side-effect prevention
+    audit_file = tmp_path / "t1_audit.jsonl"
+    denial_log = tmp_path / "t1_denial.jsonl"
+
+    reg = CapabilityRegistry(denial_log_path=str(denial_log))
+    auth = AuthorizationAuthority(
+        default_policy=Policy(policy_id="p1", allowed_operations={"*"}, allowed_resources={"*"}),
+        registry=reg
+    )
+    store = LocalProvenanceStore(log_path=str(tmp_path / "t1_prov.jsonl"))
+    boundary = TrustedExecutionBoundary(provenance_store=store, authority=auth)
+
+    orchestrator = EpistemicOrchestrator(
+        audit_log_path=str(audit_file),
+        execution_boundary=boundary,
+        authority=auth
+    )
+
+    side_effects = [0]
+    def protected_callback():
+        side_effects[0] += 1
+        return {"status": "ok", "proof": "valid_proof"}
+
+    auth.register_executor("protected_callback", protected_callback)
+
+    contract_restrictive = TrustedTaskContract(
+        task_id="TASK-T1-01",
+        permitted_actions={"read_only"},
+        resource_scope={"/app/data"}
+    )
+    contract_restrictive.sign(auth.contract_signing_secret)
+
+    # Step 1: Initial attempt -> DENIED and persisted
+    res1 = orchestrator.process_submission(
+        raw_payload={"policy_id": "p1"},
+        context={"action_name": "delete_db", "target": "/app/data", "actual_executable": protected_callback, "task_contract": contract_restrictive}
+    )
+    assert res1["status"] == "HALTED"
+    assert side_effects[0] == 0
+
+    # Step 2: Retry with whitespace-padded action_name and target ("delete_db  ", "  /app/data  ") under permissive contract.
+    # Canonicalization MUST prevent whitespace evasion and block execution!
+    contract_permissive = TrustedTaskContract(
+        task_id="TASK-T1-01",
+        permitted_actions={"delete_db", "read_only"},
+        resource_scope={"/app/data"}
+    )
+    contract_permissive.sign(auth.contract_signing_secret)
+
+    res2 = orchestrator.process_submission(
+        raw_payload={"policy_id": "p1"},
+        context={"action_name": "delete_db  ", "target": "  /app/data  ", "actual_executable": protected_callback, "task_contract": contract_permissive}
+    )
+    assert res2["status"] == "HALTED"
+    assert "DURABLE_DENIAL_ACTIVE" in res2["reason"]
+    assert side_effects[0] == 0  # Side effect counter remains strictly 0!
+
+    # Step 3: Positive Control — Genuine distinct operation ("read_only") against same contract executes side effect
+    res_control = orchestrator.process_submission(
+        raw_payload={"policy_id": "p1"},
+        context={"action_name": "read_only", "target": "/app/data", "actual_executable": protected_callback, "task_contract": contract_permissive}
+    )
+    assert res_control["status"] == "ALLOWED"
+    assert side_effects[0] == 1  # Positive control proves callback executes when legitimate!
+
+
+def test_persistence_and_rollback_failure_recovery_on_restart(tmp_path):
+    # Target 2: Fault injection testing of fsync failure with successful rollback truncation
+    from unittest.mock import patch
+    denial_log = str(tmp_path / "rollback_fail.jsonl")
+
+    reg = CapabilityRegistry(denial_log_path=denial_log, fail_closed_persistence=True)
+    auth = AuthorizationAuthority(registry=reg)
+
+    reg.record_denial("TASK-T2-RECOVERY", "mutate", "/data", "Active initial denial")
+
+    app = HumanApprovalRecord(
+        approval_id="APP-T2-CLEAR",
+        approver_id="security_admin",
+        action_name="CLEAR_DENIAL:mutate",
+        target="/data",
+        action_digest="dig",
+        request_id="req",
+        task_id="TASK-T2-RECOVERY"
+    )
+    app.sign(auth.approval_signing_secret)
+
+    # Inject failure into os.fsync (rollback os.ftruncate executes successfully)
+    with patch("os.fsync", side_effect=OSError("Primary fsync failure")):
+        with pytest.raises(RuntimeError) as exc:
+            reg.clear_denial_with_approval("TASK-T2-RECOVERY", "mutate", "/data", app, auth.approval_signing_secret)
+        assert "Denial persistence failure" in str(exc.value) or "Primary fsync failure" in str(exc.value)
+
+    # Construct a fresh CapabilityRegistry instance reloading the on-disk file
+    reloaded_reg = CapabilityRegistry(denial_log_path=denial_log, fail_closed_persistence=True)
+    is_denied, record = reloaded_reg.check_denial("TASK-T2-RECOVERY", "mutate", "/data")
+
+    # The reloaded registry MUST observe that rollback succeeded, active denial remains intact!
+    assert is_denied is True
+    assert record["reason"] == "Active initial denial"
 
 
 def test_production_configuration_enforcement(monkeypatch):

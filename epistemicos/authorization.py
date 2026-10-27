@@ -475,7 +475,10 @@ class CapabilityRegistry:
                                 if self.fail_closed_persistence:
                                     raise RuntimeError(f"Corrupted record in denial log: {line_str}")
                                 continue
-                            key = (str(rec["task_id"]), str(rec["action_name"]), str(rec["target"]))
+                            task_id_str = str(rec["task_id"]).strip()
+                            action_name_str = str(rec["action_name"]).strip()
+                            target_str = str(rec["target"]).strip()
+                            key = (task_id_str, action_name_str, target_str)
                             if rec.get("status") == "CLEARED":
                                 self._denied_records.pop(key, None)
                                 cleared_by = rec.get("cleared_by_approval")
@@ -518,10 +521,14 @@ class CapabilityRegistry:
         except ImportError:
             has_fcntl = False
 
+        task_id = str(task_id).strip()
+        action_name = str(action_name).strip()
+        target = str(target).strip()
+
         rec = {
-            "task_id": str(task_id),
-            "action_name": str(action_name),
-            "target": str(target),
+            "task_id": task_id,
+            "action_name": action_name,
+            "target": target,
             "reason": str(reason),
             "contract_version": str(contract_version),
             "policy_version": str(policy_version),
@@ -545,10 +552,14 @@ class CapabilityRegistry:
                         rollback_failed = False
                         try:
                             f.seek(pre_pos)
-                            f.truncate(pre_pos)
+                            os.ftruncate(f.fileno(), pre_pos)
                             f.flush()
                         except Exception:
-                            rollback_failed = True
+                            try:
+                                f.truncate(pre_pos)
+                                f.flush()
+                            except Exception:
+                                rollback_failed = True
 
                         if rollback_failed and self.fail_closed_persistence:
                             raise RuntimeError(f"Denial persistence failure and rollback truncation failure: on-disk state uncertain ({str(primary_err)})") from primary_err
@@ -564,7 +575,7 @@ class CapabilityRegistry:
                     raise RuntimeError(f"Denial persistence failure: unable to durably record security decision ({str(e)})") from e
 
         # Durable file write succeeded -> Commit in-memory state mutation
-        key = (str(task_id), str(action_name), str(target))
+        key = (task_id, action_name, target)
         self._denied_records[key] = rec
 
     def record_denial(
@@ -605,6 +616,10 @@ class CapabilityRegistry:
         if not reauthorization_record or not isinstance(reauthorization_record, HumanApprovalRecord):
             return False, "Invalid or missing reauthorization record"
 
+        task_id = str(task_id).strip()
+        action_name = str(action_name).strip()
+        target = str(target).strip()
+
         with self.lock_registry():
             # 1. Mandatory signature verification against trusted approval signing secret
             if not reauthorization_record.verify_signature(signing_secret, current_time=current_time):
@@ -641,11 +656,11 @@ class CapabilityRegistry:
             if not (action_match and target_match):
                 return False, "Approval record does not match action_name and target for denial clearance"
 
-            key = (str(task_id), str(action_name), str(target))
+            key = (task_id, action_name, target)
             rec = {
-                "task_id": str(task_id),
-                "action_name": str(action_name),
-                "target": str(target),
+                "task_id": task_id,
+                "action_name": action_name,
+                "target": target,
                 "status": "CLEARED",
                 "cleared_by_approval": reauthorization_record.approval_id,
                 "timestamp": time.time()
@@ -667,10 +682,14 @@ class CapabilityRegistry:
                             rollback_failed = False
                             try:
                                 f.seek(pre_pos)
-                                f.truncate(pre_pos)
+                                os.ftruncate(f.fileno(), pre_pos)
                                 f.flush()
                             except Exception:
-                                rollback_failed = True
+                                try:
+                                    f.truncate(pre_pos)
+                                    f.flush()
+                                except Exception:
+                                    rollback_failed = True
 
                             if rollback_failed and self.fail_closed_persistence:
                                 raise RuntimeError(f"Denial persistence failure and rollback truncation failure: on-disk clearance state uncertain ({str(primary_err)})") from primary_err
@@ -699,10 +718,14 @@ class CapabilityRegistry:
         contract_version: str = "1.0.0",
         policy_version: str = "1.0.0"
     ) -> Tuple[bool, Optional[Dict[str, Any]]]:
+        task_id = str(task_id).strip()
+        action_name = str(action_name).strip()
+        target = str(target).strip()
+
         # Re-sync from persistent storage to enforce cross-process durability
         self._load_persistent_denials()
 
-        key = (str(task_id), str(action_name), str(target))
+        key = (task_id, action_name, target)
         rec = self._denied_records.get(key)
         if rec and rec.get("status") == "ACTIVE":
             # Denial is active regardless of contract_version changes, unless explicitly cleared
@@ -918,12 +941,17 @@ class AuthorizationAuthority:
         if contract_obj and task_id and contract_obj.task_id != task_id:
             return None, "AUTHORIZATION_DENIED_TASK_IDENTITY_MISMATCH"
 
-        # Validate action and target
+        # Validate and canonicalize action and target
         if not action_name or not isinstance(action_name, str) or not action_name.strip():
             return None, "AUTHORIZATION_DENIED_INVALID_ACTION_NAME"
 
         if not target or not isinstance(target, str) or not target.strip():
             return None, "AUTHORIZATION_DENIED_INVALID_TARGET"
+
+        action_name = action_name.strip()
+        target = target.strip()
+        if effective_task_id:
+            effective_task_id = str(effective_task_id).strip()
 
         # Begin atomic critical section for checking denial, contract, policy, recording denial, and registering capability
         with self.registry.lock_registry():
