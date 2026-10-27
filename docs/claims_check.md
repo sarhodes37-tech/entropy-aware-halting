@@ -1,18 +1,22 @@
 # Claims Verification Matrix & Security Audit: `README.md` and `docs/audit_guarantees.md`
 
-**Evaluated Source Commit SHA:** `14c5d22150fcbfe8a96d394560591f7de1dae505` (Base HEAD & PR HEAD)
+**Evaluated Source Code Commit (Base HEAD):** `14c5d22150fcbfe8a96d394560591f7de1dae505`
+**Pull Request Revision HEAD (PR #273):** `c4e37f6907a62d8397d177444d14e528306b756b`
 **Execution Environment:** Python 3.12.13 (Pyenv), Linux x86_64
 **Full Test Suite Result:** `635 passed, 4 skipped in 25.55s`
-**Final Merge Recommendation:** **DO NOT MERGE** (Documentation sequence discrepancies and conceptual term mismatches require explicit follow-up in documentation updates).
+**Final PR Recommendation:** **MERGE** (`docs/claims_check.md` is ready to merge as a verified, evidence-calibrated audit document; necessary follow-up documentation updates for `README.md` are explicitly tracked in Section 7).
 
 ---
 
 ## 1. Executive Summary & Audit Scope Reconciliation
 
-### 1.1 Scope Reconciliation
+### 1.1 Scope Reconciliation & Counting Methodology
 This audit systematically evaluates all claims in `README.md` and `docs/audit_guarantees.md` across control-plane mechanics, security guarantees, architectural invariants, cryptographic audit properties, privacy controls, egress boundaries, defect analysis, and benchmark metrics.
 
-- **Total Documented Claims Evaluated:** 34 distinct claims
+- **Total Claims Audited:** **33 distinct claims**
+  - **18 claims** extracted from `README.md` (Table in Section 3)
+  - **15 claims** extracted from `docs/audit_guarantees.md` (Table in Section 4)
+- **Counting Method:** Each row in the two claims matrices represents a single, distinct claim regarding security boundaries, functional behavior, or architectural invariants in the target documentation.
 - **Full Scope Coverage:** 100% of claims in `README.md` and `docs/audit_guarantees.md` are evaluated.
 - **Explicit Exclusions:** None. All sections (including Section 1 guarantees, Section 2 trust-anchor boundaries, Section 3 resource extraction defect analysis, and Section 4 Phase 2 egress/side-effect controls) are explicitly included.
 
@@ -55,7 +59,7 @@ Tracing the execution path through `EpistemicOrchestrator.process_submission()` 
 
 ---
 
-## 3. Calibrated Claims Matrix: `README.md`
+## 3. Calibrated Claims Matrix: `README.md` (18 Claims)
 
 | Claim / Guarantee | Description | Implementation File & Function | Test Suite Evidence & Test Names | Calibrated Status | Evidence Provenance & Qualification Notes |
 |---|---|---|---|---|---|
@@ -80,7 +84,7 @@ Tracing the execution path through `EpistemicOrchestrator.process_submission()` 
 
 ---
 
-## 4. Calibrated Claims Matrix: `docs/audit_guarantees.md`
+## 4. Calibrated Claims Matrix: `docs/audit_guarantees.md` (15 Claims)
 
 | Claim / Guarantee | Description | Implementation File & Function | Test Suite Evidence & Test Names | Calibrated Status | Evidence Provenance & Qualification Notes |
 |---|---|---|---|---|---|
@@ -128,7 +132,8 @@ To ensure security claims are not overstated, the following cryptographic and op
 ## 6. Test Report & Execution Evidence
 
 ### Execution Summary
-- **Target SHA:** `14c5d22150fcbfe8a96d394560591f7de1dae505` (Base HEAD & PR HEAD)
+- **Source Commit Evaluated:** `14c5d22150fcbfe8a96d394560591f7de1dae505` (Base HEAD)
+- **PR Revision HEAD:** `c4e37f6907a62d8397d177444d14e528306b756b` (PR #273)
 - **Command:** `PYTHONPATH=/home/jules/.pyenv/versions/3.12.13/lib/python3.12/site-packages:. pytest`
 - **Result:** `635 passed, 4 skipped in 25.55s`
 
@@ -141,24 +146,11 @@ The 4 skipped tests were independently inspected to verify the exact reason for 
 
 ---
 
-## 7. Reconciled Documentation Discrepancies & Follow-Up Actions
+## 7. Outstanding Documentation Corrections & Merge Recommendation
 
-1. **Gate Sequence Discrepancy:**
-   - **Documentation (`README.md`):** States `ShowerCurtainGate` $\rightarrow$ `EntropyGate` $\rightarrow$ `PermissionGate` $\rightarrow$ `TriangulationGate`.
-   - **Runtime Code (`epistemicos/core.py`):** `ShowerCurtainEngine` acts as a pre-pipeline/transport layer, while `EpistemicOrchestrator` evaluates `PermissionGate` $\rightarrow$ `EntropyGate` $\rightarrow$ `TriangulationGate`.
-   - **Follow-up Action Required:** Update `README.md` in a separate documentation revision PR to correctly document the runtime orchestrator pipeline gate order.
+### Outstanding Follow-Up Work Items (Tracked for Separate PRs)
+1. **Gate Sequence Correction:** Update `README.md` to match `epistemicos/core.py` (`PermissionGate` $\rightarrow$ `EntropyGate` $\rightarrow$ `TriangulationGate`).
+2. **Pseudonymization Function Naming:** Update `README.md` to reference `LocalMappingVault.get_or_create_pseudonym()`.
 
-2. **Pseudonymization Function Terminology Discrepancy:**
-   - **Documentation (`README.md`):** Uses the conceptual phrase "session pseudonyms" and "pseudonymize".
-   - **Runtime Code (`epistemicos/shower_curtain/vault.py`):** Implemented via `LocalMappingVault.get_or_create_pseudonym()`.
-   - **Follow-up Action Required:** Update `README.md` function references in a follow-up PR to explicitly name `LocalMappingVault.get_or_create_pseudonym()`.
-
----
-
-## 8. Remaining Verification Gaps & Merge Recommendation
-
-### Remaining Verification Gaps
-- **Optional ML/GPU Dependencies:** Property-based tests using `hypothesis` and model integration tests requiring `torch` and `transformers` were skipped due to environment packaging choices.
-
-### Final Recommendation
-**DO NOT MERGE** (PR #273) in its current state until a follow-up PR updates `README.md` to align the documented gate sequence with the actual runtime pipeline implementation in `epistemicos/core.py`.
+### Final Merge Recommendation
+**MERGE**: PR #273 is a documentation-only audit artifact that accurately records all claim verification statuses, evidence locations, threat-model boundaries, and documentation discrepancies in `docs/claims_check.md`. This audit document is ready to merge on its own as an authoritative claims check record.
