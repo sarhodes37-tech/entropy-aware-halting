@@ -604,6 +604,7 @@ class CapabilityRegistry:
         target: str,
         reauthorization_record: HumanApprovalRecord,
         signing_secret: bytes,
+        expected_action_digest: Optional[str] = None,
         current_time: Optional[float] = None
     ) -> Tuple[bool, str]:
         import os
@@ -655,6 +656,11 @@ class CapabilityRegistry:
             )
             if not (action_match and target_match):
                 return False, "Approval record does not match action_name and target for denial clearance"
+
+            # Optional action digest validation if specified
+            if expected_action_digest and reauthorization_record.action_digest:
+                if reauthorization_record.action_digest != expected_action_digest:
+                    return False, f"Reauthorization approval action_digest mismatch: expected '{expected_action_digest}', got '{reauthorization_record.action_digest}'"
 
             key = (task_id, action_name, target)
             rec = {
@@ -738,24 +744,48 @@ class CapabilityRegistry:
         registry = getattr(self, "_action_registry", None) or ActionRegistry()
         req_cat = registry.classify_action(action_name)
 
-        def normalize_target_path(raw_target: str) -> str:
-            if not raw_target:
-                return "/"
-            parsed = urlparse(raw_target)
-            path = parsed.path or raw_target
-            norm = path.rstrip("/")
-            return norm if norm else "/"
+        import os
+        from urllib.parse import urlparse
 
-        target_norm = normalize_target_path(target)
+        def normalize_target_path(raw_target: str) -> tuple[str, str]:
+            if not raw_target:
+                return "", "/"
+            str_target = str(raw_target).strip()
+            if "://" not in str_target and not str_target.startswith("/"):
+                str_target = "http://" + str_target
+
+            parsed = urlparse(str_target)
+            netloc = parsed.netloc.lower().strip() if parsed.netloc else ""
+            raw_path = parsed.path or "/"
+
+            # Collapse backslashes to forward slashes and eliminate dot segments
+            clean_path = raw_path.replace("\\", "/")
+            norm_path = os.path.normpath(clean_path)
+            if norm_path in (".", "", "/"):
+                norm_path = "/"
+            else:
+                norm_path = norm_path.rstrip("/")
+            return netloc, norm_path
+
+        target_host, target_norm = normalize_target_path(target)
 
         for (d_task_id, d_action, d_target), d_rec in self._denied_records.items():
             if d_rec.get("status") != "ACTIVE" or d_task_id != task_id:
                 continue
 
-            d_target_norm = normalize_target_path(d_target)
+            d_host, d_target_norm = normalize_target_path(d_target)
+
+            # Host matching: different explicit hosts do not match unless one is empty or wildcard
+            host_matches = (
+                not target_host
+                or not d_host
+                or target_host == d_host
+                or d_host == "*"
+                or target_host == "*"
+            )
 
             # Downward path inheritance: a restriction on a parent path or exact path/wildcard applies to subpaths
-            target_matches = (
+            path_matches = (
                 d_target == target
                 or d_target == "*"
                 or target == "*"
@@ -763,6 +793,8 @@ class CapabilityRegistry:
                 or (d_target_norm == "/" and target_norm.startswith("/"))
                 or (d_target_norm != "/" and target_norm.startswith(d_target_norm + "/"))
             )
+
+            target_matches = host_matches and path_matches
 
             d_cat = registry.classify_action(d_action)
             same_action = (d_action == action_name)
@@ -924,6 +956,7 @@ class AuthorizationAuthority:
         action_name: str,
         target: str,
         reauthorization_record: Any,
+        expected_action_digest: Optional[str] = None,
         current_time: Optional[float] = None
     ) -> Tuple[bool, str]:
         rec = HumanApprovalRecord.from_input(reauthorization_record)
@@ -935,6 +968,7 @@ class AuthorizationAuthority:
             target=target,
             reauthorization_record=rec,
             signing_secret=self.approval_signing_secret,
+            expected_action_digest=expected_action_digest,
             current_time=current_time
         )
 

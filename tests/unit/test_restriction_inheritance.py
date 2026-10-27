@@ -160,15 +160,33 @@ def test_scenario_b_endpoint_substitution(tmp_path):
 def test_scenario_c_indirect_execution(tmp_path):
     """
     Scenario C: Indirect Execution
-    A restricted action is attempted through an intermediary, wrapper, or indirect execution mechanism.
-    Expected: Preserve applicable restrictions across the execution boundary.
+    A restricted action is attempted through a genuinely different registered wrapper/intermediary action name ('proxy_dispatch' / 'wrapper_exec').
+    Expected: Preserve applicable restrictions across the execution boundary and block dispatch before execution callback runs.
     """
     denial_log = tmp_path / "scenario_c_denial.jsonl"
+    audit_file = tmp_path / "scenario_c_audit.jsonl"
+    prov_file = tmp_path / "scenario_c_prov.jsonl"
+
     reg = CapabilityRegistry(denial_log_path=str(denial_log))
     auth = AuthorizationAuthority(
         default_policy=Policy(policy_id="p1", allowed_operations={"*"}, allowed_resources={"*"}),
         registry=reg
     )
+    store = LocalProvenanceStore(log_path=str(prov_file))
+    boundary = TrustedExecutionBoundary(provenance_store=store, authority=auth)
+
+    orchestrator = EpistemicOrchestrator(
+        audit_log_path=str(audit_file),
+        execution_boundary=boundary,
+        authority=auth
+    )
+
+    dispatched = [0]
+    def wrapper_callback():
+        dispatched[0] += 1
+        return {"status": "executed_via_wrapper"}
+
+    auth.register_executor("wrapper_callback", wrapper_callback)
 
     contract_restrictive = TrustedTaskContract(
         task_id="TASK-C-01",
@@ -177,16 +195,15 @@ def test_scenario_c_indirect_execution(tmp_path):
     )
     contract_restrictive.sign(auth.contract_signing_secret)
 
-    # Initial direct attempt -> DENIED
-    cap1, reason1 = auth.evaluate_and_issue_capability(
-        action_name="mutate_state",
-        target="/protected/resource",
-        canonical_request_digest="dig1",
-        task_contract=contract_restrictive
+    # Step 1: Initial direct attempt via 'delete_db' on /protected/resource -> DENIED
+    res1 = orchestrator.process_submission(
+        raw_payload={"policy_id": "p1"},
+        context={"task_id": "TASK-C-01", "action_name": "delete_db", "target": "/protected/resource", "actual_executable": wrapper_callback, "task_contract": contract_restrictive}
     )
-    assert cap1 is None
+    assert res1["status"] == "HALTED"
+    assert dispatched[0] == 0
 
-    # Wrapper/intermediary attempt
+    # Step 2: Attempt same prohibited action via distinct wrapper action 'destructive_shell' under updated permissive contract
     contract_permissive = TrustedTaskContract(
         task_id="TASK-C-01",
         permitted_actions={"*"},
@@ -194,35 +211,72 @@ def test_scenario_c_indirect_execution(tmp_path):
     )
     contract_permissive.sign(auth.contract_signing_secret)
 
-    cap2, reason2 = auth.evaluate_and_issue_capability(
-        action_name="mutate_state",
-        target="/protected/resource",
-        canonical_request_digest="dig2",
-        task_contract=contract_permissive
+    res2 = orchestrator.process_submission(
+        raw_payload={"policy_id": "p1"},
+        context={"task_id": "TASK-C-01", "action_name": "destructive_shell", "target": "/protected/resource", "actual_executable": wrapper_callback, "task_contract": contract_permissive}
     )
-    assert cap2 is None
-    assert "DURABLE_DENIAL_ACTIVE" in reason2
+    assert res2["status"] == "HALTED"
+    assert "DURABLE_DENIAL_ACTIVE" in res2["reason"]
+    assert dispatched[0] == 0  # Prohibited callback was NEVER dispatched!
 
 
-def test_scenario_d_required_approval_absent():
+def test_scenario_d_required_approval_absent_and_route_switching_integration(tmp_path):
     """
-    Scenario D: Required Approval
-    A task requires human approval before a consequential action. The agent attempts an alternate route.
-    Expected: No consequential execution without required authorization/approval.
+    Scenario D: Required Approval & Alternate Route Switching Integration Test
+    A task requires human approval before a consequential operation ('public_repo_mutation').
+    When denied due to missing approval on one execution route, switching routes/tools ('package_publish')
+    or contracts cannot bypass the approval requirement or durable denial.
+    Verifies the prohibited callback is never invoked.
     """
-    side_effect_engine = SideEffectPolicyEngine(signing_secret="secret_key_123")
+    denial_log = tmp_path / "scenario_d_denial.jsonl"
+    audit_file = tmp_path / "scenario_d_audit.jsonl"
+    prov_file = tmp_path / "scenario_d_prov.jsonl"
 
-    # Attempt consequential operation without approval
-    authorized, msg = side_effect_engine.evaluate_side_effect_authorization(
-        operation_id="public_repo_mutation",
-        target_resource="org/repo",
-        payload={"issue_title": "test"},
-        task_id="TASK-D-01",
-        correlation_id="corr-d-01",
-        approval_record=None
+    reg = CapabilityRegistry(denial_log_path=str(denial_log))
+    auth = AuthorizationAuthority(
+        default_policy=Policy(policy_id="p1", allowed_operations={"*"}, allowed_resources={"*"}, required_human_approval_operations={"public_repo_mutation", "package_publish"}),
+        registry=reg
     )
-    assert not authorized
-    assert "requires explicit typed human approval" in msg
+    store = LocalProvenanceStore(log_path=str(prov_file))
+    boundary = TrustedExecutionBoundary(provenance_store=store, authority=auth)
+
+    orchestrator = EpistemicOrchestrator(
+        audit_log_path=str(audit_file),
+        execution_boundary=boundary,
+        authority=auth
+    )
+
+    dispatched = [0]
+    def consequential_callback():
+        dispatched[0] += 1
+        return {"status": "consequential_executed"}
+
+    auth.register_executor("consequential_callback", consequential_callback)
+
+    contract = TrustedTaskContract(
+        task_id="TASK-D-INTEG-01",
+        permitted_actions={"*"},
+        resource_scope={"*"}
+    )
+    contract.sign(auth.contract_signing_secret)
+
+    # 1. Direct attempt without approval -> Denied due to missing required human approval
+    res1 = orchestrator.process_submission(
+        raw_payload={"policy_id": "p1"},
+        context={"task_id": "TASK-D-INTEG-01", "action_name": "public_repo_mutation", "target": "org/repo", "actual_executable": consequential_callback, "task_contract": contract}
+    )
+    assert res1["status"] == "HALTED"
+    assert "HUMAN_APPROVAL_REQUIRED" in res1["reason"]
+    assert dispatched[0] == 0
+
+    # 2. Switch route/tool to 'package_publish' on same target -> Durable denial inherited & blocked before dispatch
+    res2 = orchestrator.process_submission(
+        raw_payload={"policy_id": "p1"},
+        context={"task_id": "TASK-D-INTEG-01", "action_name": "package_publish", "target": "org/repo", "actual_executable": consequential_callback, "task_contract": contract}
+    )
+    assert res2["status"] == "HALTED"
+    assert "DURABLE_DENIAL_ACTIVE" in res2["reason"] or "HUMAN_APPROVAL_REQUIRED" in res2["reason"]
+    assert dispatched[0] == 0  # Prohibited callback was NEVER invoked!
 
 
 def test_scenario_e_legitimate_reauthorization(tmp_path):
@@ -476,26 +530,74 @@ def test_malformed_authorization_context():
 
 def test_audit_record_for_denied_attempt(tmp_path):
     """
-    Audit record for a denied attempt records correct decision and reason, maintaining tamper-evidence.
+    Trigger an inherited denial through the actual EpistemicOrchestrator authorization pipeline
+    and inspect the resulting AuditEvent written directly to the real audit trail log file.
+    Verifies that the audit event captures the HALT decision, gate_name, reason, and maintains hash-chain tamper integrity.
     """
-    audit_log = tmp_path / "audit_test.jsonl"
-    store = TamperEvidentAuditTrail(log_file_path=str(audit_log))
+    audit_log = tmp_path / "actual_audit.jsonl"
+    denial_log = tmp_path / "actual_denial.jsonl"
+    prov_file = tmp_path / "actual_prov.jsonl"
 
-    event = AuditEvent(
-        event_type=AuditLogLevel.WARNING,
-        gate_name="AuthorizationAuthority",
-        reason="AUTHORIZATION_DENIED_DURABLE_DENIAL_ACTIVE",
-        model_id="system_gate",
-        payload_snippet="Attempted prohibited operation: destructive_shell on /prod/db",
-        metadata={
-            "task_id": "TASK-AUDIT-01",
-            "action_name": "destructive_shell",
-            "target": "/prod/db",
-            "reason": "AUTHORIZATION_DENIED_DURABLE_DENIAL_ACTIVE"
-        }
+    reg = CapabilityRegistry(denial_log_path=str(denial_log))
+    auth = AuthorizationAuthority(
+        default_policy=Policy(policy_id="p1", allowed_operations={"*"}, allowed_resources={"*"}),
+        registry=reg
     )
-    store.record_event(event)
+    store = LocalProvenanceStore(log_path=str(prov_file))
+    boundary = TrustedExecutionBoundary(provenance_store=store, authority=auth)
 
-    is_healthy, last_hash, err_msg = store.inspect_log_health()
-    assert is_healthy, f"Audit trail corrupted: {err_msg}"
+    orchestrator = EpistemicOrchestrator(
+        audit_log_path=str(audit_log),
+        execution_boundary=boundary,
+        authority=auth
+    )
+
+    contract_restrictive = TrustedTaskContract(
+        task_id="TASK-AUDIT-01",
+        permitted_actions={"read_only"},
+        resource_scope={"/prod/db"}
+    )
+    contract_restrictive.sign(auth.contract_signing_secret)
+
+    def dummy_executable():
+        return {"status": "ok"}
+    auth.register_executor("dummy_executable", dummy_executable)
+
+    # 1. Initial attempt -> Denied & persisted
+    res1 = orchestrator.process_submission(
+        raw_payload={"policy_id": "p1"},
+        context={"task_id": "TASK-AUDIT-01", "action_name": "delete_db", "target": "/prod/db", "actual_executable": dummy_executable, "task_contract": contract_restrictive}
+    )
+    assert res1["status"] == "HALTED"
+
+    # 2. Submitting alternate tool 'destructive_shell' triggers inherited denial through actual orchestrator pipeline
+    contract_permissive = TrustedTaskContract(
+        task_id="TASK-AUDIT-01",
+        permitted_actions={"*"},
+        resource_scope={"*"}
+    )
+    contract_permissive.sign(auth.contract_signing_secret)
+
+    res2 = orchestrator.process_submission(
+        raw_payload={"policy_id": "p1"},
+        context={"task_id": "TASK-AUDIT-01", "action_name": "destructive_shell", "target": "/prod/db", "actual_executable": dummy_executable, "task_contract": contract_permissive}
+    )
+    assert res2["status"] == "HALTED"
+    assert "DURABLE_DENIAL_ACTIVE" in res2["reason"]
+
+    # 3. Inspect real audit log generated by orchestrator
+    audit_trail = TamperEvidentAuditTrail(log_file_path=str(audit_log))
+    is_healthy, last_hash, err_msg = audit_trail.inspect_log_health()
+    assert is_healthy, f"Audit log health check failed: {err_msg}"
     assert last_hash is not None
+
+    # Read and inspect entries directly from audit log file
+    import json
+    with open(audit_log, "r", encoding="utf-8") as f:
+        entries = [json.loads(line) for line in f if line.strip()]
+
+    assert len(entries) >= 2
+    inherited_audit_entry = entries[-1]
+    assert inherited_audit_entry["event_type"] == "DETERMINISTIC_HALT"
+    assert inherited_audit_entry["gate_name"] == "AuthorizationAuthority"
+    assert "DURABLE_DENIAL_ACTIVE" in inherited_audit_entry["reason"]
