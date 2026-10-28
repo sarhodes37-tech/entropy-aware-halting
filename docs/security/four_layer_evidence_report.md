@@ -1,13 +1,11 @@
 # EpistemicOS Consolidated Security & Evaluation Evidence Report
 
-**Overall Status:** `PARTIAL` | **Generated:** 2026-10-28 11:55:36 UTC
-**Overall Status:** `PARTIAL` | **Generated:** 2026-10-28 11:13:12 UTC
+**Overall Status:** `PARTIAL` | **Generated:** 2026-10-28 23:14:06 UTC
 
 ## Reproducibility & Environment Metadata
-- **Evaluated Git Commit:** `803f00f350e6e7472107abac8f7076718e96a96d`
+- **Evaluated Git Commit:** `673f9d5705a5d6b2a4196c60335f5e9d214f7912`
 - **Working Tree Status:** `DIRTY`
-- **Working Tree Digest:** `9f797e2dcbeaf0e2b0f9a514b964ea1eb86868040534902447cbe5d4ce33d575`
-- **Working Tree Digest:** `816368844cc6c78d0eb582dd519d9effb8766b747ad97e6fd7d93f2c87903bc4`
+- **Working Tree Digest:** `85b4b99b79e1602de051f618c27cc8a101280192db57a3c1ed98aa12e5443a6f`
 - **Dataset Version:** `1.0.0-frozen`
 - **Dataset SHA-256 Digest:** `f4e31381a922c1143769ccb887c4841e4a14fedec6eef6569d40eed2956ce873` (Verified: `True`)
 
@@ -15,7 +13,7 @@
 
 ## Layer A: Deterministic Regression
 - **Status:** `PASS`
-- **Test Command:** `/home/jules/.local/share/pipx/venvs/pytest/bin/python -m pytest tests/unit/test_evidence_architecture.py -k test_dataset_manifest_integrity -q --tb=no`
+- **Test Command:** `/home/jules/.pyenv/versions/3.12.13/bin/python -m pytest tests/unit/test_evidence_architecture.py -k test_dataset_manifest_integrity -q --tb=no`
 - **Summary:** .                                                                        [100%]
 
 ---
@@ -50,18 +48,14 @@
 
 ## Layer D: Performance & Cost Benchmarks
 - **Status:** `PASS`
-- **Run ID:** `run-l4-20261028115454-617e811b`
+- **Run ID:** `run-l4-20261028231315-7c26ad57`
 - **Dataset Digest:** `f4e31381a922c1143769ccb887c4841e4a14fedec6eef6569d40eed2956ce873`
-- **Run Records File SHA-256:** `eb65d7f9e7a6a18fd0ae451a96b5f40843bfb9169a81e9858b772aad33932b23`
-- **Run ID:** `run-l4-20261028111230-6d868a13`
-- **Dataset Digest:** `f4e31381a922c1143769ccb887c4841e4a14fedec6eef6569d40eed2956ce873`
-- **Run Records File SHA-256:** `c417fce9e2adce3ac3f806a1221a4dbaf8147669a528f04ef313b7c615d39959`
+- **Run Records File SHA-256:** `d9bdb37de551aed9743eb7bd8e8586f28e06e559c0fa62072210d569193881e6`
 - **Sample Size:** N = 100
 - **Combined Gating Accuracy:** 100.0%
 - **Combined Gating Security Recall:** 100.0%
 - **Benign False Positive Rate:** 0.0%
-- **P95 Latency:** 28.502 ms
-- **P95 Latency:** 28.391 ms
+- **P95 Latency:** 37.925 ms
 - **Total Tokens Spent:** 2000
 - **Mandatory Criteria Passed:** `True`
 
