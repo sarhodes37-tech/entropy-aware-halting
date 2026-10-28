@@ -119,7 +119,9 @@ def run_benchmark():
     iters_per_run = 1000
 
     print("=" * 80)
-    print(" TOKEN SURPRISAL SENSOR EVALUATE BENCHMARK REPORT")
+    print(" TOKEN SURPRISAL SENSOR EVALUATE BENCHMARK REPORT (MICROBENCHMARK)")
+    print(" Note: Results reflect isolated kernel performance and do not establish")
+    print(" end-to-end sensor performance.")
     print("=" * 80)
 
     for name, (logprobs, z_scores) in scenarios.items():
@@ -133,23 +135,37 @@ def run_benchmark():
             original_evaluate(sensor, logprobs, z_scores)
             optimized_evaluate(sensor, logprobs, z_scores)
 
-        # Measure Original across repeated runs
-        orig_run_times = []
-        for _ in range(measurement_runs):
-            t0 = time.perf_counter()
-            for _ in range(iters_per_run):
-                original_evaluate(sensor, logprobs, z_scores)
-            t1 = time.perf_counter()
-            orig_run_times.append((t1 - t0) * 1000.0 / iters_per_run) # ms per single call
+        # Measure across repeated runs alternating execution order to eliminate measurement-order bias
+        orig_run_times = [0.0] * measurement_runs
+        opt_run_times = [0.0] * measurement_runs
 
-        # Measure Optimized across repeated runs
-        opt_run_times = []
-        for _ in range(measurement_runs):
-            t0 = time.perf_counter()
-            for _ in range(iters_per_run):
-                optimized_evaluate(sensor, logprobs, z_scores)
-            t1 = time.perf_counter()
-            opt_run_times.append((t1 - t0) * 1000.0 / iters_per_run) # ms per single call
+        for r in range(measurement_runs):
+            if r % 2 == 0:
+                # Original first, then Optimized
+                t0 = time.perf_counter()
+                for _ in range(iters_per_run):
+                    original_evaluate(sensor, logprobs, z_scores)
+                t1 = time.perf_counter()
+                orig_run_times[r] = (t1 - t0) * 1000.0 / iters_per_run
+
+                t0 = time.perf_counter()
+                for _ in range(iters_per_run):
+                    optimized_evaluate(sensor, logprobs, z_scores)
+                t1 = time.perf_counter()
+                opt_run_times[r] = (t1 - t0) * 1000.0 / iters_per_run
+            else:
+                # Optimized first, then Original
+                t0 = time.perf_counter()
+                for _ in range(iters_per_run):
+                    optimized_evaluate(sensor, logprobs, z_scores)
+                t1 = time.perf_counter()
+                opt_run_times[r] = (t1 - t0) * 1000.0 / iters_per_run
+
+                t0 = time.perf_counter()
+                for _ in range(iters_per_run):
+                    original_evaluate(sensor, logprobs, z_scores)
+                t1 = time.perf_counter()
+                orig_run_times[r] = (t1 - t0) * 1000.0 / iters_per_run
 
         avg_orig = statistics.mean(orig_run_times)
         avg_opt = statistics.mean(opt_run_times)
@@ -160,10 +176,15 @@ def run_benchmark():
         speedup = avg_orig / avg_opt if avg_opt > 0 else 1.0
         pct_improvement = (diff_ms / avg_orig) * 100.0 if avg_orig > 0 else 0.0
 
+        orig_us = [t * 1000.0 for t in orig_run_times]
+        opt_us = [t * 1000.0 for t in opt_run_times]
+
         print(f"\nScenario: {name}")
-        print(f"  Original Impl  : {avg_orig * 1000:.3f} µs/op (± {std_orig * 1000:.3f} µs)")
-        print(f"  Optimized Impl : {avg_opt * 1000:.3f} µs/op (± {std_opt * 1000:.3f} µs)")
-        print(f"  Speedup        : {speedup:.2f}x ({pct_improvement:.1f}% reduction in execution time)")
+        print(f"  Repetitions (Original)  : {', '.join(f'{t:.3f} µs' for t in orig_us)}")
+        print(f"  Repetitions (Optimized) : {', '.join(f'{t:.3f} µs' for t in opt_us)}")
+        print(f"  Original Impl           : {avg_orig * 1000:.3f} µs/op (± {std_orig * 1000:.3f} µs)")
+        print(f"  Optimized Impl          : {avg_opt * 1000:.3f} µs/op (± {std_opt * 1000:.3f} µs)")
+        print(f"  Speedup                 : {speedup:.2f}x ({pct_improvement:.1f}% reduction in execution time)")
 
     print("=" * 80)
 
