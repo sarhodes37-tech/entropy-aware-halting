@@ -129,8 +129,30 @@ def test_stage_vectors_empty_list():
     manager = VectorHygieneManager()
     manager.stage_vectors("traj_empty", [])
     assert manager.get_staged_count("traj_empty") == 0
-    
-    
+
+
+def test_commit_unknown_trajectory_returns_empty_list():
+    """Validates committing a non-existent or un-staged trajectory returns an empty list."""
+    manager = VectorHygieneManager()
+    committed = manager.commit_trajectory("non_existent_traj")
+    assert committed == []
+
+
+def test_revoke_unknown_trajectory_returns_empty_list():
+    """Validates revoking a non-existent or un-staged trajectory returns an empty list without invoking backend adapter."""
+    mock_db = MagicMock()
+    manager = VectorHygieneManager(db_client=mock_db)
+    revoked = manager.revoke_trajectory("non_existent_traj", namespace="production")
+    assert revoked == []
+    mock_db.delete.assert_not_called()
+
+
+def test_get_staged_count_unknown_trajectory_returns_zero():
+    """Validates get_staged_count for an unknown trajectory ID returns 0."""
+    manager = VectorHygieneManager()
+    assert manager.get_staged_count("non_existent_traj") == 0
+
+
 def test_trajectory_scope_no_vectors_staged():
     """Validates trajectory commit block bypass when count is 0."""
     manager = VectorHygieneManager()
