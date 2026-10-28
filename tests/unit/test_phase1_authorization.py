@@ -1100,3 +1100,283 @@ def test_scenario_14_genuine_valid_authorization_permits_exact_operation_once(tm
     assert res["execution_status"] == "EXECUTED"
     assert res["execution_outcome"]["status"] == "SUCCESS"
     assert callback.call_count == 1
+
+
+# =====================================================================
+# Unit Tests for Token Validation and Invalid Input Handling in verify_capability
+# =====================================================================
+def test_verify_capability_invalid_token_inputs():
+    """Verifies that invalid token_id inputs (None, empty string, non-string, unknown, short/corrupted) are securely rejected."""
+    policy = Policy(policy_id="test_p", allowed_operations={"op_test"}, allowed_resources={"res_test"})
+    authority = AuthorizationAuthority(default_policy=policy)
+    digest = "a" * 64
+
+    # 1. None token_id
+    valid, reason, cap = authority.verify_capability(
+        token_id=None,
+        action_name="op_test",
+        target="res_test",
+        canonical_request_digest=digest,
+        executor_id="exec_test"
+    )
+    assert valid is False
+    assert reason == "CAPABILITY_VERIFICATION_FAILED_INVALID_TOKEN_ID"
+    assert cap is None
+
+    # 2. Empty string token_id
+    valid, reason, cap = authority.verify_capability(
+        token_id="",
+        action_name="op_test",
+        target="res_test",
+        canonical_request_digest=digest,
+        executor_id="exec_test"
+    )
+    assert valid is False
+    assert reason == "CAPABILITY_VERIFICATION_FAILED_INVALID_TOKEN_ID"
+    assert cap is None
+
+    # 3. Non-string token_id types (int, dict, list, bool)
+    for invalid_token in [12345, {"token": "abc"}, ["token"], True]:
+        valid, reason, cap = authority.verify_capability(
+            token_id=invalid_token,
+            action_name="op_test",
+            target="res_test",
+            canonical_request_digest=digest,
+            executor_id="exec_test"
+        )
+        assert valid is False
+        assert reason == "CAPABILITY_VERIFICATION_FAILED_INVALID_TOKEN_ID"
+        assert cap is None
+
+    # 4. Unknown or corrupted string tokens
+    for corrupted_token in ["short", "corrupted_token_string_12345", "AUTH-CAP-NONEXISTENT"]:
+        valid, reason, cap = authority.verify_capability(
+            token_id=corrupted_token,
+            action_name="op_test",
+            target="res_test",
+            canonical_request_digest=digest,
+            executor_id="exec_test"
+        )
+        assert valid is False
+        assert reason == "CAPABILITY_VERIFICATION_FAILED_UNKNOWN_TOKEN"
+        assert cap is None
+
+
+def test_verify_capability_token_lifecycle_and_field_mismatches():
+    """Verifies revoked, consumed, expired, forged signature, and field mismatch token rejections in verify_capability."""
+    policy = Policy(policy_id="test_p2", allowed_operations={"op1"}, allowed_resources={"res1"})
+    authority = AuthorizationAuthority(default_policy=policy)
+    digest = "b" * 64
+
+    # Issue a valid capability
+    valid_cap, reason_grant = authority.evaluate_and_issue_capability(
+        action_name="op1",
+        target="res1",
+        canonical_request_digest=digest,
+        principal_id="principal_1",
+        correlation_id="corr_1",
+        request_id="req_1",
+        executor_id="exec_1",
+        task_id="task_1"
+    )
+    assert valid_cap is not None
+    assert reason_grant == "AUTHORIZATION_GRANTED"
+
+    # 1. Valid token verification passes
+    valid, reason, cap = authority.verify_capability(
+        token_id=valid_cap.token_id,
+        action_name="op1",
+        target="res1",
+        canonical_request_digest=digest,
+        executor_id="exec_1",
+        principal_id="principal_1",
+        correlation_id="corr_1",
+        request_id="req_1",
+        task_id="task_1"
+    )
+    assert valid is True
+    assert reason == "CAPABILITY_VERIFIED"
+    assert cap == valid_cap
+
+    # 2. Revoked token
+    authority.registry.revoke_token(valid_cap.token_id)
+    valid, reason, cap = authority.verify_capability(
+        token_id=valid_cap.token_id,
+        action_name="op1",
+        target="res1",
+        canonical_request_digest=digest,
+        executor_id="exec_1"
+    )
+    assert valid is False
+    assert reason == "CAPABILITY_VERIFICATION_FAILED_REVOKED_TOKEN"
+
+    # 3. Consumed token
+    consumed_cap, _ = authority.evaluate_and_issue_capability(
+        action_name="op1",
+        target="res1",
+        canonical_request_digest=digest,
+        executor_id="exec_1"
+    )
+    authority.registry.consume_token(consumed_cap.token_id)
+    valid, reason, cap = authority.verify_capability(
+        token_id=consumed_cap.token_id,
+        action_name="op1",
+        target="res1",
+        canonical_request_digest=digest,
+        executor_id="exec_1"
+    )
+    assert valid is False
+    assert "CAPABILITY_VERIFICATION_FAILED_REPLAY_TOKEN_ALREADY_CONSUMED" in reason
+
+    # 4. Expired token
+    expired_cap, _ = authority.evaluate_and_issue_capability(
+        action_name="op1",
+        target="res1",
+        canonical_request_digest=digest,
+        executor_id="exec_1",
+        current_time=1000.0
+    )
+    valid, reason, cap = authority.verify_capability(
+        token_id=expired_cap.token_id,
+        action_name="op1",
+        target="res1",
+        canonical_request_digest=digest,
+        executor_id="exec_1",
+        current_time=2000.0  # Exceeds expires_at
+    )
+    assert valid is False
+    assert reason == "CAPABILITY_VERIFICATION_FAILED_EXPIRED_TOKEN"
+
+    # 5. Tampered/forged signature
+    forged_cap, _ = authority.evaluate_and_issue_capability(
+        action_name="op1",
+        target="res1",
+        canonical_request_digest=digest,
+        executor_id="exec_1"
+    )
+    forged_cap.signature = "bad_signature_hash"
+    valid, reason, cap = authority.verify_capability(
+        token_id=forged_cap.token_id,
+        action_name="op1",
+        target="res1",
+        canonical_request_digest=digest,
+        executor_id="exec_1"
+    )
+    assert valid is False
+    assert reason == "CAPABILITY_VERIFICATION_FAILED_INVALID_SIGNATURE"
+
+    # 6. Mismatched fields
+    fresh_cap, _ = authority.evaluate_and_issue_capability(
+        action_name="op1",
+        target="res1",
+        canonical_request_digest=digest,
+        principal_id="p1",
+        correlation_id="c1",
+        request_id="r1",
+        executor_id="exec_1",
+        task_id="t1"
+    )
+
+    # Action mismatch
+    valid, reason, _ = authority.verify_capability(
+        token_id=fresh_cap.token_id,
+        action_name="op_mismatch",
+        target="res1",
+        canonical_request_digest=digest,
+        executor_id="exec_1"
+    )
+    assert valid is False
+    assert "ACTION_MISMATCH" in reason
+
+    # Target mismatch
+    valid, reason, _ = authority.verify_capability(
+        token_id=fresh_cap.token_id,
+        action_name="op1",
+        target="res_mismatch",
+        canonical_request_digest=digest,
+        executor_id="exec_1"
+    )
+    assert valid is False
+    assert "TARGET_MISMATCH" in reason
+
+    # Digest mismatch
+    valid, reason, _ = authority.verify_capability(
+        token_id=fresh_cap.token_id,
+        action_name="op1",
+        target="res1",
+        canonical_request_digest="c" * 64,
+        executor_id="exec_1"
+    )
+    assert valid is False
+    assert "DIGEST_MISMATCH" in reason
+
+    # Executor mismatch
+    valid, reason, _ = authority.verify_capability(
+        token_id=fresh_cap.token_id,
+        action_name="op1",
+        target="res1",
+        canonical_request_digest=digest,
+        executor_id="exec_mismatch"
+    )
+    assert valid is False
+    assert "EXECUTOR_MISMATCH" in reason
+
+    # Principal mismatch
+    valid, reason, _ = authority.verify_capability(
+        token_id=fresh_cap.token_id,
+        action_name="op1",
+        target="res1",
+        canonical_request_digest=digest,
+        executor_id="exec_1",
+        principal_id="p_mismatch"
+    )
+    assert valid is False
+    assert "PRINCIPAL_MISMATCH" in reason
+
+    # Correlation ID mismatch
+    valid, reason, _ = authority.verify_capability(
+        token_id=fresh_cap.token_id,
+        action_name="op1",
+        target="res1",
+        canonical_request_digest=digest,
+        executor_id="exec_1",
+        correlation_id="c_mismatch"
+    )
+    assert valid is False
+    assert "CORRELATION_ID_MISMATCH" in reason
+
+    # Request ID mismatch
+    valid, reason, _ = authority.verify_capability(
+        token_id=fresh_cap.token_id,
+        action_name="op1",
+        target="res1",
+        canonical_request_digest=digest,
+        executor_id="exec_1",
+        request_id="r_mismatch"
+    )
+    assert valid is False
+    assert "REQUEST_ID_MISMATCH" in reason
+
+    # Policy version mismatch
+    valid, reason, _ = authority.verify_capability(
+        token_id=fresh_cap.token_id,
+        action_name="op1",
+        target="res1",
+        canonical_request_digest=digest,
+        executor_id="exec_1",
+        policy_version="2.0.0"
+    )
+    assert valid is False
+    assert "POLICY_VERSION_MISMATCH" in reason
+
+    # Task ID mismatch
+    valid, reason, _ = authority.verify_capability(
+        token_id=fresh_cap.token_id,
+        action_name="op1",
+        target="res1",
+        canonical_request_digest=digest,
+        executor_id="exec_1",
+        task_id="t_mismatch"
+    )
+    assert valid is False
+    assert "TASK_ID_MISMATCH" in reason
