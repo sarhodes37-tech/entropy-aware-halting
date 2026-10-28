@@ -858,6 +858,11 @@ h2 {
   opacity: 0.3;
 }
 
+.search-input-wrapper .input-search:not(:placeholder-shown) + .search-shortcut-badge {
+  opacity: 0;
+  pointer-events: none;
+}
+
 .input-search, .select-filter {
   background-color: var(--bg-base);
   color: var(--text-primary);

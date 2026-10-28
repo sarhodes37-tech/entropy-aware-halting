@@ -97,10 +97,14 @@ document.addEventListener('DOMContentLoaded', () => {
           this.renderTracesList();
         });
         searchInput.addEventListener('keydown', (e) => {
-          if (e.key === 'Escape' && searchInput.value) {
-            searchInput.value = '';
-            this.state.traceSearchQuery = '';
-            this.renderTracesList();
+          if (e.key === 'Escape') {
+            if (searchInput.value) {
+              searchInput.value = '';
+              this.state.traceSearchQuery = '';
+              this.renderTracesList();
+            } else {
+              searchInput.blur();
+            }
           }
         });
       }
@@ -121,10 +125,14 @@ document.addEventListener('DOMContentLoaded', () => {
           this.renderProvenanceRecordList();
         });
         provSearchInput.addEventListener('keydown', (e) => {
-          if (e.key === 'Escape' && provSearchInput.value) {
-            provSearchInput.value = '';
-            this.state.provenanceSearchQuery = '';
-            this.renderProvenanceRecordList();
+          if (e.key === 'Escape') {
+            if (provSearchInput.value) {
+              provSearchInput.value = '';
+              this.state.provenanceSearchQuery = '';
+              this.renderProvenanceRecordList();
+            } else {
+              provSearchInput.blur();
+            }
           }
         });
       }
@@ -145,10 +153,14 @@ document.addEventListener('DOMContentLoaded', () => {
           this.renderBenchmarkCasesList();
         });
         caseSearchInput.addEventListener('keydown', (e) => {
-          if (e.key === 'Escape' && caseSearchInput.value) {
-            caseSearchInput.value = '';
-            this.state.caseSearchQuery = '';
-            this.renderBenchmarkCasesList();
+          if (e.key === 'Escape') {
+            if (caseSearchInput.value) {
+              caseSearchInput.value = '';
+              this.state.caseSearchQuery = '';
+              this.renderBenchmarkCasesList();
+            } else {
+              caseSearchInput.blur();
+            }
           }
         });
       }
