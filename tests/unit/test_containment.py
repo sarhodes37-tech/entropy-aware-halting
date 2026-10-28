@@ -6,6 +6,7 @@ from epistemicos.containment import (
     ContainmentGuard,
     ContainmentViolationType,
     ContainmentReceipt,
+    parse_url_authority_structure,
 )
 
 
@@ -443,7 +444,80 @@ def test_wrapper_tool_exception_and_goal_integrity_failure(default_guard):
 
 
 # =========================================================================
-# 6. AUDIT REMEDIATION REGRESSION TESTS (F1, F2)
+# 6. URL AUTHORITY STRUCTURE PARSING & EXCEPTION HANDLING TESTS
+# =========================================================================
+
+def test_parse_url_authority_structure_urlsplit_exception_handling():
+    """Verifies parse_url_authority_structure cleanly handles exceptions from urlsplit and returns default fallback."""
+    with patch("epistemicos.containment.urlsplit", side_effect=ValueError("Invalid URL")):
+        res = parse_url_authority_structure("https://example.com/test", default_protocol="https", default_port=443)
+        assert res == {
+            "scheme": "https",
+            "port": 443,
+            "normalized_host": "",
+            "valid": False,
+        }
+
+    with patch("epistemicos.containment.urlsplit", side_effect=Exception("Unexpected parsing error")):
+        res_custom = parse_url_authority_structure("http://example.com:8080/test", default_protocol="http", default_port=80)
+        assert res_custom == {
+            "scheme": "http",
+            "port": 80,
+            "normalized_host": "",
+            "valid": False,
+        }
+
+
+@pytest.mark.parametrize("invalid_input", [
+    None,
+    12345,
+    ["http://example.com"],
+    {"url": "http://example.com"},
+    "",
+    "   ",
+])
+def test_parse_url_authority_structure_invalid_or_non_string_inputs(invalid_input):
+    """Verifies parse_url_authority_structure handles non-string and empty inputs gracefully."""
+    res = parse_url_authority_structure(invalid_input, default_protocol="HTTPS", default_port=443)
+    assert res == {
+        "scheme": "https",
+        "port": 443,
+        "normalized_host": "",
+        "valid": False,
+    }
+
+
+@pytest.mark.parametrize("malformed_url", [
+    "http://user:pass#@example.com/",
+    "http://user:pass%23@example.com/",
+    "http://[unclosed_ipv6",
+    "http://",
+    "http://  /path",
+])
+def test_parse_url_authority_structure_malformed_authorities(malformed_url):
+    """Verifies parse_url_authority_structure handles malformed authority components and fragment tricks cleanly."""
+    res = parse_url_authority_structure(malformed_url)
+    assert res["valid"] is False
+    assert res["normalized_host"] == ""
+
+
+def test_parse_url_authority_structure_valid_urls():
+    """Verifies parse_url_authority_structure parses valid hostnames, ports, and schemes correctly."""
+    res_https = parse_url_authority_structure("https://api.github.com/users")
+    assert res_https["scheme"] == "https"
+    assert res_https["port"] == 443
+    assert res_https["normalized_host"] == "api.github.com"
+    assert res_https["valid"] is True
+
+    res_http_port = parse_url_authority_structure("example.com:8080", default_protocol="http", default_port=80)
+    assert res_http_port["scheme"] == "http"
+    assert res_http_port["port"] == 8080
+    assert res_http_port["normalized_host"] == "example.com"
+    assert res_http_port["valid"] is True
+
+
+# =========================================================================
+# 7. AUDIT REMEDIATION REGRESSION TESTS (F1, F2)
 # =========================================================================
 
 def test_unconfigured_containment_guard_default_deny_egress():

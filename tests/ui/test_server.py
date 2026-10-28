@@ -347,7 +347,7 @@ def test_dynamic_buttons_aria_accessibility_completeness():
 
 
 def test_search_input_keyboard_shortcut_aria_attributes():
-    """Verifies that search inputs contain aria-keyshortcuts="/" attributes and app.js implements the global '/' focus shortcut."""
+    """Verifies that search inputs contain aria-keyshortcuts="/" attributes, Escape blur/clear handlers, and shortcut badge hiding CSS."""
     import pathlib
     index_path = pathlib.Path("epistemicos/ui/static/index.html")
     index_content = index_path.read_text(encoding="utf-8")
@@ -359,6 +359,13 @@ def test_search_input_keyboard_shortcut_aria_attributes():
     assert "e.key === '/'" in js_content
     assert "['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName)" in js_content
     assert "searchInput.focus()" in js_content
+    assert "searchInput.blur()" in js_content
+    assert "provSearchInput.blur()" in js_content
+    assert "caseSearchInput.blur()" in js_content
+
+    css_path = pathlib.Path("epistemicos/ui/static/style.css")
+    css_content = css_path.read_text(encoding="utf-8")
+    assert ".search-input-wrapper .input-search:not(:placeholder-shown) + .search-shortcut-badge" in css_content
 
 
 def test_api_route_edge_cases(test_server):
