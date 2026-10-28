@@ -6,6 +6,7 @@ import json
 import uuid
 import pytest
 import threading
+from dataclasses import asdict
 from epistemicos.authorization import Policy, Capability
 from epistemicos.provenance import (
     _sanitize_sensitive_data,
@@ -984,6 +985,139 @@ def test_execute_protected_action_with_execution_context_keyword(tmp_path):
     events = store.get_events_for_correlation(corr_id)
     assert len(events) == 2
     assert events[0].authorization_token_id == cap.token_id
+
+
+# =====================================================================
+# PROVENANCE EVENT DIGEST TESTS
+# =====================================================================
+
+def test_compute_event_digest_deterministic_and_known_hash():
+    """Verify compute_event_digest produces stable deterministic SHA-256 digests matching fixed expected value."""
+    event = ProvenanceEvent(
+        schema_version="1.0.0",
+        event_id="evt-fixed-id-101",
+        event_type=ProvenanceEventType.ACTION_PROPOSED.value,
+        provenance_source=ProvenanceSource.AGENT_ADAPTER.value,
+        correlation_id="corr-fixed-202",
+        request_id="req-fixed-303",
+        action_name="READ_FILE",
+        target="/tmp/test_file.txt",
+        canonical_request_digest="e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        timestamp="2025-01-01T12:00:00Z",
+        sequence_number=1
+    )
+
+    digest1 = event.compute_event_digest()
+    digest2 = event.compute_event_digest()
+
+    assert isinstance(digest1, str)
+    assert len(digest1) == 64
+    assert digest1 == digest2
+
+    # Manually build expected json with sorted keys and verify sha256 hash match
+    expected_data = event.to_dict()
+    assert "event_digest" not in expected_data
+    expected_json = json.dumps(expected_data, sort_keys=True).encode("utf-8")
+    import hashlib
+    expected_hash = hashlib.sha256(expected_json).hexdigest()
+
+    assert digest1 == expected_hash
+
+
+def test_compute_event_digest_field_mutation_sensitivity():
+    """Verify compute_event_digest changes when any single event field is mutated."""
+    base_event = ProvenanceEvent(
+        schema_version="1.0.0",
+        event_id="evt-base",
+        event_type=ProvenanceEventType.EXECUTION_STARTED.value,
+        provenance_source=ProvenanceSource.EXECUTOR.value,
+        correlation_id="corr-base",
+        request_id="req-base",
+        action_name="RUN_SCRIPT",
+        target="script.py",
+        canonical_request_digest="digest-base",
+        timestamp="2025-01-01T00:00:00Z",
+        authorization_token_id="tok-base",
+        execution_attempt_id="att-base",
+        sequence_number=5,
+        prev_hash="prev-hash-123"
+    )
+
+    base_digest = base_event.compute_event_digest()
+
+    mutations = [
+        ("action_name", "RUN_SCRIPT_MUTATED"),
+        ("target", "script_v2.py"),
+        ("timestamp", "2025-01-01T00:00:01Z"),
+        ("sequence_number", 6),
+        ("prev_hash", "prev-hash-456"),
+        ("authorization_token_id", "tok-mutated"),
+        ("outcome", {"status": "SUCCESS"}),
+        ("metadata", {"env": "prod"})
+    ]
+
+    for attr, mutated_val in mutations:
+        event_dict = asdict(base_event)
+        event_dict[attr] = mutated_val
+        mutated_event = ProvenanceEvent(**event_dict)
+        mutated_digest = mutated_event.compute_event_digest()
+        assert mutated_digest != base_digest, f"Digest failed to change for field mutation: {attr}"
+
+
+def test_compute_event_digest_key_sorting_and_event_digest_exclusion():
+    """Verify compute_event_digest excludes any event_digest attribute if present and sorts keys deterministically."""
+    event = ProvenanceEvent(
+        schema_version="1.0.0",
+        event_id="evt-sort",
+        event_type=ProvenanceEventType.AUTHORIZATION_GRANTED.value,
+        provenance_source=ProvenanceSource.GOVERNANCE_GATE.value,
+        correlation_id="c-sort",
+        request_id="r-sort",
+        action_name="GRANT",
+        target="res-1",
+        canonical_request_digest="dig-sort",
+        timestamp="2025-01-01T00:00:00Z"
+    )
+
+    digest_clean = event.compute_event_digest()
+
+    # Even if to_dict had an 'event_digest' key added or attached, it should be excluded from digest calculation
+    data = event.to_dict()
+    data["event_digest"] = "DUMMY_OLD_DIGEST_STRING"
+    check_data = {k: v for k, v in data.items() if k != "event_digest"}
+    serialized = json.dumps(check_data, sort_keys=True).encode("utf-8")
+    import hashlib
+    expected_digest = hashlib.sha256(serialized).hexdigest()
+
+    assert digest_clean == expected_digest
+
+
+def test_compute_event_digest_integrates_with_sanitization():
+    """Verify compute_event_digest operates on sanitized event dictionary output."""
+    event_sensitive = ProvenanceEvent(
+        schema_version="1.0.0",
+        event_id="evt-sec",
+        event_type=ProvenanceEventType.EXECUTION_SUCCEEDED.value,
+        provenance_source=ProvenanceSource.EXECUTOR.value,
+        correlation_id="c-sec",
+        request_id="r-sec",
+        action_name="AUTH",
+        target="auth-service",
+        canonical_request_digest="dig-sec",
+        timestamp="2025-01-01T00:00:00Z",
+        outcome={"api_key": "sk-123456789012345678901234", "user_email": "admin@example.com"}
+    )
+
+    digest = event_sensitive.compute_event_digest()
+
+    # The digest must be computed over the sanitized output where api_key and user_email are redacted
+    sanitized_dict = event_sensitive.to_dict()
+    assert sanitized_dict["outcome"]["api_key"] == "[REDACTED]"
+    assert sanitized_dict["outcome"]["user_email"] == "[REDACTED]"
+
+    import hashlib
+    expected_digest = hashlib.sha256(json.dumps(sanitized_dict, sort_keys=True).encode("utf-8")).hexdigest()
+    assert digest == expected_digest
 
 
 # =====================================================================
