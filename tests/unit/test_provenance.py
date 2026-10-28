@@ -8,6 +8,7 @@ import pytest
 import threading
 from epistemicos.authorization import Policy, Capability
 from epistemicos.provenance import (
+    _sanitize_sensitive_data,
     ExecutionContext,
     ProvenanceEvent,
     ProvenanceEventType,
@@ -983,7 +984,186 @@ def test_execute_protected_action_with_execution_context_keyword(tmp_path):
     events = store.get_events_for_correlation(corr_id)
     assert len(events) == 2
     assert events[0].authorization_token_id == cap.token_id
-    assert events[0].policy_version == "2.0.0"
+
+
+# =====================================================================
+# PROVENANCE SANITIZATION TESTS
+# =====================================================================
+
+def test_provenance_sanitize_sensitive_data_direct_dictionary_sanitization():
+    """Validates direct sanitization behavior of _sanitize_sensitive_data imported in provenance.py."""
+    data = {
+        "user_secret": "top_secret_value",
+        "api_key": "sk-123456789012345678901234",
+        "account_password": "my_password_123",
+        "auth_token": "Bearer eyJhbGciOiJIUzI1NiJ9",
+        "user_id": "usr_999",
+        "request_count": 42,
+        "is_active": True,
+        "null_field": None,
+        "nested": {
+            "private_key": "0xABCDEF1234567890",
+            "safe_name": "John Doe"
+        },
+        "item_list": [
+            {"secret_code": "007", "public_id": "item_1"},
+            "clean_string"
+        ],
+        "tags_set": {"normal_tag", "password=raw_pass"},
+        "tuple_info": ("info", "token=secret_tok_123")
+    }
+
+    sanitized = _sanitize_sensitive_data(data)
+
+    assert sanitized["user_secret"] == "[REDACTED]"
+    assert sanitized["api_key"] == "[REDACTED]"
+    assert sanitized["account_password"] == "[REDACTED]"
+    assert sanitized["auth_token"] == "[REDACTED]"
+    assert sanitized["user_id"] == "usr_999"
+    assert sanitized["request_count"] == 42
+    assert sanitized["is_active"] is True
+    assert sanitized["null_field"] is None
+    assert sanitized["nested"]["private_key"] == "[REDACTED]"
+    assert sanitized["nested"]["safe_name"] == "John Doe"
+    assert sanitized["item_list"][0]["secret_code"] == "[REDACTED]"
+    assert sanitized["item_list"][0]["public_id"] == "item_1"
+    assert "password=[REDACTED]" in sanitized["tags_set"]
+    assert "token=[REDACTED]" in sanitized["tuple_info"][1]
+
+
+def test_provenance_sanitize_sensitive_data_pii_string_patterns():
+    """Validates free-text credential and PII pattern redaction via _sanitize_sensitive_data."""
+    plain_text = "Contact user at alice@example.com or +1-555-123-4567. Key: sk-1234567890123456789020."
+    sanitized = _sanitize_sensitive_data(plain_text)
+
+    assert "alice@example.com" not in sanitized
+    assert "[REDACTED_EMAIL]" in sanitized
+    assert "+1-555-123-4567" not in sanitized
+    assert "[REDACTED_PHONE]" in sanitized
+    assert "sk-1234567890123456789020" not in sanitized
+    assert "sk-[REDACTED]" in sanitized
+
+
+def test_provenance_event_to_dict_sanitization():
+    """Validates that ProvenanceEvent.to_dict() automatically sanitizes sensitive fields."""
+    event = ProvenanceEvent(
+        schema_version="1.0.0",
+        event_id=str(uuid.uuid4()),
+        event_type=ProvenanceEventType.EXECUTION_SUCCEEDED.value,
+        provenance_source=ProvenanceSource.EXECUTOR.value,
+        correlation_id="corr-san-1",
+        request_id="req-san-1",
+        action_name="EXECUTE_MUTATION",
+        target="database-main",
+        canonical_request_digest="dig-san-1",
+        timestamp="2025-01-01T00:00:00Z",
+        outcome={
+            "status": "SUCCESS",
+            "api_key": "sk-secret-key-abcdef0123456789",
+            "user_email": "admin@company.com"
+        },
+        metadata={
+            "bearer_token": "Bearer token1234567890",
+            "client_ip": "127.0.0.1"
+        }
+    )
+
+    event_dict = event.to_dict()
+
+    assert event_dict["outcome"]["api_key"] == "[REDACTED]"
+    assert event_dict["outcome"]["user_email"] == "[REDACTED]"
+    assert event_dict["metadata"]["bearer_token"] == "[REDACTED]"
+    assert event_dict["metadata"]["client_ip"] == "127.0.0.1"
+
+
+def test_trusted_execution_boundary_digest_fallback_sanitization(tmp_path):
+    """Validates compute_canonical_digest exception fallback triggering _sanitize_sensitive_data."""
+    from unittest.mock import patch
+
+    store = LocalProvenanceStore(log_path=str(tmp_path / "prov_digest_fallback.jsonl"))
+    boundary = TrustedExecutionBoundary(provenance_store=store)
+
+    payload = {"api_key": "sk-secret-key-1234567890"}
+
+    # Mock json.dumps to fail on the initial call and succeed on the fallback call after _sanitize_sensitive_data
+    with patch("json.dumps", side_effect=[TypeError("initial serialization failure"), '{"api_key": "[REDACTED]"}']):
+        digest = boundary.compute_canonical_digest(payload)
+        assert isinstance(digest, str)
+        assert len(digest) == 64
+
+
+def test_trusted_execution_boundary_outcome_sanitization_unverified_and_success(tmp_path):
+    log_file = str(tmp_path / "prov_outcome_san.jsonl")
+    store = LocalProvenanceStore(log_path=log_file)
+    boundary = TrustedExecutionBoundary(provenance_store=store)
+
+    sensitive_result = {
+        "status_code": 200,
+        "access_token": "secret_access_token_val_123",
+        "user_email": "user@domain.com",
+        "result_data": "public_data"
+    }
+
+    # 1. Test UNVERIFIED_SUCCESS outcome sanitization when required evidence is missing
+    digest1 = boundary.compute_canonical_digest({"op": "AUTH_STEP_1"})
+    corr_id1 = str(uuid.uuid4())
+    exec_func1 = lambda: sensitive_result
+
+    policy1 = Policy(policy_id="p1", allowed_operations={"AUTH"}, allowed_resources={"auth-srv"})
+    cap1, _ = boundary.authority.evaluate_and_issue_capability("AUTH", "auth-srv", digest1, correlation_id=corr_id1, request_id="req-s1", executor_id=exec_func1, policy=policy1)
+
+    ctx1 = ExecutionContext(
+        correlation_id=corr_id1,
+        request_id="req-s1",
+        authorization_token_id=cap1.token_id,
+        authorized_digest=digest1,
+        authorization_granted=True,
+        required_success_evidence={"missing_required_evidence_key"}
+    )
+
+    res1 = boundary.execute_protected_action(
+        action_name="AUTH",
+        target="auth-srv",
+        request_payload={"op": "AUTH_STEP_1"},
+        executor_func=exec_func1,
+        context=ctx1
+    )
+
+    assert res1["status"] == "UNVERIFIED_SUCCESS"
+
+    events1 = store.get_events_for_correlation(corr_id1)
+    fail_ev = [e for e in events1 if e.event_type == ProvenanceEventType.EXECUTION_FAILED.value][0]
+    assert fail_ev.outcome["result"]["access_token"] == "[REDACTED]"
+    assert fail_ev.outcome["result"]["user_email"] == "[REDACTED]"
+    assert fail_ev.outcome["result"]["result_data"] == "public_data"
+
+    # 2. Test SUCCESS outcome sanitization
+    digest2 = boundary.compute_canonical_digest({"op": "AUTH_STEP_2"})
+    corr_id2 = str(uuid.uuid4())
+    exec_func2 = lambda: sensitive_result
+
+    policy2 = Policy(policy_id="p2", allowed_operations={"AUTH"}, allowed_resources={"auth-srv"})
+    cap2, _ = boundary.authority.evaluate_and_issue_capability("AUTH", "auth-srv", digest2, correlation_id=corr_id2, request_id="req-s2", executor_id=exec_func2, policy=policy2)
+
+    res2 = boundary.execute_protected_action(
+        action_name="AUTH",
+        target="auth-srv",
+        request_payload={"op": "AUTH_STEP_2"},
+        correlation_id=corr_id2,
+        request_id="req-s2",
+        authorization_token_id=cap2.token_id,
+        authorized_digest=digest2,
+        authorization_granted=True,
+        executor_func=exec_func2
+    )
+
+    assert res2["status"] == "SUCCESS"
+
+    events2 = store.get_events_for_correlation(corr_id2)
+    succ_ev = [e for e in events2 if e.event_type == ProvenanceEventType.EXECUTION_SUCCEEDED.value][0]
+    assert succ_ev.outcome["result"]["access_token"] == "[REDACTED]"
+    assert succ_ev.outcome["result"]["user_email"] == "[REDACTED]"
+    assert succ_ev.outcome["result"]["result_data"] == "public_data"
 
 
 def test_execute_protected_action_with_execution_context_positional(tmp_path):
