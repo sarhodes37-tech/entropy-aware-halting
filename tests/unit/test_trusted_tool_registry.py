@@ -116,7 +116,7 @@ def test_2_unauthorized_tool_invocation_blocked(registry_setup):
     )
 
     with pytest.raises(PermissionError) as exc_info:
-        wrapper(target="/app/secrets/key.env")
+        wrapper(path="/app/secrets/key.env")
 
     assert "AUTHORIZATION_DENIED_TARGET_NOT_ALLOWED" in str(exc_info.value)
     assert execution_count == 0  # Underling executor was NEVER invoked!
@@ -385,7 +385,8 @@ def test_7_missing_authorization_context(registry_setup):
     wrapper = registry.register_tool(
         tool_id="unbound_tool",
         action_name="unbound_action",
-        executor_func=mock_action
+        executor_func=mock_action,
+        default_target="target_1"
     )
 
     with pytest.raises(PermissionError) as exc_info:
@@ -396,8 +397,9 @@ def test_7_missing_authorization_context(registry_setup):
 
 def test_8_registration_safety(registry_setup):
     """
-    Test 8: Registration Safety
-    The Supported interface returns a TrustedToolWrapper and NEVER exposes or returns raw callables.
+    Test 8: Registration Safety & Trust Boundary Behavior
+    Verifies that register_tool returns a TrustedToolWrapper. The registering host app owns
+    wrapper._executor_func, but invocations through the wrapper mandate authorization.
     """
     registry = registry_setup["registry"]
 
@@ -416,3 +418,89 @@ def test_8_registration_safety(registry_setup):
     retrieved = registry.get_tool("safe_tool")
     assert retrieved is wrapper
     assert isinstance(retrieved, TrustedToolWrapper)
+
+
+def test_9_target_extraction_from_resource_args(registry_setup):
+    """
+    Test 9: Target Binding to Actual Resource Accessed
+    Verifies that calling a tool with a denied resource argument (e.g. path="/app/secrets/key.env")
+    is evaluated against THAT actual resource, rejecting the request before executor runs,
+    even if default_target was allowed by policy.
+    """
+    registry = registry_setup["registry"]
+    authority = registry_setup["authority"]
+
+    policy = Policy(
+        policy_id="test_policy",
+        allowed_operations={"read_file"},
+        allowed_resources={"/app/public/readme.md"} # /app/secrets/key.env NOT allowed
+    )
+    authority.default_policy = policy
+
+    execution_count = 0
+    def mock_read_file(path):
+        nonlocal execution_count
+        execution_count += 1
+        return f"content of {path}"
+
+    wrapper = registry.register_tool(
+        tool_id="file_reader",
+        action_name="read_file",
+        executor_func=mock_read_file,
+        default_target="/app/public/readme.md"  # Allowed default target!
+    )
+
+    # Invocation with allowed resource succeeds
+    res = wrapper(path="/app/public/readme.md")
+    assert res["status"] == "SUCCESS"
+    assert execution_count == 1
+
+    # Invocation with DENIED resource argument (path="/app/secrets/key.env") must be REJECTED!
+    with pytest.raises(PermissionError) as exc_info:
+        wrapper(path="/app/secrets/key.env")
+
+    assert "AUTHORIZATION_DENIED_TARGET_NOT_ALLOWED" in str(exc_info.value)
+    assert execution_count == 1  # Executor count did NOT increase!
+
+
+def test_10_policy_override_rejected(registry_setup):
+    """
+    Test 10: Untrusted Policy Override Prevention
+    Verifies that __call__ ignores any policy parameter passed by untrusted callers,
+    strictly enforcing authoritative policy from tool registration or authority default.
+    """
+    registry = registry_setup["registry"]
+    authority = registry_setup["authority"]
+
+    strict_policy = Policy(
+        policy_id="strict_policy",
+        allowed_operations={"read_file"},
+        allowed_resources={"/app/public/readme.md"}
+    )
+    authority.default_policy = strict_policy
+
+    permissive_policy = Policy(
+        policy_id="permissive_policy",
+        allowed_operations={"*"},
+        allowed_resources={"*"}
+    )
+
+    execution_count = 0
+    def mock_read(path):
+        nonlocal execution_count
+        execution_count += 1
+        return "data"
+
+    wrapper = registry.register_tool(
+        tool_id="reader",
+        action_name="read_file",
+        executor_func=mock_read
+    )
+
+    # Untrusted caller attempts to pass permissive_policy in kwargs/args
+    # Must be rejected because target /app/secrets/key.env is denied by strict_policy
+    with pytest.raises(PermissionError) as exc_info:
+        wrapper(path="/app/secrets/key.env", policy=permissive_policy)
+
+    assert "AUTHORIZATION_DENIED_TARGET_NOT_ALLOWED" in str(exc_info.value)
+    assert execution_count == 0

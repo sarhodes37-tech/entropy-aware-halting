@@ -31,7 +31,7 @@ class TrustedToolWrapper:
     """
     Fail-closed wrapper for an agent-facing callable tool.
     Routes every invocation through AuthorizationAuthority and TrustedExecutionBoundary.
-    Does not expose raw executor execution paths.
+    Binds policy authorization strictly to the actual resource target accessed by the executor.
     """
 
     def __init__(
@@ -41,6 +41,9 @@ class TrustedToolWrapper:
         executor_func: Callable[..., Any],
         registry: "TrustedToolRegistry",
         default_target: Optional[str] = None,
+        target_param: Optional[str] = None,
+        target_extractor: Optional[Callable[..., str]] = None,
+        policy: Optional[Policy] = None,
         description: str = ""
     ):
         if not tool_id or not isinstance(tool_id, str) or not tool_id.strip():
@@ -54,40 +57,116 @@ class TrustedToolWrapper:
 
         self.tool_id = tool_id.strip()
         self.action_name = action_name.strip()
-        self.executor_func = executor_func
+        self._executor_func = executor_func
         self.registry = registry
         self.default_target = default_target.strip() if default_target and isinstance(default_target, str) else None
+        self.target_param = target_param.strip() if target_param and isinstance(target_param, str) else None
+        self.target_extractor = target_extractor if callable(target_extractor) else None
+        self.tool_policy = policy  # Authoritative policy bound at tool registration time
         self.description = description
         self.executor_id = get_callable_identity(executor_func)
 
         # Register executor with the underlying authority
         if self.registry and self.registry.authority:
-            self.registry.authority.register_executor(self.executor_id, self.executor_func)
+            self.registry.authority.register_executor(self.executor_id, self._executor_func)
+
+    @property
+    def executor_func(self) -> Callable[..., Any]:
+        """Reference to the underlying executor callable owned by the registering host app."""
+        return self._executor_func
+
+    def _extract_actual_target(self, args: Tuple[Any, ...], kwargs: Dict[str, Any]) -> str:
+        """
+        Determines the actual resource target accessed by this tool invocation.
+        Precedence order:
+        1. Explicit target_extractor function declared at registration.
+        2. Explicit target_param declared at registration (searched in kwargs or positional args).
+        3. Explicit 'target' parameter passed in kwargs.
+        4. Resource argument inference in kwargs/args (checking 'path', 'file', 'filepath', 'node', 'endpoint', 'url', 'resource').
+        5. First positional string argument.
+        6. Default target configured at tool registration.
+        Fails closed if no target can be established.
+        """
+        # 1. Custom extractor
+        if self.target_extractor:
+            try:
+                extracted = self.target_extractor(*args, **kwargs)
+                if extracted and isinstance(extracted, str) and extracted.strip():
+                    return extracted.strip()
+            except Exception as e:
+                raise PermissionError(f"Tool target extraction failed closed: {str(e)}")
+
+        # 2. Explicit target_param declared at registration
+        if self.target_param:
+            if self.target_param in kwargs and kwargs[self.target_param]:
+                val = str(kwargs[self.target_param]).strip()
+                if val:
+                    return val
+            # Try binding positional args to signature
+            try:
+                sig = inspect.signature(self._executor_func)
+                bound_args = sig.bind_partial(*args, **kwargs)
+                if self.target_param in bound_args.arguments and bound_args.arguments[self.target_param]:
+                    val = str(bound_args.arguments[self.target_param]).strip()
+                    if val:
+                        return val
+            except (ValueError, TypeError):
+                pass
+
+        # 3. Explicit 'target' parameter in kwargs
+        if "target" in kwargs and kwargs["target"]:
+            val = str(kwargs["target"]).strip()
+            if val:
+                return val
+
+        # 4. Infer resource target parameter names in kwargs / bound args
+        resource_keys = ("path", "file", "filepath", "node", "endpoint", "url", "resource", "filename", "destination")
+        for r_key in resource_keys:
+            if r_key in kwargs and kwargs[r_key]:
+                val = str(kwargs[r_key]).strip()
+                if val:
+                    return val
+
+        try:
+            sig = inspect.signature(self._executor_func)
+            bound_args = sig.bind_partial(*args, **kwargs)
+            for r_key in resource_keys:
+                if r_key in bound_args.arguments and bound_args.arguments[r_key]:
+                    val = str(bound_args.arguments[r_key]).strip()
+                    if val:
+                        return val
+        except (ValueError, TypeError):
+            pass
+
+        # 5. First positional string argument if positional args provided
+        if args and isinstance(args[0], str) and args[0].strip():
+            return args[0].strip()
+
+        # 6. Default target configured at tool registration
+        if self.default_target:
+            return self.default_target
+
+        raise PermissionError(f"Tool execution rejected: Unable to determine actual resource target for tool '{self.tool_id}'")
 
     def __call__(
         self,
         *args,
-        target: Optional[str] = None,
         context: Optional[Dict[str, Any]] = None,
         task_contract: Optional[Union[TrustedTaskContract, Dict[str, Any]]] = None,
-        policy: Optional[Policy] = None,
         human_approval: Optional[HumanApprovalRecord] = None,
         **kwargs
     ) -> Dict[str, Any]:
         """
         Agent-facing invocation entry point.
         Evaluates authorization, issues single-use capability, and executes via TrustedExecutionBoundary.
-        Fails closed on missing or unauthorized requests.
+        Note: Untrusted callers CANNOT supply a custom Policy parameter in __call__ to override authorization.
+        Policy strictly originates from tool registration configuration or authority default_policy.
         """
         if not self.registry:
             raise PermissionError("Tool execution rejected: Unbound tool wrapper missing TrustedToolRegistry reference")
 
-        exec_target = target or self.default_target or kwargs.get("target")
-        if not exec_target:
-            if args and isinstance(args[0], str) and args[0].strip():
-                exec_target = args[0].strip()
-            else:
-                exec_target = f"resource:{self.tool_id}"
+        # Determine actual resource target accessed
+        exec_target = self._extract_actual_target(args, kwargs)
 
         raw_payload = {
             "tool_id": self.tool_id,
@@ -101,18 +180,22 @@ class TrustedToolWrapper:
         task_id_val = exec_context.get("task_id")
         corr_id = exec_context.get("correlation_id") or str(uuid.uuid4())
         req_id = exec_context.get("request_id") or str(uuid.uuid4())
+        # Principal ID must strictly originate from verified context or default
         principal_id = exec_context.get("principal_id", "agent_default")
 
         boundary = self.registry.execution_boundary
         authority = self.registry.authority
 
         payload_digest = boundary.compute_canonical_digest(raw_payload)
-        active_policy = policy or authority.default_policy
+
+        # Authoritative policy resolution: Tool-bound policy FIRST, then authority default_policy.
+        # Invocation-supplied policy overrides are strictly rejected.
+        active_policy = self.tool_policy or authority.default_policy
 
         # Reconstruct call_kwargs for underlying executor if target parameter was bound by wrapper signature
         call_kwargs = dict(kwargs)
         try:
-            sig_params = inspect.signature(self.executor_func).parameters
+            sig_params = inspect.signature(self._executor_func).parameters
             if "target" in sig_params and "target" not in call_kwargs and exec_target is not None:
                 call_kwargs["target"] = exec_target
         except (ValueError, TypeError):
@@ -120,7 +203,7 @@ class TrustedToolWrapper:
 
         # Construct bound 0-arg closure for TrustedExecutionBoundary
         def _exec_closure():
-            return self.executor_func(*args, **call_kwargs)
+            return self._executor_func(*args, **call_kwargs)
 
         # Evaluate against AuthorizationAuthority and issue capability for _exec_closure
         cap, reason = authority.evaluate_and_issue_capability(
@@ -214,11 +297,14 @@ class TrustedToolRegistry:
         action_name: str,
         executor_func: Callable[..., Any],
         default_target: Optional[str] = None,
+        target_param: Optional[str] = None,
+        target_extractor: Optional[Callable[..., str]] = None,
+        policy: Optional[Policy] = None,
         description: str = ""
     ) -> TrustedToolWrapper:
         """
         Registers a tool callable, wrapping it in a fail-closed TrustedToolWrapper.
-        Never returns or exposes the raw executor function.
+        Enforces target extraction parameters and authoritative tool-bound policies.
         """
         wrapper = TrustedToolWrapper(
             tool_id=tool_id,
@@ -226,13 +312,16 @@ class TrustedToolRegistry:
             executor_func=executor_func,
             registry=self,
             default_target=default_target,
+            target_param=target_param,
+            target_extractor=target_extractor,
+            policy=policy,
             description=description
         )
         self._tools[wrapper.tool_id] = wrapper
         return wrapper
 
     def get_tool(self, tool_id: str) -> Optional[TrustedToolWrapper]:
-        """Retrieves a registered TrustedToolWrapper. Never exposes raw executor."""
+        """Retrieves a registered TrustedToolWrapper."""
         return self._tools.get(tool_id)
 
     def list_tools(self) -> Dict[str, str]:
