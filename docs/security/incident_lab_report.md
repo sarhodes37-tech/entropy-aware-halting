@@ -1,8 +1,8 @@
 # EpistemicOS Incident-Derived Security Test Lab Report
 
-**Evaluated Commit:** `8974bac6a7d30273dd3d47d4f6860e12bc4c2ea6` | **Working Tree:** `DIRTY` | **Suite Version:** `2.3.0`
-**Working Tree Digest:** `adf7ed834fd333843a0bd68a8d9c61d097357a0321605dce5fbca1fc8324812e`
-**Evaluated At:** `2026-10-27T10:42:16Z` | **Total Runtime:** `0.066s`
+**Evaluated Commit:** `34ba5382c5c6595ee427451d1bfe64c8cf4d3f76` | **Working Tree:** `CLEAN` | **Suite Version:** `2.3.0`
+**Working Tree Digest:** `1834e956525a5de2585a9bed44df7f1f6bf1ff96876a989be6760fd147248c08`
+**Evaluated At:** `2026-10-28T00:29:34Z` | **Total Runtime:** `0.081s`
 **Tree Digest Algorithm:** `Full 64-char SHA-256 over deterministic POSIX sorted inventory of HEAD commit, git status -uall paths, status codes, symlink targets, deletions, and actual raw file bytes.`
 **Evaluation Notes:** Evaluation executed against uncommitted working tree prior to report persistence commit.
 **Environment:** Isolated Incident-Derived Security Test Lab (Synthetic Fixtures / Local Networking Only)
