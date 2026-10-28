@@ -6,6 +6,7 @@ structured checksum validation (e.g. Luhn algorithm for cards),
 Shannon entropy estimation for secrets, and configurable entity dictionaries.
 """
 
+import bisect
 import math
 import re
 from collections import Counter
@@ -166,15 +167,23 @@ class SensitiveDataDetector:
         spans_covered: List[Tuple[int, int]] = []
 
         def _is_overlapping(s: Tuple[int, int]) -> bool:
-            for start, end in spans_covered:
-                if max(s[0], start) < min(s[1], end):
-                    return True
+            a, b = s
+            # Binary search for inserting s[0] into sorted non-overlapping spans_covered
+            idx = bisect.bisect_left(spans_covered, a, key=lambda x: x[0])
+            # Check overlap with previous span: spans_covered[idx-1] overlaps if its end > a
+            if idx > 0 and spans_covered[idx - 1][1] > a:
+                return True
+            # Check overlap with current/next span: spans_covered[idx] overlaps if its start < b
+            if idx < len(spans_covered) and spans_covered[idx][0] < b:
+                return True
             return False
 
         def _add_result(res: DetectionResult):
             if not _is_overlapping(res.span):
                 results.append(res)
-                spans_covered.append(res.span)
+                # Keep spans_covered sorted by start position
+                idx = bisect.bisect_left(spans_covered, res.span[0], key=lambda x: x[0])
+                spans_covered.insert(idx, res.span)
 
         # 1. Private keys (multiline)
         for m in self.private_key_regex.finditer(text):
