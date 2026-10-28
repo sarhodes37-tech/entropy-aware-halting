@@ -29,7 +29,8 @@ jobs:
       - name: Install Dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -e .[test]
+          pip install --require-hashes -r requirements-test-lock.txt
+          pip install --no-deps -e .
           
       - name: Run Core Tests
         run: pytest tests/unit/
@@ -54,8 +55,8 @@ jobs:
       - name: Install Full Dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pytest-cov
-          pip install -e .[ml,test]
+          pip install --require-hashes -r requirements-full-lock.txt
+          pip install --no-deps -e .
 
       - name: Prepare Telemetry Artifact Directory
         run: mkdir -p results
