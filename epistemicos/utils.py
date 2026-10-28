@@ -5,9 +5,19 @@ and VRAM-optimized precision configuration for benchmarking and trace extraction
 """
 
 import logging
-from typing import Tuple, Any, Optional
+from typing import Tuple, Any, Optional, Dict
 
 logger = logging.getLogger("EpistemicOS.Utils")
+
+
+def extract_metadata(payload: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Safely extracts metadata dictionary from a payload."""
+    if payload is None:
+        return {}
+    metadata = payload.get("metadata", {})
+    if not isinstance(metadata, dict):
+        return {}
+    return metadata
 
 
 def get_optimal_device() -> str:
