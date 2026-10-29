@@ -1,14 +1,14 @@
 {
   "metadata": {
     "evaluation_suite_version": "2.3.0",
-    "evaluated_git_commit": "ee0eb6455e2160ef4088cab3c3121adc33abeddf",
-    "working_tree_status": "CLEAN",
-    "uncommitted_tree_digest": "ea951a358fc2f237aa952d7ca71a8d41c17b9292f6d90ccc7d784513e84c99d4",
+    "evaluated_git_commit": "9804a609d41dab44b3bd4064fc238508bb85c806",
+    "working_tree_status": "DIRTY",
+    "uncommitted_tree_digest": "9bb16aa35ea4d9337fa566d009e3178fd96c7bd86117ba29201ee7f3d3fd7cc1",
     "tree_digest_algorithm": "Full 64-char SHA-256 over deterministic POSIX sorted inventory of HEAD commit, git status -uall paths, status codes, symlink targets, deletions, and actual raw file bytes.",
     "evaluation_notes": "Evaluation executed against uncommitted working tree prior to report persistence commit.",
-    "timestamp": "2026-10-29T04:39:56Z",
+    "timestamp": "2026-10-29T05:12:26Z",
     "total_scenarios_evaluated": 7,
-    "total_runtime_seconds": 0.443,
+    "total_runtime_seconds": 0.672,
     "environment": "Isolated Incident-Derived Security Test Lab (Synthetic Fixtures / Local Networking Only)"
   },
   "scenarios": {

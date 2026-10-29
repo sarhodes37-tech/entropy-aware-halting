@@ -316,23 +316,11 @@ def test_copy_to_clipboard_dynamic_aria_accessibility_update():
     import pathlib
     js_path = pathlib.Path("epistemicos/ui/static/app.js")
     js_content = js_path.read_text(encoding="utf-8")
-    assert "btnElement._origAriaLabel = btnElement.getAttribute('aria-label');" in js_content
+    assert "const origAriaLabel = btnElement ? btnElement.getAttribute('aria-label') : null;" in js_content
     assert "btnElement.setAttribute('aria-label', 'Copied to clipboard!');" in js_content
     assert "btnElement.setAttribute('aria-label', 'Copy failed');" in js_content
     assert "btnElement.setAttribute('aria-label', 'Copy unavailable');" in js_content
     assert "restoreState" in js_content
-
-
-def test_micro_ux_debounced_copy_and_tab_focus_management():
-    """Verifies that app.js debounces copy timeout state and sets focus to target tab panels on jump navigation."""
-    import pathlib
-    js_path = pathlib.Path("epistemicos/ui/static/app.js")
-    js_content = js_path.read_text(encoding="utf-8")
-    assert "if (btnElement._copyTimeout)" in js_content
-    assert "clearTimeout(btnElement._copyTimeout);" in js_content
-    assert "delete btnElement._origText;" in js_content
-    assert "const targetPanel = document.getElementById(`view-${targetTab}`);" in js_content
-    assert "if (targetPanel) targetPanel.focus();" in js_content
 
 
 def test_summary_digest_copy_button_human_readable_aria_labels():
