@@ -81,6 +81,29 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
+/* Skip Link (Accessibility) */
+.skip-link {
+  position: absolute;
+  top: -100px;
+  left: 1rem;
+  background-color: var(--bg-elevated);
+  color: var(--accent-primary);
+  padding: 0.5rem 1rem;
+  border: 1px solid var(--accent-primary);
+  border-radius: var(--radius-sm);
+  font-weight: 600;
+  font-size: 0.85rem;
+  z-index: 1000;
+  text-decoration: none;
+  transition: top 0.15s ease;
+}
+
+.skip-link:focus {
+  top: 0.75rem;
+  outline: 2px solid var(--accent-primary);
+  outline-offset: 2px;
+}
+
 /* Typography Utilities */
 .font-mono {
   font-family: var(--font-mono);
