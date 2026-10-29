@@ -20,6 +20,16 @@ def extract_metadata(payload: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     return metadata
 
 
+def normalize_policy_name(name: Optional[str]) -> str:
+    """
+    Normalizes policy or scope identifier strings to a standard lowercased,
+    snake_cased, whitespace-stripped canonical format.
+    """
+    if not name or not name.strip():
+        return ""
+    return name.strip().lower().replace(" ", "_")
+
+
 def get_optimal_device() -> str:
     """Detects best available compute device (CUDA -> MPS -> CPU)."""
     try:
