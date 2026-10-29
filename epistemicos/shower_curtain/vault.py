@@ -158,13 +158,14 @@ class LocalMappingVault:
     def load_from_file(self, path: str) -> bytes:
         """
         Reads raw binary vault data from the specified path.
-        Raises VaultAccessError if a PermissionError is encountered.
+        Translates PermissionError to VaultAccessError (with explicit exception chaining),
+        while allowing other filesystem exceptions (such as FileNotFoundError) to propagate directly.
         """
         try:
             with open(path, 'rb') as f:
                 return f.read()
         except PermissionError as e:
-            raise VaultAccessError(f"Access denied: {e}")
+            raise VaultAccessError(f"Access denied: {e}") from e
 
     def clear_session(self, session_id: str) -> None:
         """Wipes all mapping data for a given session."""

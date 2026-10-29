@@ -719,16 +719,22 @@ def test_shower_curtain_miscellaneous_uncovered_branches(engine):
 
 
 def test_vault_load_from_file_permission_error_raises_vault_access_error(tmp_path):
-    """Verifies that PermissionError during file read raises VaultAccessError with 'Access denied' message."""
+    """Verifies that PermissionError during file read raises VaultAccessError with 'Access denied' message and exception cause chaining."""
     vault = LocalMappingVault()
 
-    # 1. Permission error mocked path
-    with patch("builtins.open", side_effect=PermissionError("Permission denied")):
+    # 1. Permission error mocked path - verifies translation, cause chaining, and message
+    mock_perm_err = PermissionError("Permission denied")
+    with patch("builtins.open", side_effect=mock_perm_err):
         with pytest.raises(VaultAccessError) as exc_info:
             vault.load_from_file("protected_file.dat")
         assert "Access denied: Permission denied" in str(exc_info.value)
+        assert exc_info.value.__cause__ is mock_perm_err
 
-    # 2. Happy path with real file
+    # 2. Other filesystem exception (e.g. FileNotFoundError) propagates unchanged
+    with pytest.raises(FileNotFoundError):
+        vault.load_from_file("non_existent_file.dat")
+
+    # 3. Happy path with real file
     test_file = tmp_path / "vault_data.bin"
     test_file.write_bytes(b"vault_secret_content")
     data = vault.load_from_file(str(test_file))
