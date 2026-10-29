@@ -275,7 +275,7 @@ def test_provenance_store_write_failure_fail_closed(tmp_path):
 
 
 def test_orchestrator_process_submission_failing_provenance_store(tmp_path):
-    """Orchestrator process_submission fails closed and prevents execution when provenance store write fails."""
+    """Orchestrator process_submission fails closed and prevents execution when provenance store write fails on ACTION_PROPOSED."""
     class FailingProvenanceStore(LocalProvenanceStore):
         def record_event(self, event: ProvenanceEvent) -> dict:
             raise RuntimeError("Disk IO Failure on Provenance Store")
@@ -314,6 +314,111 @@ def test_orchestrator_process_submission_failing_provenance_store(tmp_path):
     assert res["status"] == "HALTED"
     assert res["gate"] == "LocalProvenanceStore"
     assert "Disk IO Failure" in res["reason"]
+    assert len(executor_called) == 0
+
+
+def test_orchestrator_process_submission_failing_on_authorization_denied_event(tmp_path):
+    """Orchestrator process_submission records ACTION_PROPOSED successfully, but handles store write failure on AUTHORIZATION_DENIED during a real gate denial path."""
+    class FailOnDenialProvenanceStore(LocalProvenanceStore):
+        def record_event(self, event: ProvenanceEvent) -> dict:
+            if event.event_type == ProvenanceEventType.AUTHORIZATION_DENIED.value:
+                raise RuntimeError("Disk IO Failure on AUTHORIZATION_DENIED Event")
+            return super().record_event(event)
+
+    denial_store = FailOnDenialProvenanceStore(log_path=str(tmp_path / "denial_fail.jsonl"))
+    boundary = TrustedExecutionBoundary(provenance_store=denial_store)
+
+    orchestrator = EpistemicOrchestrator(
+        audit_log_path=str(tmp_path / "audit.jsonl"),
+        execution_boundary=boundary
+    )
+
+    executor_called = []
+    def dummy_executable():
+        executor_called.append(True)
+        return {"data": "unauthorized_data"}
+
+    # Set scope to ALLOW ONLY 'read' on 'doc1'
+    scope = PermissionScope(allowed_resources=["doc1"], allowed_operations=["read"], expires_at=0)
+    orchestrator.gates[0] = PermissionGate(trusted_scope=scope)
+
+    # Propose UNAUTHORIZED operation 'delete'
+    payload = {
+        "policy_id": "POL-DENY",
+        "scope": scope.model_dump(),
+        "proposed_actions": [{"op": "delete", "node": "doc1"}]
+    }
+    corr_id = f"CORR-DENY-STORE-{uuid.uuid4()}"
+    ctx = {
+        "correlation_id": corr_id,
+        "action_name": "delete",
+        "target": "doc1",
+        "proposed_actions": payload["proposed_actions"],
+        "actual_executable": dummy_executable,
+        "trusted_scope": scope
+    }
+
+    res = orchestrator.process_submission(payload, ctx)
+    assert res["status"] == "HALTED"
+    assert res["gate"] == "LocalProvenanceStore"
+    assert "Operation 'delete' outside allowed scope" in res["reason"]
+    assert "Provenance recording failed" in res["reason"]
+    assert len(executor_called) == 0
+
+    # Verify ACTION_PROPOSED was recorded in store before denial failed
+    events = denial_store.get_events_for_correlation(corr_id)
+    assert len(events) == 1
+    assert events[0].event_type == "ACTION_PROPOSED"
+
+
+def test_orchestrator_process_submission_failing_on_capability_denial_event(tmp_path):
+    """Orchestrator process_submission records ACTION_PROPOSED successfully, but handles store write failure on AUTHORIZATION_DENIED during AuthorizationAuthority capability evaluation denial."""
+    class FailOnDenialProvenanceStore(LocalProvenanceStore):
+        def record_event(self, event: ProvenanceEvent) -> dict:
+            if event.event_type == ProvenanceEventType.AUTHORIZATION_DENIED.value:
+                raise RuntimeError("Disk IO Failure on Capability AUTHORIZATION_DENIED")
+            return super().record_event(event)
+
+    denial_store = FailOnDenialProvenanceStore(log_path=str(tmp_path / "cap_denial_fail.jsonl"))
+    policy = Policy(policy_id="pol1", allowed_operations={"read"}, allowed_resources={"doc1"})
+    auth = AuthorizationAuthority(default_policy=policy)
+    boundary = TrustedExecutionBoundary(provenance_store=denial_store, authority=auth)
+
+    orchestrator = EpistemicOrchestrator(
+        audit_log_path=str(tmp_path / "audit.jsonl"),
+        execution_boundary=boundary,
+        authority=auth
+    )
+
+    executor_called = []
+    def dummy_executable():
+        executor_called.append(True)
+        return {"data": "unauthorized"}
+
+    scope = PermissionScope(allowed_resources=["doc1", "doc2"], allowed_operations=["read", "write"], expires_at=0)
+    orchestrator.gates[0] = PermissionGate(trusted_scope=scope)
+
+    # Gate ALLOWS write, but Policy DENIES write (policy only allows read)
+    payload = {
+        "policy_id": "POL-CAP-DENY",
+        "scope": scope.model_dump(),
+        "proposed_actions": [{"op": "write", "node": "doc1"}]
+    }
+    corr_id = f"CORR-CAP-DENY-{uuid.uuid4()}"
+    ctx = {
+        "correlation_id": corr_id,
+        "action_name": "write",
+        "target": "doc1",
+        "proposed_actions": payload["proposed_actions"],
+        "actual_executable": dummy_executable,
+        "trusted_scope": scope
+    }
+
+    res = orchestrator.process_submission(payload, ctx)
+    assert res["status"] == "HALTED"
+    assert res["gate"] == "LocalProvenanceStore"
+    assert "Authorization Policy Denied" in res["reason"]
+    assert "Provenance recording failed" in res["reason"]
     assert len(executor_called) == 0
 
 

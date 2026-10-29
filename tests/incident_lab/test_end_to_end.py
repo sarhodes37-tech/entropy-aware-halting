@@ -198,16 +198,16 @@ def test_provenance_valid_control_cannot_compensate_for_missing_attack_correlati
     assert overall_status == "UNVERIFIED"
 
 
-def test_scenario_report_emits_unverified_when_attack_correlation_missing_events(tmp_path):
+def test_scenario_report_emits_verified_when_all_correlations_have_provenance(tmp_path):
     """
     Scenario Reporting Regression Test:
-    Executes a scenario evaluation where an attack correlation ID lacks required provenance events
-    and verifies that the emitted ScenarioEvaluationReport explicitly marks provenance as "UNVERIFIED".
+    Executes a scenario evaluation where all correlations (attack and benign) have recorded provenance
+    and verifies that the emitted ScenarioEvaluationReport explicitly marks provenance as "VERIFIED".
     """
-    scenario = Case1GitHubCredentialExposureScenario(audit_dir=str(tmp_path / "s1_unverified"))
+    scenario = Case1GitHubCredentialExposureScenario(audit_dir=str(tmp_path / "s1_verified"))
     report = scenario.run_evaluation()
 
-    assert report.dimension_a_security.provenance_evidence_integrity == "UNVERIFIED"
+    assert report.dimension_a_security.provenance_evidence_integrity == "VERIFIED"
 
 
 def test_digest_changes_when_untracked_file_content_changes():

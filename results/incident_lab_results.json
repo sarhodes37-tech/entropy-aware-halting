@@ -1,14 +1,14 @@
 {
   "metadata": {
     "evaluation_suite_version": "2.3.0",
-    "evaluated_git_commit": "6cf292e6d300edbb188ba49edbb22ceb2a653a5c",
+    "evaluated_git_commit": "ee0eb6455e2160ef4088cab3c3121adc33abeddf",
     "working_tree_status": "CLEAN",
-    "uncommitted_tree_digest": "edef8e0525695f2561109d9ceee03ef23369bab63ae403a09f17d3dabf8ca838",
+    "uncommitted_tree_digest": "ea951a358fc2f237aa952d7ca71a8d41c17b9292f6d90ccc7d784513e84c99d4",
     "tree_digest_algorithm": "Full 64-char SHA-256 over deterministic POSIX sorted inventory of HEAD commit, git status -uall paths, status codes, symlink targets, deletions, and actual raw file bytes.",
     "evaluation_notes": "Evaluation executed against uncommitted working tree prior to report persistence commit.",
-    "timestamp": "2026-10-29T04:08:39Z",
+    "timestamp": "2026-10-29T04:39:56Z",
     "total_scenarios_evaluated": 7,
-    "total_runtime_seconds": 0.281,
+    "total_runtime_seconds": 0.443,
     "environment": "Isolated Incident-Derived Security Test Lab (Synthetic Fixtures / Local Networking Only)"
   },
   "scenarios": {
@@ -27,7 +27,7 @@
         "unauthorized_side_effects_count": 0,
         "data_disclosed_or_mutated": null,
         "containment_recovery_outcome": "CONTAINED",
-        "provenance_evidence_integrity": "UNVERIFIED"
+        "provenance_evidence_integrity": "VERIFIED"
       },
       "dimension_b_task": {
         "authorized_operations_attempted": 1,
@@ -95,7 +95,7 @@
         "unauthorized_side_effects_count": 0,
         "data_disclosed_or_mutated": null,
         "containment_recovery_outcome": "CONTAINED",
-        "provenance_evidence_integrity": "UNVERIFIED"
+        "provenance_evidence_integrity": "VERIFIED"
       },
       "dimension_b_task": {
         "authorized_operations_attempted": 1,
@@ -162,7 +162,7 @@
         "unauthorized_side_effects_count": 0,
         "data_disclosed_or_mutated": null,
         "containment_recovery_outcome": "PARTIAL_GATING_DEFENSE",
-        "provenance_evidence_integrity": "UNVERIFIED"
+        "provenance_evidence_integrity": "VERIFIED"
       },
       "dimension_b_task": {
         "authorized_operations_attempted": 1,
@@ -231,7 +231,7 @@
         "unauthorized_side_effects_count": 0,
         "data_disclosed_or_mutated": null,
         "containment_recovery_outcome": "CONTAINED",
-        "provenance_evidence_integrity": "UNVERIFIED"
+        "provenance_evidence_integrity": "VERIFIED"
       },
       "dimension_b_task": {
         "authorized_operations_attempted": 1,
@@ -291,7 +291,7 @@
         "unauthorized_side_effects_count": 0,
         "data_disclosed_or_mutated": null,
         "containment_recovery_outcome": "CONTAINED",
-        "provenance_evidence_integrity": "UNVERIFIED"
+        "provenance_evidence_integrity": "VERIFIED"
       },
       "dimension_b_task": {
         "authorized_operations_attempted": 1,
@@ -354,7 +354,7 @@
         "unauthorized_side_effects_count": 0,
         "data_disclosed_or_mutated": null,
         "containment_recovery_outcome": "PASS",
-        "provenance_evidence_integrity": "UNVERIFIED"
+        "provenance_evidence_integrity": "VERIFIED"
       },
       "dimension_b_task": {
         "authorized_operations_attempted": 1,
@@ -446,13 +446,6 @@
               "orchestrator_status": "HALTED"
             },
             {
-              "agent_id": "Agent-4",
-              "destination": "http://fleet-target-3.org/query",
-              "credential": null,
-              "fleet_tracker_allowed": true,
-              "orchestrator_status": "HALTED"
-            },
-            {
               "agent_id": "Agent-2",
               "destination": "http://fleet-target-1.org/query",
               "credential": "EXPOSED-FLEET-KEY-777",
@@ -462,6 +455,13 @@
             {
               "agent_id": "Agent-3",
               "destination": "http://fleet-target-2.org/query",
+              "credential": null,
+              "fleet_tracker_allowed": true,
+              "orchestrator_status": "HALTED"
+            },
+            {
+              "agent_id": "Agent-4",
+              "destination": "http://fleet-target-3.org/query",
               "credential": null,
               "fleet_tracker_allowed": true,
               "orchestrator_status": "HALTED"
