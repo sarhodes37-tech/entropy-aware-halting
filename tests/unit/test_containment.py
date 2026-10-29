@@ -1,4 +1,5 @@
 import pytest
+import ipaddress
 from unittest.mock import patch
 import socket
 
@@ -7,6 +8,7 @@ from epistemicos.containment import (
     ContainmentViolationType,
     ContainmentReceipt,
     parse_url_authority_structure,
+    parse_ip_numeric,
 )
 
 
@@ -555,3 +557,85 @@ def test_wrapper_pipeline_blocks_schemeless_and_protocol_relative_targets(bypass
     assert receipt.passed is False
     assert receipt.violation_type == ContainmentViolationType.UNAUTHORIZED_EGRESS_ATTEMPT
     assert len(executed) == 0
+
+
+# =========================================================================
+# 8. PARSE IP NUMERIC UNIT TESTS
+# =========================================================================
+
+@pytest.mark.parametrize("ip_str,expected_ip", [
+    ("127.0.0.1", ipaddress.IPv4Address("127.0.0.1")),
+    ("10.0.0.1.", ipaddress.IPv4Address("10.0.0.1")),
+    ("192.168.1.1", ipaddress.IPv4Address("192.168.1.1")),
+    ("0.0.0.0", ipaddress.IPv4Address("0.0.0.0")),
+    ("255.255.255.255", ipaddress.IPv4Address("255.255.255.255")),
+])
+def test_parse_ip_numeric_valid_standard_dotted_ipv4(ip_str, expected_ip):
+    """Verifies parse_ip_numeric correctly parses standard IPv4 dotted notation and trailing dots."""
+    assert parse_ip_numeric(ip_str) == expected_ip
+
+
+@pytest.mark.parametrize("dword_str,expected_ip", [
+    ("2130706433", ipaddress.IPv4Address("127.0.0.1")),
+    ("0", ipaddress.IPv4Address("0.0.0.0")),
+    ("4294967295", ipaddress.IPv4Address("255.255.255.255")),
+    ("0x7f000001", ipaddress.IPv4Address("127.0.0.1")),
+    ("0X7F000001", ipaddress.IPv4Address("127.0.0.1")),
+    ("0x0", ipaddress.IPv4Address("0.0.0.0")),
+    ("0xffffffff", ipaddress.IPv4Address("255.255.255.255")),
+    ("017700000001", ipaddress.IPv4Address("127.0.0.1")),
+])
+def test_parse_ip_numeric_single_integer_dword_formats(dword_str, expected_ip):
+    """Verifies parse_ip_numeric handles single integer dword encodings (decimal, hex, octal)."""
+    assert parse_ip_numeric(dword_str) == expected_ip
+
+
+@pytest.mark.parametrize("dotted_str,expected_ip", [
+    ("0177.0.0.1", ipaddress.IPv4Address("127.0.0.1")),
+    ("0x7f.0.0.1", ipaddress.IPv4Address("127.0.0.1")),
+    ("127.0x0.0x0.1", ipaddress.IPv4Address("127.0.0.1")),
+    ("0177.0000.0000.0001", ipaddress.IPv4Address("127.0.0.1")),
+])
+def test_parse_ip_numeric_alternate_dotted_encodings(dotted_str, expected_ip):
+    """Verifies parse_ip_numeric handles alternate non-standard dotted encodings (dotted octal, dotted hex)."""
+    assert parse_ip_numeric(dotted_str) == expected_ip
+
+
+@pytest.mark.parametrize("invalid_input", [
+    None,
+    12345,
+    ["127.0.0.1"],
+    {"ip": "127.0.0.1"},
+    "",
+    "   ",
+    ".",
+])
+def test_parse_ip_numeric_non_string_and_empty_inputs(invalid_input):
+    """Verifies parse_ip_numeric returns None for non-string, empty, or whitespace inputs."""
+    assert parse_ip_numeric(invalid_input) is None
+
+
+@pytest.mark.parametrize("invalid_host", [
+    "256.0.0.1",
+    "127.0.0.256",
+    "4294967296",
+    "-1",
+    "example.com",
+    "127.0.0..1",
+    ".127.0.0.1",
+    "0xGG",
+    "0888",
+    "0177.0888.0.1",
+])
+def test_parse_ip_numeric_invalid_formats_and_out_of_bounds(invalid_host):
+    """Verifies parse_ip_numeric returns None for invalid numeric strings, out of bounds numbers, or domain names."""
+    assert parse_ip_numeric(invalid_host) is None
+
+
+def test_parse_ip_numeric_exception_handling_fallback():
+    """Verifies parse_ip_numeric safely catches exceptions and returns None on parsing failures."""
+    with patch("socket.inet_aton", side_effect=OSError("Invalid address")):
+        assert parse_ip_numeric("invalid.ip") is None
+
+    with patch("re.match", side_effect=Exception("Regex matching error")):
+        assert parse_ip_numeric("0x7f000001") is None or parse_ip_numeric("0x7f000001") == ipaddress.IPv4Address("127.0.0.1")
