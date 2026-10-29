@@ -42,7 +42,8 @@ def test_extract_metadata_non_dict_value():
         ("  ", ""),
         ("Already_Normalized", "already_normalized"),
         ("lowercase", "lowercase"),
-        ("  Multiple   Spaces  Policy ", "multiple___spaces__policy"),
+        ("  Multiple   Spaces  Policy ", "multiple_spaces_policy"),
+        ("\tTabbed\t Policy\nName\t", "tabbed_policy_name"),
     ],
 )
 def test_normalize_policy_name(input_name, expected_output):
