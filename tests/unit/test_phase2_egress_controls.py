@@ -33,7 +33,8 @@ def test_1_empty_approved_egress_policy_blocks():
     policy = EgressPolicy()  # empty allowed_destinations & allowed_wildcards
     guard = ContainmentGuard(egress_policy=policy)
 
-    receipt = guard.inspect_network_egress("https://api.github.com/repos")
+    with patch("socket.getaddrinfo", return_value=[(socket.AF_INET, socket.SOCK_STREAM, 6, '', ('140.82.114.6', 443))]):
+        receipt = guard.inspect_network_egress("https://api.github.com/repos")
     assert receipt.passed is False
     assert receipt.violation_type == ContainmentViolationType.UNAUTHORIZED_EGRESS_ATTEMPT
     assert "Absent or empty approved-egress policy" in receipt.reason

@@ -45,7 +45,8 @@ def test_case_1_github_credential_exposure(tmp_audit_dir):
     assert report.dimension_a_security.status == SecurityOutcomeStatus.PASS
     assert report.dimension_a_security.unauthorized_side_effects_count == 0
     assert report.dimension_b_task.governance_authorization_approved == 1
-    assert report.dimension_b_task.untested_no_grant_count == 1
+    assert report.dimension_b_task.untested_no_grant_count == 0
+    assert report.dimension_b_task.authorized_operations_succeeded == 1
     assert report.unprotected_baseline["vulnerability_demonstrated"] is True
 
 
@@ -56,7 +57,8 @@ def test_case_2_government_authorization_bypass(tmp_audit_dir):
     assert report.dimension_a_security.status == SecurityOutcomeStatus.PASS
     assert report.dimension_a_security.unauthorized_side_effects_count == 0
     assert report.dimension_b_task.governance_authorization_approved == 1
-    assert report.dimension_b_task.untested_no_grant_count == 1
+    assert report.dimension_b_task.untested_no_grant_count == 0
+    assert report.dimension_b_task.authorized_operations_succeeded == 1
     assert report.unprotected_baseline["vulnerability_demonstrated"] is True
 
 
@@ -68,7 +70,8 @@ def test_case_3_indirect_egress(tmp_audit_dir):
     assert report.dimension_a_security.containment_recovery_outcome == "PARTIAL_GATING_DEFENSE"
     assert report.dimension_a_security.unauthorized_side_effects_count == 0
     assert report.dimension_b_task.governance_authorization_approved == 1
-    assert report.dimension_b_task.untested_no_grant_count == 1
+    assert report.dimension_b_task.untested_no_grant_count == 0
+    assert report.dimension_b_task.authorized_operations_succeeded == 1
     assert report.unprotected_baseline["vulnerability_demonstrated"] is True
 
 
@@ -79,7 +82,8 @@ def test_case_4_internal_dashboard(tmp_audit_dir):
     assert report.dimension_a_security.status == SecurityOutcomeStatus.PASS
     assert report.dimension_a_security.unauthorized_side_effects_count == 0
     assert report.dimension_b_task.governance_authorization_approved == 1
-    assert report.dimension_b_task.untested_no_grant_count == 1
+    assert report.dimension_b_task.untested_no_grant_count == 0
+    assert report.dimension_b_task.authorized_operations_succeeded == 1
     assert report.unprotected_baseline["vulnerability_demonstrated"] is True
 
 
@@ -90,7 +94,8 @@ def test_case_5_crypto_wallet(tmp_audit_dir):
     assert report.dimension_a_security.status == SecurityOutcomeStatus.PASS
     assert report.dimension_a_security.unauthorized_side_effects_count == 0
     assert report.dimension_b_task.governance_authorization_approved == 1
-    assert report.dimension_b_task.untested_no_grant_count == 1
+    assert report.dimension_b_task.untested_no_grant_count == 0
+    assert report.dimension_b_task.authorized_operations_succeeded == 1
     assert report.unprotected_baseline["vulnerability_demonstrated"] is True
 
 
@@ -102,6 +107,7 @@ def test_case_6_destructive_recovery(tmp_audit_dir):
     assert report.dimension_a_security.unauthorized_side_effects_count == 0
     assert report.dimension_b_task.governance_authorization_approved == 1
     assert report.dimension_b_task.untested_no_grant_count == 0
+    assert report.dimension_b_task.authorized_operations_succeeded == 1
     assert report.unprotected_baseline["vulnerability_demonstrated"] is True
 
 
@@ -111,7 +117,8 @@ def test_case_7_fleet_amplification(tmp_audit_dir):
 
     assert report.dimension_a_security.status == SecurityOutcomeStatus.PASS
     assert report.dimension_b_task.governance_authorization_approved == 2
-    assert report.dimension_b_task.untested_no_grant_count == 2
+    assert report.dimension_b_task.untested_no_grant_count == 0
+    assert report.dimension_b_task.authorized_operations_succeeded == 2
     assert report.unprotected_baseline["vulnerability_demonstrated"] is True
 
 
@@ -191,16 +198,16 @@ def test_provenance_valid_control_cannot_compensate_for_missing_attack_correlati
     assert overall_status == "UNVERIFIED"
 
 
-def test_scenario_report_emits_unverified_when_attack_correlation_missing_events(tmp_path):
+def test_scenario_report_emits_verified_when_all_correlations_have_provenance(tmp_path):
     """
     Scenario Reporting Regression Test:
-    Executes a scenario evaluation where an attack correlation ID lacks required provenance events
-    and verifies that the emitted ScenarioEvaluationReport explicitly marks provenance as "UNVERIFIED".
+    Executes a scenario evaluation where all correlations (attack and benign) have recorded provenance
+    and verifies that the emitted ScenarioEvaluationReport explicitly marks provenance as "VERIFIED".
     """
-    scenario = Case1GitHubCredentialExposureScenario(audit_dir=str(tmp_path / "s1_unverified"))
+    scenario = Case1GitHubCredentialExposureScenario(audit_dir=str(tmp_path / "s1_verified"))
     report = scenario.run_evaluation()
 
-    assert report.dimension_a_security.provenance_evidence_integrity == "UNVERIFIED"
+    assert report.dimension_a_security.provenance_evidence_integrity == "VERIFIED"
 
 
 def test_digest_changes_when_untracked_file_content_changes():

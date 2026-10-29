@@ -51,7 +51,9 @@ def run_layer_a_deterministic_tests(fast_mode: bool = False) -> Dict[str, Any]:
 
     pytest_bin = "pytest"
     if not env.get("PYTHONPATH"):
-        env["PYTHONPATH"] = os.pathsep.join([PROJECT_ROOT] + [p for p in sys.path if p])
+        env["PYTHONPATH"] = PROJECT_ROOT
+    else:
+        env["PYTHONPATH"] = os.pathsep.join([PROJECT_ROOT, env["PYTHONPATH"]])
 
     cmd = [sys.executable, "-m", "pytest", *test_targets, "-q", "--tb=no"]
 
@@ -64,7 +66,7 @@ def run_layer_a_deterministic_tests(fast_mode: bool = False) -> Dict[str, Any]:
         cmd = [pytest_bin, *test_targets, "-q", "--tb=no"]
 
     try:
-        res = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=120)
+        res = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=300)
         passed = (res.returncode == 0)
         return {
             "evaluation_layer": "Layer A: Deterministic Regression",

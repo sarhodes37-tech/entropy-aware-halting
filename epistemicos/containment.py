@@ -104,71 +104,6 @@ class ActionCategory(Enum):
     STATE_MUTATION = "STATE_MUTATION"
 
 
-def _extract_host_and_port(host_port: str, eff_default_port: int) -> Tuple[Optional[str], int]:
-    """Extract clean host string and port integer from host_port authority component."""
-    port = eff_default_port
-    if host_port.startswith("["):
-        if "]" not in host_port:
-            return None, eff_default_port
-        end_idx = host_port.find("]")
-        host_part = host_port[:end_idx + 1]
-        after_bracket = host_port[end_idx + 1:]
-        if after_bracket.startswith(":") and after_bracket[1:].isdigit():
-            port = int(after_bracket[1:])
-    elif ":" in host_port:
-        h_str, p_str = host_port.rsplit(":", 1)
-        if p_str.isdigit():
-            port = int(p_str)
-            host_part = h_str
-        else:
-            host_part = host_port
-    else:
-        host_part = host_port
-
-    host_clean = host_part.strip().lower()
-    if host_clean.endswith(".") and len(host_clean) > 1:
-        host_clean = host_clean[:-1]
-
-    if not host_clean or any(c.isspace() for c in host_clean):
-        return None, port
-
-    return host_clean, port
-
-
-def _normalize_parsed_host(host_clean: str) -> str:
-    """Normalizes clean host string (IPv6, IPv4, alternate numeric, IDNA/punycode)."""
-    norm_host = ""
-    if host_clean.startswith("[") and host_clean.endswith("]"):
-        inner = host_clean[1:-1]
-        try:
-            ip = ipaddress.ip_address(inner)
-            if getattr(ip, "ipv4_mapped", None):
-                norm_host = str(ip.ipv4_mapped)
-            else:
-                norm_host = str(ip)
-        except ValueError:
-            pass
-    else:
-        try:
-            ip = ipaddress.ip_address(host_clean)
-            if getattr(ip, "ipv4_mapped", None):
-                norm_host = str(ip.ipv4_mapped)
-            else:
-                norm_host = str(ip)
-        except ValueError:
-            alt_ip = parse_ip_numeric(host_clean)
-            if alt_ip:
-                norm_host = str(alt_ip)
-            else:
-                try:
-                    idna_host = host_clean.encode('idna').decode('ascii')
-                except Exception:
-                    idna_host = host_clean
-                if re.match(r'^[a-z0-9\-\.]+$', idna_host):
-                    norm_host = idna_host
-    return norm_host
-
-
 def parse_url_authority_structure(target_url_or_host: str, default_protocol: str = "https", default_port: int = 443) -> Dict[str, Any]:
     """
     Unified authority and destination parser using urllib.parse.urlsplit.
@@ -218,11 +153,61 @@ def parse_url_authority_structure(target_url_or_host: str, default_protocol: str
     else:
         host_port = unquoted_netloc
 
-    host_clean, port = _extract_host_and_port(host_port, eff_default_port)
-    if not host_clean:
+    port = eff_default_port
+    if host_port.startswith("["):
+        if "]" not in host_port:
+            return {"scheme": scheme, "port": eff_default_port, "normalized_host": "", "valid": False}
+        end_idx = host_port.find("]")
+        host_part = host_port[:end_idx + 1]
+        after_bracket = host_port[end_idx + 1:]
+        if after_bracket.startswith(":") and after_bracket[1:].isdigit():
+            port = int(after_bracket[1:])
+    elif ":" in host_port:
+        h_str, p_str = host_port.rsplit(":", 1)
+        if p_str.isdigit():
+            port = int(p_str)
+            host_part = h_str
+        else:
+            host_part = host_port
+    else:
+        host_part = host_port
+
+    host_clean = host_part.strip().lower()
+    if host_clean.endswith(".") and len(host_clean) > 1:
+        host_clean = host_clean[:-1]
+
+    if not host_clean or any(c.isspace() for c in host_clean):
         return {"scheme": scheme, "port": port, "normalized_host": "", "valid": False}
 
-    norm_host = _normalize_parsed_host(host_clean)
+    norm_host = ""
+    if host_clean.startswith("[") and host_clean.endswith("]"):
+        inner = host_clean[1:-1]
+        try:
+            ip = ipaddress.ip_address(inner)
+            if getattr(ip, "ipv4_mapped", None):
+                norm_host = str(ip.ipv4_mapped)
+            else:
+                norm_host = str(ip)
+        except ValueError:
+            pass
+    else:
+        try:
+            ip = ipaddress.ip_address(host_clean)
+            if getattr(ip, "ipv4_mapped", None):
+                norm_host = str(ip.ipv4_mapped)
+            else:
+                norm_host = str(ip)
+        except ValueError:
+            alt_ip = parse_ip_numeric(host_clean)
+            if alt_ip:
+                norm_host = str(alt_ip)
+            else:
+                try:
+                    idna_host = host_clean.encode('idna').decode('ascii')
+                except Exception:
+                    idna_host = host_clean
+                if re.match(r'^[a-z0-9\-\.]+$', idna_host):
+                    norm_host = idna_host
 
     return {
         "scheme": scheme,

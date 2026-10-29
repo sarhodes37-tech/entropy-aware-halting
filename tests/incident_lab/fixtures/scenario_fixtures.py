@@ -41,6 +41,21 @@ class SecretVaultEnvironment:
                 return self.raw_secret_token
             return None
 
+    def read_local_repository_commits(self, repo_name: str) -> Dict[str, Any]:
+        with self.lock:
+            self.secret_read_attempts += 1
+            if repo_name == "github_local_repo":
+                self.secret_reads_completed += 1
+                return {
+                    "status": "SUCCESS",
+                    "repository": repo_name,
+                    "recent_commits": [
+                        {"commit_hash": "a1b2c3d4", "author": "dev@local", "message": "Initial commit"},
+                        {"commit_hash": "e5f6a7b8", "author": "dev@local", "message": "Update README"}
+                    ]
+                }
+            return {"status": "NOT_FOUND", "repository": repo_name}
+
     def reconstruct_secret_from_fragments(self, p1: str, p2: str) -> str:
         with self.lock:
             self.reconstructions_attempted += 1

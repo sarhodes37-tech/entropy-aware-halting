@@ -282,6 +282,66 @@ class EpistemicOrchestrator:
                     if k not in cpr.SENSITIVE_FIELDS
                 }
 
+                corr_id = context.get("correlation_id") or traj_id
+                req_id = context.get("request_id") or str(uuid.uuid4())
+                exec_func = context.get("actual_executable") or context.get("executable_operation")
+                proposed = context.get("proposed_actions", []) or raw_payload.get("proposed_actions", [])
+                has_protected_action = bool(exec_func is not None or proposed)
+
+                action_name = context.get("action_name")
+                target = context.get("target")
+
+                if proposed and isinstance(proposed, list) and len(proposed) > 0:
+                    act_item = proposed[0]
+                    if isinstance(act_item, dict):
+                        act_inner = act_item.get("action", act_item)
+                        if isinstance(act_inner, dict):
+                            action_name = action_name or act_inner.get("op")
+                            target = target or act_inner.get("node") or act_inner.get("endpoint") or act_inner.get("policy") or act_inner.get("resource") or act_inner.get("target")
+
+                action_name_str = action_name if (action_name and isinstance(action_name, str)) else "unknown_action"
+                target_str = target if (target and isinstance(target, str)) else "unknown_target"
+
+                payload_digest = self.execution_boundary.compute_canonical_digest(raw_payload)
+                store = getattr(self.execution_boundary, "store", None)
+
+                # Record ACTION_PROPOSED event into LocalProvenanceStore FIRST before gate evaluation
+                if store and hasattr(store, "record_event"):
+                    proposed_event = ProvenanceEvent(
+                        schema_version="1.0.0",
+                        event_id=str(uuid.uuid4()),
+                        event_type=ProvenanceEventType.ACTION_PROPOSED.value,
+                        provenance_source=ProvenanceSource.AGENT_ADAPTER.value,
+                        correlation_id=corr_id,
+                        request_id=req_id,
+                        action_name=action_name_str,
+                        target=target_str,
+                        canonical_request_digest=payload_digest,
+                        timestamp=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+                    )
+                    try:
+                        store.record_event(proposed_event)
+                    except Exception as prop_err:
+                        telemetry = profiler.get_telemetry()
+                        revoked_ids = self.vector_manager.revoke_trajectory(traj_id)
+                        actual_revoked_count = len(revoked_ids)
+                        reason_msg = f"Provenance store write failure on ACTION_PROPOSED: {str(prop_err)}"
+                        self._log_pipeline_event(
+                            event_type=AuditLogLevel.HALT,
+                            gate_name="LocalProvenanceStore",
+                            reason=f"{reason_msg} | Vectors Revoked: {actual_revoked_count}",
+                            masked_payload=masked_payload,
+                            cpr=cpr,
+                            telemetry=telemetry
+                        )
+                        return {
+                            "status": "HALTED",
+                            "execution_status": "DENIED",
+                            "gate": "LocalProvenanceStore",
+                            "reason": reason_msg,
+                            "vectors_revoked": actual_revoked_count
+                        }
+
                 result = self._evaluate_gates(payload_dump, context)
 
                 if result:
@@ -294,6 +354,44 @@ class EpistemicOrchestrator:
 
                     gate_name = getattr(result, "gate_name", getattr(result, "gate", "UnknownGate"))
                     reason_msg = getattr(result, "reason", "Gate Execution Halted")
+
+                    if store and hasattr(store, "record_event"):
+                        gate_denied_event = ProvenanceEvent(
+                            schema_version="1.0.0",
+                            event_id=str(uuid.uuid4()),
+                            event_type=ProvenanceEventType.AUTHORIZATION_DENIED.value,
+                            provenance_source=ProvenanceSource.GOVERNANCE_GATE.value,
+                            correlation_id=corr_id,
+                            request_id=req_id,
+                            action_name=action_name_str,
+                            target=target_str,
+                            canonical_request_digest=payload_digest,
+                            timestamp=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                            decision="DENIED",
+                            policy_version="1.0.0",
+                            outcome={"gate": gate_name, "reason": reason_msg}
+                        )
+                        try:
+                            store.record_event(gate_denied_event)
+                        except Exception as gate_prov_err:
+                            # Ensure provenance write failure on denial halts fail-closed
+                            reason_msg = f"{reason_msg} (Provenance recording failed: {str(gate_prov_err)})"
+                            gate_name = "LocalProvenanceStore"
+                            self._log_pipeline_event(
+                                event_type=AuditLogLevel.HALT,
+                                gate_name=gate_name,
+                                reason=f"Governance gate halted and provenance recording failed: {str(gate_prov_err)} | Vectors Revoked: {actual_revoked_count}",
+                                masked_payload=masked_payload,
+                                cpr=cpr,
+                                telemetry=telemetry
+                            )
+                            return {
+                                "status": "HALTED",
+                                "execution_status": "DENIED",
+                                "gate": gate_name,
+                                "reason": reason_msg,
+                                "vectors_revoked": actual_revoked_count
+                            }
 
                     self._log_pipeline_event(
                         event_type=AuditLogLevel.HALT,
@@ -311,32 +409,36 @@ class EpistemicOrchestrator:
                     }
 
             # 3b. Boundary Enforcement for Protected Operations / Executables
-            exec_func = context.get("actual_executable") or context.get("executable_operation")
-            proposed = context.get("proposed_actions", []) or raw_payload.get("proposed_actions", [])
-            has_protected_action = bool(exec_func is not None or proposed)
-
             execution_outcome = None
             execution_status = "AUTHORIZED_NOT_EXECUTED"
 
             if has_protected_action:
-                # Resolve target action_name and target resource explicitly
-                action_name = context.get("action_name")
-                target = context.get("target")
-
-                if proposed and isinstance(proposed, list) and len(proposed) > 0:
-                    act_item = proposed[0]
-                    if isinstance(act_item, dict):
-                        act_inner = act_item.get("action", act_item)
-                        if isinstance(act_inner, dict):
-                            action_name = action_name or act_inner.get("op")
-                            target = target or act_inner.get("node") or act_inner.get("endpoint") or act_inner.get("policy") or act_inner.get("resource") or act_inner.get("target")
-
                 # Strictly reject missing or ambiguous action or target identifiers
                 if not action_name or not isinstance(action_name, str) or not action_name.strip():
                     telemetry = profiler.get_telemetry()
                     revoked_ids = self.vector_manager.revoke_trajectory(traj_id)
                     actual_revoked_count = len(revoked_ids)
                     reason_msg = "TrustedExecutionBoundary Enforcement: Missing or ambiguous action_name for protected operation"
+                    if store and hasattr(store, "record_event"):
+                        denied_event = ProvenanceEvent(
+                            schema_version="1.0.0",
+                            event_id=str(uuid.uuid4()),
+                            event_type=ProvenanceEventType.AUTHORIZATION_DENIED.value,
+                            provenance_source=ProvenanceSource.GOVERNANCE_GATE.value,
+                            correlation_id=corr_id,
+                            request_id=req_id,
+                            action_name=action_name_str,
+                            target=target_str,
+                            canonical_request_digest=payload_digest,
+                            timestamp=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                            decision="DENIED",
+                            policy_version="1.0.0",
+                            outcome={"reason": reason_msg}
+                        )
+                        try:
+                            store.record_event(denied_event)
+                        except Exception as store_err:
+                            reason_msg = f"{reason_msg} (Provenance recording failed: {str(store_err)})"
                     self._log_pipeline_event(
                         event_type=AuditLogLevel.HALT,
                         gate_name="TrustedExecutionBoundary",
@@ -358,6 +460,26 @@ class EpistemicOrchestrator:
                     revoked_ids = self.vector_manager.revoke_trajectory(traj_id)
                     actual_revoked_count = len(revoked_ids)
                     reason_msg = "TrustedExecutionBoundary Enforcement: Missing or ambiguous target resource for protected operation"
+                    if store and hasattr(store, "record_event"):
+                        denied_event = ProvenanceEvent(
+                            schema_version="1.0.0",
+                            event_id=str(uuid.uuid4()),
+                            event_type=ProvenanceEventType.AUTHORIZATION_DENIED.value,
+                            provenance_source=ProvenanceSource.GOVERNANCE_GATE.value,
+                            correlation_id=corr_id,
+                            request_id=req_id,
+                            action_name=action_name_str,
+                            target=target_str,
+                            canonical_request_digest=payload_digest,
+                            timestamp=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                            decision="DENIED",
+                            policy_version="1.0.0",
+                            outcome={"reason": reason_msg}
+                        )
+                        try:
+                            store.record_event(denied_event)
+                        except Exception as store_err:
+                            reason_msg = f"{reason_msg} (Provenance recording failed: {str(store_err)})"
                     self._log_pipeline_event(
                         event_type=AuditLogLevel.HALT,
                         gate_name="TrustedExecutionBoundary",
@@ -374,11 +496,6 @@ class EpistemicOrchestrator:
                         "vectors_revoked": actual_revoked_count
                     }
 
-                corr_id = context.get("correlation_id") or traj_id
-                req_id = context.get("request_id") or str(uuid.uuid4())
-                payload_digest = self.execution_boundary.compute_canonical_digest(raw_payload)
-
-                store = getattr(self.execution_boundary, "store", None)
                 if not store or not hasattr(store, "get_events_for_correlation"):
                     telemetry = profiler.get_telemetry()
                     revoked_ids = self.vector_manager.revoke_trajectory(traj_id)
@@ -469,6 +586,9 @@ class EpistemicOrchestrator:
                     revoked_ids = self.vector_manager.revoke_trajectory(traj_id)
                     actual_revoked_count = len(revoked_ids)
 
+                    reason_msg = f"Authorization Policy Denied: {cap_reason}"
+                    gate_name = "AuthorizationAuthority"
+
                     # Record AUTHORIZATION_DENIED event
                     denied_event = ProvenanceEvent(
                         schema_version="1.0.0",
@@ -486,13 +606,13 @@ class EpistemicOrchestrator:
                     )
                     try:
                         store.record_event(denied_event)
-                    except Exception:
-                        pass
+                    except Exception as cap_den_err:
+                        reason_msg = f"{reason_msg} (Provenance recording failed: {str(cap_den_err)})"
+                        gate_name = "LocalProvenanceStore"
 
-                    reason_msg = f"Authorization Policy Denied: {cap_reason}"
                     self._log_pipeline_event(
                         event_type=AuditLogLevel.HALT,
-                        gate_name="AuthorizationAuthority",
+                        gate_name=gate_name,
                         reason=f"{reason_msg} | Vectors Revoked: {actual_revoked_count}",
                         masked_payload=masked_payload,
                         cpr=cpr,
@@ -501,7 +621,7 @@ class EpistemicOrchestrator:
                     return {
                         "status": "HALTED",
                         "execution_status": "DENIED",
-                        "gate": "AuthorizationAuthority",
+                        "gate": gate_name,
                         "reason": reason_msg,
                         "vectors_revoked": actual_revoked_count
                     }
