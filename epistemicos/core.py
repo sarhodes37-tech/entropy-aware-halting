@@ -437,8 +437,8 @@ class EpistemicOrchestrator:
                         )
                         try:
                             store.record_event(denied_event)
-                        except Exception:
-                            pass
+                        except Exception as store_err:
+                            reason_msg = f"{reason_msg} (Provenance recording failed: {str(store_err)})"
                     self._log_pipeline_event(
                         event_type=AuditLogLevel.HALT,
                         gate_name="TrustedExecutionBoundary",
@@ -478,8 +478,8 @@ class EpistemicOrchestrator:
                         )
                         try:
                             store.record_event(denied_event)
-                        except Exception:
-                            pass
+                        except Exception as store_err:
+                            reason_msg = f"{reason_msg} (Provenance recording failed: {str(store_err)})"
                     self._log_pipeline_event(
                         event_type=AuditLogLevel.HALT,
                         gate_name="TrustedExecutionBoundary",
