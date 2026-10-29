@@ -529,6 +529,28 @@ def test_detector_empty_and_falsy_input():
     assert detector.detect(12345) == []
 
 
+def test_detector_memoization_cache_and_static_patterns():
+    from epistemicos.shower_curtain.detector import _get_compiled_regex
+
+    cache_info_before = _get_compiled_regex.cache_info()
+
+    # Instantiating multiple detectors sharing custom entities and custom patterns
+    det1 = SensitiveDataDetector(custom_entities=["ProjectX"], custom_patterns={"rule": r"SECRET_\d{4}"})
+    det2 = SensitiveDataDetector(custom_entities=["ProjectX"], custom_patterns={"rule": r"SECRET_\d{4}"})
+
+    cache_info_after = _get_compiled_regex.cache_info()
+    assert cache_info_after.hits > cache_info_before.hits
+
+    # Static pattern identity across instances
+    assert det1.email_regex is det2.email_regex
+    assert det1.phone_regex is det2.phone_regex
+    assert det1.ssn_regex is det2.ssn_regex
+
+    # Detection correctness with custom patterns and entities
+    res1 = det1.detect("User in ProjectX with SECRET_1234")
+    assert len(res1) == 2
+
+
 # ------------------------------------------------------------------------------
 # Targeted Hardening & Priority Coverage Tests for Shower Curtain Modules
 # ------------------------------------------------------------------------------
