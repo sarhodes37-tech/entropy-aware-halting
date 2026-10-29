@@ -70,11 +70,6 @@ class TrustedToolWrapper:
         if self.registry and self.registry.authority:
             self.registry.authority.register_executor(self.executor_id, self._executor_func)
 
-    @property
-    def executor_func(self) -> Callable[..., Any]:
-        """Reference to the underlying executor callable owned by the registering host app."""
-        return self._executor_func
-
     def _extract_actual_target(self, args: Tuple[Any, ...], kwargs: Dict[str, Any]) -> str:
         """
         Determines the actual resource target accessed by this tool invocation.

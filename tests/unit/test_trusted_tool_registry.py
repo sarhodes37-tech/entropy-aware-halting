@@ -398,8 +398,8 @@ def test_7_missing_authorization_context(registry_setup):
 def test_8_registration_safety(registry_setup):
     """
     Test 8: Registration Safety & Trust Boundary Behavior
-    Verifies that register_tool returns a TrustedToolWrapper. The registering host app owns
-    wrapper._executor_func, but invocations through the wrapper mandate authorization.
+    Verifies that register_tool returns a TrustedToolWrapper. The public executor_func property
+    has been removed to prevent reference leaks.
     """
     registry = registry_setup["registry"]
 
@@ -413,9 +413,166 @@ def test_8_registration_safety(registry_setup):
     )
 
     assert isinstance(wrapper, TrustedToolWrapper)
-    assert wrapper.executor_func is raw_executor
+    assert not hasattr(wrapper, "executor_func")
 
-    retrieved = registry.get_tool("safe_tool")
+
+def test_9_executor_reference_encapsulation_and_boundary_regression(registry_setup):
+    """
+    Test 9: Comprehensive Executor Reference Encapsulation & Boundary Regression Test Suite
+    Covers:
+    1. Removal of public wrapper.executor_func accessor.
+    2. Encapsulated ExecutorRegistry restricting keys(), values(), items(), and __iter__ enumeration.
+    3. Successful authorized tool invocation through wrapper/boundary.
+    4. Rejection of unauthorized invocation without executor execution.
+    5. Rejection of action or target substitution.
+    6. Strict callable object identity binding ('is').
+    7. Single-use capability token replay enforcement.
+    """
+    registry = registry_setup["registry"]
+    authority = registry_setup["authority"]
+    boundary = registry_setup["boundary"]
+
+    policy = Policy(
+        policy_id="test_encapsulation_policy",
+        allowed_operations={"read_file"},
+        allowed_resources={"/app/data.json"}
+    )
+    authority.default_policy = policy
+
+    execution_count = 0
+    def mock_read(path="/app/data.json"):
+        nonlocal execution_count
+        execution_count += 1
+        return {"data": "secret_content", "path": path}
+
+    # Register tool
+    wrapper = registry.register_tool(
+        tool_id="read_tool",
+        action_name="read_file",
+        executor_func=mock_read,
+        default_target="/app/data.json"
+    )
+
+    # 1. Verify removal of public executor_func
+    assert not hasattr(wrapper, "executor_func")
+
+    # 2. Verify ExecutorRegistry enumeration restriction
+    exec_reg = authority.executor_registry
+    with pytest.raises(TypeError, match="does not support iteration or key enumeration"):
+        exec_reg.keys()
+    with pytest.raises(TypeError, match="does not support iteration or value enumeration"):
+        exec_reg.values()
+    with pytest.raises(TypeError, match="does not support iteration or item enumeration"):
+        exec_reg.items()
+    with pytest.raises(TypeError, match="is not iterable"):
+        iter(exec_reg)
+
+    # Verify registered lookup still works as expected
+    assert wrapper.executor_id in exec_reg
+    assert exec_reg.get(wrapper.executor_id) is mock_read
+
+    # 3. Successful authorized tool invocation
+    res = wrapper(path="/app/data.json")
+    assert res["status"] == "SUCCESS"
+    assert res["result"] == {"data": "secret_content", "path": "/app/data.json"}
+    assert execution_count == 1
+
+    # 4. Rejection of unauthorized invocation without executor execution
+    unauthorized_policy = Policy(
+        policy_id="unauth_policy",
+        allowed_operations={"read_file"},
+        allowed_resources={"/app/public.json"}
+    )
+    unauth_wrapper = registry.register_tool(
+        tool_id="unauth_read_tool",
+        action_name="read_file",
+        executor_func=mock_read,
+        default_target="/app/unauthorized.json",
+        policy=unauthorized_policy
+    )
+    with pytest.raises(PermissionError) as exc_unauth:
+        unauth_wrapper(path="/app/unauthorized.json")
+    assert "Tool execution rejected" in str(exc_unauth.value)
+    assert execution_count == 1  # Executor count did NOT increase!
+
+    # 5. Rejection of action or target substitution
+    payload = {"op": "read_file", "path": "/app/data.json"}
+    digest = boundary.compute_canonical_digest(payload)
+    cap, _ = authority.evaluate_and_issue_capability(
+        action_name="read_file",
+        target="/app/data.json",
+        canonical_request_digest=digest,
+        executor_id=mock_read,
+        policy=policy
+    )
+    ctx_sub = ExecutionContext(
+        correlation_id=cap.correlation_id,
+        request_id=cap.request_id,
+        authorization_token_id=cap.token_id,
+        authorized_digest=digest,
+        authorization_granted=True
+    )
+    # Attempt target substitution
+    with pytest.raises(PermissionError) as exc_target_sub:
+        boundary.execute_protected_action(
+            action_name="read_file",
+            target="/app/unauthorized_target.json",
+            request_payload=payload,
+            executor_func=mock_read,
+            context=ctx_sub
+        )
+    assert "CAPABILITY_VERIFICATION_FAILED_TARGET_MISMATCH" in str(exc_target_sub.value)
+
+    # 6. Strict callable object identity binding ('is')
+    def spoofed_mock_read(path="/app/data.json"):
+        return {"data": "spoofed"}
+
+    cap_identity, _ = authority.evaluate_and_issue_capability(
+        action_name="read_file",
+        target="/app/data.json",
+        canonical_request_digest=digest,
+        executor_id=mock_read,
+        policy=policy
+    )
+    ctx_identity = ExecutionContext(
+        correlation_id=cap_identity.correlation_id,
+        request_id=cap_identity.request_id,
+        authorization_token_id=cap_identity.token_id,
+        authorized_digest=digest,
+        authorization_granted=True
+    )
+    with pytest.raises(PermissionError) as exc_identity:
+        boundary.execute_protected_action(
+            action_name="read_file",
+            target="/app/data.json",
+            request_payload=payload,
+            executor_func=spoofed_mock_read,
+            context=ctx_identity
+        )
+    assert ("Executable object identity mismatch" in str(exc_identity.value) or
+            "CAPABILITY_VERIFICATION_FAILED_EXECUTOR_MISMATCH" in str(exc_identity.value))
+
+    # 7. Single-use capability token replay enforcement
+    res_single = boundary.execute_protected_action(
+        action_name="read_file",
+        target="/app/data.json",
+        request_payload=payload,
+        executor_func=mock_read,
+        context=ctx_identity
+    )
+    assert res_single["status"] == "SUCCESS"
+
+    with pytest.raises(PermissionError) as exc_replay:
+        boundary.execute_protected_action(
+            action_name="read_file",
+            target="/app/data.json",
+            request_payload=payload,
+            executor_func=mock_read,
+            context=ctx_identity
+        )
+    assert "CAPABILITY_VERIFICATION_FAILED_REPLAY_TOKEN_ALREADY_CONSUMED" in str(exc_replay.value) or "already been consumed" in str(exc_replay.value)
+
+    retrieved = registry.get_tool("read_tool")
     assert retrieved is wrapper
     assert isinstance(retrieved, TrustedToolWrapper)
 

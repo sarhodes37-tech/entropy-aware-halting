@@ -903,6 +903,70 @@ def get_callable_identity(func: Any) -> str:
     return qualname
 
 
+class ExecutorRegistry:
+    """
+    Thread-safe, encapsulated registry mapping executor IDs and single-use token IDs
+    to trusted executor callables.
+    Restricts raw dictionary enumeration methods (keys, values, items, __iter__) to prevent
+    ordinary callers from iterating over and extracting registered raw executor function references.
+    Supports thread-safe get(), pop(), register(), contains(), __getitem__, __setitem__, and __contains__.
+    """
+
+    def __init__(self, initial_mapping: Optional[Union[Dict[str, Any], "ExecutorRegistry"]] = None):
+        self._lock = threading.RLock()
+        self._store: Dict[str, Any] = {}
+        if initial_mapping:
+            if isinstance(initial_mapping, ExecutorRegistry):
+                with initial_mapping._lock:
+                    self._store.update(initial_mapping._store)
+            elif isinstance(initial_mapping, dict):
+                self._store.update(initial_mapping)
+
+    def register(self, key: str, executor_func: Any) -> None:
+        with self._lock:
+            self._store[key] = executor_func
+
+    def get(self, key: str, default: Any = None) -> Any:
+        with self._lock:
+            return self._store.get(key, default)
+
+    def pop(self, key: str, default: Any = None) -> Any:
+        with self._lock:
+            return self._store.pop(key, default)
+
+    def contains(self, key: str) -> bool:
+        with self._lock:
+            return key in self._store
+
+    def __getitem__(self, key: str) -> Any:
+        with self._lock:
+            return self._store[key]
+
+    def __setitem__(self, key: str, value: Any) -> None:
+        with self._lock:
+            self._store[key] = value
+
+    def __contains__(self, key: Any) -> bool:
+        with self._lock:
+            return key in self._store
+
+    def __len__(self) -> int:
+        with self._lock:
+            return len(self._store)
+
+    def keys(self):
+        raise TypeError("ExecutorRegistry object does not support iteration or key enumeration")
+
+    def values(self):
+        raise TypeError("ExecutorRegistry object does not support iteration or value enumeration")
+
+    def items(self):
+        raise TypeError("ExecutorRegistry object does not support iteration or item enumeration")
+
+    def __iter__(self):
+        raise TypeError("ExecutorRegistry object is not iterable")
+
+
 class AuthorizationAuthority:
     """
     Trusted policy authority for EpistemicOS.
@@ -958,7 +1022,10 @@ class AuthorizationAuthority:
         else:
             self.contract_signing_secret = hashlib.sha256(f"EPISTEMICOS_CONTRACT_KEY_{uuid.uuid4()}".encode("utf-8")).digest()
 
-        self.executor_registry: Dict[str, Any] = dict(executor_registry or {})
+        if isinstance(executor_registry, ExecutorRegistry):
+            self.executor_registry = executor_registry
+        else:
+            self.executor_registry = ExecutorRegistry(executor_registry)
 
     def clear_denial_with_approval(
         self,
