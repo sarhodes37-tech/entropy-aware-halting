@@ -5,6 +5,7 @@ and VRAM-optimized precision configuration for benchmarking and trace extraction
 """
 
 import logging
+import re
 from typing import Tuple, Any, Optional, Dict
 
 logger = logging.getLogger("EpistemicOS.Utils")
@@ -18,6 +19,17 @@ def extract_metadata(payload: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     if not isinstance(metadata, dict):
         return {}
     return metadata
+
+
+def normalize_policy_name(name: Optional[str]) -> str:
+    """
+    Normalizes policy or scope identifier strings to a standard lowercased,
+    snake_cased, whitespace-stripped canonical format.
+    Consecutive whitespace characters are normalized to a single underscore.
+    """
+    if not name or not name.strip():
+        return ""
+    return re.sub(r"\s+", "_", name.strip().lower())
 
 
 def get_optimal_device() -> str:

@@ -5,7 +5,7 @@ Validates device auto-detection and helper configuration.
 
 import pytest
 from unittest.mock import MagicMock, patch
-from epistemicos.utils import extract_metadata, get_optimal_device
+from epistemicos.utils import extract_metadata, get_optimal_device, normalize_policy_name
 
 
 def test_extract_metadata_none_payload():
@@ -29,6 +29,26 @@ def test_extract_metadata_non_dict_value():
     """Validates extract_metadata handles non-dict metadata value gracefully."""
     payload = {"metadata": "invalid_metadata"}
     assert extract_metadata(payload) == {}
+
+
+@pytest.mark.parametrize(
+    "input_name, expected_output",
+    [
+        ("Read Policy", "read_policy"),
+        ("  WRITE_POLICY  ", "write_policy"),
+        ("Admin Policy v1", "admin_policy_v1"),
+        ("", ""),
+        (None, ""),
+        ("  ", ""),
+        ("Already_Normalized", "already_normalized"),
+        ("lowercase", "lowercase"),
+        ("  Multiple   Spaces  Policy ", "multiple_spaces_policy"),
+        ("\tTabbed\t Policy\nName\t", "tabbed_policy_name"),
+    ],
+)
+def test_normalize_policy_name(input_name, expected_output):
+    """Validates normalize_policy_name handles string normalization and empty/None edge cases."""
+    assert normalize_policy_name(input_name) == expected_output
 
 
 def test_get_optimal_device_fallback():
