@@ -98,6 +98,8 @@ def test_static_aria_accessibility_attributes():
     import pathlib
     index_path = pathlib.Path("epistemicos/ui/static/index.html")
     content = index_path.read_text(encoding="utf-8")
+    assert '<a href="#main-content" class="skip-link">Skip to main content</a>' in content
+    assert '<main id="main-content" class="main-content" tabindex="-1">' in content
     assert 'aria-label="Observatory Navigation"' in content
     assert 'aria-label="Refresh overview metrics"' in content
     assert 'class="refresh-icon" aria-hidden="true"' in content
