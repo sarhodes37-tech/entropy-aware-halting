@@ -682,7 +682,10 @@ document.addEventListener('DOMContentLoaded', () => {
             this.state.traceSearchQuery = '';
             this.state.traceFilterStatus = 'ALL';
             const searchInput = document.getElementById('trace-search');
-            if (searchInput) searchInput.value = '';
+            if (searchInput) {
+              searchInput.value = '';
+              searchInput.focus();
+            }
             const statusFilter = document.getElementById('trace-status-filter');
             if (statusFilter) statusFilter.value = 'ALL';
             this.renderTracesList();
@@ -1586,7 +1589,10 @@ document.addEventListener('DOMContentLoaded', () => {
             this.state.provenanceSearchQuery = '';
             this.state.provenanceFilterType = 'ALL';
             const searchInput = document.getElementById('provenance-search');
-            if (searchInput) searchInput.value = '';
+            if (searchInput) {
+              searchInput.value = '';
+              searchInput.focus();
+            }
             const typeFilter = document.getElementById('provenance-type-filter');
             if (typeFilter) typeFilter.value = 'ALL';
             this.renderProvenanceRecordList();
@@ -2510,7 +2516,10 @@ document.addEventListener('DOMContentLoaded', () => {
             this.state.caseBaselineFilter = 'ALL';
             this.state.caseOutcomeFilter = 'ALL';
             const searchInput = document.getElementById('benchmark-case-search');
-            if (searchInput) searchInput.value = '';
+            if (searchInput) {
+              searchInput.value = '';
+              searchInput.focus();
+            }
             const baseSelect = document.getElementById('benchmark-case-baseline-filter');
             if (baseSelect) baseSelect.value = 'ALL';
             const outcomeSelect = document.getElementById('benchmark-case-outcome-filter');

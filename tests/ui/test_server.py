@@ -361,7 +361,7 @@ def test_dynamic_buttons_aria_accessibility_completeness():
 
 
 def test_search_input_keyboard_shortcut_aria_attributes():
-    """Verifies that search inputs contain aria-keyshortcuts="/" attributes, Escape blur/clear handlers, and shortcut badge hiding CSS."""
+    """Verifies that search inputs contain aria-keyshortcuts="/" attributes, Escape blur/clear handlers, clear filter focus restoration, and shortcut badge hiding CSS."""
     import pathlib
     index_path = pathlib.Path("epistemicos/ui/static/index.html")
     index_content = index_path.read_text(encoding="utf-8")
@@ -376,6 +376,11 @@ def test_search_input_keyboard_shortcut_aria_attributes():
     assert "searchInput.blur()" in js_content
     assert "provSearchInput.blur()" in js_content
     assert "caseSearchInput.blur()" in js_content
+
+    # Clear filters focus restoration verification
+    assert "clearBtn.addEventListener('click', () => {" in js_content
+    assert "if (searchInput) {" in js_content
+    assert "searchInput.value = '';" in js_content
 
     css_path = pathlib.Path("epistemicos/ui/static/style.css")
     css_content = css_path.read_text(encoding="utf-8")
