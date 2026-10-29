@@ -80,6 +80,8 @@ document.addEventListener('DOMContentLoaded', () => {
             if (filterSelect) filterSelect.value = filter;
           }
           this.switchTab(targetTab);
+          const targetPanel = document.getElementById(`view-${targetTab}`);
+          if (targetPanel) targetPanel.focus();
         });
       });
 
@@ -220,65 +222,59 @@ document.addEventListener('DOMContentLoaded', () => {
     // Helper: Clipboard Copy Action
     // -------------------------------------------------------------------------
     copyToClipboard(text, btnElement) {
-      if (!text) return;
-      const origAriaLabel = btnElement ? btnElement.getAttribute('aria-label') : null;
-      const origTitle = btnElement ? btnElement.getAttribute('title') : null;
+      if (!text || !btnElement) return;
 
-      const restoreState = (origText) => {
+      if (btnElement._copyTimeout) {
+        clearTimeout(btnElement._copyTimeout);
+      } else {
+        btnElement._origText = btnElement.textContent;
+        btnElement._origAriaLabel = btnElement.getAttribute('aria-label');
+        btnElement._origTitle = btnElement.getAttribute('title');
+      }
+
+      const restoreState = () => {
         if (!btnElement) return;
-        btnElement.textContent = origText;
-        if (origAriaLabel !== null) {
-          btnElement.setAttribute('aria-label', origAriaLabel);
+        btnElement.textContent = btnElement._origText;
+        if (btnElement._origAriaLabel !== null && btnElement._origAriaLabel !== undefined) {
+          btnElement.setAttribute('aria-label', btnElement._origAriaLabel);
         } else {
           btnElement.removeAttribute('aria-label');
         }
-        if (origTitle !== null) {
-          btnElement.setAttribute('title', origTitle);
+        if (btnElement._origTitle !== null && btnElement._origTitle !== undefined) {
+          btnElement.setAttribute('title', btnElement._origTitle);
         } else {
           btnElement.removeAttribute('title');
         }
+        btnElement.classList.remove('copied');
+        btnElement.style.borderColor = '';
+        delete btnElement._copyTimeout;
+        delete btnElement._origText;
+        delete btnElement._origAriaLabel;
+        delete btnElement._origTitle;
       };
 
       if (!navigator.clipboard || !navigator.clipboard.writeText) {
-        if (btnElement) {
-          const origText = btnElement.textContent;
-          btnElement.textContent = 'Copy Unavailable';
-          btnElement.setAttribute('aria-label', 'Copy unavailable');
-          btnElement.setAttribute('title', 'Copy unavailable in this browser context');
-          btnElement.style.borderColor = 'var(--status-failed-border)';
-          setTimeout(() => {
-            restoreState(origText);
-            btnElement.style.borderColor = '';
-          }, 2000);
-        }
+        btnElement.textContent = 'Copy Unavailable';
+        btnElement.setAttribute('aria-label', 'Copy unavailable');
+        btnElement.setAttribute('title', 'Copy unavailable in this browser context');
+        btnElement.style.borderColor = 'var(--status-failed-border)';
+        btnElement._copyTimeout = setTimeout(restoreState, 2000);
         return;
       }
 
       navigator.clipboard.writeText(text).then(() => {
-        if (btnElement) {
-          const origText = btnElement.textContent;
-          btnElement.textContent = '✓ Copied!';
-          btnElement.setAttribute('aria-label', 'Copied to clipboard!');
-          btnElement.setAttribute('title', 'Copied to clipboard!');
-          btnElement.classList.add('copied');
-          setTimeout(() => {
-            restoreState(origText);
-            btnElement.classList.remove('copied');
-          }, 1500);
-        }
+        btnElement.textContent = '✓ Copied!';
+        btnElement.setAttribute('aria-label', 'Copied to clipboard!');
+        btnElement.setAttribute('title', 'Copied to clipboard!');
+        btnElement.classList.add('copied');
+        btnElement._copyTimeout = setTimeout(restoreState, 1500);
       }).catch(err => {
         console.error('Copy failed:', err);
-        if (btnElement) {
-          const origText = btnElement.textContent;
-          btnElement.textContent = 'Copy Failed';
-          btnElement.setAttribute('aria-label', 'Copy failed');
-          btnElement.setAttribute('title', 'Copy action failed');
-          btnElement.style.borderColor = 'var(--status-failed-border)';
-          setTimeout(() => {
-            restoreState(origText);
-            btnElement.style.borderColor = '';
-          }, 2000);
-        }
+        btnElement.textContent = 'Copy Failed';
+        btnElement.setAttribute('aria-label', 'Copy failed');
+        btnElement.setAttribute('title', 'Copy action failed');
+        btnElement.style.borderColor = 'var(--status-failed-border)';
+        btnElement._copyTimeout = setTimeout(restoreState, 2000);
       });
     },
 
@@ -1750,6 +1746,8 @@ document.addEventListener('DOMContentLoaded', () => {
           this.state.selectedTraceId = corrId;
           this.switchTab('traces');
           this.selectTrace(corrId);
+          const targetPanel = document.getElementById('view-traces');
+          if (targetPanel) targetPanel.focus();
         });
         actionBtnGroup.appendChild(traceBtn);
       }

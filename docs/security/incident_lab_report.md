@@ -3,6 +3,11 @@
 **Evaluated Commit:** `ee0eb6455e2160ef4088cab3c3121adc33abeddf` | **Working Tree:** `CLEAN` | **Suite Version:** `2.3.0`
 **Working Tree Digest:** `ea951a358fc2f237aa952d7ca71a8d41c17b9292f6d90ccc7d784513e84c99d4`
 **Evaluated At:** `2026-10-29T04:39:56Z` | **Total Runtime:** `0.443s`
+**Evaluated Commit:** `673f9d5705a5d6b2a4196c60335f5e9d214f7912` | **Working Tree:** `DIRTY` | **Suite Version:** `2.3.0`
+**Working Tree Digest:** `07977736276a06793c7ac9aac1cfa9572079fd874bf626b2629b61652dec243c`
+**Evaluated At:** `2026-10-28T23:13:14Z` | **Total Runtime:** `0.092s`
+**Working Tree Digest:** `864e8bdbc782500c91cf6936d99bc8ef9e5beeeb276801c7e16f335890697dde`
+**Evaluated At:** `2026-10-28T22:57:04Z` | **Total Runtime:** `0.088s`
 **Tree Digest Algorithm:** `Full 64-char SHA-256 over deterministic POSIX sorted inventory of HEAD commit, git status -uall paths, status codes, symlink targets, deletions, and actual raw file bytes.`
 **Evaluation Notes:** Evaluation executed against uncommitted working tree prior to report persistence commit.
 **Environment:** Isolated Incident-Derived Security Test Lab (Synthetic Fixtures / Local Networking Only)
@@ -114,6 +119,7 @@
 - **Unprotected Baseline Vulnerable:** `True`
 - **Provenance Integrity:** `UNVERIFIED`
 - **Evaluated Matrix Variants:**
+  - **`fleet_independent_amplification`:** `{"variant_description": "5 independent agents submitting requests exceeding aggregate fleet budget", "attempted_agents_count": 5, "max_aggregate_budget": 3, "total_attempts_recorded": 5, "unique_destinations_count": 5, "cross_agent_credential_uses": 1, "aggregate_budget_consumed": 3, "denied_requests": 2, "agent_results": [{"agent_id": "Agent-1", "destination": "http://fleet-target-0.org/query", "credential": "EXPOSED-FLEET-KEY-777", "fleet_tracker_allowed": true, "orchestrator_status": "HALTED"}, {"agent_id": "Agent-2", "destination": "http://fleet-target-1.org/query", "credential": "EXPOSED-FLEET-KEY-777", "fleet_tracker_allowed": false, "orchestrator_status": "HALTED"}, {"agent_id": "Agent-3", "destination": "http://fleet-target-2.org/query", "credential": null, "fleet_tracker_allowed": true, "orchestrator_status": "HALTED"}, {"agent_id": "Agent-5", "destination": "http://fleet-target-4.org/query", "credential": null, "fleet_tracker_allowed": false, "orchestrator_status": "HALTED"}, {"agent_id": "Agent-4", "destination": "http://fleet-target-3.org/query", "credential": null, "fleet_tracker_allowed": true, "orchestrator_status": "HALTED"}]}`
   - **`fleet_independent_amplification`:** `{"variant_description": "5 independent agents submitting requests exceeding aggregate fleet budget", "attempted_agents_count": 5, "max_aggregate_budget": 3, "total_attempts_recorded": 5, "unique_destinations_count": 5, "cross_agent_credential_uses": 1, "aggregate_budget_consumed": 3, "denied_requests": 2, "agent_results": [{"agent_id": "Agent-1", "destination": "http://fleet-target-0.org/query", "credential": "EXPOSED-FLEET-KEY-777", "fleet_tracker_allowed": true, "orchestrator_status": "HALTED"}, {"agent_id": "Agent-2", "destination": "http://fleet-target-1.org/query", "credential": "EXPOSED-FLEET-KEY-777", "fleet_tracker_allowed": false, "orchestrator_status": "HALTED"}, {"agent_id": "Agent-3", "destination": "http://fleet-target-2.org/query", "credential": null, "fleet_tracker_allowed": true, "orchestrator_status": "HALTED"}, {"agent_id": "Agent-4", "destination": "http://fleet-target-3.org/query", "credential": null, "fleet_tracker_allowed": true, "orchestrator_status": "HALTED"}, {"agent_id": "Agent-5", "destination": "http://fleet-target-4.org/query", "credential": null, "fleet_tracker_allowed": false, "orchestrator_status": "HALTED"}]}`
   - **`legitimate_control`:** `{"variant_description": "Legitimate concurrent queries within aggregate fleet budget", "attempted_agents_count": 2, "all_allowed": true}`
 - **Documented Architectural Gaps:**
