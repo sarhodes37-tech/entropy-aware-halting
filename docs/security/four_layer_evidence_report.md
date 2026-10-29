@@ -1,11 +1,11 @@
 # EpistemicOS Consolidated Security & Evaluation Evidence Report
 
-**Overall Status:** `PARTIAL` | **Generated:** 2026-10-29 09:28:08 UTC
+**Overall Status:** `PARTIAL` | **Generated:** 2026-10-29 10:36:18 UTC
 
 ## Reproducibility & Environment Metadata
-- **Evaluated Git Commit:** `cdd7e0a9811c0332895f7ac3e1a66759fb5a2cea`
+- **Evaluated Git Commit:** `00d2f9cf9fa37e5ec67ccef3ac6a781c459cb1f0`
 - **Working Tree Status:** `DIRTY`
-- **Working Tree Digest:** `2dd7fe0f88f8380fdf117d20db8d9e2ed517b10cb741d5a790594bf953c72792`
+- **Working Tree Digest:** `a89b46627bfd930f5a9c7cc88f8382de5765ac4f061dfa88afffca0777e56423`
 - **Dataset Version:** `1.0.0-frozen`
 - **Dataset SHA-256 Digest:** `f4e31381a922c1143769ccb887c4841e4a14fedec6eef6569d40eed2956ce873` (Verified: `True`)
 
@@ -13,7 +13,7 @@
 
 ## Layer A: Deterministic Regression
 - **Status:** `PASS`
-- **Test Command:** `/home/jules/.pyenv/versions/3.12.13/bin/python -m pytest tests/unit/test_evidence_architecture.py -k test_dataset_manifest_integrity -q --tb=no`
+- **Test Command:** `/home/jules/.pyenv/versions/3.12.13/bin/python3 -m pytest tests/unit/test_evidence_architecture.py -k test_dataset_manifest_integrity -q --tb=no`
 - **Summary:** .                                                                        [100%]
 
 ---
@@ -48,14 +48,14 @@
 
 ## Layer D: Performance & Cost Benchmarks
 - **Status:** `PASS`
-- **Run ID:** `run-l4-20261028234642-b5cf0b5d`
+- **Run ID:** `run-l4-20261029103327-11da586b`
 - **Dataset Digest:** `f4e31381a922c1143769ccb887c4841e4a14fedec6eef6569d40eed2956ce873`
-- **Run Records File SHA-256:** `2c3aece2b2ce8b9310187a09a5400211def4424d35f2156454777e885488d85e`
+- **Run Records File SHA-256:** `3f197fe5236f76adf2ef333410b32d9e930da13e61188fc741da67bf1d7f68ae`
 - **Sample Size:** N = 100
 - **Combined Gating Accuracy:** 100.0%
 - **Combined Gating Security Recall:** 100.0%
 - **Benign False Positive Rate:** 0.0%
-- **P95 Latency:** 34.533 ms
+- **P95 Latency:** 101.539 ms
 - **Total Tokens Spent:** 2000
 - **Mandatory Criteria Passed:** `True`
 
