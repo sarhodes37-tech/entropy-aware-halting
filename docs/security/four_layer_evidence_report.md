@@ -1,11 +1,11 @@
 # EpistemicOS Consolidated Security & Evaluation Evidence Report
 
-**Overall Status:** `PARTIAL` | **Generated:** 2026-10-29 05:12:26 UTC
+**Overall Status:** `PARTIAL` | **Generated:** 2026-10-29 08:53:37 UTC
 
 ## Reproducibility & Environment Metadata
-- **Evaluated Git Commit:** `9804a609d41dab44b3bd4064fc238508bb85c806`
+- **Evaluated Git Commit:** `78fed18e2a8bdbf5a9ba9f9e7f6ef4a3fcf94d57`
 - **Working Tree Status:** `DIRTY`
-- **Working Tree Digest:** `cc1efb5a26e2bfd5b261f8d4f09a48d68c047b6026cc839f47f407ae4150db59`
+- **Working Tree Digest:** `a2c4b46a4167c45e55ada1d524934732b9a891ecd100326772d4e4b8bc9cc8cf`
 - **Dataset Version:** `1.0.0-frozen`
 - **Dataset SHA-256 Digest:** `f4e31381a922c1143769ccb887c4841e4a14fedec6eef6569d40eed2956ce873` (Verified: `True`)
 
