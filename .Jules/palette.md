@@ -17,3 +17,7 @@
 ## 2025-05-18 - Human-Readable ARIA Labels for Dynamic Helper Buttons
 **Learning:** Using raw DOM element IDs (like `summary-dataset-digest`) inside dynamic button `aria-label` attributes causes screen readers and tooltips to announce internal technical identifiers rather than clear, user-facing descriptive labels.
 **Action:** When creating reusable UI helper functions that set `aria-label` or `title` attributes on dynamic action buttons, accept an explicit human-readable label parameter to ensure screen readers announce accessible titles (e.g. "Copy Dataset SHA-256 Digest").
+
+## 2025-05-18 - Focus Restoration Upon Dynamic Control Destruction
+**Learning:** When a user clicks a dynamic button inside an empty state container (such as "Clear Filters") that subsequently destroys or removes the button from the DOM during list re-rendering, keyboard focus drops to `document.body` or is lost entirely. Explicitly calling `focus()` on the corresponding search input upon resetting search/filter state preserves logical focus context for keyboard navigation.
+**Action:** When destroying dynamic action triggers during state reset or list re-rendering, explicitly transfer focus to a logical persistent anchor element (such as the search input).
