@@ -7,6 +7,7 @@ Shannon entropy estimation for secrets, and configurable entity dictionaries.
 """
 
 import bisect
+import functools
 import math
 import re
 from collections import Counter
@@ -93,6 +94,47 @@ COMMON_FIRST_NAMES_PATTERNS = [
     for name in sorted(COMMON_FIRST_NAMES)
 ]
 
+# Pre-compiled module-level static regex patterns
+_EMAIL_REGEX = re.compile(
+    r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b"
+)
+_PHONE_REGEX = re.compile(
+    r"(\+?\d{1,3}[-.\s]?)?(\(?\d{3}\)?[-.\s]?)?\d{3}[-.\s]?\d{4}\b"
+)
+_SSN_REGEX = re.compile(
+    r"\b\d{3}[- ]?\d{2}[- ]?\d{4}\b"
+)
+_CREDIT_CARD_REGEX = re.compile(
+    r"\b(?:4[0-9]{12}(?:[0-9]{3})?|5[1-5][0-9]{14}|3[47][0-9]{13}|6(?:011|5[0-9]{2})[0-9]{12})\b"
+)
+_IBAN_REGEX = re.compile(
+    r"\b[A-Z]{2}\d{2}[A-Z0-9]{11,30}\b"
+)
+_API_KEY_REGEX = re.compile(
+    r"\b(sk-[a-zA-Z0-9_\-]{20,}|glpat-[a-zA-Z0-9_\-]{20,}|AKIA[0-9A-Z]{16}|ghp_[a-zA-Z0-9]{36,}|github_pat_[a-zA-Z0-9_\-]{80,}|xox[baprs]-[a-zA-Z0-9_\-]{10,})\b"
+)
+_BEARER_REGEX = re.compile(
+    r"Bearer\s+([a-zA-Z0-9\._\-]{20,})", re.IGNORECASE
+)
+_PRIVATE_KEY_REGEX = re.compile(
+    r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----[\s\S]+?-----END (?:RSA |EC |OPENSSH )?PRIVATE KEY-----"
+)
+_FILE_PATH_REGEX = re.compile(
+    r"(?:\b[a-zA-Z]:\\|\/)(?:[^\s\\/]+[\\/])+[^\s\\/]+"
+)
+_IP_REGEX = re.compile(
+    r"\b(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\b"
+)
+_NAME_TITLE_REGEX = re.compile(
+    r"\b(?:Mr\.|Mrs\.|Ms\.|Dr\.|Prof\.)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\b"
+)
+
+
+@functools.lru_cache(maxsize=1024)
+def _get_compiled_regex(pattern: str, flags: int = 0) -> re.Pattern:
+    """Memoized compilation helper for dynamic regex patterns."""
+    return re.compile(pattern, flags)
+
 
 class SensitiveDataDetector:
     """
@@ -109,55 +151,33 @@ class SensitiveDataDetector:
     ):
         self.custom_entities = set(custom_entities or [])
         self.custom_entities_compiled = [
-            (entity, re.compile(r"(?<!\w)" + re.escape(entity) + r"(?!\w)", re.IGNORECASE))
+            (entity, _get_compiled_regex(r"(?<!\w)" + re.escape(entity) + r"(?!\w)", re.IGNORECASE))
             for entity in sorted(self.custom_entities)
             if entity
         ]
         self.entropy_threshold = entropy_threshold
         self.min_entropy_len = min_entropy_len
-        self.entropy_regex = re.compile(
+        self.entropy_regex = _get_compiled_regex(
             r"(?<![A-Za-z0-9_\-+/=])[A-Za-z0-9_\-+/=]{" + str(self.min_entropy_len) + r",}(?![A-Za-z0-9_\-+/=])"
         )
 
-        # Regex patterns
-        self.email_regex = re.compile(
-            r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b"
-        )
-        self.phone_regex = re.compile(
-            r"(\+?\d{1,3}[-.\s]?)?(\(?\d{3}\)?[-.\s]?)?\d{3}[-.\s]?\d{4}\b"
-        )
-        self.ssn_regex = re.compile(
-            r"\b\d{3}[- ]?\d{2}[- ]?\d{4}\b"
-        )
-        self.credit_card_regex = re.compile(
-            r"\b(?:4[0-9]{12}(?:[0-9]{3})?|5[1-5][0-9]{14}|3[47][0-9]{13}|6(?:011|5[0-9]{2})[0-9]{12})\b"
-        )
-        self.iban_regex = re.compile(
-            r"\b[A-Z]{2}\d{2}[A-Z0-9]{11,30}\b"
-        )
-        self.api_key_regex = re.compile(
-            r"\b(sk-[a-zA-Z0-9_\-]{20,}|glpat-[a-zA-Z0-9_\-]{20,}|AKIA[0-9A-Z]{16}|ghp_[a-zA-Z0-9]{36,}|github_pat_[a-zA-Z0-9_\-]{80,}|xox[baprs]-[a-zA-Z0-9_\-]{10,})\b"
-        )
-        self.bearer_regex = re.compile(
-            r"Bearer\s+([a-zA-Z0-9\._\-]{20,})", re.IGNORECASE
-        )
-        self.private_key_regex = re.compile(
-            r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----[\s\S]+?-----END (?:RSA |EC |OPENSSH )?PRIVATE KEY-----"
-        )
-        self.file_path_regex = re.compile(
-            r"(?:\b[a-zA-Z]:\\|\/)(?:[^\s\\/]+[\\/])+[^\s\\/]+"
-        )
-        self.ip_regex = re.compile(
-            r"\b(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\b"
-        )
-        self.name_title_regex = re.compile(
-            r"\b(?:Mr\.|Mrs\.|Ms\.|Dr\.|Prof\.)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\b"
-        )
+        # Regex pattern assignments (pre-compiled module-level constants)
+        self.email_regex = _EMAIL_REGEX
+        self.phone_regex = _PHONE_REGEX
+        self.ssn_regex = _SSN_REGEX
+        self.credit_card_regex = _CREDIT_CARD_REGEX
+        self.iban_regex = _IBAN_REGEX
+        self.api_key_regex = _API_KEY_REGEX
+        self.bearer_regex = _BEARER_REGEX
+        self.private_key_regex = _PRIVATE_KEY_REGEX
+        self.file_path_regex = _FILE_PATH_REGEX
+        self.ip_regex = _IP_REGEX
+        self.name_title_regex = _NAME_TITLE_REGEX
 
         self.custom_compiled = {}
         if custom_patterns:
             for name, pat in custom_patterns.items():
-                self.custom_compiled[name] = re.compile(pat)
+                self.custom_compiled[name] = _get_compiled_regex(pat)
 
     def detect(self, text: str) -> List[DetectionResult]:
         if not text or not isinstance(text, str):
