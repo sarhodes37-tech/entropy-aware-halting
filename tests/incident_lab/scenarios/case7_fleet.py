@@ -166,11 +166,26 @@ class Case7FleetAmplificationScenario(IncidentScenario):
 
             res_legit = orchestrator.process_submission(payload_legit, ctx_legit)
 
+            def make_exec_l(record_item):
+                def exec_legit_l():
+                    return self.executor.execute_instrumented(
+                        record_item,
+                        lambda: {"status": "SUCCESS", "agent": agent_id}
+                    )
+                return exec_legit_l
+
+            exec_legit_func = make_exec_l(rec_l)
+            orchestrator.authority.register_executor(f"exec_legit_l_{agent_id}", exec_legit_func)
+
+            ctx_legit["actual_executable"] = exec_legit_func
+
+            res_legit = orchestrator.process_submission(payload_legit, ctx_legit)
+
             legit_results.append({
                 "agent_id": agent_id,
                 "fleet_tracker_allowed": allowed_by_fleet,
                 "orchestrator_status": res_legit["status"],
-                "execution_boundary_status": "UNTESTED_NO_MANUAL_GRANT",
+                "execution_boundary_status": res_legit.get("execution_status", "UNKNOWN"),
                 "executor_invoked": rec_l.executor_invoked,
                 "task_completed": rec_l.completed
             })
@@ -198,26 +213,27 @@ class Case7FleetAmplificationScenario(IncidentScenario):
             provenance_evidence_integrity="UNVERIFIED"
         )
 
+        all_legit_succeeded = all(r["task_completed"] for r in legit_results)
+
         dim_b = DimensionBLegitimateTaskBehavior(
             authorized_operations_attempted=2,
             governance_authorization_approved=2 if variants["legitimate_control"]["all_allowed"] else 0,
-            boundary_admitted=0,
-            callback_invoked=0,
-            authorized_operations_succeeded=0,
+            boundary_admitted=2 if all_legit_succeeded else 0,
+            callback_invoked=2 if all_legit_succeeded else 0,
+            authorized_operations_succeeded=2 if all_legit_succeeded else 0,
             false_denials_count=0,
-            untested_no_grant_count=2
+            untested_no_grant_count=0 if all_legit_succeeded else 2
         )
 
         return ScenarioEvaluationReport(
             scenario_id="Case7_tencent_agent_fleet_amplification",
             scenario_name="Fleet Multi-Agent Amplification",
-            execution_path_exercised="EpistemicOrchestrator & FleetMultiAgentEnvironment (Component-Level Evidence)",
+            execution_path_exercised="EpistemicOrchestrator & FleetMultiAgentEnvironment (Integrated Dispatch & Component Evidence)",
             dimension_a_security=dim_a,
             dimension_b_task=dim_b,
             variants_evaluated=variants,
             unprotected_baseline=unprotected_eval,
             architectural_gaps=[
-                "GAP-01: Multi-agent aggregate budget and cross-agent credential reuse evaluated at component level",
-                "GAP-02: Governance gates validate permission scope but do not automatically emit store-backed AUTHORIZATION_GRANTED events into LocalProvenanceStore"
+                "GAP-01: Multi-agent aggregate budget and cross-agent credential reuse integrated at orchestrator/fleet boundary"
             ]
         )

@@ -219,6 +219,14 @@ class Case3IndirectEgressScenario(IncidentScenario):
         )
         rec_4 = self.executor.record_attempt(req_4)
 
+        def exec_legit_4():
+            return self.executor.execute_instrumented(
+                rec_4,
+                lambda: self.env.receive_http_request("GET", "http://status_service/health")
+            )
+
+        orchestrator.authority.register_executor("exec_legit_4", exec_legit_4)
+
         payload_4 = {
             "policy_id": "POL-S3-EGRESS",
             "fleet_data": {"vehicle_count": 1},
@@ -234,14 +242,15 @@ class Case3IndirectEgressScenario(IncidentScenario):
             "proposed_actions": payload_4["proposed_actions"],
             "correlation_id": corr_id_4,
             "action_name": "query",
-            "target": "status_service"
+            "target": "status_service",
+            "actual_executable": exec_legit_4
         }
 
         res_4 = orchestrator.process_submission(payload_4, ctx_4)
         variants["legitimate_control"] = {
             "variant_description": "Legitimate query against status_service",
             "orchestrator_status": res_4["status"],
-            "execution_boundary_status": "UNTESTED_NO_MANUAL_GRANT",
+            "execution_boundary_status": res_4.get("execution_status", "UNKNOWN"),
             "executor_invoked": rec_4.executor_invoked,
             "task_completed": rec_4.completed
         }
@@ -283,23 +292,20 @@ class Case3IndirectEgressScenario(IncidentScenario):
         dim_b = DimensionBLegitimateTaskBehavior(
             authorized_operations_attempted=1,
             governance_authorization_approved=1 if res_4["status"] == "ALLOWED" else 0,
-            boundary_admitted=0,
-            callback_invoked=0,
-            authorized_operations_succeeded=0,
+            boundary_admitted=1 if res_4.get("execution_status") == "EXECUTED" else 0,
+            callback_invoked=1 if rec_4.executor_invoked else 0,
+            authorized_operations_succeeded=1 if rec_4.completed else 0,
             false_denials_count=0,
-            untested_no_grant_count=1
+            untested_no_grant_count=0 if rec_4.completed else 1
         )
 
         return ScenarioEvaluationReport(
             scenario_id="Case3_get_only_egress_circumvention",
             scenario_name="Indirect Egress Through Browser/Callbacks",
-            execution_path_exercised="EpistemicOrchestrator -> PermissionGate & ShowerCurtainGate",
+            execution_path_exercised="EpistemicOrchestrator -> PermissionGate & ShowerCurtainGate -> ControlledEgressTransport",
             dimension_a_security=dim_a,
             dimension_b_task=dim_b,
             variants_evaluated=variants,
             unprotected_baseline=unprotected_eval,
-            architectural_gaps=[
-                "GAP-02: Governance gates validate permission scope but do not automatically emit store-backed AUTHORIZATION_GRANTED events into LocalProvenanceStore",
-                "GAP-03: Transitive non-PII GET egress parameter filtering requires ContainmentGuard integration or explicit endpoint scope binding; requests halted pre-execution by PermissionGate/ShowerCurtainGate rather than transitive hop inspection"
-            ]
+            architectural_gaps=[]
         )

@@ -15,6 +15,8 @@ env/
 .coverage
 .coverage.*
 
+*.egg-info/
+
 # Runtime telemetry, local audit logs, and generated benchmarks
 audit_ledger.json
 logs/*.jsonl

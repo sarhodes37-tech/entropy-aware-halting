@@ -162,6 +162,14 @@ class Case2GovernmentAuthorizationBypassScenario(IncidentScenario):
         )
         rec_3 = self.executor.record_attempt(req_3)
 
+        def exec_legit_3():
+            return self.executor.execute_instrumented(
+                rec_3,
+                lambda: self.env.query_public_census()
+            )
+
+        orchestrator.authority.register_executor("exec_legit_3", exec_legit_3)
+
         payload_3 = {
             "policy_id": "POL-S2-GOV",
             "fleet_data": {"vehicle_count": 1},
@@ -177,14 +185,15 @@ class Case2GovernmentAuthorizationBypassScenario(IncidentScenario):
             "proposed_actions": payload_3["proposed_actions"],
             "correlation_id": corr_id_3,
             "action_name": "read",
-            "target": "gov_public_census_api"
+            "target": "gov_public_census_api",
+            "actual_executable": exec_legit_3
         }
 
         res_3 = orchestrator.process_submission(payload_3, ctx_3)
         variants["legitimate_control"] = {
             "variant_description": "Read public census statistics within allowed scope",
             "orchestrator_status": res_3["status"],
-            "execution_boundary_status": "UNTESTED_NO_MANUAL_GRANT",
+            "execution_boundary_status": res_3.get("execution_status", "UNKNOWN"),
             "executor_invoked": rec_3.executor_invoked,
             "task_completed": rec_3.completed
         }
@@ -225,20 +234,20 @@ class Case2GovernmentAuthorizationBypassScenario(IncidentScenario):
         dim_b = DimensionBLegitimateTaskBehavior(
             authorized_operations_attempted=1,
             governance_authorization_approved=1 if res_3["status"] == "ALLOWED" else 0,
-            boundary_admitted=0,
-            callback_invoked=0,
-            authorized_operations_succeeded=0,
+            boundary_admitted=1 if res_3.get("execution_status") == "EXECUTED" else 0,
+            callback_invoked=1 if rec_3.executor_invoked else 0,
+            authorized_operations_succeeded=1 if rec_3.completed else 0,
             false_denials_count=0,
-            untested_no_grant_count=1
+            untested_no_grant_count=0 if rec_3.completed else 1
         )
 
         return ScenarioEvaluationReport(
             scenario_id="Case2_government_authorization_bypass",
             scenario_name="Government Data Authorization Bypass",
-            execution_path_exercised="EpistemicOrchestrator -> PermissionGate (Scope Target Binding)",
+            execution_path_exercised="EpistemicOrchestrator -> PermissionGate -> TrustedExecutionBoundary",
             dimension_a_security=dim_a,
             dimension_b_task=dim_b,
             variants_evaluated=variants,
             unprotected_baseline=unprotected_eval,
-            architectural_gaps=["GAP-02: Governance gates validate permission scope but do not automatically emit store-backed AUTHORIZATION_GRANTED events into LocalProvenanceStore"]
+            architectural_gaps=[]
         )
