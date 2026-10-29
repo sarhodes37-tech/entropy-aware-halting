@@ -18,6 +18,11 @@ from typing import Dict, Any, Optional, Set
 from epistemicos.shower_curtain.detector import SensitivityCategory, DetectionResult
 
 
+class VaultAccessError(Exception):
+    """Raised when access to a vault persistence resource is denied or fails."""
+    pass
+
+
 @functools.lru_cache(maxsize=2048)
 def _get_placeholder_pattern(placeholder: str) -> re.Pattern:
     """Compiles and caches word-boundary regex patterns for placeholders."""
@@ -149,6 +154,17 @@ class LocalMappingVault:
             rehydrated = pattern.sub(lambda _: raw_value, rehydrated)
 
         return rehydrated
+
+    def load_from_file(self, path: str) -> bytes:
+        """
+        Reads raw binary vault data from the specified path.
+        Raises VaultAccessError if a PermissionError is encountered.
+        """
+        try:
+            with open(path, 'rb') as f:
+                return f.read()
+        except PermissionError as e:
+            raise VaultAccessError(f"Access denied: {e}")
 
     def clear_session(self, session_id: str) -> None:
         """Wipes all mapping data for a given session."""

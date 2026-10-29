@@ -13,6 +13,8 @@ import os
 import tempfile
 import concurrent.futures
 
+from unittest.mock import mock_open, patch
+
 from epistemicos.shower_curtain import (
     ShowerCurtainEngine,
     ShowerCurtainGate,
@@ -23,6 +25,7 @@ from epistemicos.shower_curtain import (
     PrivacyPolicy,
     PrivacyTreatment,
     LocalMappingVault,
+    VaultAccessError,
     ContextMinimizationBroker,
     ContextChunk,
     MarginalPrivacyUtilityEvaluator
@@ -713,6 +716,23 @@ def test_shower_curtain_miscellaneous_uncovered_branches(engine):
 
     # Non-existent session rehydration
     assert engine.vault.rehydrate("non_existent_sess_123", "text") == "text"
+
+
+def test_vault_load_from_file_permission_error_raises_vault_access_error(tmp_path):
+    """Verifies that PermissionError during file read raises VaultAccessError with 'Access denied' message."""
+    vault = LocalMappingVault()
+
+    # 1. Permission error mocked path
+    with patch("builtins.open", side_effect=PermissionError("Permission denied")):
+        with pytest.raises(VaultAccessError) as exc_info:
+            vault.load_from_file("protected_file.dat")
+        assert "Access denied: Permission denied" in str(exc_info.value)
+
+    # 2. Happy path with real file
+    test_file = tmp_path / "vault_data.bin"
+    test_file.write_bytes(b"vault_secret_content")
+    data = vault.load_from_file(str(test_file))
+    assert data == b"vault_secret_content"
 
 
 def test_transformer_exception_fails_closed_and_blocks_egress():

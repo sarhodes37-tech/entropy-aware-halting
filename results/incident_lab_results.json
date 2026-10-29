@@ -1,14 +1,14 @@
 {
   "metadata": {
     "evaluation_suite_version": "2.3.0",
-    "evaluated_git_commit": "cdd7e0a9811c0332895f7ac3e1a66759fb5a2cea",
+    "evaluated_git_commit": "00d2f9cf9fa37e5ec67ccef3ac6a781c459cb1f0",
     "working_tree_status": "DIRTY",
-    "uncommitted_tree_digest": "a7842347ea7a032cb073cb823bb774956b13098ba657e28d8682b9921bdc76ea",
+    "uncommitted_tree_digest": "a129be95ceb8dd286432e3709e0a0ab275d48dca658073ba7acb0e70e59dfd84",
     "tree_digest_algorithm": "Full 64-char SHA-256 over deterministic POSIX sorted inventory of HEAD commit, git status -uall paths, status codes, symlink targets, deletions, and actual raw file bytes.",
     "evaluation_notes": "Evaluation executed against uncommitted working tree prior to report persistence commit.",
-    "timestamp": "2026-10-29T09:28:08Z",
+    "timestamp": "2026-10-29T10:33:27Z",
     "total_scenarios_evaluated": 7,
-    "total_runtime_seconds": 1.468,
+    "total_runtime_seconds": 0.166,
     "environment": "Isolated Incident-Derived Security Test Lab (Synthetic Fixtures / Local Networking Only)"
   },
   "scenarios": {
@@ -446,13 +446,6 @@
               "orchestrator_status": "HALTED"
             },
             {
-              "agent_id": "Agent-3",
-              "destination": "http://fleet-target-2.org/query",
-              "credential": null,
-              "fleet_tracker_allowed": true,
-              "orchestrator_status": "HALTED"
-            },
-            {
               "agent_id": "Agent-2",
               "destination": "http://fleet-target-1.org/query",
               "credential": "EXPOSED-FLEET-KEY-777",
@@ -462,6 +455,13 @@
             {
               "agent_id": "Agent-4",
               "destination": "http://fleet-target-3.org/query",
+              "credential": null,
+              "fleet_tracker_allowed": true,
+              "orchestrator_status": "HALTED"
+            },
+            {
+              "agent_id": "Agent-3",
+              "destination": "http://fleet-target-2.org/query",
               "credential": null,
               "fleet_tracker_allowed": true,
               "orchestrator_status": "HALTED"
