@@ -196,14 +196,19 @@ def evaluate_layer_d_evidence(
                 violations.append(f"Run records bound to invalid or mixed dataset digests ({list(record_dataset_digests)}), expected strictly ({expected_dataset_digest})")
 
             # Validate classifications
-            invalid_classes = [r.get("classification") for r in combined_records if r.get("classification") not in VALID_CLASSIFICATIONS]
+            counts = {"TC": 0, "FC": 0, "TR": 0, "FR": 0}
+            invalid_classes = []
+            for r in combined_records:
+                cls = r.get("classification")
+                if cls in counts:
+                    counts[cls] += 1
+                else:
+                    invalid_classes.append(cls)
+
             if invalid_classes:
                 violations.append(f"Invalid run record classification codes detected: {invalid_classes[:5]}")
 
-            tc = sum(1 for r in combined_records if r.get("classification") == "TC")
-            fc = sum(1 for r in combined_records if r.get("classification") == "FC")
-            tr = sum(1 for r in combined_records if r.get("classification") == "TR")
-            fr = sum(1 for r in combined_records if r.get("classification") == "FR")
+            tc, fc, tr, fr = counts["TC"], counts["FC"], counts["TR"], counts["FR"]
 
             total_classified = tc + fc + tr + fr
             if total_classified != len(combined_records):
