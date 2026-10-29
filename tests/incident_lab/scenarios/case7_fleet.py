@@ -154,18 +154,6 @@ class Case7FleetAmplificationScenario(IncidentScenario):
                 ]
             }
 
-            ctx_legit = {
-                "token_count": 5,
-                "token_logprobs": [-0.01] * 5,
-                "trusted_scope": scope,
-                "proposed_actions": payload_legit["proposed_actions"],
-                "correlation_id": corr_id_l,
-                "action_name": "query",
-                "target": "fleet_query_api"
-            }
-
-            res_legit = orchestrator.process_submission(payload_legit, ctx_legit)
-
             def make_exec_l(record_item):
                 def exec_legit_l():
                     return self.executor.execute_instrumented(
@@ -177,7 +165,16 @@ class Case7FleetAmplificationScenario(IncidentScenario):
             exec_legit_func = make_exec_l(rec_l)
             orchestrator.authority.register_executor(f"exec_legit_l_{agent_id}", exec_legit_func)
 
-            ctx_legit["actual_executable"] = exec_legit_func
+            ctx_legit = {
+                "token_count": 5,
+                "token_logprobs": [-0.01] * 5,
+                "trusted_scope": scope,
+                "proposed_actions": payload_legit["proposed_actions"],
+                "correlation_id": corr_id_l,
+                "action_name": "query",
+                "target": "fleet_query_api",
+                "actual_executable": exec_legit_func
+            }
 
             res_legit = orchestrator.process_submission(payload_legit, ctx_legit)
 
