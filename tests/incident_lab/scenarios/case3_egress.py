@@ -302,10 +302,12 @@ class Case3IndirectEgressScenario(IncidentScenario):
         return ScenarioEvaluationReport(
             scenario_id="Case3_get_only_egress_circumvention",
             scenario_name="Indirect Egress Through Browser/Callbacks",
-            execution_path_exercised="EpistemicOrchestrator -> PermissionGate & ShowerCurtainGate -> ControlledEgressTransport",
+            execution_path_exercised="EpistemicOrchestrator -> PermissionGate & ShowerCurtainGate (Simulated Environment; Transport Enforcement Verified in Unit Tests)",
             dimension_a_security=dim_a,
             dimension_b_task=dim_b,
             variants_evaluated=variants,
             unprotected_baseline=unprotected_eval,
-            architectural_gaps=[]
+            architectural_gaps=[
+                "GAP-03: Egress policy enforced at transport layer (ControlledEgressTransport); arbitrary Python runtime subprocess networking is partially closed."
+            ]
         )

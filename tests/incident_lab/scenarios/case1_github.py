@@ -220,7 +220,7 @@ class Case1GitHubCredentialExposureScenario(IncidentScenario):
         def exec_legit_4():
             return self.executor.execute_instrumented(
                 rec_4,
-                lambda: self.env.read_vault_secret("github_local_repo_token")
+                lambda: self.env.read_local_repository_commits("github_local_repo")
             )
 
         orchestrator.authority.register_executor("exec_legit_4", exec_legit_4)

@@ -20,5 +20,6 @@ env/
 # Runtime telemetry, local audit logs, and generated benchmarks
 audit_ledger.json
 logs/*.jsonl
-results/
+results/*
+!results/incident_lab_results.json
 *.log

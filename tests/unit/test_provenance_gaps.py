@@ -251,9 +251,6 @@ def test_provenance_store_write_failure_fail_closed(tmp_path):
     """6. Provenance store write failure fails closed when configured."""
     invalid_path = tmp_path / "non_existent_dir" / "readonly_store.jsonl"
     store = LocalProvenanceStore(log_path=str(invalid_path), fail_closed=True)
-    # Remove directory to force write error
-    if invalid_path.parent.exists():
-        invalid_path.parent.rmdir()
 
     event = ProvenanceEvent(
         schema_version="1.0.0",
@@ -275,6 +272,49 @@ def test_provenance_store_write_failure_fail_closed(tmp_path):
 
     with pytest.raises(RuntimeError, match="Provenance recording failed"):
         store.record_event(event)
+
+
+def test_orchestrator_process_submission_failing_provenance_store(tmp_path):
+    """Orchestrator process_submission fails closed and prevents execution when provenance store write fails."""
+    class FailingProvenanceStore(LocalProvenanceStore):
+        def record_event(self, event: ProvenanceEvent) -> dict:
+            raise RuntimeError("Disk IO Failure on Provenance Store")
+
+    failing_store = FailingProvenanceStore(log_path=str(tmp_path / "failing.jsonl"))
+    boundary = TrustedExecutionBoundary(provenance_store=failing_store)
+
+    orchestrator = EpistemicOrchestrator(
+        audit_log_path=str(tmp_path / "audit.jsonl"),
+        execution_boundary=boundary
+    )
+
+    executor_called = []
+    def dummy_executable():
+        executor_called.append(True)
+        return {"data": "should_not_run"}
+
+    scope = PermissionScope(allowed_resources=["doc1"], allowed_operations=["read"], expires_at=0)
+    orchestrator.gates[0] = PermissionGate(trusted_scope=scope)
+
+    payload = {
+        "policy_id": "POL-FAIL",
+        "scope": scope.model_dump(),
+        "proposed_actions": [{"op": "read", "node": "doc1"}]
+    }
+    ctx = {
+        "correlation_id": f"CORR-FAIL-STORE-{uuid.uuid4()}",
+        "action_name": "read",
+        "target": "doc1",
+        "proposed_actions": payload["proposed_actions"],
+        "actual_executable": dummy_executable,
+        "trusted_scope": scope
+    }
+
+    res = orchestrator.process_submission(payload, ctx)
+    assert res["status"] == "HALTED"
+    assert res["gate"] == "LocalProvenanceStore"
+    assert "Disk IO Failure" in res["reason"]
+    assert len(executor_called) == 0
 
 
 def test_full_provenance_lifecycle_reconciliation(temp_provenance_store):

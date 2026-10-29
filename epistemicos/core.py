@@ -350,26 +350,25 @@ class EpistemicOrchestrator:
                 try:
                     store.record_event(proposed_event)
                 except Exception as prop_err:
-                    if getattr(store, "fail_closed", False):
-                        telemetry = profiler.get_telemetry()
-                        revoked_ids = self.vector_manager.revoke_trajectory(traj_id)
-                        actual_revoked_count = len(revoked_ids)
-                        reason_msg = f"Provenance store write failure on ACTION_PROPOSED: {str(prop_err)}"
-                        self._log_pipeline_event(
-                            event_type=AuditLogLevel.HALT,
-                            gate_name="LocalProvenanceStore",
-                            reason=f"{reason_msg} | Vectors Revoked: {actual_revoked_count}",
-                            masked_payload=masked_payload,
-                            cpr=cpr,
-                            telemetry=telemetry
-                        )
-                        return {
-                            "status": "HALTED",
-                            "execution_status": "DENIED",
-                            "gate": "LocalProvenanceStore",
-                            "reason": reason_msg,
-                            "vectors_revoked": actual_revoked_count
-                        }
+                    telemetry = profiler.get_telemetry()
+                    revoked_ids = self.vector_manager.revoke_trajectory(traj_id)
+                    actual_revoked_count = len(revoked_ids)
+                    reason_msg = f"Provenance store write failure on ACTION_PROPOSED: {str(prop_err)}"
+                    self._log_pipeline_event(
+                        event_type=AuditLogLevel.HALT,
+                        gate_name="LocalProvenanceStore",
+                        reason=f"{reason_msg} | Vectors Revoked: {actual_revoked_count}",
+                        masked_payload=masked_payload,
+                        cpr=cpr,
+                        telemetry=telemetry
+                    )
+                    return {
+                        "status": "HALTED",
+                        "execution_status": "DENIED",
+                        "gate": "LocalProvenanceStore",
+                        "reason": reason_msg,
+                        "vectors_revoked": actual_revoked_count
+                    }
 
             result = self._evaluate_gates(payload_dump, context)
 
@@ -400,8 +399,9 @@ class EpistemicOrchestrator:
                     )
                     try:
                         store.record_event(gate_denied_event)
-                    except Exception:
-                        pass
+                    except Exception as gate_prov_err:
+                        # Ensure provenance write failure on denial halts fail-closed
+                        reason_msg = f"{reason_msg} (Provenance recording failed: {str(gate_prov_err)})"
 
                 self._log_pipeline_event(
                     event_type=AuditLogLevel.HALT,
