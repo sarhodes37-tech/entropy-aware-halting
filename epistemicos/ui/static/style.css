@@ -855,6 +855,216 @@ h2 {
   box-shadow: inset 3px 0 0 var(--accent-interactive);
 }
 
+/* -------------------------------------------------------------------------
+ * Mobile Drill-In Navigation Controls & Context Headers
+ * ------------------------------------------------------------------------- */
+.trace-nav-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  background-color: var(--bg-surface);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  padding: 0.5rem 0.85rem;
+  margin-bottom: 1rem;
+  flex-wrap: wrap;
+}
+
+.btn-back {
+  background-color: var(--bg-elevated);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: 0.8rem;
+  font-weight: 600;
+  padding: 0.35rem 0.75rem;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  transition: all 0.15s ease;
+  min-height: 44px; /* Touch target size */
+}
+
+.btn-back:hover {
+  background-color: var(--bg-hover);
+  border-color: var(--accent-interactive);
+  color: var(--accent-interactive);
+}
+
+.btn-back:focus-visible {
+  outline: 2px solid var(--accent-interactive);
+  outline-offset: -2px;
+}
+
+.btn-back .back-icon {
+  font-size: 0.9rem;
+}
+
+.trace-breadcrumb {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.trace-breadcrumb strong {
+  color: var(--accent-primary);
+}
+
+/* -------------------------------------------------------------------------
+ * Execution Lifecycle Timeline Sequence Visualization
+ * ------------------------------------------------------------------------- */
+.lifecycle-timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  position: relative;
+  margin: 0.5rem 0;
+}
+
+.lifecycle-stage {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.85rem;
+  position: relative;
+  padding-bottom: 1.25rem;
+}
+
+.lifecycle-stage:last-child {
+  padding-bottom: 0;
+}
+
+.lifecycle-stage-connector {
+  position: absolute;
+  top: 24px;
+  left: 15px;
+  bottom: 0;
+  width: 2px;
+  background-color: var(--border-default);
+  z-index: 1;
+}
+
+.lifecycle-stage:last-child .lifecycle-stage-connector {
+  display: none;
+}
+
+.lifecycle-stage-node {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background-color: var(--bg-elevated);
+  border: 2px solid var(--border-default);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  z-index: 2;
+  flex-shrink: 0;
+  transition: all 0.15s ease;
+}
+
+.lifecycle-stage.active .lifecycle-stage-node {
+  border-color: var(--accent-interactive);
+  color: var(--accent-interactive);
+  box-shadow: 0 0 8px rgba(100, 222, 217, 0.4);
+}
+
+.lifecycle-stage.status-recorded .lifecycle-stage-node {
+  border-color: var(--accent-primary);
+  background-color: var(--bg-elevated);
+  color: var(--accent-primary);
+}
+
+.lifecycle-stage.status-verified .lifecycle-stage-node {
+  border-color: var(--status-verified-fg);
+  background-color: var(--status-verified-bg);
+  color: var(--status-verified-fg);
+}
+
+.lifecycle-stage.status-halted .lifecycle-stage-node {
+  border-color: var(--status-halted-fg);
+  background-color: var(--status-halted-bg);
+  color: var(--status-halted-fg);
+}
+
+.lifecycle-stage.status-failed .lifecycle-stage-node {
+  border-color: var(--status-failed-fg);
+  background-color: var(--status-failed-bg);
+  color: var(--status-failed-fg);
+}
+
+.lifecycle-stage.status-unknown .lifecycle-stage-node {
+  border-color: var(--status-unknown-fg);
+  background-color: var(--status-unknown-bg);
+  color: var(--status-unknown-fg);
+}
+
+.lifecycle-stage-card {
+  flex: 1;
+  background-color: var(--bg-base);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  padding: 0.75rem 0.85rem;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  min-height: 44px;
+}
+
+.lifecycle-stage-card:hover {
+  background-color: var(--bg-hover);
+  border-color: var(--border-accent);
+}
+
+.lifecycle-stage.selected .lifecycle-stage-card {
+  border-color: var(--accent-interactive);
+  background-color: var(--bg-elevated);
+  box-shadow: inset 3px 0 0 var(--accent-interactive);
+}
+
+.lifecycle-stage-card:focus-visible {
+  outline: 2px solid var(--accent-interactive);
+  outline-offset: -2px;
+}
+
+.lifecycle-stage-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.35rem;
+  flex-wrap: wrap;
+}
+
+.lifecycle-stage-title {
+  font-weight: 700;
+  font-size: 0.85rem;
+  color: var(--text-primary);
+}
+
+.lifecycle-stage-body {
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  line-height: 1.35;
+  word-break: break-word;
+}
+
+.lifecycle-stage-meta {
+  font-family: var(--font-mono);
+  font-size: 0.725rem;
+  color: var(--text-muted);
+  margin-top: 0.35rem;
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
 /* Technical Banners & Controls */
 .disclaimer-banner {
   background-color: var(--bg-subtle);
@@ -1164,8 +1374,37 @@ h2 {
     grid-template-columns: 1fr;
   }
 
+  /* Mobile Drill-In Panels for Trace Explorer (< 1024px) */
+  .trace-layout.mobile-view-list #area-trace-list {
+    display: block !important;
+  }
+  .trace-layout.mobile-view-list .trace-detail-container {
+    display: none !important;
+  }
+
+  .trace-layout.mobile-view-detail #area-trace-list {
+    display: none !important;
+  }
+  .trace-layout.mobile-view-detail .trace-detail-container {
+    display: flex !important;
+  }
+  .trace-layout.mobile-view-detail #area-evidence-inspector {
+    display: none !important;
+  }
+
+  .trace-layout.mobile-view-event #area-trace-list {
+    display: none !important;
+  }
+  .trace-layout.mobile-view-event .trace-detail-container {
+    display: flex !important;
+  }
+  .trace-layout.mobile-view-event #area-evidence-inspector {
+    display: block !important;
+  }
+
   .trace-list-container {
-    max-height: 320px;
+    max-height: calc(100vh - 220px);
+    min-height: 320px;
   }
 
   .evidence-inspector-grid {

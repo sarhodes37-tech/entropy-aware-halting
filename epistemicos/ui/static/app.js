@@ -19,6 +19,7 @@ document.addEventListener('DOMContentLoaded', () => {
       tracesData: [],
       selectedTraceId: null,
       selectedEventSeq: null,
+      mobileTraceLevel: 'list', // 'list', 'detail', or 'event'
       provenanceData: null,
       selectedRecordId: null,
       benchmarkData: null,
@@ -114,6 +115,31 @@ document.addEventListener('DOMContentLoaded', () => {
         statusFilter.addEventListener('change', (e) => {
           this.state.traceFilterStatus = e.target.value;
           this.renderTracesList();
+        });
+      }
+
+      // Mobile Drill-In Back Button Handlers
+      const btnBackToList = document.getElementById('btn-trace-back-to-list');
+      if (btnBackToList) {
+        btnBackToList.addEventListener('click', () => {
+          this.updateMobileTraceView('list');
+          // Return focus to selected trace item if possible
+          if (this.state.selectedTraceId) {
+            const selectedItem = document.querySelector('#trace-list .trace-item.active');
+            if (selectedItem) selectedItem.focus();
+          }
+        });
+      }
+
+      const btnBackToDetail = document.getElementById('btn-trace-back-to-detail');
+      if (btnBackToDetail) {
+        btnBackToDetail.addEventListener('click', () => {
+          this.updateMobileTraceView('detail');
+          // Return focus to selected stage card if possible
+          if (this.state.selectedEventSeq !== null && this.state.selectedEventSeq !== undefined) {
+            const selectedStage = document.querySelector('.lifecycle-stage.selected .lifecycle-stage-card');
+            if (selectedStage) selectedStage.focus();
+          }
         });
       }
 
@@ -229,9 +255,61 @@ document.addEventListener('DOMContentLoaded', () => {
       });
 
       if (tabName === 'overview') this.loadOverview();
-      else if (tabName === 'traces') this.loadTraces();
+      else if (tabName === 'traces') {
+        this.loadTraces();
+        const hasSelectedEvent = this.state.selectedEventSeq !== null && this.state.selectedEventSeq !== undefined;
+        this.updateMobileTraceView(this.state.selectedTraceId ? (hasSelectedEvent ? 'event' : 'detail') : 'list');
+      }
       else if (tabName === 'provenance') this.loadProvenance();
       else if (tabName === 'benchmarks') this.loadBenchmarks();
+    },
+
+    updateMobileTraceView(level) {
+      this.state.mobileTraceLevel = level; // 'list', 'detail', or 'event'
+      const traceLayout = document.getElementById('trace-layout');
+      const traceNavBar = document.getElementById('trace-nav-bar');
+      const btnBackToList = document.getElementById('btn-trace-back-to-list');
+      const btnBackToDetail = document.getElementById('btn-trace-back-to-detail');
+      const breadcrumbEl = document.getElementById('trace-breadcrumb');
+
+      if (traceLayout) {
+        traceLayout.classList.remove('mobile-view-list', 'mobile-view-detail', 'mobile-view-event');
+        traceLayout.classList.add(`mobile-view-${level}`);
+      }
+
+      if (!traceNavBar) return;
+
+      if (level === 'list' || !this.state.selectedTraceId) {
+        traceNavBar.classList.add('hidden');
+        if (btnBackToList) btnBackToList.classList.add('hidden');
+        if (btnBackToDetail) btnBackToDetail.classList.add('hidden');
+        if (breadcrumbEl) breadcrumbEl.replaceChildren();
+      } else if (level === 'detail') {
+        traceNavBar.classList.remove('hidden');
+        if (btnBackToList) btnBackToList.classList.remove('hidden');
+        if (btnBackToDetail) btnBackToDetail.classList.add('hidden');
+        if (breadcrumbEl) {
+          breadcrumbEl.replaceChildren();
+          breadcrumbEl.appendChild(document.createTextNode('Trace: '));
+          const strong = document.createElement('strong');
+          strong.textContent = this.state.selectedTraceId;
+          breadcrumbEl.appendChild(strong);
+        }
+      } else if (level === 'event') {
+        traceNavBar.classList.remove('hidden');
+        if (btnBackToList) btnBackToList.classList.add('hidden');
+        if (btnBackToDetail) btnBackToDetail.classList.remove('hidden');
+        if (breadcrumbEl) {
+          breadcrumbEl.replaceChildren();
+          breadcrumbEl.appendChild(document.createTextNode('Trace: '));
+          const strong = document.createElement('strong');
+          strong.textContent = this.state.selectedTraceId;
+          breadcrumbEl.appendChild(strong);
+          if (this.state.selectedEventSeq !== null && this.state.selectedEventSeq !== undefined) {
+            breadcrumbEl.appendChild(document.createTextNode(` / Event #${this.state.selectedEventSeq}`));
+          }
+        }
+      }
     },
 
     // -------------------------------------------------------------------------
@@ -308,6 +386,9 @@ document.addEventListener('DOMContentLoaded', () => {
       if (st === 'VERIFIED') {
         span.className = 'status-badge status-badge-verified';
         span.textContent = '✓ VERIFIED';
+      } else if (st === 'RECORDED') {
+        span.className = 'status-badge status-badge-not-established';
+        span.textContent = '• RECORDED';
       } else if (st === 'FAILED' || st === 'FAIL') {
         span.className = 'status-badge status-badge-failed';
         span.textContent = '✗ FAILED';
@@ -806,8 +887,11 @@ document.addEventListener('DOMContentLoaded', () => {
       if (!correlationId) {
         if (emptyDiv) emptyDiv.classList.remove('hidden');
         if (contentDiv) contentDiv.classList.add('hidden');
+        this.updateMobileTraceView('list');
         return;
       }
+
+      this.updateMobileTraceView('detail');
 
       // Fetch trace detail
       try {
@@ -1105,249 +1189,295 @@ document.addEventListener('DOMContentLoaded', () => {
       }
       container.appendChild(recCard);
 
-      // Area C & B: Observed Event Timeline & Dedicated Evidence Inspector
-      const eventsCard = document.createElement('div');
-      eventsCard.className = 'card';
+      // Area C & B: Execution Lifecycle Sequence Visualization & Timeline
+      const lifecycleCard = document.createElement('div');
+      lifecycleCard.className = 'card';
 
-      const eventsHeader = document.createElement('div');
-      eventsHeader.className = 'card-header';
-      eventsHeader.textContent = 'Observed Chronological Event Timeline';
-      eventsCard.appendChild(eventsHeader);
+      const lifecycleHeader = document.createElement('div');
+      lifecycleHeader.className = 'card-header';
+
+      const headerTitle = document.createElement('span');
+      headerTitle.textContent = 'Recorded Execution Lifecycle Sequence';
+
+      const countBadge = document.createElement('span');
+      countBadge.className = 'status-badge status-badge-not-established';
+      countBadge.textContent = `${events.length} RECORDED EVENT(S)`;
+
+      lifecycleHeader.appendChild(headerTitle);
+      lifecycleHeader.appendChild(countBadge);
+      lifecycleCard.appendChild(lifecycleHeader);
 
       if (events.length === 0) {
         const noEv = document.createElement('p');
         noEv.className = 'text-muted text-center';
         noEv.style.padding = '1rem';
         noEv.textContent = 'No recorded provenance events exist for this execution trace correlation ID.';
-        eventsCard.appendChild(noEv);
+        lifecycleCard.appendChild(noEv);
       } else {
-        // Check for ambiguous or missing timestamps
-        let hasMissingOrAmbiguousTimestamps = false;
-        events.forEach(e => {
-          if (!e.timestamp || e.timestamp === 'UNKNOWN' || e.timestamp === 'N/A') {
-            hasMissingOrAmbiguousTimestamps = true;
-          }
-        });
+        // Completeness / Availability Warning
+        const isUnknown = trace.status === 'OUTCOME_UNKNOWN';
+        const hasReconciliationViolations = trace.reconciliation && !trace.reconciliation.valid;
 
-        if (hasMissingOrAmbiguousTimestamps) {
-          const ambigNotice = document.createElement('div');
-          ambigNotice.className = 'epistemic-disclaimer-box mb-1';
-          ambigNotice.style.borderColor = 'var(--status-halted-fg)';
-          ambigNotice.textContent = 'NOTICE: One or more recorded events lack a reliable timestamp. Displayed sequence ordering reflects append-only sequence numbers rather than strictly verified physical real-world time.';
-          eventsCard.appendChild(ambigNotice);
+        if (isUnknown || hasReconciliationViolations) {
+          const compWarning = document.createElement('div');
+          compWarning.className = 'epistemic-disclaimer-box mb-1';
+          compWarning.style.borderColor = 'var(--status-halted-border)';
+          compWarning.style.backgroundColor = 'var(--status-halted-bg)';
+
+          const warnTitle = document.createElement('strong');
+          warnTitle.className = 'text-warning';
+          warnTitle.textContent = 'LIFECYCLE COMPLETENESS WARNING: ';
+
+          const warnBody = document.createElement('span');
+          if (isUnknown && hasReconciliationViolations) {
+            warnBody.textContent = 'Trace outcome is OUTCOME_UNKNOWN and exhibits reconciliation violations. Available records do not establish a complete lifecycle.';
+          } else if (isUnknown) {
+            warnBody.textContent = 'Trace ends without a terminal outcome event (OUTCOME_UNKNOWN). Available records represent a partial execution history.';
+          } else {
+            warnBody.textContent = 'Trace exhibits reconciliation violations across the recorded sequence. Sequence integrity cannot be verified.';
+          }
+
+          compWarning.appendChild(warnTitle);
+          compWarning.appendChild(warnBody);
+          lifecycleCard.appendChild(compWarning);
         }
 
-        const tableResp = document.createElement('div');
-        tableResp.className = 'table-responsive';
+        // Timeline Container
+        const timeline = document.createElement('div');
+        timeline.className = 'lifecycle-timeline';
 
-        const table = document.createElement('table');
-        table.className = 'data-table';
-        table.setAttribute('aria-label', 'Recorded Events for Selected Trace');
+        events.forEach((ev, idx) => {
+          const isSelected = (this.state.selectedEventSeq !== null && this.state.selectedEventSeq !== undefined && ev.sequence_number === this.state.selectedEventSeq) ||
+            ((this.state.selectedEventSeq === null || this.state.selectedEventSeq === undefined) && idx === 0 && this.state.mobileTraceLevel === 'event');
 
-        const thead = document.createElement('thead');
-        thead.innerHTML = `
-          <tr>
-            <th>Seq #</th>
-            <th>Timestamp</th>
-            <th>Event Type</th>
-            <th>Source</th>
-            <th>Entry Hash</th>
-          </tr>
-        `;
-        table.appendChild(thead);
+          const stage = document.createElement('div');
+          let statusClass = 'status-recorded';
+          const type = ev.event_type || 'UNKNOWN';
 
-        const tbody = document.createElement('tbody');
+          if (type === 'AUTHORIZATION_DENIED') statusClass = 'status-failed';
+          else if (type === 'EGRESS_BLOCKED') statusClass = 'status-halted';
+          else if (type === 'EXECUTION_FAILED' || type === 'EXECUTION_INTERRUPTED') statusClass = 'status-failed';
+          else if (type === 'EXECUTION_SUCCEEDED') statusClass = 'status-recorded'; // Recorded outcome stage
 
-        events.forEach(ev => {
-          const isSelectedEvent = (this.state.selectedEventSeq === ev.sequence_number) ||
-            (!this.state.selectedEventSeq && ev.sequence_number === events[0].sequence_number);
+          stage.className = `lifecycle-stage ${statusClass} ${isSelected ? 'selected' : ''}`;
 
-          const tr = document.createElement('tr');
-          tr.className = `clickable ${isSelectedEvent ? 'selected' : ''}`;
-          tr.setAttribute('role', 'button');
-          tr.setAttribute('tabindex', '0');
-          tr.setAttribute('aria-selected', isSelectedEvent ? 'true' : 'false');
-          tr.setAttribute('aria-label', `Inspect event sequence ${ev.sequence_number}, type ${ev.event_type}`);
+          const connector = document.createElement('div');
+          connector.className = 'lifecycle-stage-connector';
 
-          tr.addEventListener('click', () => {
+          const node = document.createElement('div');
+          node.className = 'lifecycle-stage-node';
+          node.textContent = (ev.sequence_number !== null && ev.sequence_number !== undefined) ? ev.sequence_number : (idx + 1);
+
+          const stageCard = document.createElement('div');
+          stageCard.className = 'lifecycle-stage-card';
+          stageCard.setAttribute('role', 'button');
+          stageCard.setAttribute('tabindex', '0');
+          stageCard.setAttribute('aria-pressed', isSelected ? 'true' : 'false');
+          const seqDisplay = (ev.sequence_number !== null && ev.sequence_number !== undefined) ? ev.sequence_number : (idx + 1);
+          stageCard.setAttribute('aria-label', `Select lifecycle stage #${seqDisplay} ${type}`);
+
+          const handleSelectStage = () => {
             this.state.selectedEventSeq = ev.sequence_number;
+            this.updateMobileTraceView('event');
             this.renderTraceDetail(trace, container);
-          });
-          tr.addEventListener('keydown', (e) => {
+
+            // Shift focus to Evidence Inspector for keyboard users
+            const inspectorEl = document.getElementById('area-evidence-inspector');
+            if (inspectorEl) {
+              inspectorEl.setAttribute('tabindex', '-1');
+              inspectorEl.focus();
+            }
+          };
+
+          stageCard.addEventListener('click', handleSelectStage);
+          stageCard.addEventListener('keydown', (e) => {
             if (e.key === 'Enter' || e.key === ' ') {
               e.preventDefault();
-              this.state.selectedEventSeq = ev.sequence_number;
-              this.renderTraceDetail(trace, container);
+              handleSelectStage();
             }
           });
 
-          const tdSeq = document.createElement('td');
-          tdSeq.className = 'font-mono';
-          tdSeq.textContent = ev.sequence_number ?? '-';
+          const stageHeader = document.createElement('div');
+          stageHeader.className = 'lifecycle-stage-header';
 
-          const tdTs = document.createElement('td');
-          tdTs.className = 'font-mono';
-          tdTs.style.fontSize = '0.75rem';
-          tdTs.textContent = ev.timestamp || 'TIMESTAMP UNRECORDED';
+          const stageTitle = document.createElement('span');
+          stageTitle.className = 'lifecycle-stage-title';
+          stageTitle.textContent = type;
 
-          const tdType = document.createElement('td');
-          tdType.style.fontWeight = '600';
-          tdType.textContent = ev.event_type || 'UNKNOWN';
+          const stageBadge = this.createStatusBadge(
+            type === 'AUTHORIZATION_DENIED' ? 'FAILED' :
+            (type === 'EGRESS_BLOCKED' ? 'HALTED' :
+            (type === 'EXECUTION_FAILED' || type === 'EXECUTION_INTERRUPTED' ? 'FAILED' : 'RECORDED'))
+          );
 
-          const tdSource = document.createElement('td');
-          tdSource.textContent = ev.provenance_source || 'UNKNOWN';
+          stageHeader.appendChild(stageTitle);
+          stageHeader.appendChild(stageBadge);
 
-          const tdHash = document.createElement('td');
-          tdHash.className = 'font-mono';
-          tdHash.style.fontSize = '0.75rem';
-          const fullHash = ev.entry_hash || '';
-          tdHash.textContent = fullHash ? (fullHash.length > 18 ? fullHash.substring(0, 16) + '...' : fullHash) : 'N/A';
-          tdHash.title = fullHash;
+          const stageBody = document.createElement('div');
+          stageBody.className = 'lifecycle-stage-body';
+          let bodyText = `Source: ${ev.provenance_source || 'Unknown'}`;
+          if (ev.action_name) bodyText += ` • Action: ${ev.action_name}`;
+          if (ev.target) bodyText += ` ➔ ${ev.target}`;
+          stageBody.textContent = bodyText;
 
-          tr.appendChild(tdSeq);
-          tr.appendChild(tdTs);
-          tr.appendChild(tdType);
-          tr.appendChild(tdSource);
-          tr.appendChild(tdHash);
-          tbody.appendChild(tr);
+          const stageMeta = document.createElement('div');
+          stageMeta.className = 'lifecycle-stage-meta';
+
+          const tsSpan = document.createElement('span');
+          tsSpan.textContent = ev.timestamp ? `Time: ${ev.timestamp}` : 'Time: UNRECORDED';
+
+          const hashSpan = document.createElement('span');
+          const shortHash = ev.entry_hash ? (ev.entry_hash.length > 14 ? ev.entry_hash.substring(0, 12) + '...' : ev.entry_hash) : 'No Hash';
+          hashSpan.textContent = `Hash: ${shortHash}`;
+
+          stageMeta.appendChild(tsSpan);
+          stageMeta.appendChild(hashSpan);
+
+          stageCard.appendChild(stageHeader);
+          stageCard.appendChild(stageBody);
+          stageCard.appendChild(stageMeta);
+
+          stage.appendChild(connector);
+          stage.appendChild(node);
+          stage.appendChild(stageCard);
+
+          timeline.appendChild(stage);
         });
 
-        table.appendChild(tbody);
-        tableResp.appendChild(table);
-        eventsCard.appendChild(tableResp);
-
-        // Area C: Evidence Inspector Panel for Selected Event
-        const selectedEv = events.find(e => e.sequence_number === this.state.selectedEventSeq) || events[0];
-        if (selectedEv) {
-          const inspectorBox = document.createElement('div');
-          inspectorBox.id = 'area-evidence-inspector';
-          inspectorBox.style.marginTop = '1.25rem';
-          inspectorBox.style.borderTop = '1px solid var(--border-default)';
-          inspectorBox.style.paddingTop = '1rem';
-
-          const inspHeader = document.createElement('div');
-          inspHeader.style.display = 'flex';
-          inspHeader.style.justifyContent = 'space-between';
-          inspHeader.style.alignItems = 'center';
-          inspHeader.style.marginBottom = '0.75rem';
-          inspHeader.style.flexWrap = 'wrap';
-          inspHeader.style.gap = '0.5rem';
-
-          const inspTitle = document.createElement('h4');
-          inspTitle.style.fontSize = '0.9rem';
-          inspTitle.style.fontWeight = '700';
-          inspTitle.style.color = 'var(--accent-primary)';
-          inspTitle.textContent = `Evidence Inspector: Event #${selectedEv.sequence_number} (${selectedEv.event_type})`;
-
-          const inspCopyBtn = document.createElement('button');
-          inspCopyBtn.type = 'button';
-          inspCopyBtn.className = 'copy-btn';
-          inspCopyBtn.textContent = 'Copy Event Payload JSON';
-          inspCopyBtn.setAttribute('aria-label', `Copy full JSON payload for event sequence ${selectedEv.sequence_number}`);
-          inspCopyBtn.setAttribute('title', `Copy JSON payload for event sequence ${selectedEv.sequence_number}`);
-          inspCopyBtn.addEventListener('click', () => {
-            this.copyToClipboard(JSON.stringify(selectedEv, null, 2), inspCopyBtn);
-          });
-
-          inspHeader.appendChild(inspTitle);
-          inspHeader.appendChild(inspCopyBtn);
-          inspectorBox.appendChild(inspHeader);
-
-          // Grid Layout for Key Fields & Full Raw JSON Payload
-          const inspectorGrid = document.createElement('div');
-          inspectorGrid.className = 'evidence-inspector-grid';
-
-          // Field Inspector Breakdown Card
-          const fieldsCard = document.createElement('div');
-          fieldsCard.className = 'card';
-          fieldsCard.style.padding = '0.85rem';
-
-          const fieldsHeader = document.createElement('div');
-          fieldsHeader.className = 'card-header';
-          fieldsHeader.textContent = 'Structured Event Metadata';
-          fieldsCard.appendChild(fieldsHeader);
-
-          const fieldList = [
-            { label: 'Event ID', value: selectedEv.event_id, mono: true },
-            { label: 'Event Type', value: selectedEv.event_type, bold: true },
-            { label: 'Provenance Source', value: selectedEv.provenance_source },
-            { label: 'Sequence Number', value: selectedEv.sequence_number, mono: true },
-            { label: 'Timestamp', value: selectedEv.timestamp, mono: true },
-            { label: 'Correlation ID', value: selectedEv.correlation_id, mono: true, copyable: true },
-            { label: 'Request ID', value: selectedEv.request_id, mono: true, copyable: true },
-            { label: 'Action Name', value: selectedEv.action_name },
-            { label: 'Target Resource', value: selectedEv.target },
-            { label: 'Capability Token ID', value: selectedEv.authorization_token_id, mono: true, copyable: true },
-            { label: 'Canonical Request Digest', value: selectedEv.canonical_request_digest, mono: true, copyable: true },
-            { label: 'Policy Version', value: selectedEv.policy_version, mono: true },
-            { label: 'Previous Entry Hash', value: selectedEv.prev_hash, mono: true, copyable: true },
-            { label: 'Entry Cryptographic Hash', value: selectedEv.entry_hash, mono: true, copyable: true }
-          ];
-
-          fieldList.forEach(item => {
-            const row = document.createElement('div');
-            row.style.marginBottom = '0.4rem';
-            row.style.fontSize = '0.8rem';
-            row.style.wordBreak = 'break-all';
-
-            const lbl = document.createElement('span');
-            lbl.style.color = 'var(--text-secondary)';
-            lbl.style.fontWeight = '600';
-            lbl.textContent = `${item.label}: `;
-            row.appendChild(lbl);
-
-            const valSpan = document.createElement('span');
-            if (item.value !== null && item.value !== undefined && item.value !== '') {
-              valSpan.textContent = String(item.value);
-              if (item.mono) valSpan.className = 'font-mono';
-              if (item.bold) valSpan.style.fontWeight = '700';
-              row.appendChild(valSpan);
-
-              if (item.copyable) {
-                const btn = document.createElement('button');
-                btn.type = 'button';
-                btn.className = 'copy-btn';
-                btn.style.marginLeft = '0.4rem';
-                btn.style.padding = '0.1rem 0.35rem';
-                btn.style.fontSize = '0.65rem';
-                btn.textContent = 'Copy';
-                btn.setAttribute('aria-label', `Copy ${item.label}`);
-                btn.setAttribute('title', `Copy ${item.label} to clipboard`);
-                btn.addEventListener('click', () => this.copyToClipboard(String(item.value), btn));
-                row.appendChild(btn);
-              }
-            } else {
-              valSpan.className = 'text-dim';
-              valSpan.textContent = 'UNAVAILABLE / NOT RECORDED';
-              row.appendChild(valSpan);
-            }
-
-            fieldsCard.appendChild(row);
-          });
-
-          // Raw JSON Block Card
-          const jsonCard = document.createElement('div');
-          jsonCard.className = 'card';
-          jsonCard.style.padding = '0.85rem';
-
-          const jsonHeader = document.createElement('div');
-          jsonHeader.className = 'card-header';
-          jsonHeader.textContent = 'Raw Event JSON Record';
-          jsonCard.appendChild(jsonHeader);
-
-          const pre = document.createElement('pre');
-          pre.className = 'inspector-block';
-          pre.textContent = JSON.stringify(selectedEv, null, 2);
-          jsonCard.appendChild(pre);
-
-          inspectorGrid.appendChild(fieldsCard);
-          inspectorGrid.appendChild(jsonCard);
-          inspectorBox.appendChild(inspectorGrid);
-          eventsCard.appendChild(inspectorBox);
-        }
+        lifecycleCard.appendChild(timeline);
       }
 
-      container.appendChild(eventsCard);
+      container.appendChild(lifecycleCard);
+
+      // Area C: Evidence Inspector Panel for Selected Event
+      const selectedEv = events.find(e => e.sequence_number === this.state.selectedEventSeq) || events[0];
+      if (selectedEv) {
+        const inspectorBox = document.createElement('div');
+        inspectorBox.id = 'area-evidence-inspector';
+        inspectorBox.style.marginTop = '1.25rem';
+        inspectorBox.style.borderTop = '1px solid var(--border-default)';
+        inspectorBox.style.paddingTop = '1rem';
+
+        const inspHeader = document.createElement('div');
+        inspHeader.style.display = 'flex';
+        inspHeader.style.justifyContent = 'space-between';
+        inspHeader.style.alignItems = 'center';
+        inspHeader.style.marginBottom = '0.75rem';
+        inspHeader.style.flexWrap = 'wrap';
+        inspHeader.style.gap = '0.5rem';
+
+        const inspTitle = document.createElement('h4');
+        inspTitle.style.fontSize = '0.9rem';
+        inspTitle.style.fontWeight = '700';
+        inspTitle.style.color = 'var(--accent-primary)';
+        inspTitle.textContent = `Evidence Inspector: Event #${selectedEv.sequence_number ?? '-'} (${selectedEv.event_type || 'UNKNOWN'})`;
+
+        const inspCopyBtn = document.createElement('button');
+        inspCopyBtn.type = 'button';
+        inspCopyBtn.className = 'copy-btn';
+        inspCopyBtn.textContent = 'Copy Event Payload JSON';
+        inspCopyBtn.setAttribute('aria-label', `Copy full JSON payload for event sequence ${selectedEv.sequence_number ?? '-'}`);
+        inspCopyBtn.setAttribute('title', `Copy JSON payload for event sequence ${selectedEv.sequence_number ?? '-'}`);
+        inspCopyBtn.addEventListener('click', () => {
+          this.copyToClipboard(JSON.stringify(selectedEv, null, 2), inspCopyBtn);
+        });
+
+        inspHeader.appendChild(inspTitle);
+        inspHeader.appendChild(inspCopyBtn);
+        inspectorBox.appendChild(inspHeader);
+
+        // Grid Layout for Key Fields & Full Raw JSON Payload
+        const inspectorGrid = document.createElement('div');
+        inspectorGrid.className = 'evidence-inspector-grid';
+
+        // Field Inspector Breakdown Card
+        const fieldsCard = document.createElement('div');
+        fieldsCard.className = 'card';
+        fieldsCard.style.padding = '0.85rem';
+
+        const fieldsHeader = document.createElement('div');
+        fieldsHeader.className = 'card-header';
+        fieldsHeader.textContent = 'Structured Event Metadata';
+        fieldsCard.appendChild(fieldsHeader);
+
+        const fieldList = [
+          { label: 'Event ID', value: selectedEv.event_id, mono: true },
+          { label: 'Event Type', value: selectedEv.event_type, bold: true },
+          { label: 'Provenance Source', value: selectedEv.provenance_source },
+          { label: 'Sequence Number', value: selectedEv.sequence_number, mono: true },
+          { label: 'Timestamp', value: selectedEv.timestamp, mono: true },
+          { label: 'Correlation ID', value: selectedEv.correlation_id, mono: true, copyable: true },
+          { label: 'Request ID', value: selectedEv.request_id, mono: true, copyable: true },
+          { label: 'Action Name', value: selectedEv.action_name },
+          { label: 'Target Resource', value: selectedEv.target },
+          { label: 'Capability Token ID', value: selectedEv.authorization_token_id, mono: true, copyable: true },
+          { label: 'Canonical Request Digest', value: selectedEv.canonical_request_digest, mono: true, copyable: true },
+          { label: 'Policy Version', value: selectedEv.policy_version, mono: true },
+          { label: 'Previous Entry Hash', value: selectedEv.prev_hash, mono: true, copyable: true },
+          { label: 'Entry Cryptographic Hash', value: selectedEv.entry_hash, mono: true, copyable: true }
+        ];
+
+        fieldList.forEach(item => {
+          const row = document.createElement('div');
+          row.style.marginBottom = '0.4rem';
+          row.style.fontSize = '0.8rem';
+          row.style.wordBreak = 'break-all';
+
+          const lbl = document.createElement('span');
+          lbl.style.color = 'var(--text-secondary)';
+          lbl.style.fontWeight = '600';
+          lbl.textContent = `${item.label}: `;
+          row.appendChild(lbl);
+
+          const valSpan = document.createElement('span');
+          if (item.value !== null && item.value !== undefined && item.value !== '') {
+            valSpan.textContent = String(item.value);
+            if (item.mono) valSpan.className = 'font-mono';
+            if (item.bold) valSpan.style.fontWeight = '700';
+            row.appendChild(valSpan);
+
+            if (item.copyable) {
+              const btn = document.createElement('button');
+              btn.type = 'button';
+              btn.className = 'copy-btn';
+              btn.style.marginLeft = '0.4rem';
+              btn.style.padding = '0.1rem 0.35rem';
+              btn.style.fontSize = '0.65rem';
+              btn.textContent = 'Copy';
+              btn.setAttribute('aria-label', `Copy ${item.label}`);
+              btn.setAttribute('title', `Copy ${item.label} to clipboard`);
+              btn.addEventListener('click', () => this.copyToClipboard(String(item.value), btn));
+              row.appendChild(btn);
+            }
+          } else {
+            valSpan.className = 'text-dim';
+            valSpan.textContent = 'UNAVAILABLE / NOT RECORDED';
+            row.appendChild(valSpan);
+          }
+
+          fieldsCard.appendChild(row);
+        });
+
+        // Raw JSON Block Card
+        const jsonCard = document.createElement('div');
+        jsonCard.className = 'card';
+        jsonCard.style.padding = '0.85rem';
+
+        const jsonHeader = document.createElement('div');
+        jsonHeader.className = 'card-header';
+        jsonHeader.textContent = 'Raw Event JSON Record';
+        jsonCard.appendChild(jsonHeader);
+
+        const pre = document.createElement('pre');
+        pre.className = 'inspector-block';
+        pre.textContent = JSON.stringify(selectedEv, null, 2);
+        jsonCard.appendChild(pre);
+
+        inspectorGrid.appendChild(fieldsCard);
+        inspectorGrid.appendChild(jsonCard);
+        inspectorBox.appendChild(inspectorGrid);
+        container.appendChild(inspectorBox);
+      }
     },
 
     // -------------------------------------------------------------------------
