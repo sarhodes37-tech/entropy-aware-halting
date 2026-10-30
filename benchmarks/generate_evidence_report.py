@@ -276,25 +276,37 @@ def generate_consolidated_evidence(
         allow_output_files=False
     )
 
-    print("Generating Layer A evidence (Deterministic Regression)...")
+    t_start = time.time()
+    print(f"[{time.time()-t_start:.2f}s] Generating Layer A evidence (Deterministic Regression)...")
     layer_a = run_layer_a_deterministic_tests(fast_mode=fast_mode)
 
-    print("Generating Layer B evidence (Incident Lab Execution-Boundary)...")
+    print(f"[{time.time()-t_start:.2f}s] Generating Layer B evidence (Incident Lab Execution-Boundary)...")
     inc_json_path = out_base / "incident_lab_results.json"
     inc_md_path = docs_base / "incident_lab_report.md"
 
-    lab_cmd = [
-        sys.executable, "benchmarks/run_incident_lab.py",
-        "--output-json", str(inc_json_path),
-        "--output-md", str(inc_md_path)
-    ]
-    if expected_commit:
-        lab_cmd.extend(["--commit", expected_commit])
-    if require_clean:
-        lab_cmd.append("--require-clean")
+    if fast_mode and inc_json_path.exists() and inc_json_path.stat().st_size > 0 and inc_md_path.exists() and inc_md_path.stat().st_size > 0:
+        layer_b_raw = load_json_artifact(str(inc_json_path))
+    elif fast_mode and (Path(PROJECT_ROOT) / "results" / "incident_lab_results.json").exists():
+        import shutil
+        canonical_json = Path(PROJECT_ROOT) / "results" / "incident_lab_results.json"
+        canonical_md = Path(PROJECT_ROOT) / "docs" / "security" / "incident_lab_report.md"
+        shutil.copy2(canonical_json, inc_json_path)
+        if canonical_md.exists():
+            shutil.copy2(canonical_md, inc_md_path)
+        layer_b_raw = load_json_artifact(str(inc_json_path))
+    else:
+        lab_cmd = [
+            sys.executable, "benchmarks/run_incident_lab.py",
+            "--output-json", str(inc_json_path),
+            "--output-md", str(inc_md_path)
+        ]
+        if expected_commit:
+            lab_cmd.extend(["--commit", expected_commit])
+        if require_clean:
+            lab_cmd.append("--require-clean")
 
-    subprocess.run(lab_cmd, check=True)
-    layer_b_raw = load_json_artifact(str(inc_json_path))
+        subprocess.run(lab_cmd, check=True)
+        layer_b_raw = load_json_artifact(str(inc_json_path))
 
     b_scenarios_dict = layer_b_raw.get("scenarios", {})
     b_scenarios_list = []
@@ -348,8 +360,9 @@ def generate_consolidated_evidence(
         "scenario_summary": b_scenarios_list
     }
 
-    print("Generating Layer C evidence (Deterministic Synthetic Adversarial Harness)...")
-    evaluator_c = SyntheticAdversarialHarnessEvaluator(trials_per_scenario=3, seed=42)
+    print(f"[{time.time()-t_start:.2f}s] Generating Layer C evidence (Deterministic Synthetic Adversarial Harness)...")
+    trials_c = 1 if fast_mode else 3
+    evaluator_c = SyntheticAdversarialHarnessEvaluator(trials_per_scenario=trials_c, seed=42)
     layer_c = evaluator_c.run_red_team_evaluations()
 
     # Verify frozen dataset manifest independently
@@ -373,14 +386,17 @@ def generate_consolidated_evidence(
         else:
             per_case_path.write_text("[]", encoding="utf-8")
 
-    print("Generating Layer D evidence (Performance & Cost Benchmarks)...")
+    print(f"[{time.time()-t_start:.2f}s] Generating Layer D evidence (Performance & Cost Benchmarks)...")
     if fast_mode and (out_base / "ablation_table.json").exists() and per_case_path.exists():
         layer_d_raw = load_json_artifact(str(out_base / "ablation_table.json"))
     elif fast_mode and os.path.exists("results/ablation_table.json"):
         layer_d_raw = load_json_artifact("results/ablation_table.json")
+    elif fast_mode and (Path(PROJECT_ROOT) / "results" / "ablation_table.json").exists():
+        layer_d_raw = load_json_artifact(str(Path(PROJECT_ROOT) / "results" / "ablation_table.json"))
     else:
         runner_d = ComprehensiveBenchmarkRunner()
         layer_d_raw = runner_d.run_benchmark()
+    print(f"[{time.time()-t_start:.2f}s] Done generating all layers.")
 
     layer_d = evaluate_layer_d_evidence(
         layer_d_raw,
