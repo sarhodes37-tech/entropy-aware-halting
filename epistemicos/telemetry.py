@@ -11,7 +11,7 @@ import time
 import logging
 from collections import Counter
 from dataclasses import dataclass
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger("EpistemicOS.Telemetry")
 
@@ -232,3 +232,43 @@ def calculate_structural_risk_index(dH_pos: float, omega: float, dA: int) -> flo
     """
     sri = max(0.0, dH_pos) * omega * float(dA)
     return round(sri, 4)
+
+
+# ==========================================
+# TELEMETRY BUFFER & EVENT SINK
+# ==========================================
+
+class TelemetryBuffer:
+    """
+    Buffers telemetry events in memory and flushes them to a network or storage sink.
+    """
+
+    def __init__(self, sink: Optional[Any] = None, max_size: int = 1000):
+        self._sink = sink
+        self._buffer: List[Any] = []
+        self.max_size = max_size
+
+    def add_event(self, event: Any) -> None:
+        """Adds a telemetry event to the buffer, auto-flushing if max_size is reached."""
+        self._buffer.append(event)
+        if len(self._buffer) >= self.max_size:
+            self.flush_events()
+
+    def flush_events(self) -> int:
+        """
+        Flushes buffered telemetry events to the sink and clears the internal buffer.
+        Returns the number of events that were flushed.
+        """
+        count = len(self._buffer)
+        if count > 0:
+            if self._sink is not None and hasattr(self._sink, "send_batch"):
+                self._sink.send_batch(list(self._buffer))
+            self._buffer.clear()
+        return count
+
+    def clear(self) -> None:
+        """Clears the internal buffer without sending events to sink."""
+        self._buffer.clear()
+
+    def __len__(self) -> int:
+        return len(self._buffer)

@@ -11,6 +11,7 @@ from unittest.mock import patch, MagicMock
 import epistemicos.telemetry
 from epistemicos.telemetry import (
     ResourceProfiler,
+    TelemetryBuffer,
     calculate_entropy_differential,
     calculate_rolling_entropy,
     calculate_trigram_repetition,
@@ -66,6 +67,15 @@ def test_trigram_repetition_short_text():
     """Validates evasion of index errors on short text sequences."""
     # Text under 3 tokens should safely return 0.0
     assert calculate_trigram_repetition("too short") == 0.0
+
+
+def test_trigram_repetition_with_repeats():
+    """Validates trigram repetition ratio calculation when trigrams repeat."""
+    text = "the cat sat on the mat the cat sat"
+    # tokens = ['the', 'cat', 'sat', 'on', 'the', 'mat', 'the', 'cat', 'sat']
+    # 7 trigrams: ('the','cat','sat'), ('cat','sat','on'), ('sat','on','the'), ('on','the','mat'), ('the','mat','the'), ('mat','the','cat'), ('the','cat','sat')
+    # ('the','cat','sat') appears twice -> 1 repeated / 7 = 0.1429
+    assert calculate_trigram_repetition(text) == 0.1429
 
 
 def test_ast_persistence_break():
@@ -183,3 +193,123 @@ def test_ast_analyzer_get_node_weight_custom():
 
     # Missing weights fallback to 1.0
     assert analyzer.get_node_weight("Assign") == 1.0
+
+
+# ==========================================
+# TELEMETRY BUFFER UNIT TESTS
+# ==========================================
+
+def test_telemetry_buffer_init_and_len():
+    """Validates default TelemetryBuffer initialization and __len__."""
+    tb = TelemetryBuffer()
+    assert tb._sink is None
+    assert tb.max_size == 1000
+    assert len(tb) == 0
+
+
+def test_telemetry_buffer_add_event():
+    """Validates adding events to TelemetryBuffer."""
+    tb = TelemetryBuffer()
+    tb.add_event({"event_type": "metric", "value": 42})
+    assert len(tb) == 1
+    tb.add_event({"event_type": "metric", "value": 43})
+    assert len(tb) == 2
+
+
+def test_telemetry_buffer_flush_events_empty():
+    """Validates flushing an empty TelemetryBuffer."""
+    mock_sink = MagicMock()
+    tb = TelemetryBuffer(sink=mock_sink)
+
+    count = tb.flush_events()
+
+    assert count == 0
+    assert len(tb) == 0
+    mock_sink.send_batch.assert_not_called()
+
+
+def test_telemetry_buffer_flush_events_with_sink():
+    """Validates flushing buffered events to a mocked sink."""
+    mock_sink = MagicMock()
+    tb = TelemetryBuffer(sink=mock_sink)
+
+    events = [{"id": 1}, {"id": 2}, {"id": 3}]
+    for e in events:
+        tb.add_event(e)
+
+    assert len(tb) == 3
+
+    count = tb.flush_events()
+
+    assert count == 3
+    assert len(tb) == 0
+    mock_sink.send_batch.assert_called_once_with([{"id": 1}, {"id": 2}, {"id": 3}])
+
+
+def test_telemetry_buffer_auto_flush_on_max_size():
+    """Validates auto-flushing when buffer reaches max_size."""
+    mock_sink = MagicMock()
+    tb = TelemetryBuffer(sink=mock_sink, max_size=3)
+
+    tb.add_event({"id": 1})
+    tb.add_event({"id": 2})
+    mock_sink.send_batch.assert_not_called()
+    assert len(tb) == 2
+
+    tb.add_event({"id": 3})  # Reaches max_size=3 -> auto-flushes!
+
+    mock_sink.send_batch.assert_called_once_with([{"id": 1}, {"id": 2}, {"id": 3}])
+    assert len(tb) == 0
+
+
+def test_telemetry_buffer_flush_without_sink():
+    """Validates flush_events safely clears buffer when sink is None."""
+    tb = TelemetryBuffer(sink=None)
+    tb.add_event("event_1")
+    tb.add_event("event_2")
+
+    count = tb.flush_events()
+
+    assert count == 2
+    assert len(tb) == 0
+
+
+def test_telemetry_buffer_flush_with_invalid_sink():
+    """Validates flush_events safely handles sink objects missing send_batch."""
+    tb = TelemetryBuffer(sink=object())
+    tb.add_event("event_1")
+
+    count = tb.flush_events()
+
+    assert count == 1
+    assert len(tb) == 0
+
+
+def test_telemetry_buffer_consecutive_flushes():
+    """Validates that consecutive flush_events calls handle empty state properly."""
+    mock_sink = MagicMock()
+    tb = TelemetryBuffer(sink=mock_sink)
+    tb.add_event("e1")
+
+    first_count = tb.flush_events()
+    assert first_count == 1
+    mock_sink.send_batch.assert_called_once_with(["e1"])
+
+    mock_sink.reset_mock()
+    second_count = tb.flush_events()
+    assert second_count == 0
+    mock_sink.send_batch.assert_not_called()
+
+
+def test_telemetry_buffer_clear():
+    """Validates clearing the buffer without flushing to sink."""
+    mock_sink = MagicMock()
+    tb = TelemetryBuffer(sink=mock_sink)
+    tb.add_event("e1")
+    tb.add_event("e2")
+    assert len(tb) == 2
+
+    tb.clear()
+
+    assert len(tb) == 0
+    mock_sink.send_batch.assert_not_called()
