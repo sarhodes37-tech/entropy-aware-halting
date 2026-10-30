@@ -4,7 +4,11 @@ Targets edge cases in Popperian contracts, Bayesian updates,
 PermissionScope quarantine logic, CPR serialization, and Surprisal Sensors.
 """
 
+import json
 import math
+import os
+import sys
+from datetime import datetime, timezone
 import pytest
 from epistemicos.models import (
     PopperianContract,
@@ -15,13 +19,14 @@ from epistemicos.models import (
     EpistemicStatus,
     BayesianBeliefKernel,
     TokenSurprisalSensor,
+    _DEFAULT_QUARANTINE_SUBNETS,
+    DEFAULT_REDACTION_KEYS,
     _estimate_payload_size
 )
 
 # ==========================================
 # ESTIMATE PAYLOAD SIZE TESTS
 # ==========================================
-import sys
 
 def test_estimate_payload_size_primitives():
     """Validates memory estimation for basic primitive types."""
@@ -395,8 +400,6 @@ def test_token_surprisal_sensor_evaluate_integration_flagged():
     assert len(result["token_z_scores"]) == len(logprobs)
 
 
-import json
-
 @pytest.mark.parametrize("non_finite_val", [float('nan'), float('inf'), float('-inf')])
 def test_token_surprisal_sensor_evaluate_non_finite_z_scores(monkeypatch, non_finite_val):
     """Validates that NaN, +inf, and -inf Z-scores are rejected as malformed numerical output and sanitized for JSON."""
@@ -446,9 +449,71 @@ def test_token_surprisal_ramping_evasion_blocked_by_ceiling():
 
 
 # ==========================================
-# MODEL SERIALIZATION TESTS
+# MODEL SERIALIZATION & DEFAULTS TESTS
 # ==========================================
-from datetime import datetime, timezone
+
+def test_permission_scope_defaults_and_isolation():
+    """Validates PermissionScope defaults, quarantine subnet env-awareness, and mutable list isolation."""
+    scope1 = PermissionScope()
+    assert scope1.allowed_resources == []
+    assert scope1.allowed_operations == []
+    assert scope1.origin_subnet is None
+    assert scope1.quarantine_subnets == list(_DEFAULT_QUARANTINE_SUBNETS)
+
+    scope2 = PermissionScope()
+    # Mutate scope1 lists and verify scope2 is isolated
+    scope1.allowed_resources.append("res_1")
+    scope1.allowed_operations.append("op_1")
+    scope1.quarantine_subnets.append("10.99.")
+
+    assert scope2.allowed_resources == []
+    assert scope2.allowed_operations == []
+    assert scope2.quarantine_subnets == list(_DEFAULT_QUARANTINE_SUBNETS)
+
+
+def test_belief_object_defaults_and_isolation():
+    """Validates BeliefObject default fields and mutable list isolation."""
+    contract = PopperianContract(
+        claim_id="claim_def",
+        target_metric="metric_def",
+        falsification_threshold=10.0,
+        comparison_operator=">",
+        observation_window_days=7
+    )
+    b1 = BeliefObject(
+        belief_id="bel_def1",
+        cpr_frame_id="cpr_def1",
+        assertion="Default belief assertions",
+        prior_probability=0.5,
+        current_posterior=0.5,
+        popp_contract=contract
+    )
+    assert b1.status == EpistemicStatus.UNVERIFIED
+    assert b1.evidence_ledger == []
+    assert b1.invalidation_triggers == []
+
+    b2 = BeliefObject(
+        belief_id="bel_def2",
+        cpr_frame_id="cpr_def2",
+        assertion="Second belief assertion",
+        prior_probability=0.5,
+        current_posterior=0.5,
+        popp_contract=contract
+    )
+    # Mutate b1 lists and verify b2 remains isolated
+    b1.evidence_ledger.append(
+        BayesFactorUpdate(
+            evidence_id="ev_mut",
+            source_provenance=["src"],
+            p_evidence_given_hypothesis=0.8,
+            p_evidence_given_not_hypothesis=0.2
+        )
+    )
+    b1.invalidation_triggers.append("trigger_1")
+
+    assert b2.evidence_ledger == []
+    assert b2.invalidation_triggers == []
+
 
 def test_popperian_contract_serialization():
     """Validates PopperianContract dict/JSON serialization and round-trip deserialization."""
@@ -480,13 +545,17 @@ def test_popperian_contract_serialization():
 
 
 def test_bayes_factor_update_serialization():
-    """Validates BayesFactorUpdate dict/JSON serialization including computed fields."""
+    """Validates BayesFactorUpdate dict/JSON serialization and round-trip verification of computed fields."""
     update = BayesFactorUpdate(
         evidence_id="ev_001",
         source_provenance=["log_a", "log_b"],
         p_evidence_given_hypothesis=0.8,
         p_evidence_given_not_hypothesis=0.2
     )
+    # Check computed fields on original instance
+    assert update.bayes_factor == 4.0
+    assert update.bayes_factor_db == 6.02
+
     data_dict = update.model_dump(mode="json")
     assert data_dict["evidence_id"] == "ev_001"
     assert data_dict["source_provenance"] == ["log_a", "log_b"]
@@ -495,15 +564,24 @@ def test_bayes_factor_update_serialization():
 
     json_str = update.model_dump_json()
     parsed = json.loads(json_str)
+    assert parsed["p_evidence_given_hypothesis"] == 0.8
+    assert parsed["p_evidence_given_not_hypothesis"] == 0.2
     assert parsed["bayes_factor"] == 4.0
+    assert parsed["bayes_factor_db"] == 6.02
 
+    # Restore from JSON and explicitly verify both computed fields and underlying likelihoods
     restored = BayesFactorUpdate.model_validate_json(json_str)
     assert restored == update
+    assert restored.p_evidence_given_hypothesis == 0.8
+    assert restored.p_evidence_given_not_hypothesis == 0.2
+    assert restored.bayes_factor == 4.0
+    assert restored.bayes_factor_db == 6.02
 
 
-def test_belief_object_nested_serialization():
-    """Validates BeliefObject nested serialization with PopperianContract, BayesFactorUpdate list, EpistemicStatus enum, and datetime."""
-    now = datetime.now(timezone.utc)
+def test_belief_object_nested_serialization_and_datetime_roundtrip():
+    """Validates BeliefObject nested serialization with PopperianContract, BayesFactorUpdate list, EpistemicStatus enum, and datetime instant preservation."""
+    # Deterministic, timezone-aware datetime
+    fixed_time = datetime(2026, 5, 15, 14, 30, 0, 123456, tzinfo=timezone.utc)
     contract = PopperianContract(
         claim_id="claim_100",
         target_metric="error_rate",
@@ -527,7 +605,7 @@ def test_belief_object_nested_serialization():
         status=EpistemicStatus.CONFIRMED,
         evidence_ledger=[update],
         popp_contract=contract,
-        created_at=now,
+        created_at=fixed_time,
         ttl_days=90,
         invalidation_triggers=["trigger_alpha", "trigger_beta"]
     )
@@ -536,6 +614,7 @@ def test_belief_object_nested_serialization():
     assert data_dict["belief_id"] == "bel_100"
     assert data_dict["status"] == "CONFIRMED"
     assert isinstance(data_dict["created_at"], str)
+    assert data_dict["created_at"].startswith("2026-05-15T14:30:00")
     assert data_dict["popp_contract"]["claim_id"] == "claim_100"
     assert len(data_dict["evidence_ledger"]) == 1
     assert data_dict["evidence_ledger"][0]["bayes_factor"] == 9.0
@@ -551,6 +630,9 @@ def test_belief_object_nested_serialization():
     assert restored.status == EpistemicStatus.CONFIRMED
     assert restored.popp_contract == contract
     assert restored.evidence_ledger[0] == update
+    # Verify exact datetime instant preservation
+    assert restored.created_at == fixed_time
+    assert restored.created_at.timestamp() == fixed_time.timestamp()
 
 
 def test_permission_scope_serialization_and_defaults():
@@ -580,27 +662,33 @@ def test_permission_scope_serialization_and_defaults():
     assert restored == scope
 
 
-def test_cpr_nested_serialization_and_excluded_fields():
-    """Validates CanonicalProblemRepresentation nested serialization, PermissionScope inclusion, and SENSITIVE_FIELDS exclusion."""
+def test_cpr_nested_serialization_fidelity_and_excluded_fields():
+    """
+    Validates CanonicalProblemRepresentation nested serialization fidelity.
+    Confirms model serialization preserves raw_payload fidelity as-is (including sensitive keys)
+    and excludes class attribute SENSITIVE_FIELDS.
+    """
     scope = PermissionScope(
         allowed_resources=["logistics_db"],
         allowed_operations=["read"]
     )
     cpr = CanonicalProblemRepresentation(
         policy_id="POL-999",
-        raw_payload={"user_id": 123, "api_key": "secret_key_123"},
+        raw_payload={"user_id": 123, "API_KEY": "synthetic_key_xyz", "account_number": "ACC-9999"},
         fleet_data={"vehicle_count": 200, "operating_radius_miles": 500, "loss_modifier": 1.1},
         risk_details={"loss_mod": 1.1},
         primary_metric=42.0,
         scope=scope
     )
 
+    # Ordinary model serialization preserves raw_payload intact
     data_dict = cpr.model_dump(mode="json")
     assert data_dict["policy_id"] == "POL-999"
-    assert data_dict["raw_payload"] == {"user_id": 123, "api_key": "secret_key_123"}
+    assert data_dict["raw_payload"] == {"user_id": 123, "API_KEY": "synthetic_key_xyz", "account_number": "ACC-9999"}
     assert data_dict["fleet_data"]["vehicle_count"] == 200
     assert data_dict["scope"]["allowed_resources"] == ["logistics_db"]
-    # Verify SENSITIVE_FIELDS attribute is excluded from serialized data
+
+    # Verify class attribute SENSITIVE_FIELDS is excluded from model output fields
     assert "SENSITIVE_FIELDS" not in data_dict
 
     json_str = cpr.model_dump_json()
@@ -610,5 +698,55 @@ def test_cpr_nested_serialization_and_excluded_fields():
 
     restored = CanonicalProblemRepresentation.model_validate_json(json_str)
     assert restored.policy_id == cpr.policy_id
+    assert restored.raw_payload == cpr.raw_payload
     assert restored.fleet_data == cpr.fleet_data
     assert restored.scope.allowed_resources == ["logistics_db"]
+
+
+def test_cpr_mask_egress_payload_redaction():
+    """
+    Validates CanonicalProblemRepresentation.mask_egress_payload contract.
+    Egress masking is separate from model serialization, performing top-level key redaction.
+    Tests case-insensitive key matching against DEFAULT_REDACTION_KEYS, custom redaction keys,
+    and preservation of benign top-level keys.
+    """
+    cpr = CanonicalProblemRepresentation(
+        policy_id="POL-EGR-1",
+        raw_payload={
+            "User_ID": "usr_777",
+            "API_KEY": "synthetic_secret_1",
+            "Token": "synthetic_token_2",
+            "Password": "synthetic_password_3",
+            "SECRET": "synthetic_secret_4",
+            "Organization": "Acme Corp",
+            "nested_data": {"api_key": "nested_value_remains_unfiltered"}
+        }
+    )
+
+    # 1. Default egress masking using DEFAULT_REDACTION_KEYS (case-insensitive top-level check)
+    masked_default = cpr.mask_egress_payload()
+    assert masked_default == {
+        "User_ID": "usr_777",
+        "Organization": "Acme Corp",
+        "nested_data": {"api_key": "nested_value_remains_unfiltered"}
+    }
+    assert "API_KEY" not in masked_default
+    assert "Token" not in masked_default
+    assert "Password" not in masked_default
+    assert "SECRET" not in masked_default
+
+    # 2. Custom egress masking policy
+    custom_keys = frozenset({"user_id", "organization"})
+    masked_custom = cpr.mask_egress_payload(custom_redactions=custom_keys)
+    assert masked_custom == {
+        "API_KEY": "synthetic_secret_1",
+        "Token": "synthetic_token_2",
+        "Password": "synthetic_password_3",
+        "SECRET": "synthetic_secret_4",
+        "nested_data": {"api_key": "nested_value_remains_unfiltered"}
+    }
+    assert "User_ID" not in masked_custom
+    assert "Organization" not in masked_custom
+
+    # 3. Model raw_payload itself is unchanged by mask_egress_payload()
+    assert "API_KEY" in cpr.raw_payload
