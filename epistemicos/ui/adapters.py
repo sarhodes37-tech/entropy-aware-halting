@@ -381,14 +381,20 @@ class ObservatoryDataAdapter:
         """
         Loads measured benchmark results from results/ablation_table.json
         and results/per_case_results.json.
+        Returns structured status fields ('AVAILABLE', 'EMPTY', 'MALFORMED', 'UNAVAILABLE')
+        alongside backward-compatible available, data, and error fields.
         """
         ablation_table = None
         ablation_error = None
+        ablation_status = "UNAVAILABLE"
+
         per_case_results = None
         per_case_error = None
+        per_case_status = "UNAVAILABLE"
 
         if self.ablation_table_path.exists():
             if self.ablation_table_path.stat().st_size == 0:
+                ablation_status = "EMPTY"
                 ablation_error = "File is empty: results/ablation_table.json"
             else:
                 try:
@@ -396,15 +402,24 @@ class ObservatoryDataAdapter:
                         loaded = json.load(f)
                         if isinstance(loaded, dict):
                             ablation_table = loaded
+                            if not loaded or not loaded.get("baselines"):
+                                ablation_status = "EMPTY"
+                                ablation_error = ablation_error or "Artifact contains zero baselines: results/ablation_table.json"
+                            else:
+                                ablation_status = "AVAILABLE"
                         else:
+                            ablation_status = "MALFORMED"
                             ablation_error = f"Unexpected JSON structure in ablation table: expected object, got {type(loaded).__name__}"
                 except Exception as e:
+                    ablation_status = "MALFORMED"
                     ablation_error = f"Malformed JSON in ablation table: {str(e)}"
         else:
+            ablation_status = "UNAVAILABLE"
             ablation_error = "File not found: results/ablation_table.json"
 
         if self.per_case_results_path.exists():
             if self.per_case_results_path.stat().st_size == 0:
+                per_case_status = "EMPTY"
                 per_case_error = "File is empty: results/per_case_results.json"
             else:
                 try:
@@ -412,20 +427,30 @@ class ObservatoryDataAdapter:
                         loaded = json.load(f)
                         if isinstance(loaded, list):
                             per_case_results = loaded
+                            if len(loaded) == 0:
+                                per_case_status = "EMPTY"
+                                per_case_error = per_case_error or "Artifact contains zero per-case results: results/per_case_results.json"
+                            else:
+                                per_case_status = "AVAILABLE"
                         else:
+                            per_case_status = "MALFORMED"
                             per_case_error = f"Unexpected JSON structure in per-case results: expected list, got {type(loaded).__name__}"
                 except Exception as e:
+                    per_case_status = "MALFORMED"
                     per_case_error = f"Malformed JSON in per-case results: {str(e)}"
         else:
+            per_case_status = "UNAVAILABLE"
             per_case_error = "File not found: results/per_case_results.json"
 
         return {
             "ablation_table": {
+                "status": ablation_status,
                 "available": ablation_table is not None,
                 "data": ablation_table,
                 "error": ablation_error
             },
             "per_case_results": {
+                "status": per_case_status,
                 "available": per_case_results is not None,
                 "data": per_case_results,
                 "error": per_case_error

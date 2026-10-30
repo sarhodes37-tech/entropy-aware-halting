@@ -392,7 +392,10 @@ document.addEventListener('DOMContentLoaded', () => {
       const span = document.createElement('span');
       const st = (statusText || 'UNKNOWN').toUpperCase();
 
-      if (st === 'VERIFIED') {
+      if (st === 'AVAILABLE') {
+        span.className = 'status-badge status-badge-verified';
+        span.textContent = '✓ AVAILABLE';
+      } else if (st === 'VERIFIED') {
         span.className = 'status-badge status-badge-verified';
         span.textContent = '✓ VERIFIED';
       } else if (st === 'RECORDED') {
@@ -410,6 +413,12 @@ document.addEventListener('DOMContentLoaded', () => {
       } else if (st === 'UNAVAILABLE') {
         span.className = 'status-badge status-badge-unavailable';
         span.textContent = '⊘ UNAVAILABLE';
+      } else if (st === 'EMPTY') {
+        span.className = 'status-badge status-badge-partial';
+        span.textContent = '░ EMPTY';
+      } else if (st === 'MALFORMED') {
+        span.className = 'status-badge status-badge-unreadable';
+        span.textContent = '⊘ MALFORMED';
       } else if (st === 'PARTIAL') {
         span.className = 'status-badge status-badge-partial';
         span.textContent = '⚠ PARTIAL';
@@ -2245,18 +2254,33 @@ document.addEventListener('DOMContentLoaded', () => {
       // Artifact Status Badge
       const statusBadge = document.getElementById('benchmark-artifacts-status');
       if (statusBadge) {
-        let statusStr = 'UNAVAILABLE';
-        const hasAblErr = Boolean(abl.error);
-        const hasPcErr = Boolean(pc.error);
+        const deriveStatus = (item) => {
+          if (item.status) return item.status;
+          if (item.error) {
+            if (item.error.toLowerCase().includes('malformed') || item.error.toLowerCase().includes('unexpected json structure')) return 'MALFORMED';
+            if (item.error.toLowerCase().includes('empty')) return 'EMPTY';
+            return 'UNAVAILABLE';
+          }
+          return item.available ? 'AVAILABLE' : 'UNAVAILABLE';
+        };
 
-        if (hasAblErr && hasPcErr && (abl.error.includes('Malformed') || pc.error.includes('Malformed'))) {
+        const ablStatus = deriveStatus(abl);
+        const pcStatus = deriveStatus(pc);
+
+        let statusStr = 'UNAVAILABLE';
+
+        if (ablStatus === 'AVAILABLE' && pcStatus === 'AVAILABLE') {
+          statusStr = 'AVAILABLE';
+        } else if (ablStatus === 'MALFORMED' && pcStatus === 'MALFORMED') {
           statusStr = 'MALFORMED';
-        } else if (hasAblErr && hasPcErr && (abl.error.includes('empty') || pc.error.includes('empty'))) {
-          statusStr = 'EMPTY';
-        } else if (abl.available && pc.available) {
-          statusStr = 'VERIFIED';
-        } else if (abl.available || pc.available) {
+        } else if ((ablStatus === 'MALFORMED' && pcStatus === 'UNAVAILABLE') || (pcStatus === 'MALFORMED' && ablStatus === 'UNAVAILABLE')) {
+          statusStr = 'MALFORMED';
+        } else if (ablStatus === 'MALFORMED' || pcStatus === 'MALFORMED') {
           statusStr = 'PARTIAL';
+        } else if (ablStatus === 'AVAILABLE' || pcStatus === 'AVAILABLE') {
+          statusStr = 'PARTIAL';
+        } else if (ablStatus === 'EMPTY' || pcStatus === 'EMPTY') {
+          statusStr = 'EMPTY';
         } else {
           statusStr = 'UNAVAILABLE';
         }
