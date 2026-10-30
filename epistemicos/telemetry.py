@@ -241,9 +241,21 @@ def calculate_structural_risk_index(dH_pos: float, omega: float, dA: int) -> flo
 class TelemetryBuffer:
     """
     Buffers telemetry events in memory and flushes them to a network or storage sink.
+
+    Flush Semantics:
+      - Configured Sink: Events are passed to sink.send_batch(). If successful, the buffer
+        is cleared and the count of delivered events is returned. If send_batch() raises an
+        exception, the buffered events are retained in self._buffer to prevent silent data
+        loss and the exception is propagated.
+      - Invalid Sink: If a sink is configured but does not implement callable send_batch,
+        an AttributeError is raised and the buffer is retained.
+      - Optional Sink (sink=None): Acts as an explicit discard policy. Buffered events are
+        cleared from memory and 0 is returned, indicating 0 events were delivered to a sink.
     """
 
     def __init__(self, sink: Optional[Any] = None, max_size: int = 1000):
+        if not isinstance(max_size, int) or isinstance(max_size, bool) or max_size <= 0:
+            raise ValueError("max_size must be a positive integer")
         self._sink = sink
         self._buffer: List[Any] = []
         self.max_size = max_size
@@ -256,14 +268,31 @@ class TelemetryBuffer:
 
     def flush_events(self) -> int:
         """
-        Flushes buffered telemetry events to the sink and clears the internal buffer.
-        Returns the number of events that were flushed.
+        Flushes buffered telemetry events to the sink.
+
+        Returns:
+            int: The number of events successfully delivered to the sink (0 if sink is None
+            or if buffer is empty).
+
+        Raises:
+            AttributeError: If sink is configured but lacks a callable send_batch method.
+            Exception: Re-raises any delivery exception raised by sink.send_batch() while
+            retaining all buffered events in self._buffer.
         """
         count = len(self._buffer)
-        if count > 0:
-            if self._sink is not None and hasattr(self._sink, "send_batch"):
-                self._sink.send_batch(list(self._buffer))
+        if count == 0:
+            return 0
+
+        if self._sink is None:
             self._buffer.clear()
+            return 0
+
+        send_batch_func = getattr(self._sink, "send_batch", None)
+        if not callable(send_batch_func):
+            raise AttributeError("Configured telemetry sink must implement a callable 'send_batch' method")
+
+        send_batch_func(list(self._buffer))
+        self._buffer.clear()
         return count
 
     def clear(self) -> None:

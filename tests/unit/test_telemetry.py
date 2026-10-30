@@ -207,6 +207,13 @@ def test_telemetry_buffer_init_and_len():
     assert len(tb) == 0
 
 
+def test_telemetry_buffer_invalid_max_size_inputs():
+    """Validates that invalid max_size inputs raise ValueError."""
+    for invalid_val in [0, -1, -10, True, False, 10.5, "100"]:
+        with pytest.raises(ValueError, match="max_size must be a positive integer"):
+            TelemetryBuffer(max_size=invalid_val)
+
+
 def test_telemetry_buffer_add_event():
     """Validates adding events to TelemetryBuffer."""
     tb = TelemetryBuffer()
@@ -262,27 +269,59 @@ def test_telemetry_buffer_auto_flush_on_max_size():
     assert len(tb) == 0
 
 
-def test_telemetry_buffer_flush_without_sink():
-    """Validates flush_events safely clears buffer when sink is None."""
+def test_telemetry_buffer_flush_without_sink_discard_policy():
+    """Validates flush_events clears buffer and returns 0 delivered when sink is None."""
     tb = TelemetryBuffer(sink=None)
     tb.add_event("event_1")
     tb.add_event("event_2")
 
     count = tb.flush_events()
 
-    assert count == 2
+    assert count == 0  # 0 events delivered to a sink
     assert len(tb) == 0
 
 
-def test_telemetry_buffer_flush_with_invalid_sink():
-    """Validates flush_events safely handles sink objects missing send_batch."""
+def test_telemetry_buffer_flush_with_invalid_sink_raises_and_retains_buffer():
+    """Validates flush_events raises AttributeError and retains buffer when sink lacks callable send_batch."""
     tb = TelemetryBuffer(sink=object())
     tb.add_event("event_1")
 
-    count = tb.flush_events()
+    with pytest.raises(AttributeError, match="Configured telemetry sink must implement a callable 'send_batch' method"):
+        tb.flush_events()
 
-    assert count == 1
-    assert len(tb) == 0
+    assert len(tb) == 1  # Buffer retained on invalid sink exception
+
+
+def test_telemetry_buffer_flush_sink_exception_retains_buffer():
+    """Validates that sink exceptions during flush_events propagate and retain buffered events."""
+    mock_sink = MagicMock()
+    mock_sink.send_batch.side_effect = RuntimeError("Network connection failed")
+    tb = TelemetryBuffer(sink=mock_sink)
+
+    tb.add_event("event_1")
+    tb.add_event("event_2")
+    assert len(tb) == 2
+
+    with pytest.raises(RuntimeError, match="Network connection failed"):
+        tb.flush_events()
+
+    # Events must be retained in buffer so they are not silently lost
+    assert len(tb) == 2
+
+
+def test_telemetry_buffer_auto_flush_sink_exception_retains_buffer():
+    """Validates that sink exceptions during auto-flush in add_event propagate and retain buffer."""
+    mock_sink = MagicMock()
+    mock_sink.send_batch.side_effect = IOError("Storage volume full")
+    tb = TelemetryBuffer(sink=mock_sink, max_size=2)
+
+    tb.add_event("e1")
+    assert len(tb) == 1
+
+    with pytest.raises(IOError, match="Storage volume full"):
+        tb.add_event("e2")  # Reaches max_size=2, triggers auto-flush, sink raises IOError
+
+    assert len(tb) == 2  # Buffer retains e1 and e2
 
 
 def test_telemetry_buffer_consecutive_flushes():
