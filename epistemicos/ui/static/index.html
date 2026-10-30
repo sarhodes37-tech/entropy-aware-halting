@@ -8,492 +8,528 @@
 </head>
 <body>
   <a href="#main-content" class="skip-link">Skip to main content</a>
-  <header class="app-header">
-    <div class="header-container">
-      <div class="brand">
-        <span class="logo-icon" aria-hidden="true">🛡️</span>
-        <div>
-          <h1>EpistemicOS</h1>
-          <p class="subtitle">Control Plane Observatory • Evidence & System Observability</p>
-        </div>
-      </div>
-      <div class="read-only-badge">
-        <span class="indicator" aria-hidden="true"></span> READ-ONLY CONTROL PLANE
-      </div>
-    </div>
-    <nav class="nav-tabs" role="tablist" aria-label="Observatory Navigation">
-      <button id="tab-overview" class="nav-tab active" data-tab="overview" role="tab" aria-selected="true" aria-controls="view-overview" tabindex="0">Overview</button>
-      <button id="tab-traces" class="nav-tab" data-tab="traces" role="tab" aria-selected="false" aria-controls="view-traces" tabindex="-1">Execution Traces</button>
-      <button id="tab-provenance" class="nav-tab" data-tab="provenance" role="tab" aria-selected="false" aria-controls="view-provenance" tabindex="-1">Provenance Explorer</button>
-      <button id="tab-benchmarks" class="nav-tab" data-tab="benchmarks" role="tab" aria-selected="false" aria-controls="view-benchmarks" tabindex="-1">Benchmark Workbench</button>
-    </nav>
-  </header>
-
-  <main id="main-content" class="main-content" tabindex="-1">
-    <!-- View 1: Overview -->
-    <section id="view-overview" class="view-panel active" role="tabpanel" aria-labelledby="tab-overview" tabindex="0">
-      <div class="panel-header">
-        <h2>System Executive Overview</h2>
-        <div class="header-actions">
-          <span id="overview-last-updated" class="last-updated-text" aria-live="polite"></span>
-          <button id="btn-refresh-overview" type="button" class="btn-refresh" aria-label="Refresh overview metrics" title="Refresh overview metrics"><span class="refresh-icon" aria-hidden="true">🔄</span> Refresh</button>
-        </div>
-      </div>
-
-      <!-- Execution Summary Metrics Grid -->
-      <div class="metrics-grid">
-        <div class="metric-card primary">
-          <div class="metric-label">Total Executions</div>
-          <div class="metric-value" id="metric-total-executions">--</div>
-          <div class="metric-subtext" id="subtext-total-executions">Source: LocalProvenanceStore • Window: Full Log History</div>
-        </div>
-        <div class="metric-card danger">
-          <div class="metric-label">Authorization Denials</div>
-          <div class="metric-value text-danger" id="metric-denials">--</div>
-          <div class="metric-subtext">Source: TamperEvidentAuditTrail • Scope: Access Rejections</div>
-        </div>
-        <div class="metric-card warning">
-          <div class="metric-label">Policy Halts</div>
-          <div class="metric-value text-warning" id="metric-halts">--</div>
-          <div class="metric-subtext">Source: TamperEvidentAuditTrail • Scope: Gate &amp; Egress Halts</div>
-        </div>
-        <div class="metric-card danger">
-          <div class="metric-label">Execution Failures</div>
-          <div class="metric-value text-danger" id="metric-failures">--</div>
-          <div class="metric-subtext">Source: TamperEvidentAuditTrail • Scope: Runtime Exceptions</div>
-        </div>
-        <div class="metric-card warning">
-          <div class="metric-label">Parse Errors</div>
-          <div class="metric-value text-warning" id="metric-parse-errors">--</div>
-          <div class="metric-subtext">Source: TamperEvidentAuditTrail • Scope: Malformed Payloads</div>
-        </div>
-      </div>
-
-      <!-- Evidence & Integrity Status -->
-      <div class="section-grid mb-1">
-        <div class="card">
-          <div class="card-header">
-            <span>Audit Trail Verification</span>
-            <span id="audit-data-availability" class="status-badge status-badge-unknown">AVAILABILITY: CHECKING</span>
-          </div>
-          <h3>Audit Log Health &amp; Chain Integrity</h3>
-          <div id="audit-integrity-status" class="status-block">Loading...</div>
-        </div>
-        <div class="card">
-          <div class="card-header">
-            <span>Provenance Verification</span>
-            <span id="provenance-data-availability" class="status-badge status-badge-unknown">AVAILABILITY: CHECKING</span>
-          </div>
-          <h3>Provenance Store Chain Integrity</h3>
-          <div id="provenance-integrity-status" class="status-block">Loading...</div>
-        </div>
-      </div>
-
-      <!-- Recent Execution Traces -->
-      <div class="card mb-1">
-        <div class="card-header">
-          <span>Recent Execution Traces</span>
-          <span class="subtitle font-mono">Source: LocalProvenanceStore &amp; Audit Trail</span>
-        </div>
-        <div id="overview-recent-traces-container" class="table-responsive">
-          <table class="data-table" aria-label="Recent Execution Traces">
-            <thead>
-              <tr>
-                <th>Correlation ID</th>
-                <th>Action</th>
-                <th>Target</th>
-                <th>Status</th>
-                <th>Start Time</th>
-              </tr>
-            </thead>
-            <tbody id="overview-recent-traces">
-              <tr>
-                <td colspan="5" class="text-center text-muted">Loading recent execution traces...</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      <!-- Investigation Entry Points -->
-      <div class="card">
-        <div class="card-header">Investigative Shortcuts &amp; Entry Points</div>
-        <p class="text-muted" style="font-size: 0.85rem; margin-bottom: 0.75rem;">
-          Direct navigation to filtered execution traces based on security and operational outcome classification.
-        </p>
-        <div class="quick-entry-grid">
-          <button type="button" class="quick-entry-btn" data-jump-tab="traces" data-filter="DENIED" aria-label="View Denied Requests">
-            <span>Inspect Denials</span>
-            <span class="arrow" aria-hidden="true">➔</span>
-          </button>
-          <button type="button" class="quick-entry-btn" data-jump-tab="traces" data-filter="HALTED" aria-label="View Policy Halts">
-            <span>Inspect Policy Halts</span>
-            <span class="arrow" aria-hidden="true">➔</span>
-          </button>
-          <button type="button" class="quick-entry-btn" data-jump-tab="traces" data-filter="FAILED" aria-label="View Execution Failures">
-            <span>Inspect Failures</span>
-            <span class="arrow" aria-hidden="true">➔</span>
-          </button>
-          <button type="button" class="quick-entry-btn" data-jump-tab="traces" data-filter="OUTCOME_UNKNOWN" aria-label="View Unknown Outcomes">
-            <span>Inspect Unknown Outcomes</span>
-            <span class="arrow" aria-hidden="true">➔</span>
-          </button>
-        </div>
-      </div>
-    </section>
-
-    <!-- View 2: Execution Trace Explorer -->
-    <section id="view-traces" class="view-panel" role="tabpanel" aria-labelledby="tab-traces" tabindex="0">
-      <div class="panel-header">
-        <div>
-          <h2>Execution Trace Explorer</h2>
-          <p class="subtitle">Primary Investigative Surface • Recorded Events, Verification &amp; Evidence Inspection</p>
-        </div>
-        <div class="filter-controls">
-          <div class="search-input-wrapper">
-            <input type="search" id="trace-search" placeholder="Search correlation / request ID / action..." class="input-search" aria-label="Search execution traces by correlation or request ID" aria-keyshortcuts="/" title="Press '/' to focus search">
-            <kbd class="search-shortcut-badge" aria-hidden="true">/</kbd>
-          </div>
-          <select id="trace-status-filter" class="select-filter" aria-label="Filter execution traces by status">
-            <option value="ALL">All Statuses</option>
-            <option value="COMPLETED">COMPLETED</option>
-            <option value="DENIED">DENIED</option>
-            <option value="HALTED">HALTED</option>
-            <option value="FAILED">FAILED</option>
-            <option value="OUTCOME_UNKNOWN">OUTCOME_UNKNOWN</option>
-          </select>
-        </div>
-      </div>
-
-      <div class="trace-layout">
-        <!-- Area A: Trace List -->
-        <aside id="area-trace-list" class="trace-list-container" aria-label="Execution Trace List">
-          <div class="card-header">
-            <span>Execution Traces</span>
-            <span id="trace-count" class="trace-count-badge" aria-live="polite" aria-atomic="true"></span>
-          </div>
-          <ul id="trace-list" class="trace-list" role="listbox" aria-label="Select an execution trace"></ul>
-        </aside>
-
-        <!-- Main Detail & Evidence Container (Area B & Area C) -->
-        <div class="trace-detail-container">
-          <div id="trace-detail-empty" class="empty-state">
-            <span style="font-size: 2rem;" aria-hidden="true">🔍</span>
-            <div>Select an execution trace from the list to inspect recorded event timeline, derived summaries, authorization records, and evidence details.</div>
-          </div>
-          <div id="trace-detail-content" class="trace-detail-content hidden">
-            <!-- Selected trace details dynamically populated via app.js -->
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <!-- View 3: Provenance Explorer -->
-    <section id="view-provenance" class="view-panel" role="tabpanel" aria-labelledby="tab-provenance" tabindex="0">
-      <div class="panel-header">
-        <div>
-          <h2>Provenance Explorer</h2>
-          <p class="subtitle">Investigative Workspace • Chain Verification, Source Authenticity & Evidence Inspection</p>
-        </div>
-        <div class="filter-controls">
-          <div class="search-input-wrapper">
-            <input type="search" id="provenance-search" placeholder="Search event ID / correlation / source / hash..." class="input-search" aria-label="Search provenance records" aria-keyshortcuts="/" title="Press '/' to focus search">
-            <kbd class="search-shortcut-badge" aria-hidden="true">/</kbd>
-          </div>
-          <select id="provenance-type-filter" class="select-filter" aria-label="Filter provenance records by event type">
-            <option value="ALL">All Event Types</option>
-            <option value="ACTION_PROPOSED">ACTION_PROPOSED</option>
-            <option value="AUTHORIZATION_GRANTED">AUTHORIZATION_GRANTED</option>
-            <option value="AUTHORIZATION_DENIED">AUTHORIZATION_DENIED</option>
-            <option value="EXECUTION_STARTED">EXECUTION_STARTED</option>
-            <option value="EXECUTION_SUCCEEDED">EXECUTION_SUCCEEDED</option>
-            <option value="EXECUTION_FAILED">EXECUTION_FAILED</option>
-            <option value="EXECUTION_INTERRUPTED">EXECUTION_INTERRUPTED</option>
-            <option value="EGRESS_BLOCKED">EGRESS_BLOCKED</option>
-          </select>
-        </div>
-      </div>
-
-      <div class="disclaimer-banner mb-1">
-        <span class="warning-icon" aria-hidden="true">⚠️</span>
-        <div>
-          <strong>Provenance Scope Disclaimer:</strong>
-          Valid local cryptographic hash chain integrity verifies append-only sequence chaining, but does NOT prove external source authenticity, non-repudiation, or trace completeness.
-        </div>
-      </div>
-
-      <!-- Section A: 4 Verification Summary Panels -->
-      <div class="card mb-1">
-        <div class="card-header">
-          <span>Verification Scope &amp; Summary</span>
-          <span class="subtitle font-mono">Independent Control Plane Assessments</span>
-        </div>
-        <div id="provenance-verification-grid" class="verification-summary-grid">
-          <div class="verification-panel">
-            <div class="panel-title">1. Record Availability</div>
-            <div id="summary-avail-badge" class="status-badge status-badge-unknown">CHECKING...</div>
-            <div id="summary-avail-msg" class="panel-msg">Checking provenance log presence...</div>
-            <div class="panel-scope">Scope: Physical log presence &amp; readable line structure.</div>
-          </div>
-          <div class="verification-panel">
-            <div class="panel-title">2. Integrity Verification</div>
-            <div id="summary-integrity-badge" class="status-badge status-badge-unknown">CHECKING...</div>
-            <div id="summary-integrity-msg" class="panel-msg">Checking cryptographic hash chain...</div>
-            <div class="panel-scope">Scope: SHA-256 sequence chaining continuity.</div>
-          </div>
-          <div class="verification-panel">
-            <div class="panel-title">3. Trace Coverage</div>
-            <div id="summary-coverage-badge" class="status-badge status-badge-unknown">CHECKING...</div>
-            <div id="summary-coverage-msg" class="panel-msg">Assessing event record coverage...</div>
-            <div class="panel-scope">Scope: Terminal outcome completeness per trace.</div>
-          </div>
-          <div class="verification-panel">
-            <div class="panel-title">4. Source Authenticity</div>
-            <div id="summary-authenticity-badge" class="status-badge status-badge-not-established">NOT ESTABLISHED</div>
-            <div id="summary-authenticity-msg" class="panel-msg">Local logs lack hardware enclave / signature proofs.</div>
-            <div class="panel-scope">Scope: Cryptographic origin identity &amp; non-repudiation.</div>
-          </div>
-        </div>
-      </div>
-
-      <!-- Section B: Actionable Verification Findings -->
-      <div class="card mb-1">
-        <div class="card-header">Actionable Verification Findings</div>
-        <div id="provenance-findings-container">
-          <p class="text-muted text-center" style="padding: 0.5rem;">Loading verification findings...</p>
-        </div>
-      </div>
-
-      <!-- Section C: Provenance Record Explorer & Record Inspector Split View -->
-      <div class="trace-layout">
-        <!-- Record Stream List -->
-        <aside id="area-provenance-list" class="trace-list-container" aria-label="Provenance Record Stream">
-          <div class="card-header">
-            <span>Recorded Stream</span>
-            <span id="provenance-count" class="trace-count-badge" aria-live="polite" aria-atomic="true">--</span>
-          </div>
-          <ul id="provenance-record-list" class="trace-list" role="listbox" aria-label="Select a provenance record to inspect">
-            <li class="text-muted text-center" style="padding: 1.5rem;">Loading provenance records...</li>
-          </ul>
-        </aside>
-
-        <!-- Record Inspector Detail -->
-        <div class="trace-detail-container">
-          <div id="provenance-inspector-empty" class="empty-state">
-            <span style="font-size: 2rem;" aria-hidden="true">🔎</span>
-            <div>Select a provenance record from the stream to inspect original fields, cryptographic hashes, predecessor relationships, and related execution traces.</div>
-          </div>
-          <div id="provenance-inspector-content" class="trace-detail-content hidden">
-            <!-- Dynamically rendered via app.js -->
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <!-- View 4: Benchmark Workbench -->
-    <section id="view-benchmarks" class="view-panel" role="tabpanel" aria-labelledby="tab-benchmarks" tabindex="0">
-      <div class="panel-header">
-        <div>
-          <h2>Benchmark Workbench</h2>
-          <p class="subtitle">Empirical Evidence & Evaluation Surface • Baseline Conditions, Inferential Comparisons & Per-Case Telemetry</p>
-        </div>
-      </div>
-
-      <!-- Section 1: Run Summary & Identity Panel -->
-      <div id="benchmark-run-summary-card" class="card mb-1">
-        <div class="card-header">
-          <span>Benchmark Identity &amp; Run Summary</span>
-          <span id="benchmark-artifacts-status" class="status-badge status-badge-unknown">ARTIFACTS: CHECKING...</span>
-        </div>
-        <div id="benchmark-run-summary-grid" class="metrics-grid mb-1">
-          <div class="metric-card primary">
-            <div class="metric-label">Run Identifier</div>
-            <div id="summary-run-id" class="metric-value font-mono" style="font-size: 0.95rem; word-break: break-all;">CHECKING...</div>
-            <div class="metric-subtext">Source: Ablation Table Artifact</div>
-          </div>
-          <div class="metric-card primary">
-            <div class="metric-label">Evaluated Sample Count</div>
-            <div id="summary-sample-count" class="metric-value">--</div>
-            <div class="metric-subtext">Scope: Held-out Evaluation Dataset</div>
-          </div>
-          <div class="metric-card primary">
-            <div class="metric-label">Dataset SHA-256 Digest</div>
-            <div id="summary-dataset-digest" class="metric-value font-mono" style="font-size: 0.8rem; word-break: break-all;">CHECKING...</div>
-            <div class="metric-subtext">Verification: Evaluation Set Integrity</div>
-          </div>
-          <div class="metric-card primary">
-            <div class="metric-label">Run Records SHA-256 Digest</div>
-            <div id="summary-records-digest" class="metric-value font-mono" style="font-size: 0.8rem; word-break: break-all;">CHECKING...</div>
-            <div class="metric-subtext">Verification: Case Output Serialization</div>
-          </div>
-        </div>
-        <div id="benchmark-run-meta-row" class="text-muted font-mono" style="font-size: 0.8rem; display: flex; gap: 1.5rem; flex-wrap: wrap;">
-          <span>Benchmark Version: <strong id="summary-version" class="text-primary">--</strong></span>
-          <span>Evaluation Seed: <strong id="summary-seed" class="text-primary">--</strong></span>
-        </div>
-        <div id="benchmark-artifacts-alert-container" style="margin-top: 0.75rem;"></div>
-      </div>
-
-      <!-- Section 2: Condition Comparison Surface -->
-      <div class="card mb-1">
-        <div class="card-header">
-          <span>Condition Comparison &amp; Empirical Performance</span>
-          <span class="subtitle font-mono">Measured Evaluation Artifact Metrics</span>
-        </div>
-
-        <h3>Baseline Condition Performance</h3>
-        <div class="table-responsive mb-1">
-          <table class="data-table" aria-label="Baseline Condition Performance Metrics">
-            <thead>
-              <tr>
-                <th>Baseline Condition</th>
-                <th>Samples</th>
-                <th>Confusion Matrix (TC/FC/TR/FR)</th>
-                <th>Accuracy (95% CI)</th>
-                <th>Recall %</th>
-                <th>Precision %</th>
-                <th>FPR %</th>
-                <th>FNR %</th>
-                <th>Avg Latency</th>
-                <th>Total Tokens</th>
-              </tr>
-            </thead>
-            <tbody id="benchmark-baselines-tbody">
-              <tr><td colspan="10" class="text-center text-muted">Loading baseline evaluation metrics...</td></tr>
-            </tbody>
-          </table>
-        </div>
-
-        <div class="section-grid mb-1">
+  <div class="app-shell">
+    <aside class="app-sidebar" aria-label="Sidebar Navigation">
+      <div class="sidebar-brand">
+        <div class="brand">
+          <span class="logo-icon" aria-hidden="true">🛡️</span>
           <div>
-            <h3 style="font-size: 0.95rem; margin-bottom: 0.5rem;">Paired McNemar Inferential Comparisons</h3>
-            <div id="benchmark-mcnemar-container" class="table-responsive">
-              <table class="data-table" aria-label="Paired McNemar Inferential Comparisons">
-                <thead>
-                  <tr>
-                    <th>Comparison</th>
-                    <th>Disc. A+/B-</th>
-                    <th>Disc. A-/B+</th>
-                    <th>Chi² Stat</th>
-                    <th>p-value</th>
-                    <th>Significant (α=0.05)</th>
-                  </tr>
-                </thead>
-                <tbody id="benchmark-mcnemar-tbody">
-                  <tr><td colspan="6" class="text-center text-muted">Loading McNemar comparisons...</td></tr>
-                </tbody>
-              </table>
+            <h1>EpistemicOS</h1>
+            <p class="subtitle">Control Plane Observatory • Evidence &amp; System Observability</p>
+          </div>
+        </div>
+        <div class="read-only-badge desktop-only-badge">
+          <span class="indicator" aria-hidden="true"></span> READ-ONLY CONTROL PLANE
+        </div>
+      </div>
+
+      <div class="mobile-header-bar">
+        <div class="mobile-brand">
+          <span class="logo-icon" aria-hidden="true">🛡️</span>
+          <span class="mobile-title">EpistemicOS</span>
+        </div>
+        <div class="mobile-context">
+          <span id="mobile-current-title" class="mobile-current-title">System Executive Overview</span>
+          <div class="read-only-badge compact">
+            <span class="indicator" aria-hidden="true"></span> READ-ONLY
+          </div>
+        </div>
+      </div>
+
+      <nav class="nav-tabs" role="tablist" aria-label="Observatory Navigation">
+        <button id="tab-overview" class="nav-tab active" data-tab="overview" role="tab" aria-selected="true" aria-controls="view-overview" tabindex="0">
+          <span class="nav-icon" aria-hidden="true">📊</span>
+          <span class="nav-label">Overview</span>
+        </button>
+        <button id="tab-traces" class="nav-tab" data-tab="traces" role="tab" aria-selected="false" aria-controls="view-traces" tabindex="-1">
+          <span class="nav-icon" aria-hidden="true">⚡</span>
+          <span class="nav-label">Execution Traces</span>
+        </button>
+        <button id="tab-provenance" class="nav-tab" data-tab="provenance" role="tab" aria-selected="false" aria-controls="view-provenance" tabindex="-1">
+          <span class="nav-icon" aria-hidden="true">📜</span>
+          <span class="nav-label">Provenance Explorer</span>
+        </button>
+        <button id="tab-benchmarks" class="nav-tab" data-tab="benchmarks" role="tab" aria-selected="false" aria-controls="view-benchmarks" tabindex="-1">
+          <span class="nav-icon" aria-hidden="true">🧪</span>
+          <span class="nav-label">Benchmark Workbench</span>
+        </button>
+      </nav>
+
+      <div class="sidebar-footer">
+        <div class="read-only-badge">
+          <span class="indicator" aria-hidden="true"></span> READ-ONLY CONTROL PLANE
+        </div>
+      </div>
+    </aside>
+
+    <div class="app-main-wrapper">
+      <main id="main-content" class="main-content" tabindex="-1">
+        <!-- View 1: Overview -->
+        <section id="view-overview" class="view-panel active" role="tabpanel" aria-labelledby="tab-overview" tabindex="0">
+          <div class="panel-header">
+            <h2>System Executive Overview</h2>
+            <div class="header-actions">
+              <span id="overview-last-updated" class="last-updated-text" aria-live="polite"></span>
+              <button id="btn-refresh-overview" type="button" class="btn-refresh" aria-label="Refresh overview metrics" title="Refresh overview metrics"><span class="refresh-icon" aria-hidden="true">🔄</span> Refresh</button>
             </div>
           </div>
 
-          <div>
-            <h3 style="font-size: 0.95rem; margin-bottom: 0.5rem;">Entropy Gate Threshold Sensitivity Analysis</h3>
-            <div id="threshold-ablations-container" class="table-responsive">
-              <table class="data-table" aria-label="Entropy Gate Threshold Sensitivity Analysis">
-                <thead>
-                  <tr>
-                    <th>Z-Threshold</th>
-                    <th>TC</th>
-                    <th>FC</th>
-                    <th>TR</th>
-                    <th>FR</th>
-                    <th>Precision %</th>
-                    <th>Recall %</th>
-                  </tr>
-                </thead>
-                <tbody id="benchmark-thresholds-tbody">
-                  <tr><td colspan="7" class="text-center text-muted">Loading threshold ablations...</td></tr>
-                </tbody>
-              </table>
+          <!-- Execution Summary Metrics Grid -->
+          <div class="metrics-grid">
+            <div class="metric-card primary">
+              <div class="metric-label">Total Executions</div>
+              <div class="metric-value" id="metric-total-executions">--</div>
+              <div class="metric-subtext" id="subtext-total-executions">Source: LocalProvenanceStore • Window: Full Log History</div>
+            </div>
+            <div class="metric-card danger">
+              <div class="metric-label">Authorization Denials</div>
+              <div class="metric-value text-danger" id="metric-denials">--</div>
+              <div class="metric-subtext">Source: TamperEvidentAuditTrail • Scope: Access Rejections</div>
+            </div>
+            <div class="metric-card warning">
+              <div class="metric-label">Policy Halts</div>
+              <div class="metric-value text-warning" id="metric-halts">--</div>
+              <div class="metric-subtext">Source: TamperEvidentAuditTrail • Scope: Gate &amp; Egress Halts</div>
+            </div>
+            <div class="metric-card danger">
+              <div class="metric-label">Execution Failures</div>
+              <div class="metric-value text-danger" id="metric-failures">--</div>
+              <div class="metric-subtext">Source: TamperEvidentAuditTrail • Scope: Runtime Exceptions</div>
+            </div>
+            <div class="metric-card warning">
+              <div class="metric-label">Parse Errors</div>
+              <div class="metric-value text-warning" id="metric-parse-errors">--</div>
+              <div class="metric-subtext">Source: TamperEvidentAuditTrail • Scope: Malformed Payloads</div>
             </div>
           </div>
-        </div>
-      </div>
 
-      <!-- Section 3: Per-Case Evaluation Inspector -->
-      <div class="card mb-1">
-        <div class="card-header">
-          <div>
-            <span style="font-size: 1rem; font-weight: 700;">Per-Case Evaluation Inspector</span>
-            <span class="subtitle font-mono" style="display: block; font-size: 0.775rem;">Recorded Case Outcomes, Classification Labels &amp; Failure Details</span>
-          </div>
-          <div class="filter-controls">
-            <div class="search-input-wrapper">
-              <input type="search" id="benchmark-case-search" placeholder="Search case ID / family / reason..." class="input-search" aria-label="Search benchmark cases" aria-keyshortcuts="/" title="Press '/' to focus search">
-              <kbd class="search-shortcut-badge" aria-hidden="true">/</kbd>
+          <!-- Evidence & Integrity Status -->
+          <div class="section-grid mb-1">
+            <div class="card">
+              <div class="card-header">
+                <span>Audit Trail Verification</span>
+                <span id="audit-data-availability" class="status-badge status-badge-unknown">AVAILABILITY: CHECKING</span>
+              </div>
+              <h3>Audit Log Health &amp; Chain Integrity</h3>
+              <div id="audit-integrity-status" class="status-block">Loading...</div>
             </div>
-            <select id="benchmark-case-baseline-filter" class="select-filter" aria-label="Filter benchmark cases by baseline condition">
-              <option value="ALL">All Baselines</option>
-            </select>
-            <select id="benchmark-case-outcome-filter" class="select-filter" aria-label="Filter benchmark cases by outcome classification">
-              <option value="ALL">All Outcomes</option>
-              <option value="TC">TC (True Commit)</option>
-              <option value="FC">FC (False Commit)</option>
-              <option value="TR">TR (True Rollback)</option>
-              <option value="FR">FR (False Rollback)</option>
-            </select>
+            <div class="card">
+              <div class="card-header">
+                <span>Provenance Verification</span>
+                <span id="provenance-data-availability" class="status-badge status-badge-unknown">AVAILABILITY: CHECKING</span>
+              </div>
+              <h3>Provenance Store Chain Integrity</h3>
+              <div id="provenance-integrity-status" class="status-block">Loading...</div>
+            </div>
           </div>
-        </div>
 
-        <div class="trace-layout" style="margin-top: 0.75rem;">
-          <!-- Case Stream List -->
-          <aside id="area-benchmark-case-list" class="trace-list-container" aria-label="Benchmark Case Stream">
+          <!-- Recent Execution Traces -->
+          <div class="card mb-1">
             <div class="card-header">
-              <span>Recorded Cases</span>
-              <span id="benchmark-case-count" class="trace-count-badge" aria-live="polite" aria-atomic="true">--</span>
+              <span>Recent Execution Traces</span>
+              <span class="subtitle font-mono">Source: LocalProvenanceStore &amp; Audit Trail</span>
             </div>
-            <ul id="benchmark-case-list" class="trace-list" role="listbox" aria-label="Select a benchmark case to inspect">
-              <li class="text-muted text-center" style="padding: 1.5rem;">Loading benchmark cases...</li>
-            </ul>
-          </aside>
-
-          <!-- Case Detail Inspector -->
-          <div class="trace-detail-container">
-            <div id="benchmark-case-empty" class="empty-state">
-              <span style="font-size: 2rem;" aria-hidden="true">📊</span>
-              <div>Select a benchmark case from the list to inspect expected vs observed decisions, classification labels, latencies, and recorded decision reasons.</div>
-            </div>
-            <div id="benchmark-case-content" class="trace-detail-content hidden">
-              <!-- Dynamically populated via app.js -->
+            <div id="overview-recent-traces-container" class="table-responsive">
+              <table class="data-table" aria-label="Recent Execution Traces">
+                <thead>
+                  <tr>
+                    <th>Correlation ID</th>
+                    <th>Action</th>
+                    <th>Target</th>
+                    <th>Status</th>
+                    <th>Start Time</th>
+                  </tr>
+                </thead>
+                <tbody id="overview-recent-traces">
+                  <tr>
+                    <td colspan="5" class="text-center text-muted">Loading recent execution traces...</td>
+                  </tr>
+                </tbody>
+              </table>
             </div>
           </div>
-        </div>
-      </div>
 
-      <!-- Section 4: Methodology & Limitations -->
-      <div class="card">
-        <div class="card-header">Methodology, Scope &amp; Documented Interpretive Guidance</div>
-        <div class="section-grid" style="margin-top: 0.75rem;">
-          <div>
-            <h3 style="font-size: 0.95rem; margin-bottom: 0.5rem;">Documented Interpretive Guidance &amp; Takeaways</h3>
-            <p class="text-muted" style="font-size: 0.8rem; margin-bottom: 0.5rem;">
-              The takeaways below represent qualitative interpretive notes documented by the benchmark runner harness, distinct from raw measured telemetry.
+          <!-- Investigation Entry Points -->
+          <div class="card">
+            <div class="card-header">Investigative Shortcuts &amp; Entry Points</div>
+            <p class="text-muted" style="font-size: 0.85rem; margin-bottom: 0.75rem;">
+              Direct navigation to filtered execution traces based on security and operational outcome classification.
             </p>
-            <div id="attribution-container">Loading attribution takeaways...</div>
-          </div>
-
-          <div>
-            <h3 style="font-size: 0.95rem; margin-bottom: 0.5rem;">Benchmark Methodology &amp; Artifact Scope</h3>
-            <div class="epistemic-disclaimer-box" style="font-size: 0.8rem; line-height: 1.45;">
-              <p style="margin-bottom: 0.5rem;">
-                <strong>EPISTEMIC LIMITATIONS NOTICE:</strong>
-              </p>
-              <ul style="margin-left: 1.2rem; display: flex; flex-direction: column; gap: 0.35rem;">
-                <li>The Benchmark Workbench displays recorded evidence from static JSON artifacts (<code>results/ablation_table.json</code> and <code>results/per_case_results.json</code>).</li>
-                <li>Parsing success confirms syntactic readability of JSON artifacts only—it does NOT establish empirical validity, reproducibility, or external system safety.</li>
-                <li>Aggregated accuracy, precision, and recall metrics reflect performance on the specific N=100 held-out evaluation dataset and configured baseline conditions.</li>
-                <li>Individual case classification labels (TC/FC/TR/FR) reflect automated comparison against expected outcomes, not human adjudication or external source authenticity.</li>
-              </ul>
+            <div class="quick-entry-grid">
+              <button type="button" class="quick-entry-btn" data-jump-tab="traces" data-filter="DENIED" aria-label="View Denied Requests">
+                <span>Inspect Denials</span>
+                <span class="arrow" aria-hidden="true">➔</span>
+              </button>
+              <button type="button" class="quick-entry-btn" data-jump-tab="traces" data-filter="HALTED" aria-label="View Policy Halts">
+                <span>Inspect Policy Halts</span>
+                <span class="arrow" aria-hidden="true">➔</span>
+              </button>
+              <button type="button" class="quick-entry-btn" data-jump-tab="traces" data-filter="FAILED" aria-label="View Execution Failures">
+                <span>Inspect Failures</span>
+                <span class="arrow" aria-hidden="true">➔</span>
+              </button>
+              <button type="button" class="quick-entry-btn" data-jump-tab="traces" data-filter="OUTCOME_UNKNOWN" aria-label="View Unknown Outcomes">
+                <span>Inspect Unknown Outcomes</span>
+                <span class="arrow" aria-hidden="true">➔</span>
+              </button>
             </div>
           </div>
-        </div>
-      </div>
-    </section>
-  </main>
+        </section>
 
-  <footer class="app-footer">
-    <p>EpistemicOS Security Governance & Control Plane Observatory • Read-Only Client Interface</p>
-  </footer>
+        <!-- View 2: Execution Trace Explorer -->
+        <section id="view-traces" class="view-panel" role="tabpanel" aria-labelledby="tab-traces" tabindex="0">
+          <div class="panel-header">
+            <div>
+              <h2>Execution Trace Explorer</h2>
+              <p class="subtitle">Primary Investigative Surface • Recorded Events, Verification &amp; Evidence Inspection</p>
+            </div>
+            <div class="filter-controls">
+              <div class="search-input-wrapper">
+                <input type="search" id="trace-search" placeholder="Search correlation / request ID / action..." class="input-search" aria-label="Search execution traces by correlation or request ID" aria-keyshortcuts="/" title="Press '/' to focus search">
+                <kbd class="search-shortcut-badge" aria-hidden="true">/</kbd>
+              </div>
+              <select id="trace-status-filter" class="select-filter" aria-label="Filter execution traces by status">
+                <option value="ALL">All Statuses</option>
+                <option value="COMPLETED">COMPLETED</option>
+                <option value="DENIED">DENIED</option>
+                <option value="HALTED">HALTED</option>
+                <option value="FAILED">FAILED</option>
+                <option value="OUTCOME_UNKNOWN">OUTCOME_UNKNOWN</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="trace-layout">
+            <!-- Area A: Trace List -->
+            <aside id="area-trace-list" class="trace-list-container" aria-label="Execution Trace List">
+              <div class="card-header">
+                <span>Execution Traces</span>
+                <span id="trace-count" class="trace-count-badge" aria-live="polite" aria-atomic="true"></span>
+              </div>
+              <ul id="trace-list" class="trace-list" role="listbox" aria-label="Select an execution trace"></ul>
+            </aside>
+
+            <!-- Main Detail & Evidence Container (Area B & Area C) -->
+            <div class="trace-detail-container">
+              <div id="trace-detail-empty" class="empty-state">
+                <span style="font-size: 2rem;" aria-hidden="true">🔍</span>
+                <div>Select an execution trace from the list to inspect recorded event timeline, derived summaries, authorization records, and evidence details.</div>
+              </div>
+              <div id="trace-detail-content" class="trace-detail-content hidden">
+                <!-- Selected trace details dynamically populated via app.js -->
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- View 3: Provenance Explorer -->
+        <section id="view-provenance" class="view-panel" role="tabpanel" aria-labelledby="tab-provenance" tabindex="0">
+          <div class="panel-header">
+            <div>
+              <h2>Provenance Explorer</h2>
+              <p class="subtitle">Investigative Workspace • Chain Verification, Source Authenticity &amp; Evidence Inspection</p>
+            </div>
+            <div class="filter-controls">
+              <div class="search-input-wrapper">
+                <input type="search" id="provenance-search" placeholder="Search event ID / correlation / source / hash..." class="input-search" aria-label="Search provenance records" aria-keyshortcuts="/" title="Press '/' to focus search">
+                <kbd class="search-shortcut-badge" aria-hidden="true">/</kbd>
+              </div>
+              <select id="provenance-type-filter" class="select-filter" aria-label="Filter provenance records by event type">
+                <option value="ALL">All Event Types</option>
+                <option value="ACTION_PROPOSED">ACTION_PROPOSED</option>
+                <option value="AUTHORIZATION_GRANTED">AUTHORIZATION_GRANTED</option>
+                <option value="AUTHORIZATION_DENIED">AUTHORIZATION_DENIED</option>
+                <option value="EXECUTION_STARTED">EXECUTION_STARTED</option>
+                <option value="EXECUTION_SUCCEEDED">EXECUTION_SUCCEEDED</option>
+                <option value="EXECUTION_FAILED">EXECUTION_FAILED</option>
+                <option value="EXECUTION_INTERRUPTED">EXECUTION_INTERRUPTED</option>
+                <option value="EGRESS_BLOCKED">EGRESS_BLOCKED</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="disclaimer-banner mb-1">
+            <span class="warning-icon" aria-hidden="true">⚠️</span>
+            <div>
+              <strong>Provenance Scope Disclaimer:</strong>
+              Valid local cryptographic hash chain integrity verifies append-only sequence chaining, but does NOT prove external source authenticity, non-repudiation, or trace completeness.
+            </div>
+          </div>
+
+          <!-- Section A: 4 Verification Summary Panels -->
+          <div class="card mb-1">
+            <div class="card-header">
+              <span>Verification Scope &amp; Summary</span>
+              <span class="subtitle font-mono">Independent Control Plane Assessments</span>
+            </div>
+            <div id="provenance-verification-grid" class="verification-summary-grid">
+              <div class="verification-panel">
+                <div class="panel-title">1. Record Availability</div>
+                <div id="summary-avail-badge" class="status-badge status-badge-unknown">CHECKING...</div>
+                <div id="summary-avail-msg" class="panel-msg">Checking provenance log presence...</div>
+                <div class="panel-scope">Scope: Physical log presence &amp; readable line structure.</div>
+              </div>
+              <div class="verification-panel">
+                <div class="panel-title">2. Integrity Verification</div>
+                <div id="summary-integrity-badge" class="status-badge status-badge-unknown">CHECKING...</div>
+                <div id="summary-integrity-msg" class="panel-msg">Checking cryptographic hash chain...</div>
+                <div class="panel-scope">Scope: SHA-256 sequence chaining continuity.</div>
+              </div>
+              <div class="verification-panel">
+                <div class="panel-title">3. Trace Coverage</div>
+                <div id="summary-coverage-badge" class="status-badge status-badge-unknown">CHECKING...</div>
+                <div id="summary-coverage-msg" class="panel-msg">Assessing event record coverage...</div>
+                <div class="panel-scope">Scope: Terminal outcome completeness per trace.</div>
+              </div>
+              <div class="verification-panel">
+                <div class="panel-title">4. Source Authenticity</div>
+                <div id="summary-authenticity-badge" class="status-badge status-badge-not-established">NOT ESTABLISHED</div>
+                <div id="summary-authenticity-msg" class="panel-msg">Local logs lack hardware enclave / signature proofs.</div>
+                <div class="panel-scope">Scope: Cryptographic origin identity &amp; non-repudiation.</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Section B: Actionable Verification Findings -->
+          <div class="card mb-1">
+            <div class="card-header">Actionable Verification Findings</div>
+            <div id="provenance-findings-container">
+              <p class="text-muted text-center" style="padding: 0.5rem;">Loading verification findings...</p>
+            </div>
+          </div>
+
+          <!-- Section C: Provenance Record Explorer & Record Inspector Split View -->
+          <div class="trace-layout">
+            <!-- Record Stream List -->
+            <aside id="area-provenance-list" class="trace-list-container" aria-label="Provenance Record Stream">
+              <div class="card-header">
+                <span>Recorded Stream</span>
+                <span id="provenance-count" class="trace-count-badge" aria-live="polite" aria-atomic="true">--</span>
+              </div>
+              <ul id="provenance-record-list" class="trace-list" role="listbox" aria-label="Select a provenance record to inspect">
+                <li class="text-muted text-center" style="padding: 1.5rem;">Loading provenance records...</li>
+              </ul>
+            </aside>
+
+            <!-- Record Inspector Detail -->
+            <div class="trace-detail-container">
+              <div id="provenance-inspector-empty" class="empty-state">
+                <span style="font-size: 2rem;" aria-hidden="true">🔎</span>
+                <div>Select a provenance record from the stream to inspect original fields, cryptographic hashes, predecessor relationships, and related execution traces.</div>
+              </div>
+              <div id="provenance-inspector-content" class="trace-detail-content hidden">
+                <!-- Dynamically rendered via app.js -->
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- View 4: Benchmark Workbench -->
+        <section id="view-benchmarks" class="view-panel" role="tabpanel" aria-labelledby="tab-benchmarks" tabindex="0">
+          <div class="panel-header">
+            <div>
+              <h2>Benchmark Workbench</h2>
+              <p class="subtitle">Empirical Evidence &amp; Evaluation Surface • Baseline Conditions, Inferential Comparisons &amp; Per-Case Telemetry</p>
+            </div>
+          </div>
+
+          <!-- Section 1: Run Summary & Identity Panel -->
+          <div id="benchmark-run-summary-card" class="card mb-1">
+            <div class="card-header">
+              <span>Benchmark Identity &amp; Run Summary</span>
+              <span id="benchmark-artifacts-status" class="status-badge status-badge-unknown">ARTIFACTS: CHECKING...</span>
+            </div>
+            <div id="benchmark-run-summary-grid" class="metrics-grid mb-1">
+              <div class="metric-card primary">
+                <div class="metric-label">Run Identifier</div>
+                <div id="summary-run-id" class="metric-value font-mono" style="font-size: 0.95rem; word-break: break-all;">CHECKING...</div>
+                <div class="metric-subtext">Source: Ablation Table Artifact</div>
+              </div>
+              <div class="metric-card primary">
+                <div class="metric-label">Evaluated Sample Count</div>
+                <div id="summary-sample-count" class="metric-value">--</div>
+                <div class="metric-subtext">Scope: Held-out Evaluation Dataset</div>
+              </div>
+              <div class="metric-card primary">
+                <div class="metric-label">Dataset SHA-256 Digest</div>
+                <div id="summary-dataset-digest" class="metric-value font-mono" style="font-size: 0.8rem; word-break: break-all;">CHECKING...</div>
+                <div class="metric-subtext">Verification: Evaluation Set Integrity</div>
+              </div>
+              <div class="metric-card primary">
+                <div class="metric-label">Run Records SHA-256 Digest</div>
+                <div id="summary-records-digest" class="metric-value font-mono" style="font-size: 0.8rem; word-break: break-all;">CHECKING...</div>
+                <div class="metric-subtext">Verification: Case Output Serialization</div>
+              </div>
+            </div>
+            <div id="benchmark-run-meta-row" class="text-muted font-mono" style="font-size: 0.8rem; display: flex; gap: 1.5rem; flex-wrap: wrap;">
+              <span>Benchmark Version: <strong id="summary-version" class="text-primary">--</strong></span>
+              <span>Evaluation Seed: <strong id="summary-seed" class="text-primary">--</strong></span>
+            </div>
+            <div id="benchmark-artifacts-alert-container" style="margin-top: 0.75rem;"></div>
+          </div>
+
+          <!-- Section 2: Condition Comparison Surface -->
+          <div class="card mb-1">
+            <div class="card-header">
+              <span>Condition Comparison &amp; Empirical Performance</span>
+              <span class="subtitle font-mono">Measured Evaluation Artifact Metrics</span>
+            </div>
+
+            <h3>Baseline Condition Performance</h3>
+            <div class="table-responsive mb-1">
+              <table class="data-table" aria-label="Baseline Condition Performance Metrics">
+                <thead>
+                  <tr>
+                    <th>Baseline Condition</th>
+                    <th>Samples</th>
+                    <th>Confusion Matrix (TC/FC/TR/FR)</th>
+                    <th>Accuracy (95% CI)</th>
+                    <th>Recall %</th>
+                    <th>Precision %</th>
+                    <th>FPR %</th>
+                    <th>FNR %</th>
+                    <th>Avg Latency</th>
+                    <th>Total Tokens</th>
+                  </tr>
+                </thead>
+                <tbody id="benchmark-baselines-tbody">
+                  <tr><td colspan="10" class="text-center text-muted">Loading baseline evaluation metrics...</td></tr>
+                </tbody>
+              </table>
+            </div>
+
+            <div class="section-grid mb-1">
+              <div>
+                <h3 style="font-size: 0.95rem; margin-bottom: 0.5rem;">Paired McNemar Inferential Comparisons</h3>
+                <div id="benchmark-mcnemar-container" class="table-responsive">
+                  <table class="data-table" aria-label="Paired McNemar Inferential Comparisons">
+                    <thead>
+                      <tr>
+                        <th>Comparison</th>
+                        <th>Disc. A+/B-</th>
+                        <th>Disc. A-/B+</th>
+                        <th>Chi² Stat</th>
+                        <th>p-value</th>
+                        <th>Significant (α=0.05)</th>
+                      </tr>
+                    </thead>
+                    <tbody id="benchmark-mcnemar-tbody">
+                      <tr><td colspan="6" class="text-center text-muted">Loading McNemar comparisons...</td></tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              <div>
+                <h3 style="font-size: 0.95rem; margin-bottom: 0.5rem;">Entropy Gate Threshold Sensitivity Analysis</h3>
+                <div id="threshold-ablations-container" class="table-responsive">
+                  <table class="data-table" aria-label="Entropy Gate Threshold Sensitivity Analysis">
+                    <thead>
+                      <tr>
+                        <th>Z-Threshold</th>
+                        <th>TC</th>
+                        <th>FC</th>
+                        <th>TR</th>
+                        <th>FR</th>
+                        <th>Precision %</th>
+                        <th>Recall %</th>
+                      </tr>
+                    </thead>
+                    <tbody id="benchmark-thresholds-tbody">
+                      <tr><td colspan="7" class="text-center text-muted">Loading threshold ablations...</td></tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Section 3: Per-Case Evaluation Inspector -->
+          <div class="card mb-1">
+            <div class="card-header">
+              <div>
+                <span style="font-size: 1rem; font-weight: 700;">Per-Case Evaluation Inspector</span>
+                <span class="subtitle font-mono" style="display: block; font-size: 0.775rem;">Recorded Case Outcomes, Classification Labels &amp; Failure Details</span>
+              </div>
+              <div class="filter-controls">
+                <div class="search-input-wrapper">
+                  <input type="search" id="benchmark-case-search" placeholder="Search case ID / family / reason..." class="input-search" aria-label="Search benchmark cases" aria-keyshortcuts="/" title="Press '/' to focus search">
+                  <kbd class="search-shortcut-badge" aria-hidden="true">/</kbd>
+                </div>
+                <select id="benchmark-case-baseline-filter" class="select-filter" aria-label="Filter benchmark cases by baseline condition">
+                  <option value="ALL">All Baselines</option>
+                </select>
+                <select id="benchmark-case-outcome-filter" class="select-filter" aria-label="Filter benchmark cases by outcome classification">
+                  <option value="ALL">All Outcomes</option>
+                  <option value="TC">TC (True Commit)</option>
+                  <option value="FC">FC (False Commit)</option>
+                  <option value="TR">TR (True Rollback)</option>
+                  <option value="FR">FR (False Rollback)</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="trace-layout" style="margin-top: 0.75rem;">
+              <!-- Case Stream List -->
+              <aside id="area-benchmark-case-list" class="trace-list-container" aria-label="Benchmark Case Stream">
+                <div class="card-header">
+                  <span>Recorded Cases</span>
+                  <span id="benchmark-case-count" class="trace-count-badge" aria-live="polite" aria-atomic="true">--</span>
+                </div>
+                <ul id="benchmark-case-list" class="trace-list" role="listbox" aria-label="Select a benchmark case to inspect">
+                  <li class="text-muted text-center" style="padding: 1.5rem;">Loading benchmark cases...</li>
+                </ul>
+              </aside>
+
+              <!-- Case Detail Inspector -->
+              <div class="trace-detail-container">
+                <div id="benchmark-case-empty" class="empty-state">
+                  <span style="font-size: 2rem;" aria-hidden="true">📊</span>
+                  <div>Select a benchmark case from the list to inspect expected vs observed decisions, classification labels, latencies, and recorded decision reasons.</div>
+                </div>
+                <div id="benchmark-case-content" class="trace-detail-content hidden">
+                  <!-- Dynamically populated via app.js -->
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Section 4: Methodology & Limitations -->
+          <div class="card">
+            <div class="card-header">Methodology, Scope &amp; Documented Interpretive Guidance</div>
+            <div class="section-grid" style="margin-top: 0.75rem;">
+              <div>
+                <h3 style="font-size: 0.95rem; margin-bottom: 0.5rem;">Documented Interpretive Guidance &amp; Takeaways</h3>
+                <p class="text-muted" style="font-size: 0.8rem; margin-bottom: 0.5rem;">
+                  The takeaways below represent qualitative interpretive notes documented by the benchmark runner harness, distinct from raw measured telemetry.
+                </p>
+                <div id="attribution-container">Loading attribution takeaways...</div>
+              </div>
+
+              <div>
+                <h3 style="font-size: 0.95rem; margin-bottom: 0.5rem;">Benchmark Methodology &amp; Artifact Scope</h3>
+                <div class="epistemic-disclaimer-box" style="font-size: 0.8rem; line-height: 1.45;">
+                  <p style="margin-bottom: 0.5rem;">
+                    <strong>EPISTEMIC LIMITATIONS NOTICE:</strong>
+                  </p>
+                  <ul style="margin-left: 1.2rem; display: flex; flex-direction: column; gap: 0.35rem;">
+                    <li>The Benchmark Workbench displays recorded evidence from static JSON artifacts (<code>results/ablation_table.json</code> and <code>results/per_case_results.json</code>).</li>
+                    <li>Parsing success confirms syntactic readability of JSON artifacts only—it does NOT establish empirical validity, reproducibility, or external system safety.</li>
+                    <li>Aggregated accuracy, precision, and recall metrics reflect performance on the specific N=100 held-out evaluation dataset and configured baseline conditions.</li>
+                    <li>Individual case classification labels (TC/FC/TR/FR) reflect automated comparison against expected outcomes, not human adjudication or external source authenticity.</li>
+                  </ul>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+      </main>
+
+      <footer class="app-footer">
+        <p>EpistemicOS Security Governance &amp; Control Plane Observatory • Read-Only Client Interface</p>
+      </footer>
+    </div>
+  </div>
 
   <script src="app.js"></script>
 </body>
