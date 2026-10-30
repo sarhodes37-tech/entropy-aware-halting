@@ -372,14 +372,11 @@ class TrustedExecutionBoundary:
         # under token_id or executor_id, AND executor_func matches that registered object identity ('is').
         if self.authority and hasattr(self.authority, "executor_registry"):
             exec_reg = self.authority.executor_registry
-            if hasattr(exec_reg, "_get_executor_for_boundary"):
-                bound_callable = exec_reg._get_executor_for_boundary(auth_token_id)
-                if not bound_callable:
-                    bound_callable = exec_reg._get_executor_for_boundary(executor_id)
-            else:
-                bound_callable = exec_reg.get(auth_token_id)
-                if not bound_callable:
-                    bound_callable = exec_reg.get(executor_id)
+            if not hasattr(exec_reg, "_get_executor_for_boundary"):
+                raise PermissionError("Execution rejected: Authority executor_registry does not implement _get_executor_for_boundary interface")
+            bound_callable = exec_reg._get_executor_for_boundary(auth_token_id)
+            if not bound_callable:
+                bound_callable = exec_reg._get_executor_for_boundary(executor_id)
 
             if bound_callable:
                 if executor_func is not bound_callable:

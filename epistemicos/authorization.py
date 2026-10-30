@@ -923,9 +923,17 @@ class ExecutorRegistry:
             elif isinstance(initial_mapping, dict):
                 self._store.update(initial_mapping)
 
-    def _register_internal(self, key: str, executor_func: Any) -> None:
-        """Internal registration method used exclusively by AuthorizationAuthority."""
+    def _register_internal(self, key: str, executor_func: Any, allow_overwrite: bool = False) -> None:
+        """
+        Internal registration method used exclusively by AuthorizationAuthority.
+        Re-binding an existing registered key to a different callable object is strictly rejected
+        unless allow_overwrite=True or the registered function identity matches ('is').
+        """
         with self._lock:
+            if key in self._store and not allow_overwrite:
+                existing = self._store[key]
+                if existing is not executor_func:
+                    raise ValueError(f"Registration rejected: Cannot overwrite existing executor ID '{key}' with a different callable object")
             self._store[key] = executor_func
 
     def _get_executor_for_boundary(self, key: str, default: Any = None) -> Any:
@@ -1245,7 +1253,9 @@ class AuthorizationAuthority:
                 exec_obj = executor_id
                 executor_id_str = get_callable_identity(exec_obj)
                 self.executor_registry._register_internal(token_id, exec_obj)
-                self.executor_registry._register_internal(executor_id_str, exec_obj)
+                # Lambdas and anonymous closures share qualitative name '<lambda>'; permit overwrite for anonymous closures
+                allow_lambda_overwrite = (executor_id_str == "<lambda>")
+                self.executor_registry._register_internal(executor_id_str, exec_obj, allow_overwrite=allow_lambda_overwrite)
             else:
                 executor_id_str = get_callable_identity(executor_id)
                 if executor_id_str in self.executor_registry:

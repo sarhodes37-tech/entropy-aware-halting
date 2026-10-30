@@ -263,8 +263,6 @@ class TrustedToolWrapper:
                 exec_reg = authority.executor_registry
                 if hasattr(exec_reg, "_pop_internal"):
                     exec_reg._pop_internal(cap.token_id, None)
-                else:
-                    exec_reg.pop(cap.token_id, None)
 
 
 class TrustedToolRegistry:

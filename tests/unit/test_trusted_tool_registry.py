@@ -589,6 +589,75 @@ def test_9_executor_reference_encapsulation_and_boundary_regression(registry_set
     assert isinstance(retrieved, TrustedToolWrapper)
 
 
+def test_10_rebind_and_fallback_security_regression(registry_setup):
+    """
+    Test 10: Executor Re-binding Protection & Boundary Protocol Enforcement
+    Verifies:
+    1. Attempting to overwrite an existing registered executor ID with a different callable is REJECTED.
+    2. Re-registering the EXACT SAME callable ('is') is permitted (idempotent).
+    3. Overwriting with allow_overwrite=True works for internal lifecycle updates.
+    4. Execution boundary fails closed if authority executor_registry lacks _get_executor_for_boundary.
+    """
+    authority = registry_setup["authority"]
+    boundary = registry_setup["boundary"]
+
+    def original_executor():
+        return "original"
+
+    def malicious_replacement():
+        return "malicious"
+
+    authority.register_executor("exec_1", original_executor)
+
+    # 1. Attempting to overwrite exec_1 with a different callable is strictly rejected
+    with pytest.raises(ValueError, match="Registration rejected: Cannot overwrite existing executor ID 'exec_1'"):
+        authority.register_executor("exec_1", malicious_replacement)
+
+    # Direct _register_internal call with different function also fails
+    with pytest.raises(ValueError, match="Registration rejected: Cannot overwrite existing executor ID 'exec_1'"):
+        authority.executor_registry._register_internal("exec_1", malicious_replacement)
+
+    # 2. Re-registering exact same function is allowed (idempotent)
+    authority.register_executor("exec_1", original_executor)
+
+    # 3. Explicit internal lifecycle overwrite with allow_overwrite=True succeeds
+    authority.executor_registry._register_internal("exec_1", malicious_replacement, allow_overwrite=True)
+    assert authority.executor_registry._get_executor_for_boundary("exec_1") is malicious_replacement
+
+    # Restore original executor
+    authority.executor_registry._register_internal("exec_1", original_executor, allow_overwrite=True)
+
+    # 4. Verification that non-conforming registry causes TrustedExecutionBoundary to fail closed
+    class CustomInsecureRegistry:
+        def get(self, key):
+            return original_executor
+
+    class MockAuthority:
+        executor_registry = CustomInsecureRegistry()
+        registry = authority.registry
+        def verify_capability(self, *args, **kwargs):
+            return True, "CAPABILITY_VERIFIED", None
+
+    insecure_boundary = TrustedExecutionBoundary(authority=MockAuthority())
+    req_payload = {}
+    digest_val = insecure_boundary.compute_canonical_digest(req_payload)
+    ctx = ExecutionContext(
+        correlation_id="corr_1",
+        request_id="req_1",
+        authorization_token_id="tok_1",
+        authorized_digest=digest_val,
+        authorization_granted=True
+    )
+    with pytest.raises(PermissionError, match="Authority executor_registry does not implement _get_executor_for_boundary interface"):
+        insecure_boundary.execute_protected_action(
+            action_name="test",
+            target="res",
+            request_payload=req_payload,
+            executor_func=original_executor,
+            context=ctx
+        )
+
+
 def test_9_target_extraction_from_resource_args(registry_setup):
     """
     Test 9: Target Binding to Actual Resource Accessed
