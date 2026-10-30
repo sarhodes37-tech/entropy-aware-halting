@@ -17,6 +17,20 @@ from typing import Dict, Any, List, Optional, Tuple
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
+# Output artifact paths created during evaluation runs (excluded from source tree status checks)
+IGNORED_OUTPUT_PREFIXES = ("logs/", "tmp/", ".git/", "__pycache__", ".pytest_cache", "results/")
+IGNORED_OUTPUT_FILES = (
+    "coverage.xml",
+    ".coverage",
+    "docs/security/four_layer_evidence_report.md",
+    "docs/security/incident_lab_report.md",
+    "docs/security/e2e_security_evidence_report.md",
+    "docs/security/security_evidence.json",
+    "results/incident_lab_results.json",
+    "results/four_layer_evidence.json",
+    "results/security_evidence.json"
+)
+
 
 def get_git_commit_hash(root_dir: Optional[str] = None) -> str:
     cwd = root_dir or PROJECT_ROOT
@@ -35,12 +49,12 @@ def get_git_commit_hash(root_dir: Optional[str] = None) -> str:
 
 def get_working_tree_status(root_dir: Optional[str] = None) -> Dict[str, Any]:
     """
-    Inspects working tree status via `git status --porcelain=v1 -uall`.
+    Inspects source working tree status via `git status --porcelain=v1 -uall`.
+    Excludes generated evaluation output files and directories.
     Returns dict with overall status ('CLEAN' / 'DIRTY'), list of tracked changes,
     and list of untracked files.
     """
     cwd = root_dir or PROJECT_ROOT
-    ignored_prefixes = ("logs/", "tmp/", ".git/", "__pycache__", ".pytest_cache")
 
     try:
         res = subprocess.run(
@@ -71,7 +85,10 @@ def get_working_tree_status(root_dir: Optional[str] = None) -> Dict[str, Any]:
 
         norm_path = Path(rel_path_str).as_posix()
 
-        if any(norm_path.startswith(prefix) or f"/{prefix}" in norm_path for prefix in ignored_prefixes):
+        # Exclude runtime outputs, coverage files, and generated evidence reports
+        if any(norm_path.startswith(prefix) or f"/{prefix}" in norm_path for prefix in IGNORED_OUTPUT_PREFIXES):
+            continue
+        if norm_path in IGNORED_OUTPUT_FILES:
             continue
 
         if status_code == "??" or status_code == "A ":
@@ -96,8 +113,6 @@ def compute_working_tree_digest(root_dir: Optional[str] = None) -> str:
 
     commit_sha = get_git_commit_hash(str(base))
     hasher.update(f"COMMIT:{commit_sha}\n".encode("utf-8"))
-
-    ignored_prefixes = ("logs/", "tmp/", ".git/", "__pycache__", ".pytest_cache", "results/")
 
     try:
         res = subprocess.run(
@@ -126,7 +141,9 @@ def compute_working_tree_digest(root_dir: Optional[str] = None) -> str:
 
         norm_path = Path(rel_path_str).as_posix()
 
-        if any(norm_path.startswith(prefix) or f"/{prefix}" in norm_path for prefix in ignored_prefixes):
+        if any(norm_path.startswith(prefix) or f"/{prefix}" in norm_path for prefix in IGNORED_OUTPUT_PREFIXES):
+            continue
+        if norm_path in IGNORED_OUTPUT_FILES:
             continue
 
         full_path = base / rel_path_str
