@@ -6,9 +6,29 @@ The EpistemicOS Control Plane Observatory is a read-only client dashboard interf
 
 - **Strict Read-Only Design**: The UI contains zero policy mutation, execution triggering, or privileged controls.
 - **Zero-Dependency Core Stack**: Serves a standalone REST API and static single-page app (SPA) using Python's standard library (`http.server`).
+- **Neon Dusk Design System**: Early-vaporwave / retro-futurist scientific instrumentation visual foundation with restrained dark surfaces and high-contrast accents.
 - **No Fabricated Data**: Metrics are derived directly from actual `TamperEvidentAuditTrail` logs, `LocalProvenanceStore` hash chains, and benchmark result files (`results/*.json`).
 - **Explicit Unavailable & Unverified States**: When log files do not exist or are empty, cards display explicit `UNAVAILABLE` or `UNVERIFIED` indicators rather than default zeroes or synthetic placeholders.
 - **Untrusted Input Escaping**: Dynamic DOM rendering uses strict DOM text-node binding (`textContent` and DOM element creation) to ensure untrusted event payloads cannot execute malicious scripts.
+
+## Design System Tokens (Neon Dusk Palette)
+
+The Observatory UI utilizes the Neon Dusk design system token palette:
+
+Token | Variable Name | Hex / Value | Intended Usage
+--- | --- | --- | ---
+Background Base | `--bg-base` | `#120F24` | Midnight violet primary background
+Primary Surface | `--bg-surface` | `#1D1833` | Deep plum panel surface
+Elevated Surface | `--bg-elevated` | `#282044` | Purple graphite elevated card/modal
+Border Default | `--border-default` | `#44365F` | Dusty violet structural dividers
+Primary Accent | `--accent-primary` | `#B69AFF` | Electric lavender headers & identifiers
+Secondary Accent | `--accent-secondary` | `#FF83B8` | Vaporwave pink highlights & alerts
+Interactive Accent | `--accent-interactive` | `#64DED9` | Retro cyan hover/focus/tabs
+Primary Text | `--text-primary` | `#F5F0FF` | Soft white high-contrast text
+Secondary Text | `--text-secondary` | `#B6A9CA` | Muted lavender subtext
+Semantic Verified | `--status-verified-fg` | `#2DD4BF` | Mint teal verification indicators
+Semantic Failed / Denied | `--status-failed-fg` | `#FF83B8` | Vaporwave pink failure indicators
+Semantic Halted | `--status-halted-fg` | `#FBBF24` | Amber yellow deterministic halt indicators
 
 ## Installation & Execution
 

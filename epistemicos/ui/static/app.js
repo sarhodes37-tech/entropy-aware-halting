@@ -1495,10 +1495,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
         if (f.severity === 'CRITICAL' || f.severity === 'HIGH') {
           card.style.borderColor = 'var(--status-failed-border)';
-          card.style.backgroundColor = 'rgba(251, 113, 133, 0.08)';
+          card.style.backgroundColor = 'var(--status-failed-bg)';
         } else if (f.severity === 'WARNING') {
           card.style.borderColor = 'var(--status-halted-border)';
-          card.style.backgroundColor = 'rgba(251, 146, 60, 0.08)';
+          card.style.backgroundColor = 'var(--status-halted-bg)';
         } else {
           card.style.borderColor = 'var(--border-default)';
         }
@@ -2090,7 +2090,7 @@ document.addEventListener('DOMContentLoaded', () => {
           const ablErrCard = document.createElement('div');
           ablErrCard.className = 'status-block';
           ablErrCard.style.borderColor = 'var(--status-failed-border)';
-          ablErrCard.style.backgroundColor = 'rgba(251, 113, 133, 0.08)';
+          ablErrCard.style.backgroundColor = 'var(--status-failed-bg)';
           ablErrCard.style.fontSize = '0.8rem';
           ablErrCard.style.marginBottom = '0.5rem';
 
@@ -2110,7 +2110,7 @@ document.addEventListener('DOMContentLoaded', () => {
           const pcErrCard = document.createElement('div');
           pcErrCard.className = 'status-block';
           pcErrCard.style.borderColor = 'var(--status-failed-border)';
-          pcErrCard.style.backgroundColor = 'rgba(251, 113, 133, 0.08)';
+          pcErrCard.style.backgroundColor = 'var(--status-failed-bg)';
           pcErrCard.style.fontSize = '0.8rem';
 
           const title = document.createElement('strong');
