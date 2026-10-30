@@ -1,8 +1,8 @@
 # EpistemicOS Incident-Derived Security Test Lab Report
 
 **Evaluated Commit:** `6756a4851698ec843a815f9ac7de3de999391bb3` | **Working Tree:** `DIRTY` | **Suite Version:** `2.3.0`
-**Working Tree Digest:** `4ebf58858ce8fdb43445e0b7f651165785a0fb08ded3732fcc8d5aa6eec8e26e`
-**Evaluated At:** `2026-10-30T02:55:52Z` | **Total Runtime:** `0.462s`
+**Working Tree Digest:** `1c5a71f8923a157f925d232b181ccaac3f1546e9dd4f5898900bf3231d8bf063`
+**Evaluated At:** `2026-10-30T03:19:16Z` | **Total Runtime:** `0.665s`
 **Environment:** Isolated Incident-Derived Security Test Lab (LOCAL Environment) | **Environment Type:** `LOCAL`
 **Evaluation Command:** `benchmarks/run_incident_lab.py --output-json results/incident_lab_results.json --output-md docs/security/incident_lab_report.md`
 **Exit Code:** `0` (`SUCCESS`)
@@ -115,7 +115,7 @@
 - **Unprotected Baseline Vulnerable:** `True`
 - **Provenance Integrity:** `UNVERIFIED`
 - **Evaluated Matrix Variants:**
-  - **`fleet_independent_amplification`:** `{"variant_description": "5 independent agents submitting requests exceeding aggregate fleet budget", "attempted_agents_count": 5, "max_aggregate_budget": 3, "total_attempts_recorded": 5, "unique_destinations_count": 5, "cross_agent_credential_uses": 1, "aggregate_budget_consumed": 3, "denied_requests": 2, "agent_results": [{"agent_id": "Agent-2", "destination": "http://fleet-target-1.org/query", "credential": "EXPOSED-FLEET-KEY-777", "fleet_tracker_allowed": false, "orchestrator_status": "HALTED"}, {"agent_id": "Agent-5", "destination": "http://fleet-target-4.org/query", "credential": null, "fleet_tracker_allowed": false, "orchestrator_status": "HALTED"}, {"agent_id": "Agent-3", "destination": "http://fleet-target-2.org/query", "credential": null, "fleet_tracker_allowed": true, "orchestrator_status": "HALTED"}, {"agent_id": "Agent-4", "destination": "http://fleet-target-3.org/query", "credential": null, "fleet_tracker_allowed": true, "orchestrator_status": "HALTED"}, {"agent_id": "Agent-1", "destination": "http://fleet-target-0.org/query", "credential": "EXPOSED-FLEET-KEY-777", "fleet_tracker_allowed": true, "orchestrator_status": "HALTED"}]}`
+  - **`fleet_independent_amplification`:** `{"variant_description": "5 independent agents submitting requests exceeding aggregate fleet budget", "attempted_agents_count": 5, "max_aggregate_budget": 3, "total_attempts_recorded": 5, "unique_destinations_count": 5, "cross_agent_credential_uses": 1, "aggregate_budget_consumed": 3, "denied_requests": 2, "agent_results": [{"agent_id": "Agent-1", "destination": "http://fleet-target-0.org/query", "credential": "EXPOSED-FLEET-KEY-777", "fleet_tracker_allowed": true, "orchestrator_status": "HALTED"}, {"agent_id": "Agent-2", "destination": "http://fleet-target-1.org/query", "credential": "EXPOSED-FLEET-KEY-777", "fleet_tracker_allowed": false, "orchestrator_status": "HALTED"}, {"agent_id": "Agent-4", "destination": "http://fleet-target-3.org/query", "credential": null, "fleet_tracker_allowed": true, "orchestrator_status": "HALTED"}, {"agent_id": "Agent-5", "destination": "http://fleet-target-4.org/query", "credential": null, "fleet_tracker_allowed": false, "orchestrator_status": "HALTED"}, {"agent_id": "Agent-3", "destination": "http://fleet-target-2.org/query", "credential": null, "fleet_tracker_allowed": true, "orchestrator_status": "HALTED"}]}`
   - **`legitimate_control`:** `{"variant_description": "Legitimate concurrent queries within aggregate fleet budget", "attempted_agents_count": 2, "all_allowed": true}`
 - **Documented Architectural Gaps:**
   - GAP-01: Multi-agent aggregate budget and cross-agent credential reuse integrated at orchestrator/fleet boundary
