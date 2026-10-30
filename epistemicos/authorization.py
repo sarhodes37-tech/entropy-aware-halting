@@ -903,6 +903,86 @@ def get_callable_identity(func: Any) -> str:
     return qualname
 
 
+class ExecutorRegistry:
+    """
+    Thread-safe, encapsulated registry mapping executor IDs and single-use token IDs
+    to trusted executor callables.
+    Restricts public retrieval and mutation methods (.get(), __getitem__, __setitem__, keys(), values(), items(), __iter__)
+    to prevent ordinary callers from retrieving or replacing registered raw executor function references.
+    Exposes narrow internal methods (_get_executor_for_boundary, _register_internal, _pop_internal)
+    used exclusively by AuthorizationAuthority and TrustedExecutionBoundary.
+    """
+
+    def __init__(self, initial_mapping: Optional[Union[Dict[str, Any], "ExecutorRegistry"]] = None):
+        self._lock = threading.RLock()
+        self._store: Dict[str, Any] = {}
+        if initial_mapping:
+            if isinstance(initial_mapping, ExecutorRegistry):
+                with initial_mapping._lock:
+                    self._store.update(initial_mapping._store)
+            elif isinstance(initial_mapping, dict):
+                self._store.update(initial_mapping)
+
+    def _register_internal(self, key: str, executor_func: Any, allow_overwrite: bool = False) -> None:
+        """
+        Internal registration method used exclusively by AuthorizationAuthority.
+        Re-binding an existing registered key to a different callable object is strictly rejected
+        unless allow_overwrite=True or the registered function identity matches ('is').
+        """
+        with self._lock:
+            if key in self._store and not allow_overwrite:
+                existing = self._store[key]
+                if existing is not executor_func:
+                    raise ValueError(f"Registration rejected: Cannot overwrite existing executor ID '{key}' with a different callable object")
+            self._store[key] = executor_func
+
+    def _get_executor_for_boundary(self, key: str, default: Any = None) -> Any:
+        """Internal lookup method used exclusively by AuthorizationAuthority & TrustedExecutionBoundary."""
+        with self._lock:
+            return self._store.get(key, default)
+
+    def _pop_internal(self, key: str, default: Any = None) -> Any:
+        """Internal removal method used exclusively by AuthorizationAuthority & TrustedExecutionBoundary."""
+        with self._lock:
+            return self._store.pop(key, default)
+
+    def contains(self, key: str) -> bool:
+        """Public metadata check: returns True if an executor is registered for key, without exposing the raw callable."""
+        with self._lock:
+            return key in self._store
+
+    def __contains__(self, key: Any) -> bool:
+        """Public metadata check: supports 'key in registry' syntax without exposing raw callables."""
+        with self._lock:
+            return key in self._store
+
+    def __len__(self) -> int:
+        """Public metadata check: returns count of registered executors."""
+        with self._lock:
+            return len(self._store)
+
+    def get(self, key: str, default: Any = None) -> Any:
+        raise PermissionError("Access denied: Raw executor retrieval via ExecutorRegistry.get() is restricted")
+
+    def __getitem__(self, key: str) -> Any:
+        raise PermissionError("Access denied: Raw executor retrieval via ExecutorRegistry item lookup is restricted")
+
+    def __setitem__(self, key: str, value: Any) -> None:
+        raise PermissionError("Access denied: Direct ExecutorRegistry mutation via item assignment is restricted")
+
+    def keys(self):
+        raise TypeError("ExecutorRegistry object does not support iteration or key enumeration")
+
+    def values(self):
+        raise TypeError("ExecutorRegistry object does not support iteration or value enumeration")
+
+    def items(self):
+        raise TypeError("ExecutorRegistry object does not support iteration or item enumeration")
+
+    def __iter__(self):
+        raise TypeError("ExecutorRegistry object is not iterable")
+
+
 class AuthorizationAuthority:
     """
     Trusted policy authority for EpistemicOS.
@@ -958,7 +1038,10 @@ class AuthorizationAuthority:
         else:
             self.contract_signing_secret = hashlib.sha256(f"EPISTEMICOS_CONTRACT_KEY_{uuid.uuid4()}".encode("utf-8")).digest()
 
-        self.executor_registry: Dict[str, Any] = dict(executor_registry or {})
+        if isinstance(executor_registry, ExecutorRegistry):
+            self.executor_registry = executor_registry
+        else:
+            self.executor_registry = ExecutorRegistry(executor_registry)
 
     def clear_denial_with_approval(
         self,
@@ -983,11 +1066,12 @@ class AuthorizationAuthority:
         )
 
     def register_executor(self, executor_id: str, executor_func: Any) -> None:
-        """Registers an authoritative callable identity in the authority executor registry."""
-        self.executor_registry[executor_id] = executor_func
-        func_qual_id = get_callable_identity(executor_func)
-        if func_qual_id != executor_id:
-            self.executor_registry[func_qual_id] = executor_func
+        """Registers an authoritative callable identity in the authority executor registry atomically."""
+        with self.executor_registry._lock:
+            self.executor_registry._register_internal(executor_id, executor_func)
+            func_qual_id = get_callable_identity(executor_func)
+            if func_qual_id != executor_id and func_qual_id not in self.executor_registry._store:
+                self.executor_registry._register_internal(func_qual_id, executor_func)
 
     def evaluate_and_issue_capability(
         self,
@@ -1169,12 +1253,15 @@ class AuthorizationAuthority:
             if callable(executor_id):
                 exec_obj = executor_id
                 executor_id_str = get_callable_identity(exec_obj)
-                self.executor_registry[token_id] = exec_obj
-                self.executor_registry[executor_id_str] = exec_obj
+                self.executor_registry._register_internal(token_id, exec_obj)
+                if not self.executor_registry.contains(executor_id_str):
+                    self.executor_registry._register_internal(executor_id_str, exec_obj)
             else:
                 executor_id_str = get_callable_identity(executor_id)
                 if executor_id_str in self.executor_registry:
-                    self.executor_registry[token_id] = self.executor_registry[executor_id_str]
+                    bound_exec = self.executor_registry._get_executor_for_boundary(executor_id_str)
+                    if bound_exec:
+                        self.executor_registry._register_internal(token_id, bound_exec)
 
             cap = Capability(
                 token_id=token_id,

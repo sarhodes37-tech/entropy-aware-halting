@@ -187,6 +187,7 @@ def test_4_executor_substitution_rejected(registry_setup):
     """
     Test 4: Executor Substitution
     A different callable object cannot consume authorization issued for another executor.
+    Verifies invocation counts remain 0 for both genuine and malicious executors on rejected attempt.
     """
     authority = registry_setup["authority"]
     boundary = registry_setup["boundary"]
@@ -197,10 +198,16 @@ def test_4_executor_substitution_rejected(registry_setup):
         allowed_resources={"/data/db"}
     )
 
+    genuine_count = 0
     def genuine_executor():
+        nonlocal genuine_count
+        genuine_count += 1
         return "genuine"
 
+    malicious_count = 0
     def malicious_executor():
+        nonlocal malicious_count
+        malicious_count += 1
         return "pwned"
 
     authority.register_executor("genuine_executor", genuine_executor)
@@ -240,6 +247,8 @@ def test_4_executor_substitution_rejected(registry_setup):
         )
 
     assert "CAPABILITY_VERIFICATION_FAILED_EXECUTOR_MISMATCH" in str(exc_info.value) or "identity mismatch" in str(exc_info.value)
+    assert genuine_count == 0
+    assert malicious_count == 0  # Substituted callable was NEVER executed!
 
 
 def test_5_replay_attack_rejected(registry_setup):
@@ -398,8 +407,8 @@ def test_7_missing_authorization_context(registry_setup):
 def test_8_registration_safety(registry_setup):
     """
     Test 8: Registration Safety & Trust Boundary Behavior
-    Verifies that register_tool returns a TrustedToolWrapper. The registering host app owns
-    wrapper._executor_func, but invocations through the wrapper mandate authorization.
+    Verifies that register_tool returns a TrustedToolWrapper. The public executor_func property
+    has been removed to prevent reference leaks.
     """
     registry = registry_setup["registry"]
 
@@ -413,11 +422,342 @@ def test_8_registration_safety(registry_setup):
     )
 
     assert isinstance(wrapper, TrustedToolWrapper)
-    assert wrapper.executor_func is raw_executor
+    assert not hasattr(wrapper, "executor_func")
 
-    retrieved = registry.get_tool("safe_tool")
+
+def test_9_executor_reference_encapsulation_and_boundary_regression(registry_setup):
+    """
+    Test 9: Comprehensive Executor Reference Encapsulation & Boundary Regression Test Suite
+    Covers:
+    1. Removal of public wrapper.executor_func accessor.
+    2. Encapsulated ExecutorRegistry restricting keys(), values(), items(), and __iter__ enumeration.
+    3. Successful authorized tool invocation through wrapper/boundary.
+    4. Rejection of unauthorized invocation without executor execution.
+    5. Rejection of action or target substitution.
+    6. Strict callable object identity binding ('is').
+    7. Single-use capability token replay enforcement.
+    """
+    registry = registry_setup["registry"]
+    authority = registry_setup["authority"]
+    boundary = registry_setup["boundary"]
+
+    policy = Policy(
+        policy_id="test_encapsulation_policy",
+        allowed_operations={"read_file"},
+        allowed_resources={"/app/data.json"}
+    )
+    authority.default_policy = policy
+
+    execution_count = 0
+    def mock_read(path="/app/data.json"):
+        nonlocal execution_count
+        execution_count += 1
+        return {"data": "secret_content", "path": path}
+
+    # Register tool
+    wrapper = registry.register_tool(
+        tool_id="read_tool",
+        action_name="read_file",
+        executor_func=mock_read,
+        default_target="/app/data.json"
+    )
+
+    # 1. Verify removal of public executor_func
+    assert not hasattr(wrapper, "executor_func")
+
+    # 2. Verify ExecutorRegistry public retrieval and mutation restrictions
+    exec_reg = authority.executor_registry
+    with pytest.raises(TypeError, match="does not support iteration or key enumeration"):
+        exec_reg.keys()
+    with pytest.raises(TypeError, match="does not support iteration or value enumeration"):
+        exec_reg.values()
+    with pytest.raises(TypeError, match="does not support iteration or item enumeration"):
+        exec_reg.items()
+    with pytest.raises(TypeError, match="is not iterable"):
+        iter(exec_reg)
+
+    # Public .get() and item lookup are restricted
+    with pytest.raises(PermissionError, match=r"Access denied: Raw executor retrieval via ExecutorRegistry\.get\(\) is restricted"):
+        exec_reg.get(wrapper.executor_id)
+
+    with pytest.raises(PermissionError, match=r"Access denied: Raw executor retrieval via ExecutorRegistry item lookup is restricted"):
+        _ = exec_reg[wrapper.executor_id]
+
+    # Public mutation via item assignment is restricted
+    with pytest.raises(PermissionError, match=r"Access denied: Direct ExecutorRegistry mutation via item assignment is restricted"):
+        exec_reg[wrapper.executor_id] = lambda: "malicious"
+
+    # Metadata checking works without leaking raw callables
+    assert wrapper.executor_id in exec_reg
+    assert exec_reg.contains(wrapper.executor_id) is True
+    assert len(exec_reg) >= 1
+
+    # 3. Successful authorized tool invocation
+    res = wrapper(path="/app/data.json")
+    assert res["status"] == "SUCCESS"
+    assert res["result"] == {"data": "secret_content", "path": "/app/data.json"}
+    assert execution_count == 1
+
+    # 4. Rejection of unauthorized invocation without executor execution
+    unauthorized_policy = Policy(
+        policy_id="unauth_policy",
+        allowed_operations={"read_file"},
+        allowed_resources={"/app/public.json"}
+    )
+    unauth_wrapper = registry.register_tool(
+        tool_id="unauth_read_tool",
+        action_name="read_file",
+        executor_func=mock_read,
+        default_target="/app/unauthorized.json",
+        policy=unauthorized_policy
+    )
+    with pytest.raises(PermissionError) as exc_unauth:
+        unauth_wrapper(path="/app/unauthorized.json")
+    assert "Tool execution rejected" in str(exc_unauth.value)
+    assert execution_count == 1  # Executor count did NOT increase!
+
+    # 5. Rejection of action or target substitution
+    payload = {"op": "read_file", "path": "/app/data.json"}
+    digest = boundary.compute_canonical_digest(payload)
+    cap, _ = authority.evaluate_and_issue_capability(
+        action_name="read_file",
+        target="/app/data.json",
+        canonical_request_digest=digest,
+        executor_id=mock_read,
+        policy=policy
+    )
+    ctx_sub = ExecutionContext(
+        correlation_id=cap.correlation_id,
+        request_id=cap.request_id,
+        authorization_token_id=cap.token_id,
+        authorized_digest=digest,
+        authorization_granted=True
+    )
+    # Attempt target substitution
+    with pytest.raises(PermissionError) as exc_target_sub:
+        boundary.execute_protected_action(
+            action_name="read_file",
+            target="/app/unauthorized_target.json",
+            request_payload=payload,
+            executor_func=mock_read,
+            context=ctx_sub
+        )
+    assert "CAPABILITY_VERIFICATION_FAILED_TARGET_MISMATCH" in str(exc_target_sub.value)
+
+    # 6. Strict callable object identity binding ('is')
+    def spoofed_mock_read(path="/app/data.json"):
+        return {"data": "spoofed"}
+
+    cap_identity, _ = authority.evaluate_and_issue_capability(
+        action_name="read_file",
+        target="/app/data.json",
+        canonical_request_digest=digest,
+        executor_id=mock_read,
+        policy=policy
+    )
+    ctx_identity = ExecutionContext(
+        correlation_id=cap_identity.correlation_id,
+        request_id=cap_identity.request_id,
+        authorization_token_id=cap_identity.token_id,
+        authorized_digest=digest,
+        authorization_granted=True
+    )
+    with pytest.raises(PermissionError) as exc_identity:
+        boundary.execute_protected_action(
+            action_name="read_file",
+            target="/app/data.json",
+            request_payload=payload,
+            executor_func=spoofed_mock_read,
+            context=ctx_identity
+        )
+    assert ("Executable object identity mismatch" in str(exc_identity.value) or
+            "CAPABILITY_VERIFICATION_FAILED_EXECUTOR_MISMATCH" in str(exc_identity.value))
+
+    # 7. Single-use capability token replay enforcement
+    res_single = boundary.execute_protected_action(
+        action_name="read_file",
+        target="/app/data.json",
+        request_payload=payload,
+        executor_func=mock_read,
+        context=ctx_identity
+    )
+    assert res_single["status"] == "SUCCESS"
+
+    with pytest.raises(PermissionError) as exc_replay:
+        boundary.execute_protected_action(
+            action_name="read_file",
+            target="/app/data.json",
+            request_payload=payload,
+            executor_func=mock_read,
+            context=ctx_identity
+        )
+    assert "CAPABILITY_VERIFICATION_FAILED_REPLAY_TOKEN_ALREADY_CONSUMED" in str(exc_replay.value) or "already been consumed" in str(exc_replay.value)
+
+    retrieved = registry.get_tool("read_tool")
     assert retrieved is wrapper
     assert isinstance(retrieved, TrustedToolWrapper)
+
+
+def test_10_rebind_and_fallback_security_regression(registry_setup):
+    """
+    Test 10: Executor Re-binding Protection & Boundary Protocol Enforcement
+    Verifies:
+    1. Attempting to overwrite an existing registered executor ID with a different callable is REJECTED.
+    2. Re-registering the EXACT SAME callable ('is') is permitted (idempotent).
+    3. Overwriting with allow_overwrite=True works for internal lifecycle updates.
+    4. Execution boundary fails closed if authority executor_registry lacks _get_executor_for_boundary.
+    5. Two distinct callables with colliding qualified identities cannot rebind each other, and capability bound to original cannot execute replacement.
+    """
+    authority = registry_setup["authority"]
+    boundary = registry_setup["boundary"]
+
+    def original_executor():
+        return "original"
+
+    def malicious_replacement():
+        return "malicious"
+
+    authority.register_executor("exec_1", original_executor)
+
+    # 1. Attempting to overwrite exec_1 with a different callable is strictly rejected
+    with pytest.raises(ValueError, match="Registration rejected: Cannot overwrite existing executor ID 'exec_1'"):
+        authority.register_executor("exec_1", malicious_replacement)
+
+    # Direct _register_internal call with different function also fails
+    with pytest.raises(ValueError, match="Registration rejected: Cannot overwrite existing executor ID 'exec_1'"):
+        authority.executor_registry._register_internal("exec_1", malicious_replacement)
+
+    # 2. Re-registering exact same function is allowed (idempotent)
+    authority.register_executor("exec_1", original_executor)
+
+    # 3. Explicit internal lifecycle overwrite with allow_overwrite=True succeeds
+    authority.executor_registry._register_internal("exec_1", malicious_replacement, allow_overwrite=True)
+    assert authority.executor_registry._get_executor_for_boundary("exec_1") is malicious_replacement
+
+    # Restore original executor
+    authority.executor_registry._register_internal("exec_1", original_executor, allow_overwrite=True)
+
+    # 4. Collision & rebind protection test for local/nested functions sharing qualified names
+    def make_target_callable():
+        def shared_name_func():
+            return "target_A"
+        return shared_name_func
+
+    func_A = make_target_callable()
+    func_B = make_target_callable()
+    assert func_A is not func_B  # Distinct callable objects!
+
+    authority.register_executor("exec_target_A", func_A)
+
+    # Registering func_B under different ID 'exec_target_B' must NOT overwrite qual_id mapping for func_A
+    authority.register_executor("exec_target_B", func_B)
+    assert authority.executor_registry._get_executor_for_boundary("exec_target_A") is func_A
+    assert authority.executor_registry._get_executor_for_boundary("exec_target_B") is func_B
+
+    # Issue capability for func_A
+    pol = Policy(policy_id="p_coll", allowed_operations={"op"}, allowed_resources={"res"})
+    payload = {"op": "op"}
+    dig = boundary.compute_canonical_digest(payload)
+    cap_A, _ = authority.evaluate_and_issue_capability("op", "res", dig, executor_id=func_A, policy=pol)
+
+    ctx_A = ExecutionContext(
+        correlation_id=cap_A.correlation_id,
+        request_id=cap_A.request_id,
+        authorization_token_id=cap_A.token_id,
+        authorized_digest=dig,
+        authorization_granted=True
+    )
+
+    # Track call invocation counts explicitly
+    count_A = 0
+    count_B = 0
+    def make_tracked_callable(label):
+        def shared_name_func():
+            nonlocal count_A, count_B
+            if label == "A": count_A += 1
+            else: count_B += 1
+            return f"target_{label}"
+        return shared_name_func
+
+    func_tracked_A = make_tracked_callable("A")
+    func_tracked_B = make_tracked_callable("B")
+
+    authority.register_executor("exec_tracked_A", func_tracked_A)
+    authority.register_executor("exec_tracked_B", func_tracked_B)
+
+    cap_tracked, _ = authority.evaluate_and_issue_capability("op", "res", dig, executor_id=func_tracked_A, policy=pol)
+    ctx_tracked = ExecutionContext(
+        correlation_id=cap_tracked.correlation_id,
+        request_id=cap_tracked.request_id,
+        authorization_token_id=cap_tracked.token_id,
+        authorized_digest=dig,
+        authorization_granted=True
+    )
+
+    # Attempt to execute func_tracked_B with capability issued for func_tracked_A
+    with pytest.raises(PermissionError, match="Executable object identity mismatch"):
+        boundary.execute_protected_action(
+            action_name="op",
+            target="res",
+            request_payload=payload,
+            executor_func=func_tracked_B,
+            context=ctx_tracked
+        )
+    assert count_A == 0
+    assert count_B == 0  # Invocation counts remain 0 for both!
+
+    # Executing func_tracked_A using capability issued for func_tracked_A succeeds exactly once
+    res_tracked = boundary.execute_protected_action(
+        action_name="op",
+        target="res",
+        request_payload=payload,
+        executor_func=func_tracked_A,
+        context=ctx_tracked
+    )
+    assert res_tracked["status"] == "SUCCESS"
+    assert count_A == 1
+    assert count_B == 0
+
+    # Capability token single-use consumption: replaying token with func_tracked_A fails
+    with pytest.raises(PermissionError, match="REPLAY_TOKEN_ALREADY_CONSUMED|already been consumed"):
+        boundary.execute_protected_action(
+            action_name="op",
+            target="res",
+            request_payload=payload,
+            executor_func=func_tracked_A,
+            context=ctx_tracked
+        )
+    assert count_A == 1  # Invocation count did NOT increase on replay!
+
+    # 5. Verification that non-conforming registry causes TrustedExecutionBoundary to fail closed
+    class CustomInsecureRegistry:
+        def get(self, key):
+            return original_executor
+
+    class MockAuthority:
+        executor_registry = CustomInsecureRegistry()
+        registry = authority.registry
+        def verify_capability(self, *args, **kwargs):
+            return True, "CAPABILITY_VERIFIED", None
+
+    insecure_boundary = TrustedExecutionBoundary(authority=MockAuthority())
+    req_payload = {}
+    digest_val = insecure_boundary.compute_canonical_digest(req_payload)
+    ctx = ExecutionContext(
+        correlation_id="corr_1",
+        request_id="req_1",
+        authorization_token_id="tok_1",
+        authorized_digest=digest_val,
+        authorization_granted=True
+    )
+    with pytest.raises(PermissionError, match="Authority executor_registry does not implement _get_executor_for_boundary interface"):
+        insecure_boundary.execute_protected_action(
+            action_name="test",
+            target="res",
+            request_payload=req_payload,
+            executor_func=original_executor,
+            context=ctx
+        )
 
 
 def test_9_target_extraction_from_resource_args(registry_setup):
