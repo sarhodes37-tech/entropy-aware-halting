@@ -127,6 +127,7 @@ body {
 .text-cyan { color: var(--accent-interactive); }
 .text-primary { color: var(--text-primary); }
 .text-center { text-align: center; }
+.text-right { text-align: right; }
 
 /* -------------------------------------------------------------------------
  * Application Shell & Navigation (Desktop Persistent Sidebar)

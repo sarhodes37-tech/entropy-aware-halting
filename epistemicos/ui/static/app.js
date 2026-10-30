@@ -30,6 +30,7 @@ document.addEventListener('DOMContentLoaded', () => {
       selectedCaseIndex: null,
       caseSearchQuery: '',
       caseBaselineFilter: 'ALL',
+      caseFamilyFilter: 'ALL',
       caseOutcomeFilter: 'ALL'
     },
 
@@ -195,6 +196,14 @@ document.addEventListener('DOMContentLoaded', () => {
       if (caseBaseFilterSelect) {
         caseBaseFilterSelect.addEventListener('change', (e) => {
           this.state.caseBaselineFilter = e.target.value;
+          this.renderBenchmarkCasesList();
+        });
+      }
+
+      const caseFamilyFilterSelect = document.getElementById('benchmark-case-family-filter');
+      if (caseFamilyFilterSelect) {
+        caseFamilyFilterSelect.addEventListener('change', (e) => {
+          this.state.caseFamilyFilter = e.target.value;
           this.renderBenchmarkCasesList();
         });
       }
@@ -2092,6 +2101,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const data = await res.json();
         this.state.benchmarkData = data;
         this.populateBaselineFilterOptions();
+        this.populateFamilyFilterOptions();
         this.renderBenchmarks();
       } catch (err) {
         console.error('Failed to load benchmarks:', err);
@@ -2178,6 +2188,39 @@ document.addEventListener('DOMContentLoaded', () => {
       this.state.caseBaselineFilter = selectEl.value;
     },
 
+    populateFamilyFilterOptions() {
+      const selectEl = document.getElementById('benchmark-case-family-filter');
+      if (!selectEl) return;
+
+      const data = this.state.benchmarkData;
+      const pc = data?.per_case_results;
+      const caseList = (pc?.available && Array.isArray(pc.data)) ? pc.data : [];
+
+      const distinctFamilies = new Set();
+      caseList.forEach(c => {
+        const fam = c?.scenario_family || c?.family || c?.category;
+        if (fam) distinctFamilies.add(fam);
+      });
+
+      const currentVal = selectEl.value || 'ALL';
+
+      selectEl.innerHTML = '';
+      const allOpt = document.createElement('option');
+      allOpt.value = 'ALL';
+      allOpt.textContent = 'All Families';
+      selectEl.appendChild(allOpt);
+
+      Array.from(distinctFamilies).sort().forEach(famName => {
+        const opt = document.createElement('option');
+        opt.value = famName;
+        opt.textContent = famName;
+        selectEl.appendChild(opt);
+      });
+
+      selectEl.value = Array.from(distinctFamilies).includes(currentVal) ? currentVal : 'ALL';
+      this.state.caseFamilyFilter = selectEl.value;
+    },
+
     renderBenchmarks() {
       const data = this.state.benchmarkData;
       if (!data) return;
@@ -2203,8 +2246,21 @@ document.addEventListener('DOMContentLoaded', () => {
       const statusBadge = document.getElementById('benchmark-artifacts-status');
       if (statusBadge) {
         let statusStr = 'UNAVAILABLE';
-        if (abl.available && pc.available) statusStr = 'VERIFIED';
-        else if (abl.available || pc.available) statusStr = 'PARTIAL';
+        const hasAblErr = Boolean(abl.error);
+        const hasPcErr = Boolean(pc.error);
+
+        if (hasAblErr && hasPcErr && (abl.error.includes('Malformed') || pc.error.includes('Malformed'))) {
+          statusStr = 'MALFORMED';
+        } else if (hasAblErr && hasPcErr && (abl.error.includes('empty') || pc.error.includes('empty'))) {
+          statusStr = 'EMPTY';
+        } else if (abl.available && pc.available) {
+          statusStr = 'VERIFIED';
+        } else if (abl.available || pc.available) {
+          statusStr = 'PARTIAL';
+        } else {
+          statusStr = 'UNAVAILABLE';
+        }
+
         const badge = this.createStatusBadge(statusStr);
         statusBadge.replaceWith(badge);
         badge.id = 'benchmark-artifacts-status';
@@ -2362,12 +2418,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
             // Samples
             const tdSamples = document.createElement('td');
-            tdSamples.className = 'font-mono';
+            tdSamples.className = 'font-mono text-right';
             tdSamples.textContent = (b.sample_count !== undefined && b.sample_count !== null) ? String(b.sample_count) : 'UNAVAILABLE';
 
             // Confusion Matrix
             const tdCm = document.createElement('td');
-            tdCm.className = 'font-mono';
+            tdCm.className = 'font-mono text-center';
             if (cm && typeof cm === 'object') {
               const tc = cm.TC !== undefined ? cm.TC : 'N/A';
               const fc = cm.FC !== undefined ? cm.FC : 'N/A';
@@ -2380,7 +2436,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
             // Accuracy (95% CI)
             const tdAcc = document.createElement('td');
-            tdAcc.className = 'font-mono';
+            tdAcc.className = 'font-mono text-right';
             if (b.accuracy_pct !== undefined && b.accuracy_pct !== null) {
               let accStr = `${b.accuracy_pct}%`;
               if (Array.isArray(ci) && ci.length >= 2) {
@@ -2393,12 +2449,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
             // Recall
             const tdRecall = document.createElement('td');
-            tdRecall.className = 'font-mono';
+            tdRecall.className = 'font-mono text-right';
             tdRecall.textContent = (b.recall_pct !== undefined && b.recall_pct !== null) ? `${b.recall_pct}%` : 'UNAVAILABLE';
 
             // Precision
             const tdPrec = document.createElement('td');
-            tdPrec.className = 'font-mono';
+            tdPrec.className = 'font-mono text-right';
             if (b.precision_pct !== undefined && b.precision_pct !== null && b.precision_pct !== 'N/A') {
               tdPrec.textContent = `${b.precision_pct}%`;
             } else if (b.precision_pct === 'N/A') {
@@ -2409,22 +2465,22 @@ document.addEventListener('DOMContentLoaded', () => {
 
             // FPR
             const tdFpr = document.createElement('td');
-            tdFpr.className = 'font-mono';
+            tdFpr.className = 'font-mono text-right';
             tdFpr.textContent = (b.false_positive_rate_pct !== undefined && b.false_positive_rate_pct !== null) ? `${b.false_positive_rate_pct}%` : 'UNAVAILABLE';
 
             // FNR
             const tdFnr = document.createElement('td');
-            tdFnr.className = 'font-mono';
+            tdFnr.className = 'font-mono text-right';
             tdFnr.textContent = (b.false_negative_rate_pct !== undefined && b.false_negative_rate_pct !== null) ? `${b.false_negative_rate_pct}%` : 'UNAVAILABLE';
 
             // Avg Latency
             const tdLat = document.createElement('td');
-            tdLat.className = 'font-mono';
+            tdLat.className = 'font-mono text-right';
             tdLat.textContent = (b.avg_latency_ms !== undefined && b.avg_latency_ms !== null) ? `${b.avg_latency_ms} ms` : 'UNAVAILABLE';
 
             // Total Tokens Spent
             const tdTok = document.createElement('td');
-            tdTok.className = 'font-mono';
+            tdTok.className = 'font-mono text-right';
             tdTok.textContent = (b.total_tokens_spent !== undefined && b.total_tokens_spent !== null) ? String(b.total_tokens_spent) : 'UNAVAILABLE';
 
             tr.appendChild(tdName);
@@ -2468,19 +2524,19 @@ document.addEventListener('DOMContentLoaded', () => {
             tdName.textContent = cName;
 
             const tdDiscA = document.createElement('td');
-            tdDiscA.className = 'font-mono';
+            tdDiscA.className = 'font-mono text-right';
             tdDiscA.textContent = (c.discordant_a_correct_b_incorrect !== undefined && c.discordant_a_correct_b_incorrect !== null) ? String(c.discordant_a_correct_b_incorrect) : 'UNAVAILABLE';
 
             const tdDiscB = document.createElement('td');
-            tdDiscB.className = 'font-mono';
+            tdDiscB.className = 'font-mono text-right';
             tdDiscB.textContent = (c.discordant_a_incorrect_b_correct !== undefined && c.discordant_a_incorrect_b_correct !== null) ? String(c.discordant_a_incorrect_b_correct) : 'UNAVAILABLE';
 
             const tdChi2 = document.createElement('td');
-            tdChi2.className = 'font-mono';
+            tdChi2.className = 'font-mono text-right';
             tdChi2.textContent = (c.chi2_statistic !== undefined && c.chi2_statistic !== null) ? String(c.chi2_statistic) : 'UNAVAILABLE';
 
             const tdPval = document.createElement('td');
-            tdPval.className = 'font-mono';
+            tdPval.className = 'font-mono text-right';
             tdPval.textContent = (c.p_value !== undefined && c.p_value !== null) ? String(c.p_value) : 'UNAVAILABLE';
 
             const tdSig = document.createElement('td');
@@ -2532,23 +2588,23 @@ document.addEventListener('DOMContentLoaded', () => {
             tdZ.textContent = (item.z_threshold !== undefined && item.z_threshold !== null) ? `Z = ${item.z_threshold}` : k;
 
             const tdTc = document.createElement('td');
-            tdTc.className = 'font-mono';
+            tdTc.className = 'font-mono text-right';
             tdTc.textContent = item.TC !== undefined ? String(item.TC) : 'UNAVAILABLE';
 
             const tdFc = document.createElement('td');
-            tdFc.className = 'font-mono';
+            tdFc.className = 'font-mono text-right';
             tdFc.textContent = item.FC !== undefined ? String(item.FC) : 'UNAVAILABLE';
 
             const tdTr = document.createElement('td');
-            tdTr.className = 'font-mono';
+            tdTr.className = 'font-mono text-right';
             tdTr.textContent = item.TR !== undefined ? String(item.TR) : 'UNAVAILABLE';
 
             const tdFr = document.createElement('td');
-            tdFr.className = 'font-mono';
+            tdFr.className = 'font-mono text-right';
             tdFr.textContent = item.FR !== undefined ? String(item.FR) : 'UNAVAILABLE';
 
             const tdPrec = document.createElement('td');
-            tdPrec.className = 'font-mono';
+            tdPrec.className = 'font-mono text-right';
             if (item.precision !== undefined && item.precision !== null && item.precision !== 'N/A') {
               tdPrec.textContent = `${item.precision}%`;
             } else if (item.precision === 'N/A') {
@@ -2558,7 +2614,7 @@ document.addEventListener('DOMContentLoaded', () => {
             }
 
             const tdRec = document.createElement('td');
-            tdRec.className = 'font-mono';
+            tdRec.className = 'font-mono text-right';
             tdRec.textContent = (item.recall !== undefined && item.recall !== null) ? `${item.recall}%` : 'UNAVAILABLE';
 
             tr.appendChild(tdZ);
@@ -2607,6 +2663,14 @@ document.addEventListener('DOMContentLoaded', () => {
           return false;
         }
 
+        // Scenario Family Filter
+        if (this.state.caseFamilyFilter !== 'ALL') {
+          const fam = c.scenario_family || c.family || c.category;
+          if (fam !== this.state.caseFamilyFilter) {
+            return false;
+          }
+        }
+
         // Outcome Filter
         if (this.state.caseOutcomeFilter !== 'ALL') {
           const targetFilter = this.state.caseOutcomeFilter.toUpperCase();
@@ -2648,7 +2712,7 @@ document.addEventListener('DOMContentLoaded', () => {
         emptyLi.className = 'text-muted text-center';
         emptyLi.style.padding = '1.5rem 1rem';
 
-        const hasFilters = this.state.caseSearchQuery || this.state.caseBaselineFilter !== 'ALL' || this.state.caseOutcomeFilter !== 'ALL';
+        const hasFilters = this.state.caseSearchQuery || this.state.caseBaselineFilter !== 'ALL' || this.state.caseFamilyFilter !== 'ALL' || this.state.caseOutcomeFilter !== 'ALL';
         if (hasFilters) {
           const msgSpan = document.createElement('span');
           msgSpan.style.display = 'block';
@@ -2664,6 +2728,7 @@ document.addEventListener('DOMContentLoaded', () => {
           clearBtn.addEventListener('click', () => {
             this.state.caseSearchQuery = '';
             this.state.caseBaselineFilter = 'ALL';
+            this.state.caseFamilyFilter = 'ALL';
             this.state.caseOutcomeFilter = 'ALL';
             const searchInput = document.getElementById('benchmark-case-search');
             if (searchInput) {
@@ -2672,6 +2737,8 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             const baseSelect = document.getElementById('benchmark-case-baseline-filter');
             if (baseSelect) baseSelect.value = 'ALL';
+            const famSelect = document.getElementById('benchmark-case-family-filter');
+            if (famSelect) famSelect.value = 'ALL';
             const outcomeSelect = document.getElementById('benchmark-case-outcome-filter');
             if (outcomeSelect) outcomeSelect.value = 'ALL';
             this.renderBenchmarkCasesList();

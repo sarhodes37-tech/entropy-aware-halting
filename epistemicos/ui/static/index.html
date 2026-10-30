@@ -364,12 +364,12 @@
               <div class="metric-card primary">
                 <div class="metric-label">Dataset SHA-256 Digest</div>
                 <div id="summary-dataset-digest" class="metric-value font-mono" style="font-size: 0.8rem; word-break: break-all;">CHECKING...</div>
-                <div class="metric-subtext">Verification: Evaluation Set Integrity</div>
+                <div class="metric-subtext">Recorded Digest • Evaluation Set Manifest</div>
               </div>
               <div class="metric-card primary">
                 <div class="metric-label">Run Records SHA-256 Digest</div>
                 <div id="summary-records-digest" class="metric-value font-mono" style="font-size: 0.8rem; word-break: break-all;">CHECKING...</div>
-                <div class="metric-subtext">Verification: Case Output Serialization</div>
+                <div class="metric-subtext">Recorded Digest • Case Output Serialization</div>
               </div>
             </div>
             <div id="benchmark-run-meta-row" class="text-muted font-mono" style="font-size: 0.8rem; display: flex; gap: 1.5rem; flex-wrap: wrap;">
@@ -470,6 +470,9 @@
                 <select id="benchmark-case-baseline-filter" class="select-filter" aria-label="Filter benchmark cases by baseline condition">
                   <option value="ALL">All Baselines</option>
                 </select>
+                <select id="benchmark-case-family-filter" class="select-filter" aria-label="Filter benchmark cases by scenario family">
+                  <option value="ALL">All Families</option>
+                </select>
                 <select id="benchmark-case-outcome-filter" class="select-filter" aria-label="Filter benchmark cases by outcome classification">
                   <option value="ALL">All Outcomes</option>
                   <option value="TC">TC (True Commit)</option>
@@ -528,6 +531,18 @@
                     <li>Parsing success confirms syntactic readability of JSON artifacts only—it does NOT establish empirical validity, reproducibility, or external system safety.</li>
                     <li>Aggregated accuracy, precision, and recall metrics reflect performance on the specific N=100 held-out evaluation dataset and configured baseline conditions.</li>
                     <li>Individual case classification labels (TC/FC/TR/FR) reflect automated comparison against expected outcomes, not human adjudication or external source authenticity.</li>
+                    <li>Presence of SHA-256 digest strings proves record inclusion in JSON artifacts, but does NOT constitute external cryptographic verification against raw dataset files.</li>
+                  </ul>
+                </div>
+
+                <h3 style="font-size: 0.95rem; margin-top: 1rem; margin-bottom: 0.5rem;">Unavailable Analysis Scope</h3>
+                <div id="unavailable-analyses-container" class="status-block" style="font-size: 0.8rem; line-height: 1.45; border-color: var(--border-default);">
+                  <p style="margin-bottom: 0.35rem; font-weight: 600;" class="text-warning">
+                    UNAVAILABLE ANALYSES NOTICE:
+                  </p>
+                  <ul style="margin-left: 1.2rem; display: flex; flex-direction: column; gap: 0.35rem;" class="text-muted">
+                    <li><strong>Statistical Power / Sample Size Sensitivity:</strong> Cannot be derived because artifacts do not include resampling/bootstrap distributions.</li>
+                    <li><strong>Continuous Logprob ROC-AUC Curves:</strong> Cannot be computed because raw token logprob distributions are omitted from per-case summary records.</li>
                   </ul>
                 </div>
               </div>
