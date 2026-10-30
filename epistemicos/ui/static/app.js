@@ -48,9 +48,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
         tabBtn.addEventListener('keydown', (e) => {
           let targetIndex = null;
-          if (e.key === 'ArrowRight') {
+          if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
             targetIndex = (index + 1) % tabs.length;
-          } else if (e.key === 'ArrowLeft') {
+          } else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
             targetIndex = (index - 1 + tabs.length) % tabs.length;
           } else if (e.key === 'Home') {
             targetIndex = 0;
@@ -205,7 +205,25 @@ document.addEventListener('DOMContentLoaded', () => {
         btn.classList.toggle('active', isActive);
         btn.setAttribute('aria-selected', isActive ? 'true' : 'false');
         btn.setAttribute('tabindex', isActive ? '0' : '-1');
+
+        if (isActive && typeof btn.scrollIntoView === 'function') {
+          const prefersReducedMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+          const scrollBehavior = prefersReducedMotion ? 'auto' : 'smooth';
+          btn.scrollIntoView({ behavior: scrollBehavior, block: 'nearest', inline: 'nearest' });
+        }
       });
+
+      const tabTitles = {
+        overview: 'System Executive Overview',
+        traces: 'Execution Trace Explorer',
+        provenance: 'Provenance Explorer',
+        benchmarks: 'Benchmark Workbench'
+      };
+      const mobileTitleEl = document.getElementById('mobile-current-title');
+      if (mobileTitleEl) {
+        mobileTitleEl.textContent = tabTitles[tabName] || tabName;
+      }
+
       document.querySelectorAll('.view-panel').forEach(panel => {
         panel.classList.toggle('active', panel.id === `view-${tabName}`);
       });

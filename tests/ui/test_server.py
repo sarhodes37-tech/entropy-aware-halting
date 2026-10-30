@@ -329,6 +329,47 @@ def test_recent_traces_row_keyboard_accessibility():
     assert ".data-table tr.clickable.selected" in css_content
 
 
+def test_responsive_navigation_app_shell_structure():
+    """Verify that index.html contains the responsive app shell, desktop sidebar, and mobile header bar elements."""
+    import pathlib
+    index_path = pathlib.Path("epistemicos/ui/static/index.html")
+    content = index_path.read_text(encoding="utf-8")
+    assert 'class="app-shell"' in content
+    assert '<aside class="app-sidebar" aria-label="Sidebar Navigation">' in content
+    assert 'class="sidebar-brand"' in content
+    assert 'class="mobile-header-bar"' in content
+    assert 'id="mobile-current-title"' in content
+    assert 'class="app-main-wrapper"' in content
+    assert 'class="nav-icon" aria-hidden="true"' in content
+    assert 'class="nav-label"' in content
+
+
+def test_responsive_css_sidebar_and_metrics_grid_rules():
+    """Verify that style.css contains CSS rules for persistent desktop sidebar, sticky mobile navigation, and responsive metric grid columns."""
+    import pathlib
+    css_path = pathlib.Path("epistemicos/ui/static/style.css")
+    css_content = css_path.read_text(encoding="utf-8")
+    assert "--sidebar-width: 260px;" in css_content
+    assert ".app-sidebar" in css_content
+    assert ".app-main-wrapper" in css_content
+    assert "@media (max-width: 1023px)" in css_content
+    assert ".mobile-header-bar" in css_content
+    assert "grid-template-columns: repeat(5, minmax(0, 1fr));" in css_content
+    assert "grid-template-columns: repeat(2, minmax(0, 1fr));" in css_content
+
+
+def test_app_js_responsive_navigation_handlers():
+    """Verify that app.js handles vertical keyboard arrow keys, prefers-reduced-motion scrollIntoView alignment, and mobile current title updates."""
+    import pathlib
+    js_path = pathlib.Path("epistemicos/ui/static/app.js")
+    js_content = js_path.read_text(encoding="utf-8")
+    assert "e.key === 'ArrowRight' || e.key === 'ArrowDown'" in js_content
+    assert "e.key === 'ArrowLeft' || e.key === 'ArrowUp'" in js_content
+    assert "prefers-reduced-motion: reduce" in js_content
+    assert "btn.scrollIntoView({ behavior: scrollBehavior, block: 'nearest', inline: 'nearest' });" in js_content
+    assert "const mobileTitleEl = document.getElementById('mobile-current-title');" in js_content
+
+
 def test_copy_to_clipboard_dynamic_aria_accessibility_update():
     """Verifies that app.js captures original aria-label and dynamically updates aria-label during clipboard copy feedback."""
     import pathlib
