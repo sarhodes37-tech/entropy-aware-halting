@@ -187,6 +187,7 @@ def test_4_executor_substitution_rejected(registry_setup):
     """
     Test 4: Executor Substitution
     A different callable object cannot consume authorization issued for another executor.
+    Verifies invocation counts remain 0 for both genuine and malicious executors on rejected attempt.
     """
     authority = registry_setup["authority"]
     boundary = registry_setup["boundary"]
@@ -197,10 +198,16 @@ def test_4_executor_substitution_rejected(registry_setup):
         allowed_resources={"/data/db"}
     )
 
+    genuine_count = 0
     def genuine_executor():
+        nonlocal genuine_count
+        genuine_count += 1
         return "genuine"
 
+    malicious_count = 0
     def malicious_executor():
+        nonlocal malicious_count
+        malicious_count += 1
         return "pwned"
 
     authority.register_executor("genuine_executor", genuine_executor)
@@ -240,6 +247,8 @@ def test_4_executor_substitution_rejected(registry_setup):
         )
 
     assert "CAPABILITY_VERIFICATION_FAILED_EXECUTOR_MISMATCH" in str(exc_info.value) or "identity mismatch" in str(exc_info.value)
+    assert genuine_count == 0
+    assert malicious_count == 0  # Substituted callable was NEVER executed!
 
 
 def test_5_replay_attack_rejected(registry_setup):
@@ -659,26 +668,66 @@ def test_10_rebind_and_fallback_security_regression(registry_setup):
         authorization_granted=True
     )
 
-    # Executing func_B using capability issued for func_A must be REJECTED by strict identity check ('is')
+    # Track call invocation counts explicitly
+    count_A = 0
+    count_B = 0
+    def make_tracked_callable(label):
+        def shared_name_func():
+            nonlocal count_A, count_B
+            if label == "A": count_A += 1
+            else: count_B += 1
+            return f"target_{label}"
+        return shared_name_func
+
+    func_tracked_A = make_tracked_callable("A")
+    func_tracked_B = make_tracked_callable("B")
+
+    authority.register_executor("exec_tracked_A", func_tracked_A)
+    authority.register_executor("exec_tracked_B", func_tracked_B)
+
+    cap_tracked, _ = authority.evaluate_and_issue_capability("op", "res", dig, executor_id=func_tracked_A, policy=pol)
+    ctx_tracked = ExecutionContext(
+        correlation_id=cap_tracked.correlation_id,
+        request_id=cap_tracked.request_id,
+        authorization_token_id=cap_tracked.token_id,
+        authorized_digest=dig,
+        authorization_granted=True
+    )
+
+    # Attempt to execute func_tracked_B with capability issued for func_tracked_A
     with pytest.raises(PermissionError, match="Executable object identity mismatch"):
         boundary.execute_protected_action(
             action_name="op",
             target="res",
             request_payload=payload,
-            executor_func=func_B, # Substituted colliding callable!
-            context=ctx_A
+            executor_func=func_tracked_B,
+            context=ctx_tracked
         )
+    assert count_A == 0
+    assert count_B == 0  # Invocation counts remain 0 for both!
 
-    # Executing func_A using capability issued for func_A succeeds
-    res_A = boundary.execute_protected_action(
+    # Executing func_tracked_A using capability issued for func_tracked_A succeeds exactly once
+    res_tracked = boundary.execute_protected_action(
         action_name="op",
         target="res",
         request_payload=payload,
-        executor_func=func_A,
-        context=ctx_A
+        executor_func=func_tracked_A,
+        context=ctx_tracked
     )
-    assert res_A["status"] == "SUCCESS"
-    assert res_A["result"] == "target_A"
+    assert res_tracked["status"] == "SUCCESS"
+    assert count_A == 1
+    assert count_B == 0
+
+    # Capability token single-use consumption: replaying token with func_tracked_A fails
+    with pytest.raises(PermissionError, match="REPLAY_TOKEN_ALREADY_CONSUMED|already been consumed"):
+        boundary.execute_protected_action(
+            action_name="op",
+            target="res",
+            request_payload=payload,
+            executor_func=func_tracked_A,
+            context=ctx_tracked
+        )
+    assert count_A == 1  # Invocation count did NOT increase on replay!
 
     # 5. Verification that non-conforming registry causes TrustedExecutionBoundary to fail closed
     class CustomInsecureRegistry:

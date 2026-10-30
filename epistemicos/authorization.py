@@ -1066,11 +1066,12 @@ class AuthorizationAuthority:
         )
 
     def register_executor(self, executor_id: str, executor_func: Any) -> None:
-        """Registers an authoritative callable identity in the authority executor registry."""
-        self.executor_registry._register_internal(executor_id, executor_func)
-        func_qual_id = get_callable_identity(executor_func)
-        if func_qual_id != executor_id and not self.executor_registry.contains(func_qual_id):
-            self.executor_registry._register_internal(func_qual_id, executor_func)
+        """Registers an authoritative callable identity in the authority executor registry atomically."""
+        with self.executor_registry._lock:
+            self.executor_registry._register_internal(executor_id, executor_func)
+            func_qual_id = get_callable_identity(executor_func)
+            if func_qual_id != executor_id and func_qual_id not in self.executor_registry._store:
+                self.executor_registry._register_internal(func_qual_id, executor_func)
 
     def evaluate_and_issue_capability(
         self,
