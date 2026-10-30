@@ -366,13 +366,17 @@ def generate_consolidated_evidence(
     dataset_digest_valid = (actual_digest == expected_digest and len(actual_digest) == 64)
 
     per_case_path = out_base / "per_case_results.json"
-    if not per_case_path.exists() and Path(CANONICAL_PER_CASE_RESULTS_PATH).exists():
-        per_case_path = Path(CANONICAL_PER_CASE_RESULTS_PATH)
+    if not per_case_path.exists():
+        if Path(CANONICAL_PER_CASE_RESULTS_PATH).exists():
+            import shutil
+            shutil.copy2(CANONICAL_PER_CASE_RESULTS_PATH, per_case_path)
+        else:
+            per_case_path.write_text("[]", encoding="utf-8")
 
     print("Generating Layer D evidence (Performance & Cost Benchmarks)...")
     if fast_mode and (out_base / "ablation_table.json").exists() and per_case_path.exists():
         layer_d_raw = load_json_artifact(str(out_base / "ablation_table.json"))
-    elif fast_mode and os.path.exists("results/ablation_table.json") and os.path.exists(CANONICAL_PER_CASE_RESULTS_PATH):
+    elif fast_mode and os.path.exists("results/ablation_table.json"):
         layer_d_raw = load_json_artifact("results/ablation_table.json")
     else:
         runner_d = ComprehensiveBenchmarkRunner()

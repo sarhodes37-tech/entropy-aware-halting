@@ -92,7 +92,7 @@ def full_cloned_repo(tmp_path):
     subprocess.run(["git", "config", "user.name", "CI User"], cwd=repo_dir, check=True, capture_output=True)
     subprocess.run(["git", "config", "user.email", "ci@example.com"], cwd=repo_dir, check=True, capture_output=True)
     subprocess.run(["git", "add", "."], cwd=repo_dir, check=True, capture_output=True)
-    subprocess.run(["git", "commit", "-m", "Test worktree sync"], cwd=repo_dir, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "--allow-empty", "-m", "Test worktree sync"], cwd=repo_dir, check=True, capture_output=True)
 
     res = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo_dir, check=True, capture_output=True, text=True)
     commit_sha = res.stdout.strip()
