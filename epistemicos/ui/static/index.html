@@ -199,7 +199,18 @@
             </div>
           </div>
 
-          <div class="trace-layout">
+          <!-- Mobile Context & Back Navigation Bar -->
+          <div id="trace-nav-bar" class="trace-nav-bar hidden" aria-label="Trace Investigation Navigation">
+            <button id="btn-trace-back-to-list" type="button" class="btn-back" aria-label="Back to execution trace list" title="Return to execution trace list">
+              <span class="back-icon" aria-hidden="true">←</span> <span class="btn-back-text">Back to Traces</span>
+            </button>
+            <button id="btn-trace-back-to-detail" type="button" class="btn-back hidden" aria-label="Back to trace lifecycle overview" title="Return to trace lifecycle overview">
+              <span class="back-icon" aria-hidden="true">←</span> <span class="btn-back-text">Back to Lifecycle</span>
+            </button>
+            <div id="trace-breadcrumb" class="trace-breadcrumb font-mono" aria-live="polite"></div>
+          </div>
+
+          <div id="trace-layout" class="trace-layout mobile-view-list">
             <!-- Area A: Trace List -->
             <aside id="area-trace-list" class="trace-list-container" aria-label="Execution Trace List">
               <div class="card-header">

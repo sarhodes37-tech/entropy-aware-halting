@@ -93,6 +93,38 @@ def test_static_asset_serving(test_server):
     assert "Observatory Test" in content
 
 
+def test_trace_explorer_mobile_drilldown_structure():
+    """Verify index.html and style.css contain mobile trace explorer navigation bar and timeline structures."""
+    import pathlib
+    index_path = pathlib.Path("epistemicos/ui/static/index.html")
+    index_content = index_path.read_text(encoding="utf-8")
+    assert 'id="trace-nav-bar"' in index_content
+    assert 'id="btn-trace-back-to-list"' in index_content
+    assert 'id="btn-trace-back-to-detail"' in index_content
+    assert 'id="trace-breadcrumb"' in index_content
+
+    css_path = pathlib.Path("epistemicos/ui/static/style.css")
+    css_content = css_path.read_text(encoding="utf-8")
+    assert ".trace-nav-bar" in css_content
+    assert ".btn-back" in css_content
+    assert ".lifecycle-timeline" in css_content
+    assert ".lifecycle-stage" in css_content
+    assert ".lifecycle-stage-connector" in css_content
+    assert ".lifecycle-stage-card" in css_content
+    assert ".mobile-view-list" in css_content
+    assert ".mobile-view-detail" in css_content
+    assert ".mobile-view-event" in css_content
+
+    js_path = pathlib.Path("epistemicos/ui/static/app.js")
+    js_content = js_path.read_text(encoding="utf-8")
+    assert "mobileTraceLevel" in js_content
+    assert "updateMobileTraceView" in js_content
+    assert "btn-trace-back-to-list" in js_content
+    assert "btn-trace-back-to-detail" in js_content
+    assert "Recorded Execution Lifecycle Sequence" in js_content
+    assert "Evidence Inspector:" in js_content
+
+
 def test_static_aria_accessibility_attributes():
     """Verify that the production index.html contains expected ARIA accessibility attributes and Trace / Provenance Explorer areas."""
     import pathlib
@@ -320,13 +352,13 @@ def test_recent_traces_row_keyboard_accessibility():
     assert "tr.setAttribute('tabindex', '0');" in js_content
     assert "tr.setAttribute('role', 'button');" in js_content
     assert "tr.setAttribute('aria-label', `Inspect execution trace" in js_content
-    assert "tr.setAttribute('aria-selected', isSelectedEvent ? 'true' : 'false');" in js_content
+    assert "stageCard.setAttribute('aria-label'," in js_content
     assert "e.key === 'Enter' || e.key === ' '" in js_content
 
     css_path = pathlib.Path("epistemicos/ui/static/style.css")
     css_content = css_path.read_text(encoding="utf-8")
     assert ".data-table tr.clickable:focus-visible" in css_content
-    assert ".data-table tr.clickable.selected" in css_content
+    assert ".lifecycle-stage.selected" in css_content
 
 
 def test_responsive_navigation_app_shell_structure():
