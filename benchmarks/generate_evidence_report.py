@@ -267,12 +267,13 @@ def generate_consolidated_evidence(
     out_base.mkdir(parents=True, exist_ok=True)
     docs_base.mkdir(parents=True, exist_ok=True)
 
-    # Collect pre-run environmental provenance metadata BEFORE output files dirty the tree
+    # Collect pre-run environmental provenance metadata BEFORE output files dirty the tree (strictly enforcing allow_output_files=False)
     env_meta = collect_environment_metadata(
         suite_name="EpistemicOS Consolidated Four-Layer Security Evaluation",
         suite_version="2.3.0",
         expected_commit=expected_commit,
-        require_clean=require_clean
+        require_clean=require_clean,
+        allow_output_files=False
     )
 
     print("Generating Layer A evidence (Deterministic Regression)...")

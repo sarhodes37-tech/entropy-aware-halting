@@ -146,16 +146,25 @@ def test_pre_existing_tracked_file_modification_rejected(temp_git_repo):
 def test_pre_existing_tracked_report_modification_rejected(temp_git_repo):
     repo_dir, commit_sha = temp_git_repo
 
-    # Modify pre-existing tracked report file before evaluation
-    report_file = repo_dir / "docs" / "security" / "report.md"
-    report_file.write_text("# Modified Report\n", encoding="utf-8")
+    # Create and track an EVIDENCE_OUTPUT_FILE
+    report_file = repo_dir / "docs" / "security" / "four_layer_evidence_report.md"
+    report_file.parent.mkdir(parents=True, exist_ok=True)
+    report_file.write_text("# Tracked Initial Report\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=repo_dir, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "Track report"], cwd=repo_dir, check=True, capture_output=True)
 
-    info = get_working_tree_status(root_dir=str(repo_dir))
+    new_sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo_dir, check=True, capture_output=True, text=True).stdout.strip()
+
+    # Pre-existing modification to tracked report file BEFORE evaluation starts
+    report_file.write_text("# Pre-existing Modification\n", encoding="utf-8")
+
+    # With allow_output_files=False (pre-run check), this MUST fail as dirty
+    info = get_working_tree_status(root_dir=str(repo_dir), allow_output_files=False)
     assert info["status"] == "DIRTY"
-    assert any("report.md" in change for change in info["tracked_changes"])
+    assert any("four_layer_evidence_report.md" in change for change in info["tracked_changes"])
 
     with pytest.raises(ValueError, match="Clean working tree assertion failed"):
-        verify_commit_and_tree(expected_commit=commit_sha, require_clean=True, root_dir=str(repo_dir))
+        verify_commit_and_tree(expected_commit=new_sha, require_clean=True, root_dir=str(repo_dir), allow_output_files=False)
 
 
 def test_git_status_failure_raises_runtime_error(tmp_path):

@@ -159,6 +159,10 @@ def validate_evidence_manifest(
     if pub_status == "PUBLISHED":
         if not pers_commit or not isinstance(pers_commit, str) or not SHA1_REGEX.match(pers_commit):
             errors.append(f"Manifest published status requires valid 40-char report_persistence_commit, got '{pers_commit}'")
+        else:
+            # Note: The publication SHA is an externally supplied reference recorded during report persistence.
+            # Its existence or relationship to artifacts on remote hosts is not independently verified by this validator.
+            pass
     elif pub_status == "PENDING_PUBLICATION":
         if pers_commit is not None:
             errors.append(f"Manifest pending publication status expects report_persistence_commit=null, got '{pers_commit}'")

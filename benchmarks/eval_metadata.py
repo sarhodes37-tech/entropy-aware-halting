@@ -49,11 +49,19 @@ def get_git_commit_hash(root_dir: Optional[str] = None) -> str:
         raise RuntimeError(f"Unable to establish Git commit hash: {e}") from e
 
 
-def get_working_tree_status(root_dir: Optional[str] = None) -> Dict[str, Any]:
+def get_working_tree_status(
+    root_dir: Optional[str] = None,
+    allow_output_files: bool = True
+) -> Dict[str, Any]:
     """
     Inspects source working tree status via `git status --porcelain=v1 -uall`.
     Any pre-existing modification to tracked files in Git (M, D, R, etc.) causes dirty status.
     Untracked files inside transient runtime/test directories are excluded.
+
+    If allow_output_files is False (e.g. during pre-run source cleanliness verification),
+    any modification to tracked EVIDENCE_OUTPUT_FILES is strictly treated as a DIRTY tree.
+    If allow_output_files is True (e.g. post-run validation), EVIDENCE_OUTPUT_FILES changes are excluded.
+
     Returns dict with overall status ('CLEAN' / 'DIRTY'), list of tracked changes,
     and list of untracked files.
     """
@@ -93,14 +101,14 @@ def get_working_tree_status(root_dir: Optional[str] = None) -> Dict[str, Any]:
                 continue
             if norm_path in IGNORED_UNTRACKED_FILES:
                 continue
-            if norm_path in EVIDENCE_OUTPUT_FILES:
+            if allow_output_files and norm_path in EVIDENCE_OUTPUT_FILES:
                 continue
             untracked_files.append(norm_path)
         else:
-            # Output files modified during report generation are ignored for working tree cleanliness
-            if norm_path in EVIDENCE_OUTPUT_FILES:
+            # Output files modified during report generation are ignored ONLY if allow_output_files is True
+            if allow_output_files and norm_path in EVIDENCE_OUTPUT_FILES:
                 continue
-            # ANY modification, deletion, or rename on ANY other tracked file makes the source working tree dirty!
+            # ANY modification, deletion, or rename on ANY tracked file makes the source working tree dirty!
             tracked_changes.append(f"{status_code} {norm_path}")
 
     is_dirty = len(tracked_changes) > 0 or len(untracked_files) > 0
@@ -204,12 +212,16 @@ def get_lockfile_digest(root_dir: Optional[str] = None) -> str:
 def verify_commit_and_tree(
     expected_commit: Optional[str] = None,
     require_clean: bool = False,
-    root_dir: Optional[str] = None
+    root_dir: Optional[str] = None,
+    allow_output_files: bool = False
 ) -> Dict[str, Any]:
     """
     Verifies that checked-out HEAD matches expected_commit (if supplied)
     and checks working tree status. Fails closed (raises ValueError) on mismatch
     or if require_clean=True and working tree is DIRTY.
+
+    By default, allow_output_files=False when verifying pre-run source cleanliness,
+    ensuring that pre-existing modifications to tracked report files fail the cleanliness check.
     """
     cwd = root_dir or os.getcwd()
     current_head = get_git_commit_hash(cwd)
@@ -234,7 +246,7 @@ def verify_commit_and_tree(
                 f"does not match requested commit ({expected_commit} -> {resolved_expected})."
             )
 
-    tree_info = get_working_tree_status(cwd)
+    tree_info = get_working_tree_status(cwd, allow_output_files=allow_output_files)
     tree_digest = compute_working_tree_digest(cwd)
 
     if require_clean and tree_info["status"] != "CLEAN":
@@ -262,12 +274,18 @@ def collect_environment_metadata(
     expected_commit: Optional[str] = None,
     require_clean: bool = False,
     execution_command: Optional[str] = None,
-    root_dir: Optional[str] = None
+    root_dir: Optional[str] = None,
+    allow_output_files: bool = False
 ) -> Dict[str, Any]:
     """
     Collects complete environmental and reproducibility metadata for an evaluation run.
     """
-    verification = verify_commit_and_tree(expected_commit=expected_commit, require_clean=require_clean, root_dir=root_dir)
+    verification = verify_commit_and_tree(
+        expected_commit=expected_commit,
+        require_clean=require_clean,
+        root_dir=root_dir,
+        allow_output_files=allow_output_files
+    )
     cmd = execution_command or " ".join(sys.argv)
     is_ci = os.environ.get("GITHUB_ACTIONS") == "true" or os.environ.get("CI") == "true"
     env_type = "CI" if is_ci else "LOCAL"

@@ -63,6 +63,17 @@ jobs:
         run: |
           pytest tests/ --cov=epistemicos --cov-report=xml --cov-report=term-missing
 
+      - name: Direct Workflow SHA Verification
+        run: |
+          HEAD_SHA=$(git rev-parse HEAD)
+          TARGET_SHA="${{ github.sha }}"
+          echo "Checked out HEAD: $HEAD_SHA"
+          echo "Workflow SHA:     $TARGET_SHA"
+          if [ "$HEAD_SHA" != "$TARGET_SHA" ]; then
+            echo "Error: Checked out HEAD ($HEAD_SHA) does not match workflow SHA ($TARGET_SHA)!"
+            exit 1
+          fi
+
       - name: Execute Consolidated Four-Layer Evidence Pipeline (Commit-Pinned)
         env:
           PYTHONPATH: .
