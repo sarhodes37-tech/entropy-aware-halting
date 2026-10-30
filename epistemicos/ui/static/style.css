@@ -1,60 +1,62 @@
-/* EpistemicOS Control Plane Observatory - Visual System */
+/* EpistemicOS Control Plane Observatory - Visual System (Neon Dusk Design Token Foundation) */
 
 :root {
-  /* Dark Graphite Color Palette */
-  --bg-base: #0d1117;
-  --bg-surface: #161b22;
-  --bg-elevated: #21262d;
-  --bg-subtle: #1c2128;
-  --bg-hover: #30363d;
+  /* Neon Dusk Color Palette (Early-Vaporwave / Retro-Futurist Scientific Instrumentation) */
+  --bg-base: #120F24;       /* Midnight violet */
+  --bg-surface: #1D1833;    /* Deep plum */
+  --bg-elevated: #282044;   /* Purple graphite */
+  --bg-subtle: #18132E;     /* Deep violet subtle background */
+  --bg-hover: #332A54;      /* Violet hover state */
 
-  /* Primary Accents (Muted Cyan / Blue-Green) */
-  --accent-primary: #38bdf8;
-  --accent-cyan: #22d3ee;
-  --accent-teal: #14b8a6;
+  /* Accents */
+  --accent-primary: #B69AFF;     /* Electric lavender */
+  --accent-secondary: #FF83B8;   /* Vaporwave pink */
+  --accent-interactive: #64DED9; /* Retro cyan */
+  --accent-cyan: #64DED9;        /* Retro cyan indicator */
+  --accent-teal: #2DD4BF;        /* Mint teal indicator */
 
   /* Text Contrast Hierarchy */
-  --text-primary: #f0f6fc;
-  --text-secondary: #8b949e;
-  --text-muted: #6e7681;
+  --text-primary: #F5F0FF;     /* Soft white */
+  --text-secondary: #B6A9CA;   /* Muted lavender */
+  --text-muted: #8A7CA8;       /* Deep muted lavender */
 
   /* Borders & Dividers */
-  --border-default: #30363d;
-  --border-muted: #21262d;
-  --border-accent: rgba(56, 189, 248, 0.4);
+  --border-default: #44365F;   /* Dusty violet */
+  --border-muted: #2D2344;     /* Deep dusty violet */
+  --border-accent: rgba(182, 154, 255, 0.4);
 
-  /* Semantic Status Colors */
-  --status-verified-bg: rgba(20, 184, 166, 0.15);
-  --status-verified-fg: #2dd4bf;
-  --status-verified-border: rgba(45, 212, 191, 0.3);
+  /* Semantic Status Colors (Preserving Distinct Evidence Treatments) */
+  --status-verified-bg: rgba(45, 212, 191, 0.15);
+  --status-verified-fg: #2DD4BF;
+  --status-verified-border: rgba(45, 212, 191, 0.35);
 
-  --status-failed-bg: rgba(244, 63, 94, 0.15);
-  --status-failed-fg: #fb7185;
-  --status-failed-border: rgba(251, 113, 133, 0.3);
+  --status-failed-bg: rgba(255, 131, 184, 0.15);
+  --status-failed-fg: #FF83B8;
+  --status-failed-border: rgba(255, 131, 184, 0.35);
 
-  --status-halted-bg: rgba(245, 158, 11, 0.15);
-  --status-halted-fg: #fbbf24;
-  --status-halted-border: rgba(251, 191, 36, 0.3);
+  --status-halted-bg: rgba(251, 191, 36, 0.15);
+  --status-halted-fg: #FBBF24;
+  --status-halted-border: rgba(251, 191, 36, 0.35);
 
-  --status-unknown-bg: rgba(110, 118, 129, 0.15);
-  --status-unknown-fg: #8b949e;
-  --status-unknown-border: rgba(139, 148, 158, 0.3);
+  --status-unknown-bg: rgba(182, 169, 202, 0.15);
+  --status-unknown-fg: #B6A9CA;
+  --status-unknown-border: rgba(182, 169, 202, 0.35);
 
-  --status-unavailable-bg: rgba(33, 38, 45, 0.6);
-  --status-unavailable-fg: #6e7681;
-  --status-unavailable-border: #30363d;
+  --status-unavailable-bg: rgba(40, 32, 68, 0.6);
+  --status-unavailable-fg: #B6A9CA;
+  --status-unavailable-border: #44365F;
 
-  --status-pending-bg: rgba(56, 189, 248, 0.15);
-  --status-pending-fg: #38bdf8;
-  --status-pending-border: rgba(56, 189, 248, 0.3);
+  --status-pending-bg: rgba(100, 222, 217, 0.15);
+  --status-pending-fg: #64DED9;
+  --status-pending-border: rgba(100, 222, 217, 0.35);
 
   --status-partial-bg: rgba(251, 146, 60, 0.15);
-  --status-partial-fg: #fb923c;
-  --status-partial-border: rgba(251, 146, 60, 0.3);
+  --status-partial-fg: #FB923C;
+  --status-partial-border: rgba(251, 146, 60, 0.35);
 
-  --status-unreadable-bg: rgba(244, 63, 94, 0.12);
-  --status-unreadable-fg: #f43f5e;
-  --status-unreadable-border: rgba(244, 63, 94, 0.3);
+  --status-unreadable-bg: rgba(255, 131, 184, 0.12);
+  --status-unreadable-fg: #FF83B8;
+  --status-unreadable-border: rgba(255, 131, 184, 0.35);
 
   /* Structure & Typography */
   --radius-sm: 4px;
@@ -87,9 +89,9 @@ body {
   top: -100px;
   left: 1rem;
   background-color: var(--bg-elevated);
-  color: var(--accent-primary);
+  color: var(--accent-interactive);
   padding: 0.5rem 1rem;
-  border: 1px solid var(--accent-primary);
+  border: 1px solid var(--accent-interactive);
   border-radius: var(--radius-sm);
   font-weight: 600;
   font-size: 0.85rem;
@@ -100,7 +102,7 @@ body {
 
 .skip-link:focus {
   top: 0.75rem;
-  outline: 2px solid var(--accent-primary);
+  outline: 2px solid var(--accent-interactive);
   outline-offset: 2px;
 }
 
@@ -114,7 +116,7 @@ body {
 .text-success { color: var(--status-verified-fg); }
 .text-danger { color: var(--status-failed-fg); }
 .text-warning { color: var(--status-halted-fg); }
-.text-cyan { color: var(--accent-primary); }
+.text-cyan { color: var(--accent-interactive); }
 .text-center { text-align: center; }
 
 /* App Header */
@@ -184,8 +186,8 @@ h1 {
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background-color: var(--accent-teal);
-  box-shadow: 0 0 6px rgba(20, 184, 166, 0.6);
+  background-color: var(--accent-interactive);
+  box-shadow: 0 0 6px rgba(100, 222, 217, 0.6);
 }
 
 /* Navigation Tabs */
@@ -214,8 +216,8 @@ h1 {
 }
 
 .nav-tab.active {
-  color: var(--accent-primary);
-  border-bottom-color: var(--accent-primary);
+  color: var(--accent-interactive);
+  border-bottom-color: var(--accent-interactive);
 }
 
 /* Main Content Layout */
@@ -505,8 +507,8 @@ h2 {
 
 .quick-entry-btn:hover {
   background-color: var(--bg-hover);
-  border-color: var(--accent-primary);
-  color: var(--accent-primary);
+  border-color: var(--accent-interactive);
+  color: var(--accent-interactive);
 }
 
 .quick-entry-meta {
@@ -647,9 +649,9 @@ h2 {
 }
 
 .timeline-event-item.selected {
-  border-color: var(--accent-cyan);
+  border-color: var(--accent-interactive);
   background-color: var(--bg-elevated);
-  box-shadow: inset 3px 0 0 var(--accent-cyan);
+  box-shadow: inset 3px 0 0 var(--accent-interactive);
 }
 
 /* Area C: Dedicated Evidence Inspector Area */
@@ -716,7 +718,7 @@ h2 {
 .copy-btn:hover {
   background-color: var(--bg-hover);
   color: var(--text-primary);
-  border-color: var(--accent-primary);
+  border-color: var(--accent-interactive);
 }
 
 .copy-btn.copied {
@@ -764,7 +766,7 @@ h2 {
 
 .data-table tr.clickable.selected {
   background-color: var(--bg-elevated);
-  box-shadow: inset 3px 0 0 var(--accent-cyan);
+  box-shadow: inset 3px 0 0 var(--accent-interactive);
 }
 
 /* Technical Banners & Disclaimers */
@@ -825,7 +827,7 @@ h2 {
 
 .btn-refresh:hover:not(:disabled) {
   background-color: var(--bg-hover);
-  border-color: var(--accent-primary);
+  border-color: var(--accent-interactive);
 }
 
 .btn-refresh:disabled {
@@ -898,7 +900,7 @@ h2 {
 
 .input-search:focus, .select-filter:focus {
   outline: none;
-  border-color: var(--accent-primary);
+  border-color: var(--accent-interactive);
 }
 
 .trace-count-badge {
@@ -908,7 +910,7 @@ h2 {
   padding: 0.15rem 0.5rem;
   border-radius: var(--radius-sm);
   background-color: var(--bg-base);
-  color: var(--accent-primary);
+  color: var(--accent-interactive);
   border: 1px solid var(--border-default);
 }
 
@@ -921,7 +923,7 @@ h2 {
 .quick-entry-btn:focus-visible,
 .copy-btn:focus-visible,
 .data-table tr.clickable:focus-visible {
-  outline: 2px solid var(--accent-primary);
+  outline: 2px solid var(--accent-interactive);
   outline-offset: -2px;
 }
 
