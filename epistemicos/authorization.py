@@ -1070,7 +1070,7 @@ class AuthorizationAuthority:
         self.executor_registry._register_internal(executor_id, executor_func)
         func_qual_id = get_callable_identity(executor_func)
         if func_qual_id != executor_id:
-            self.executor_registry._register_internal(func_qual_id, executor_func)
+            self.executor_registry._register_internal(func_qual_id, executor_func, allow_overwrite=True)
 
     def evaluate_and_issue_capability(
         self,
