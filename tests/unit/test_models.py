@@ -443,3 +443,172 @@ def test_token_surprisal_ramping_evasion_blocked_by_ceiling():
     result = sensor.evaluate(logprobs)
     assert result["passed"] is False
     assert result["flagged_tokens"] > 0
+
+
+# ==========================================
+# MODEL SERIALIZATION TESTS
+# ==========================================
+from datetime import datetime, timezone
+
+def test_popperian_contract_serialization():
+    """Validates PopperianContract dict/JSON serialization and round-trip deserialization."""
+    contract = PopperianContract(
+        claim_id="claim_001",
+        target_metric="loss_ratio",
+        falsification_threshold=5.0,
+        comparison_operator=">",
+        observation_window_days=30,
+        falsification_impact_posterior=0.05
+    )
+    data_dict = contract.model_dump(mode="json")
+    assert data_dict == {
+        "claim_id": "claim_001",
+        "target_metric": "loss_ratio",
+        "falsification_threshold": 5.0,
+        "comparison_operator": ">",
+        "observation_window_days": 30,
+        "falsification_impact_posterior": 0.05
+    }
+
+    json_str = contract.model_dump_json()
+    parsed_json = json.loads(json_str)
+    assert parsed_json["claim_id"] == "claim_001"
+    assert parsed_json["falsification_threshold"] == 5.0
+
+    restored = PopperianContract.model_validate_json(json_str)
+    assert restored == contract
+
+
+def test_bayes_factor_update_serialization():
+    """Validates BayesFactorUpdate dict/JSON serialization including computed fields."""
+    update = BayesFactorUpdate(
+        evidence_id="ev_001",
+        source_provenance=["log_a", "log_b"],
+        p_evidence_given_hypothesis=0.8,
+        p_evidence_given_not_hypothesis=0.2
+    )
+    data_dict = update.model_dump(mode="json")
+    assert data_dict["evidence_id"] == "ev_001"
+    assert data_dict["source_provenance"] == ["log_a", "log_b"]
+    assert data_dict["bayes_factor"] == 4.0
+    assert data_dict["bayes_factor_db"] == 6.02
+
+    json_str = update.model_dump_json()
+    parsed = json.loads(json_str)
+    assert parsed["bayes_factor"] == 4.0
+
+    restored = BayesFactorUpdate.model_validate_json(json_str)
+    assert restored == update
+
+
+def test_belief_object_nested_serialization():
+    """Validates BeliefObject nested serialization with PopperianContract, BayesFactorUpdate list, EpistemicStatus enum, and datetime."""
+    now = datetime.now(timezone.utc)
+    contract = PopperianContract(
+        claim_id="claim_100",
+        target_metric="error_rate",
+        falsification_threshold=0.01,
+        comparison_operator=">=",
+        observation_window_days=14,
+        falsification_impact_posterior=0.0
+    )
+    update = BayesFactorUpdate(
+        evidence_id="ev_100",
+        source_provenance=["provenance_trace_1"],
+        p_evidence_given_hypothesis=0.9,
+        p_evidence_given_not_hypothesis=0.1
+    )
+    belief = BeliefObject(
+        belief_id="bel_100",
+        cpr_frame_id="cpr_100",
+        assertion="Unicórniö test assertióñ with unicode",
+        prior_probability=0.5,
+        current_posterior=0.9,
+        status=EpistemicStatus.CONFIRMED,
+        evidence_ledger=[update],
+        popp_contract=contract,
+        created_at=now,
+        ttl_days=90,
+        invalidation_triggers=["trigger_alpha", "trigger_beta"]
+    )
+
+    data_dict = belief.model_dump(mode="json")
+    assert data_dict["belief_id"] == "bel_100"
+    assert data_dict["status"] == "CONFIRMED"
+    assert isinstance(data_dict["created_at"], str)
+    assert data_dict["popp_contract"]["claim_id"] == "claim_100"
+    assert len(data_dict["evidence_ledger"]) == 1
+    assert data_dict["evidence_ledger"][0]["bayes_factor"] == 9.0
+
+    json_str = belief.model_dump_json()
+    parsed = json.loads(json_str)
+    assert parsed["status"] == "CONFIRMED"
+    assert parsed["popp_contract"]["comparison_operator"] == ">="
+    assert parsed["assertion"] == "Unicórniö test assertióñ with unicode"
+
+    restored = BeliefObject.model_validate_json(json_str)
+    assert restored.belief_id == belief.belief_id
+    assert restored.status == EpistemicStatus.CONFIRMED
+    assert restored.popp_contract == contract
+    assert restored.evidence_ledger[0] == update
+
+
+def test_permission_scope_serialization_and_defaults():
+    """Validates PermissionScope serialization with custom subnets, defaults, and optional fields."""
+    scope = PermissionScope(
+        allowed_resources=["res_a", "res_b"],
+        allowed_operations=["read"],
+        expires_at=1700000000.0,
+        max_attempts=5,
+        attempt_count=2,
+        origin_subnet="10.0.0.1",
+        is_rmm_origin=False,
+        quarantine_subnets=["10.240.", "172.16."]
+    )
+
+    data_dict = scope.model_dump(mode="json")
+    assert data_dict["allowed_resources"] == ["res_a", "res_b"]
+    assert data_dict["expires_at"] == 1700000000.0
+    assert data_dict["origin_subnet"] == "10.0.0.1"
+    assert data_dict["quarantine_subnets"] == ["10.240.", "172.16."]
+
+    json_str = scope.model_dump_json()
+    parsed = json.loads(json_str)
+    assert parsed["max_attempts"] == 5
+
+    restored = PermissionScope.model_validate_json(json_str)
+    assert restored == scope
+
+
+def test_cpr_nested_serialization_and_excluded_fields():
+    """Validates CanonicalProblemRepresentation nested serialization, PermissionScope inclusion, and SENSITIVE_FIELDS exclusion."""
+    scope = PermissionScope(
+        allowed_resources=["logistics_db"],
+        allowed_operations=["read"]
+    )
+    cpr = CanonicalProblemRepresentation(
+        policy_id="POL-999",
+        raw_payload={"user_id": 123, "api_key": "secret_key_123"},
+        fleet_data={"vehicle_count": 200, "operating_radius_miles": 500, "loss_modifier": 1.1},
+        risk_details={"loss_mod": 1.1},
+        primary_metric=42.0,
+        scope=scope
+    )
+
+    data_dict = cpr.model_dump(mode="json")
+    assert data_dict["policy_id"] == "POL-999"
+    assert data_dict["raw_payload"] == {"user_id": 123, "api_key": "secret_key_123"}
+    assert data_dict["fleet_data"]["vehicle_count"] == 200
+    assert data_dict["scope"]["allowed_resources"] == ["logistics_db"]
+    # Verify SENSITIVE_FIELDS attribute is excluded from serialized data
+    assert "SENSITIVE_FIELDS" not in data_dict
+
+    json_str = cpr.model_dump_json()
+    parsed = json.loads(json_str)
+    assert parsed["primary_metric"] == 42.0
+    assert "SENSITIVE_FIELDS" not in parsed
+
+    restored = CanonicalProblemRepresentation.model_validate_json(json_str)
+    assert restored.policy_id == cpr.policy_id
+    assert restored.fleet_data == cpr.fleet_data
+    assert restored.scope.allowed_resources == ["logistics_db"]
