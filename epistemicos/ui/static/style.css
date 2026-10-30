@@ -89,7 +89,6 @@ body {
   display: flex;
   flex-direction: column;
   -webkit-font-smoothing: antialiased;
-  overflow-x: hidden;
 }
 
 /* Skip Link (Accessibility) */
@@ -1073,16 +1072,19 @@ h2 {
     justify-content: space-between;
     margin-bottom: 0.4rem;
     gap: 0.5rem;
+    width: 100%;
+    min-width: 0;
   }
 
   .mobile-brand {
     display: flex;
     align-items: center;
-    gap: 0.5rem;
+    gap: 0.4rem;
+    flex-shrink: 0;
   }
 
   .mobile-title {
-    font-size: 1.05rem;
+    font-size: 1rem;
     font-weight: 700;
     letter-spacing: -0.01em;
     color: var(--text-primary);
@@ -1091,15 +1093,19 @@ h2 {
   .mobile-context {
     display: flex;
     align-items: center;
-    gap: 0.65rem;
+    gap: 0.45rem;
+    min-width: 0;
+    flex-shrink: 1;
+    justify-content: flex-end;
   }
 
   .mobile-current-title {
-    font-size: 0.775rem;
+    font-size: 0.75rem;
     font-weight: 600;
     color: var(--accent-interactive);
     font-family: var(--font-mono);
-    max-width: 180px;
+    min-width: 0;
+    flex-shrink: 1;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;

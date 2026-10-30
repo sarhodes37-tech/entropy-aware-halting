@@ -359,13 +359,14 @@ def test_responsive_css_sidebar_and_metrics_grid_rules():
 
 
 def test_app_js_responsive_navigation_handlers():
-    """Verify that app.js handles vertical keyboard arrow keys, scrollIntoView alignment, and mobile current title updates."""
+    """Verify that app.js handles vertical keyboard arrow keys, prefers-reduced-motion scrollIntoView alignment, and mobile current title updates."""
     import pathlib
     js_path = pathlib.Path("epistemicos/ui/static/app.js")
     js_content = js_path.read_text(encoding="utf-8")
     assert "e.key === 'ArrowRight' || e.key === 'ArrowDown'" in js_content
     assert "e.key === 'ArrowLeft' || e.key === 'ArrowUp'" in js_content
-    assert "btn.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });" in js_content
+    assert "prefers-reduced-motion: reduce" in js_content
+    assert "btn.scrollIntoView({ behavior: scrollBehavior, block: 'nearest', inline: 'nearest' });" in js_content
     assert "const mobileTitleEl = document.getElementById('mobile-current-title');" in js_content
 
 

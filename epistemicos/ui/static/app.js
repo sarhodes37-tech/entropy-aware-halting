@@ -207,7 +207,9 @@ document.addEventListener('DOMContentLoaded', () => {
         btn.setAttribute('tabindex', isActive ? '0' : '-1');
 
         if (isActive && typeof btn.scrollIntoView === 'function') {
-          btn.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
+          const prefersReducedMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+          const scrollBehavior = prefersReducedMotion ? 'auto' : 'smooth';
+          btn.scrollIntoView({ behavior: scrollBehavior, block: 'nearest', inline: 'nearest' });
         }
       });
 
