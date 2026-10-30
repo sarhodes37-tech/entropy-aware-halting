@@ -63,8 +63,9 @@ def valid_evidence_data(tmp_path):
         "title": "EpistemicOS Four-Layer Security Evaluation Artifact",
         "version": "1.0.0",
         "reproducibility_metadata": {
-            "evaluated_git_commit": "abcdef1234567890",
+            "evaluated_git_commit": "a" * 40,
             "working_tree_status": "CLEAN",
+            "working_tree_digest": "0" * 64,
             "dataset_version": "1.0.0-frozen",
             "dataset_sha256_digest": FROZEN_BASELINE_DATASET_DIGEST,
             "dataset_digest_verified": True
@@ -79,6 +80,7 @@ def valid_evidence_data(tmp_path):
                 "evaluation_layer": "Layer B: Actual Execution-Boundary Integration",
                 "status": "PASS",
                 "breaches_observed": 0,
+                "scenarios_evaluated": 7,
                 "scenario_summary": [
                     {"case_id": f"Case{i}_test_scenario", "name": f"Case {i}", "security_outcome": "PASS", "provenance_verified": "VERIFIED"}
                     for i in range(1, 8)
@@ -286,6 +288,7 @@ def test_missing_layer_b_mandatory_scenarios_rejected(valid_evidence_data, tmp_p
         {"case_id": f"Case{i}_test", "name": f"Case {i}", "security_outcome": "PASS", "provenance_verified": "VERIFIED"}
         for i in range(1, 7)
     ]
+    data["layers"]["layer_b_execution_boundary"]["scenarios_evaluated"] = 6
     data["layers"]["layer_b_execution_boundary"]["status"] = "PASS"
 
     artifact_file = tmp_path / "missing_layer_b_cases.json"

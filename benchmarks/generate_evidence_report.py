@@ -10,6 +10,7 @@ Executes and aggregates evidence across all four evidence layers:
 Outputs machine-readable `results/four_layer_evidence.json` and human-readable `docs/security/four_layer_evidence_report.md`.
 """
 
+import argparse
 import json
 import math
 import os
@@ -24,8 +25,8 @@ PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
+from benchmarks.eval_metadata import collect_environment_metadata
 from benchmarks.run_full_benchmark import ComprehensiveBenchmarkRunner
-from benchmarks.run_incident_lab import get_git_commit_hash, get_working_tree_status, compute_working_tree_digest
 from benchmarks.run_live_agent_redteam import SyntheticAdversarialHarnessEvaluator
 
 
@@ -57,7 +58,6 @@ def run_layer_a_deterministic_tests(fast_mode: bool = False) -> Dict[str, Any]:
 
     cmd = [sys.executable, "-m", "pytest", *test_targets, "-q", "--tb=no"]
 
-    # If sys.executable doesn't have pytest module in local env, fall back to pytest binary directly
     try:
         check_res = subprocess.run([sys.executable, "-m", "pytest", "--version"], capture_output=True)
         if check_res.returncode != 0:
@@ -94,17 +94,6 @@ def evaluate_layer_d_evidence(
     expected_dataset_digest: str,
     per_case_filepath: str = CANONICAL_PER_CASE_RESULTS_PATH
 ) -> Dict[str, Any]:
-    """
-    Evaluates Layer D performance and cost benchmarks against mandatory evidence criteria:
-    - Complete N=100 evaluation sample.
-    - Dataset SHA-256 digest independently verified against manifest.
-    - Mandatory per-case run records present and verified (never PASS if missing/incomplete/malformed).
-    - Exact SHA-256 file byte digest verification matching benchmark output digest.
-    - Run records explicitly bound to run_id and dataset SHA-256 digest.
-    - Every summary metric (accuracy_pct, recall_pct, false_positive_rate_pct) present, numeric, finite, and in [0.0, 100.0].
-    - Recomputed recall, false-positive rate, and accuracy from run-level per-case outcomes reconciled with reported summaries.
-    - Non-zero valid denominators matching evaluated sample size.
-    """
     violations = []
 
     if not dataset_digest_valid:
@@ -136,7 +125,6 @@ def evaluate_layer_d_evidence(
     if sample_count == 0 or (eval_sample_count is not None and sample_count != eval_sample_count):
         violations.append(f"Combined Gating sample count ({sample_count}) does not match evaluated cases ({eval_sample_count})")
 
-    # MANDATORY summary metric check: accuracy, recall, FPR must all be present, numeric, finite, and in range [0.0, 100.0]
     acc = combined.get("accuracy_pct")
     recall = combined.get("recall_pct")
     fpr = combined.get("false_positive_rate_pct")
@@ -160,7 +148,6 @@ def evaluate_layer_d_evidence(
             if val < 0.0 or val > 100.0:
                 violations.append(f"Metric '{m_name}' out of valid percentage range [0.0, 100.0]: {val}")
 
-    # MANDATORY: Load per-case file bytes directly and compute exact SHA-256 digest
     per_case_path = Path(per_case_filepath)
     if not per_case_path.exists():
         violations.append(f"Mandatory run-level per-case records file missing at '{per_case_filepath}'")
@@ -186,7 +173,6 @@ def evaluate_layer_d_evidence(
         if eval_sample_count is not None and len(combined_records) != eval_sample_count:
             violations.append(f"Run-level Combined Gating record count ({len(combined_records)}) does not match expected sample size ({eval_sample_count})")
         else:
-            # Bind records to run_id and dataset digest strictly
             record_run_ids = {r.get("run_id") for r in combined_records}
             if len(record_run_ids) != 1 or (run_id and run_id not in record_run_ids):
                 violations.append(f"Run records run_id set ({list(record_run_ids)}) does not match expected benchmark run_id ({run_id})")
@@ -195,7 +181,6 @@ def evaluate_layer_d_evidence(
             if len(record_dataset_digests) != 1 or expected_dataset_digest not in record_dataset_digests:
                 violations.append(f"Run records bound to invalid or mixed dataset digests ({list(record_dataset_digests)}), expected strictly ({expected_dataset_digest})")
 
-            # Validate classifications
             counts = {"TC": 0, "FC": 0, "TR": 0, "FR": 0}
             invalid_classes = []
             for r in combined_records:
@@ -214,13 +199,11 @@ def evaluate_layer_d_evidence(
             if total_classified != len(combined_records):
                 violations.append(f"Sum of classification counts ({total_classified}) does not match record count ({len(combined_records)})")
 
-            # Denominator validation
             if (tr + fc) == 0:
                 violations.append("Zero denominator in adversarial case count (tr + fc = 0)")
             if (tc + fr) == 0:
                 violations.append("Zero denominator in benign case count (tc + fr = 0)")
 
-            # Recompute accuracy, recall, FPR
             recomputed_acc = (tc + tr) / len(combined_records) * 100.0 if len(combined_records) > 0 else 0.0
             recomputed_recall = (tr / (tr + fc) * 100.0) if (tr + fc) > 0 else 0.0
             recomputed_fpr = (fr / (tc + fr) * 100.0) if (tc + fr) > 0 else 0.0
@@ -240,7 +223,6 @@ def evaluate_layer_d_evidence(
         if fpr > 0.0:
             violations.append(f"False positive rate regression in Combined Gating: {fpr}% (Mandatory: 0.0%)")
 
-    # Status derivation: PASS requires zero violations
     if violations:
         if not layer_d_raw or eval_sample_count == 0 or per_case_records is None:
             status = "INCONCLUSIVE"
@@ -269,13 +251,46 @@ def evaluate_layer_d_evidence(
     }
 
 
-def generate_consolidated_evidence(fast_mode: bool = False) -> Dict[str, Any]:
+def generate_consolidated_evidence(
+    fast_mode: bool = False,
+    expected_commit: Optional[str] = None,
+    require_clean: bool = False,
+    output_dir: Optional[str] = None,
+    docs_dir: Optional[str] = None
+) -> Dict[str, Any]:
+
+    out_base = Path(output_dir) if output_dir else Path("results")
+    docs_base = Path(docs_dir) if docs_dir else Path("docs/security")
+    out_base.mkdir(parents=True, exist_ok=True)
+    docs_base.mkdir(parents=True, exist_ok=True)
+
+    # Collect pre-run environmental provenance metadata BEFORE output files dirty the tree
+    env_meta = collect_environment_metadata(
+        suite_name="EpistemicOS Consolidated Four-Layer Security Evaluation",
+        suite_version="2.3.0",
+        expected_commit=expected_commit,
+        require_clean=require_clean
+    )
+
     print("Generating Layer A evidence (Deterministic Regression)...")
     layer_a = run_layer_a_deterministic_tests(fast_mode=fast_mode)
 
     print("Generating Layer B evidence (Incident Lab Execution-Boundary)...")
-    subprocess.run([sys.executable, "benchmarks/run_incident_lab.py"], check=True)
-    layer_b_raw = load_json_artifact("results/incident_lab_results.json")
+    inc_json_path = out_base / "incident_lab_results.json"
+    inc_md_path = docs_base / "incident_lab_report.md"
+
+    lab_cmd = [
+        sys.executable, "benchmarks/run_incident_lab.py",
+        "--output-json", str(inc_json_path),
+        "--output-md", str(inc_md_path)
+    ]
+    if expected_commit:
+        lab_cmd.extend(["--commit", expected_commit])
+    if require_clean:
+        lab_cmd.append("--require-clean")
+
+    subprocess.run(lab_cmd, check=True)
+    layer_b_raw = load_json_artifact(str(inc_json_path))
 
     b_scenarios_dict = layer_b_raw.get("scenarios", {})
     b_scenarios_list = []
@@ -286,8 +301,6 @@ def generate_consolidated_evidence(fast_mode: bool = False) -> Dict[str, Any]:
     if isinstance(b_scenarios_dict, dict) and len(b_scenarios_dict) > 0:
         for case_key, sc_data in b_scenarios_dict.items():
             sc_id = str(sc_data.get("scenario_id", case_key)).lower()
-
-            # Map Case1_github_credential_exposure -> case1
             normalized_key = sc_id.split("_")[0] if "_" in sc_id else sc_id
             evaluated_scenario_keys.add(normalized_key)
 
@@ -307,7 +320,6 @@ def generate_consolidated_evidence(fast_mode: bool = False) -> Dict[str, Any]:
             elif outcome in ["PARTIAL_GATING_DEFENSE", "PARTIAL", "UNTESTED"]:
                 b_partials.append(sc_info)
 
-    # Empty or incomplete Layer B evidence is non-passing
     missing_mandatory_cases = MANDATORY_LAYER_B_SCENARIOS - evaluated_scenario_keys
 
     if not b_scenarios_dict or len(b_scenarios_list) == 0:
@@ -349,8 +361,14 @@ def generate_consolidated_evidence(fast_mode: bool = False) -> Dict[str, Any]:
 
     dataset_digest_valid = (actual_digest == expected_digest and len(actual_digest) == 64)
 
+    per_case_path = out_base / "per_case_results.json"
+    if not per_case_path.exists() and Path(CANONICAL_PER_CASE_RESULTS_PATH).exists():
+        per_case_path = Path(CANONICAL_PER_CASE_RESULTS_PATH)
+
     print("Generating Layer D evidence (Performance & Cost Benchmarks)...")
-    if fast_mode and os.path.exists("results/ablation_table.json") and os.path.exists(CANONICAL_PER_CASE_RESULTS_PATH):
+    if fast_mode and (out_base / "ablation_table.json").exists() and per_case_path.exists():
+        layer_d_raw = load_json_artifact(str(out_base / "ablation_table.json"))
+    elif fast_mode and os.path.exists("results/ablation_table.json") and os.path.exists(CANONICAL_PER_CASE_RESULTS_PATH):
         layer_d_raw = load_json_artifact("results/ablation_table.json")
     else:
         runner_d = ComprehensiveBenchmarkRunner()
@@ -360,12 +378,8 @@ def generate_consolidated_evidence(fast_mode: bool = False) -> Dict[str, Any]:
         layer_d_raw,
         dataset_digest_valid,
         expected_dataset_digest=expected_digest,
-        per_case_filepath=CANONICAL_PER_CASE_RESULTS_PATH
+        per_case_filepath=str(per_case_path)
     )
-
-    git_commit = get_git_commit_hash()
-    working_tree_status = get_working_tree_status()
-    tree_digest = compute_working_tree_digest()
 
     layer_statuses = {
         "Layer A": layer_a["status"],
@@ -374,7 +388,6 @@ def generate_consolidated_evidence(fast_mode: bool = False) -> Dict[str, Any]:
         "Layer D": layer_d["status"]
     }
 
-    # Derive overall pipeline status across all four layers: any non-PASS layer forces overall status to non-PASS
     if any(st == "FAIL" for st in layer_statuses.values()) or not dataset_digest_valid:
         overall_status = "FAIL"
     elif any(st in ["PARTIAL", "UNTESTED", "INCONCLUSIVE"] for st in layer_statuses.values()):
@@ -382,18 +395,24 @@ def generate_consolidated_evidence(fast_mode: bool = False) -> Dict[str, Any]:
     else:
         overall_status = "PASS"
 
+    completion_time_utc = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+    repro_meta = dict(env_meta)
+    repro_meta.update({
+        "completion_timestamp_utc": completion_time_utc,
+        "dataset_version": dataset_manifest.get("version", "UNKNOWN"),
+        "dataset_sha256_digest": actual_digest,
+        "dataset_digest_verified": dataset_digest_valid,
+        "exit_code": 0,
+        "exit_status": "SUCCESS",
+        "total_scenarios_evaluated": len(b_scenarios_list) + layer_c.get("total_scenarios", 0)
+    })
+
     consolidated_evidence = {
         "title": "EpistemicOS Four-Layer Security Evaluation Artifact",
         "version": "1.0.0",
-        "timestamp_utc": time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime()),
-        "reproducibility_metadata": {
-            "evaluated_git_commit": git_commit,
-            "working_tree_status": working_tree_status,
-            "working_tree_digest": tree_digest,
-            "dataset_version": dataset_manifest.get("version", "UNKNOWN"),
-            "dataset_sha256_digest": actual_digest,
-            "dataset_digest_verified": dataset_digest_valid
-        },
+        "timestamp_utc": completion_time_utc,
+        "reproducibility_metadata": repro_meta,
         "overall_evaluation_status": overall_status,
         "layers": {
             "layer_a_deterministic": layer_a,
@@ -403,17 +422,27 @@ def generate_consolidated_evidence(fast_mode: bool = False) -> Dict[str, Any]:
         }
     }
 
-    Path("results").mkdir(parents=True, exist_ok=True)
-    with open("results/four_layer_evidence.json", "w", encoding="utf-8") as f:
+    json_artifact_path = out_base / "four_layer_evidence.json"
+    with open(json_artifact_path, "w", encoding="utf-8") as f:
         json.dump(consolidated_evidence, f, indent=2)
 
-    generate_markdown_report(consolidated_evidence)
+    # Compute digest of generated JSON report artifact itself
+    report_digest = hashlib.sha256(json_artifact_path.read_bytes()).hexdigest()
+    consolidated_evidence["reproducibility_metadata"]["report_artifact_sha256"] = report_digest
+
+    # Re-write with self-referential report digest included
+    with open(json_artifact_path, "w", encoding="utf-8") as f:
+        json.dump(consolidated_evidence, f, indent=2)
+
+    md_artifact_path = docs_base / "four_layer_evidence_report.md"
+    generate_markdown_report(consolidated_evidence, md_artifact_path)
     return consolidated_evidence
 
 
-def generate_markdown_report(data: Dict[str, Any]):
+def generate_markdown_report(data: Dict[str, Any], output_path: Optional[Path] = None):
     meta = data["reproducibility_metadata"]
     layers = data["layers"]
+    p_out = output_path or Path("docs/security/four_layer_evidence_report.md")
 
     md = [
         "# EpistemicOS Consolidated Security & Evaluation Evidence Report",
@@ -422,10 +451,15 @@ def generate_markdown_report(data: Dict[str, Any]):
         "",
         "## Reproducibility & Environment Metadata",
         f"- **Evaluated Git Commit:** `{meta['evaluated_git_commit']}`",
-        f"- **Working Tree Status:** `{meta['working_tree_status']}`",
+        f"- **Report Persistence Revision:** `{meta['report_persistence_commit']}`",
+        f"- **Working Tree Status (Pre-Run):** `{meta['working_tree_status']}`",
         f"- **Working Tree Digest:** `{meta['working_tree_digest']}`",
+        f"- **Evaluation Command:** `{meta['evaluation_command']}`",
+        f"- **Execution Environment:** `{meta['execution_environment_type']}` (Python {meta['python_version']}, {meta['operating_system']})",
+        f"- **Lockfile Digest:** `{meta['lockfile_sha256_digest']}`",
         f"- **Dataset Version:** `{meta['dataset_version']}`",
         f"- **Dataset SHA-256 Digest:** `{meta['dataset_sha256_digest']}` (Verified: `{meta['dataset_digest_verified']}`)",
+        f"- **Report Artifact SHA-256:** `{meta.get('report_artifact_sha256', 'N/A')}`",
         "",
         "---",
         "",
@@ -483,18 +517,31 @@ def generate_markdown_report(data: Dict[str, Any]):
         "- **GAP-04 (Multi-Tenant Fleet Isolation):** Multi-tenant fleet concurrency isolation relies on process boundary enforcement rather than hypervisor-level microVMs."
     ])
 
-    Path("docs/security").mkdir(parents=True, exist_ok=True)
-    with open("docs/security/four_layer_evidence_report.md", "w", encoding="utf-8") as f:
+    p_out.parent.mkdir(parents=True, exist_ok=True)
+    with open(p_out, "w", encoding="utf-8") as f:
         f.write("\n".join(md) + "\n")
 
 
 def main():
-    fast_mode = "--fast" in sys.argv
-    evidence = generate_consolidated_evidence(fast_mode=fast_mode)
+    parser = argparse.ArgumentParser(description="Generate EpistemicOS Four-Layer Evidence Report")
+    parser.add_argument("--fast", action="store_true", help="Fast evaluation mode")
+    parser.add_argument("--commit", default=None, help="Expected full 40-character Git SHA to verify against checked-out HEAD")
+    parser.add_argument("--require-clean", action="store_true", help="Fail closed if source working tree is dirty or has untracked files")
+    parser.add_argument("--output-dir", default="results", help="Directory for JSON evidence outputs")
+    parser.add_argument("--docs-dir", default="docs/security", help="Directory for Markdown report outputs")
+    args = parser.parse_args()
+
+    evidence = generate_consolidated_evidence(
+        fast_mode=args.fast,
+        expected_commit=args.commit,
+        require_clean=args.require_clean,
+        output_dir=args.output_dir,
+        docs_dir=args.docs_dir
+    )
     print("\n=======================================================")
     print(f"Four-Layer Evidence Artifact Generated Successfully!")
     print(f"Overall Evaluation Status: {evidence['overall_evaluation_status']}")
-    print("Saved to results/four_layer_evidence.json and docs/security/four_layer_evidence_report.md")
+    print(f"Saved to {args.output_dir}/four_layer_evidence.json and {args.docs_dir}/four_layer_evidence_report.md")
     print("=======================================================")
 
 

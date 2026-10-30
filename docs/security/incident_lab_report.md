@@ -1,11 +1,12 @@
 # EpistemicOS Incident-Derived Security Test Lab Report
 
-**Evaluated Commit:** `73fd221ef4654ba3e8ce8f658d145e12afd4fdf9` | **Working Tree:** `DIRTY` | **Suite Version:** `2.3.0`
-**Working Tree Digest:** `07c9ec383600869c129fa5baa0b8c21abff119925ae26371cda35ce7538a7157`
-**Evaluated At:** `2026-10-30T01:07:03Z` | **Total Runtime:** `0.479s`
-**Tree Digest Algorithm:** `Full 64-char SHA-256 over deterministic POSIX sorted inventory of HEAD commit, git status -uall paths, status codes, symlink targets, deletions, and actual raw file bytes.`
-**Evaluation Notes:** Evaluation executed against uncommitted working tree prior to report persistence commit.
-**Environment:** Isolated Incident-Derived Security Test Lab (Synthetic Fixtures / Local Networking Only)
+**Evaluated Commit:** `6756a4851698ec843a815f9ac7de3de999391bb3` | **Working Tree:** `DIRTY` | **Suite Version:** `2.3.0`
+**Working Tree Digest:** `051a3a33298f0ceece98bc34d5f50eebfdfd0de2bcc81834078df66e8a77ec76`
+**Evaluated At:** `2026-10-30T02:15:04Z` | **Total Runtime:** `0.315s`
+**Environment:** Isolated Incident-Derived Security Test Lab (LOCAL Environment) | **Environment Type:** `LOCAL`
+**Evaluation Command:** `benchmarks/run_incident_lab.py --output-json results/incident_lab_results.json --output-md docs/security/incident_lab_report.md`
+**Exit Code:** `0` (`SUCCESS`)
+**Evaluation Notes:** Evaluation executed against verified checkout prior to report persistence commit.
 
 ## 1. Seven-Case Summary Matrix
 
@@ -125,13 +126,10 @@ To reproduce the entire Incident Test Lab suite and verify all invariants indepe
 
 ```bash
 # 1. Run full incident lab benchmark runner
-PYTHONPATH="." python3 benchmarks/run_incident_lab.py
+PYTHONPATH="." python3 benchmarks/run_incident_lab.py --commit 6756a4851698ec843a815f9ac7de3de999391bb3 --require-clean
 
 # 2. Run incident lab integration and fleet concurrency tests
 PYTHONPATH="." python3 -m pytest tests/incident_lab/
-
-# 3. Execute lab verification tool
-python3 /home/jules/self_created_tools/lab_verifier.py
 ```
 
 ## 4. Evaluation Limitations & Non-Claims

@@ -12,6 +12,7 @@ Outputs:
 - Human-readable Markdown report: docs/security/incident_lab_report.md
 """
 
+import argparse
 import json
 import time
 import subprocess
@@ -27,6 +28,12 @@ PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
+from benchmarks.eval_metadata import (
+    collect_environment_metadata,
+    get_git_commit_hash,
+    get_working_tree_status,
+    compute_working_tree_digest
+)
 from tests.incident_lab.scenarios.case1_github import Case1GitHubCredentialExposureScenario
 from tests.incident_lab.scenarios.case2_government import Case2GovernmentAuthorizationBypassScenario
 from tests.incident_lab.scenarios.case3_egress import Case3IndirectEgressScenario
@@ -36,114 +43,24 @@ from tests.incident_lab.scenarios.case6_destructive import Case6DestructiveRecov
 from tests.incident_lab.scenarios.case7_fleet import Case7FleetAmplificationScenario
 
 
-def get_git_commit_hash() -> str:
-    try:
-        res = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True, cwd=PROJECT_ROOT)
-        return res.stdout.strip()
-    except Exception:
-        return "UNKNOWN_COMMIT"
-
-
-def get_working_tree_status() -> str:
-    try:
-        res = subprocess.run(["git", "status", "--porcelain=v1", "-uall"], capture_output=True, text=True, check=True, cwd=PROJECT_ROOT)
-        return "DIRTY" if res.stdout.strip() else "CLEAN"
-    except Exception:
-        return "UNKNOWN_STATUS"
-
-
-def compute_working_tree_digest(root_dir: Optional[str] = None) -> str:
-    """
-    Computes a full 64-character SHA-256 digest covering all relevant tracked and untracked source inputs.
-
-    Algorithm Specification:
-    1. Runs `git status --porcelain=v1 -uall` to identify all staged, unstaged, modified, deleted, renamed, and untracked paths.
-    2. Filters out ignored / transient runtime directories (`logs/`, `tmp/`, `.git/`, `__pycache__`, `.pytest_cache`).
-    3. Sorts all entries deterministically by normalized POSIX relative path.
-    4. For each file entry in sorted order:
-       a. Symlinks: hashes status 'SYMLINK', path, and readlink target string.
-       b. Deletions: hashes status 'DELETED', path, and 'DELETED' marker.
-       c. Submodules / Directories: hashes status 'DIRECTORY', path, and submodule HEAD commit if available.
-       d. Regular Files (Binary & Text): hashes status ('UNTRACKED' / 'MODIFIED' / 'STAGED'), path, size, and actual raw file bytes.
-    5. Returns full 64-character SHA-256 hex digest string.
-    """
-    base = Path(root_dir) if root_dir else Path(PROJECT_ROOT)
-    hasher = hashlib.sha256()
-
-    # Track HEAD commit
-    commit_sha = get_git_commit_hash()
-    hasher.update(f"COMMIT:{commit_sha}\n".encode("utf-8"))
-
-    ignored_prefixes = ("logs/", "tmp/", ".git/", "__pycache__", ".pytest_cache", "results/")
-
-    try:
-        res = subprocess.run(["git", "status", "--porcelain=v1", "-uall"], capture_output=True, text=True, check=True, cwd=str(base))
-        lines = [line.rstrip("\r\n") for line in res.stdout.split("\n") if line.strip()]
-    except Exception:
-        lines = []
-
-    inventory: List[tuple[str, str, Path]] = []
-    for line in lines:
-        if len(line) < 4:
-            continue
-        status_code = line[:2]
-        rel_path_str = line[3:].strip()
-
-        # Handle renames e.g. "R  old -> new"
-        if " -> " in rel_path_str:
-            rel_path_str = rel_path_str.split(" -> ")[-1].strip()
-
-        # Strip surrounding quotes if present
-        if rel_path_str.startswith('"') and rel_path_str.endswith('"'):
-            rel_path_str = rel_path_str[1:-1]
-
-        norm_path = Path(rel_path_str).as_posix()
-
-        if any(norm_path.startswith(prefix) or f"/{prefix}" in norm_path for prefix in ignored_prefixes):
-            continue
-
-        full_path = base / rel_path_str
-        inventory.append((norm_path, status_code, full_path))
-
-    inventory.sort(key=lambda x: x[0])
-
-    for norm_path, status_code, full_path in inventory:
-        hasher.update(f"PATH:{norm_path}:STATUS:{status_code}\n".encode("utf-8"))
-
-        if full_path.is_symlink():
-            try:
-                target = os.readlink(full_path)
-                hasher.update(f"SYMLINK:{target}\n".encode("utf-8"))
-            except Exception:
-                hasher.update(b"SYMLINK_ERROR\n")
-        elif not full_path.exists():
-            hasher.update(b"STATUS:DELETED\n")
-        elif full_path.is_dir():
-            try:
-                sub_res = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True, cwd=str(full_path))
-                sub_sha = sub_res.stdout.strip()
-                hasher.update(f"SUBMODULE:{sub_sha}\n".encode("utf-8"))
-            except Exception:
-                hasher.update(b"DIRECTORY\n")
-        elif full_path.is_file():
-            try:
-                content = full_path.read_bytes()
-                hasher.update(f"SIZE:{len(content)}\n".encode("utf-8"))
-                hasher.update(content)
-                hasher.update(b"\n")
-            except Exception:
-                hasher.update(b"READ_ERROR\n")
-
-    return hasher.hexdigest()
-
-
 class IncidentLabRunner:
-    def __init__(self, audit_dir: Optional[str] = None):
+    def __init__(
+        self,
+        audit_dir: Optional[str] = None,
+        expected_commit: Optional[str] = None,
+        require_clean: bool = False,
+        root_dir: Optional[str] = None
+    ):
+        self.root_dir = root_dir or PROJECT_ROOT
         self.audit_dir = Path(audit_dir) if audit_dir else Path(tempfile.gettempdir()) / "lab_benchmark_run"
         self.audit_dir.mkdir(parents=True, exist_ok=True)
-        self.commit_sha = get_git_commit_hash()
-        self.tree_status = get_working_tree_status()
-        self.tree_digest = compute_working_tree_digest()
+        self.env_meta = collect_environment_metadata(
+            suite_name="EpistemicOS Incident-Derived Security Test Lab",
+            suite_version="2.3.0",
+            expected_commit=expected_commit,
+            require_clean=require_clean,
+            root_dir=self.root_dir
+        )
 
     def run_lab_evaluation(
         self,
@@ -167,21 +84,25 @@ class IncidentLabRunner:
             rep = sc.run_evaluation()
             results[rep.scenario_id] = rep.to_dict()
 
+        completion_time_utc = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         total_runtime_s = round(time.time() - start_time, 3)
 
+        meta = dict(self.env_meta)
+        meta.update({
+            "completion_timestamp_utc": completion_time_utc,
+            "timestamp": completion_time_utc,
+            "uncommitted_tree_digest": meta["working_tree_digest"],
+            "tree_digest_algorithm": "Full 64-char SHA-256 over deterministic POSIX sorted inventory of HEAD commit, git status -uall paths, status codes, symlink targets, deletions, and actual raw file bytes.",
+            "evaluation_notes": "Evaluation executed against verified checkout prior to report persistence commit.",
+            "total_scenarios_evaluated": len(results),
+            "total_runtime_seconds": total_runtime_s,
+            "exit_code": 0,
+            "exit_status": "SUCCESS",
+            "environment": f"Isolated Incident-Derived Security Test Lab ({meta['execution_environment_type']} Environment)"
+        })
+
         output_data = {
-            "metadata": {
-                "evaluation_suite_version": "2.3.0",
-                "evaluated_git_commit": self.commit_sha,
-                "working_tree_status": self.tree_status,
-                "uncommitted_tree_digest": self.tree_digest,
-                "tree_digest_algorithm": "Full 64-char SHA-256 over deterministic POSIX sorted inventory of HEAD commit, git status -uall paths, status codes, symlink targets, deletions, and actual raw file bytes.",
-                "evaluation_notes": "Evaluation executed against uncommitted working tree prior to report persistence commit.",
-                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                "total_scenarios_evaluated": len(results),
-                "total_runtime_seconds": total_runtime_s,
-                "environment": "Isolated Incident-Derived Security Test Lab (Synthetic Fixtures / Local Networking Only)"
-            },
+            "metadata": meta,
             "scenarios": results
         }
 
@@ -208,9 +129,10 @@ class IncidentLabRunner:
             f"**Evaluated Commit:** `{meta['evaluated_git_commit']}` | **Working Tree:** `{meta['working_tree_status']}` | **Suite Version:** `{meta['evaluation_suite_version']}`",
             f"**Working Tree Digest:** `{meta['uncommitted_tree_digest']}`",
             f"**Evaluated At:** `{meta['timestamp']}` | **Total Runtime:** `{meta['total_runtime_seconds']}s`",
-            f"**Tree Digest Algorithm:** `{meta['tree_digest_algorithm']}`",
+            f"**Environment:** {meta['environment']} | **Environment Type:** `{meta['execution_environment_type']}`",
+            f"**Evaluation Command:** `{meta['evaluation_command']}`",
+            f"**Exit Code:** `{meta['exit_code']}` (`{meta['exit_status']}`)",
             f"**Evaluation Notes:** {meta['evaluation_notes']}",
-            f"**Environment:** {meta['environment']}",
             "",
             "## 1. Seven-Case Summary Matrix",
             "",
@@ -224,7 +146,6 @@ class IncidentLabRunner:
             dim_b = sc_data["dimension_b_task"]
             sec_status = dim_a["status"]
 
-            # Display exact Enum status (including PARTIAL_GATING_DEFENSE)
             sec_display = str(sec_status)
 
             task_status = f"{dim_b['governance_authorization_approved']}/{dim_b['authorized_operations_attempted']} Approved (Boundary Admitted: {dim_b['boundary_admitted']})"
@@ -276,13 +197,10 @@ class IncidentLabRunner:
             "",
             "```bash",
             "# 1. Run full incident lab benchmark runner",
-            "PYTHONPATH=\".\" python3 benchmarks/run_incident_lab.py",
+            "PYTHONPATH=\".\" python3 benchmarks/run_incident_lab.py --commit " + meta['evaluated_git_commit'] + " --require-clean",
             "",
             "# 2. Run incident lab integration and fleet concurrency tests",
             "PYTHONPATH=\".\" python3 -m pytest tests/incident_lab/",
-            "",
-            "# 3. Execute lab verification tool",
-            "python3 /home/jules/self_created_tools/lab_verifier.py",
             "```",
             "",
             "## 4. Evaluation Limitations & Non-Claims",
@@ -297,11 +215,18 @@ class IncidentLabRunner:
 
 
 def main():
-    runner = IncidentLabRunner()
-    results = runner.run_lab_evaluation()
+    parser = argparse.ArgumentParser(description="Run EpistemicOS Incident Test Lab Security Evaluation")
+    parser.add_argument("--commit", default=None, help="Expected full 40-character Git SHA to verify against checked-out HEAD")
+    parser.add_argument("--require-clean", action="store_true", help="Fail closed if source working tree is dirty or has untracked files")
+    parser.add_argument("--output-json", default="results/incident_lab_results.json", help="Path to write JSON results artifact")
+    parser.add_argument("--output-md", default="docs/security/incident_lab_report.md", help="Path to write Markdown report artifact")
+    args = parser.parse_args()
+
+    runner = IncidentLabRunner(expected_commit=args.commit, require_clean=args.require_clean)
+    results = runner.run_lab_evaluation(output_json_path=args.output_json, output_md_path=args.output_md)
     print(f"Incident Test Lab evaluation completed across {len(results['scenarios'])} scenarios!")
-    print("Machine-readable results saved to: results/incident_lab_results.json")
-    print("Human-readable evidence report saved to: docs/security/incident_lab_report.md")
+    print(f"Machine-readable results saved to: {args.output_json}")
+    print(f"Human-readable evidence report saved to: {args.output_md}")
 
 
 if __name__ == "__main__":

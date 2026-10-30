@@ -44,25 +44,25 @@ jobs:
     - name: Prepare Telemetry Artifact Directory
       run: mkdir -p results
 
-    - name: Execute Consolidated Four-Layer Evidence Pipeline
+    - name: Execute Consolidated Four-Layer Evidence Pipeline (Commit-Pinned)
       env:
         PYTHONPATH: .
       run: |
-        python -m benchmarks.generate_evidence_report
+        python -m benchmarks.generate_evidence_report --commit ${{ github.sha }} --require-clean
 
     - name: Validate Four-Layer Security Evidence Invariants (Standard CI)
       if: "!startsWith(github.ref, 'refs/tags/v') && github.event_name != 'release'"
       env:
         PYTHONPATH: .
       run: |
-        python -m benchmarks.validate_evidence --artifact results/four_layer_evidence.json
+        python -m benchmarks.validate_evidence --artifact results/four_layer_evidence.json --expected-commit ${{ github.sha }} --require-clean-tree
 
     - name: Validate Four-Layer Security Evidence Invariants (Release CI - Strict Full Pass)
       if: "startsWith(github.ref, 'refs/tags/v') || github.event_name == 'release'"
       env:
         PYTHONPATH: .
       run: |
-        python -m benchmarks.validate_evidence --artifact results/four_layer_evidence.json --require-full-pass
+        python -m benchmarks.validate_evidence --artifact results/four_layer_evidence.json --expected-commit ${{ github.sha }} --require-clean-tree --require-full-pass
 
     - name: Archive Benchmark Artifacts
       if: always()

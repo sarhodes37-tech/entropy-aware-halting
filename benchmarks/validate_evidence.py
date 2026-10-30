@@ -2,12 +2,15 @@
 Shared Evidence Artifact Validator for EpistemicOS CI/CD Pipelines.
 
 Validates:
-- Required top-level fields, schema, and reproducibility metadata.
+- Required top-level fields, schema, and reproducible environment metadata.
+- Full 40-character Git commit SHA format and optional expected SHA match.
+- Clean working tree status assertion when clean checkout is required.
+- Environmental metadata completeness (timestamps, execution command, exit code/status, lockfile digest, environment type).
 - Cryptographic verification strictly against base-branch dataset manifest/eval_set (via git show origin/main or GITHUB_BASE_REF).
   FAILS CLOSED if trusted base ref cannot be resolved, unless explicit --allow-local-constant-fallback is provided for local offline testing.
 - Layer status semantics (PASS, FAIL, PARTIAL, UNTESTED, BLOCKED_BY_ARCHITECTURE, INCONCLUSIVE).
 - Zero security breaches across Layer B execution boundary.
-- Mandatory Layer B scenario coverage contract (all 7 core cases present).
+- Mandatory Layer B scenario coverage contract (all 7 core cases present) and scenario count alignment.
 - Independent recomputation and verification of Layer D run-level per-case records (`results/per_case_results.json`).
 - Run-level record binding to dataset SHA-256 digest, run_id, and exact record file byte SHA-256.
 - Strict validation of Layer D metrics: presence, finite numeric types, range [0.0, 100.0], valid non-zero denominators, and exact record-to-summary alignment.
@@ -24,19 +27,22 @@ Trust Model Note:
   unforgeable authenticity against a compromised host that modifies both the execution loop and the recorded output simultaneously.
 """
 
-import json
-import sys
-import os
 import argparse
 import hashlib
+import json
 import math
+import os
+import re
 import subprocess
+import sys
 from pathlib import Path
 from typing import Dict, Any, List, Tuple, Optional
 
 
 VALID_STATUSES = frozenset({"PASS", "FAIL", "PARTIAL", "UNTESTED", "BLOCKED_BY_ARCHITECTURE", "INCONCLUSIVE"})
 VALID_CLASSIFICATIONS = frozenset({"TC", "FC", "TR", "FR"})
+SHA1_REGEX = re.compile(r"^[0-9a-fA-F]{40}$")
+SHA256_REGEX = re.compile(r"^[0-9a-fA-F]{64}$")
 
 # Code-level fallback constant used strictly when explicit --allow-local-constant-fallback is set
 FROZEN_BASELINE_DATASET_DIGEST = "f4e31381a922c1143769ccb887c4841e4a14fedec6eef6569d40eed2956ce873"
@@ -98,6 +104,8 @@ def validate_evidence_artifact(
     artifact_path: str,
     manifest_path: str = "benchmarks/data/dataset_manifest.json",
     require_full_pass: bool = False,
+    expected_commit: Optional[str] = None,
+    require_clean_tree: bool = False,
     expected_baseline_digest: Optional[str] = None,
     allow_local_constant_fallback: bool = False,
     per_case_filepath: str = CANONICAL_PER_CASE_RESULTS_PATH
@@ -144,16 +152,48 @@ def validate_evidence_artifact(
     if overall_status not in VALID_STATUSES:
         errors.append(f"Invalid overall_evaluation_status: {overall_status}")
 
-    # 3. Independent Dataset SHA-256 Digest Verification against Base-Branch Trusted Baseline
+    # 3. Environmental Metadata Verification
     meta = data.get("reproducibility_metadata", {})
-    required_meta = {"evaluated_git_commit", "working_tree_status", "dataset_version", "dataset_sha256_digest", "dataset_digest_verified"}
+    required_meta = {
+        "evaluated_git_commit",
+        "working_tree_status",
+        "working_tree_digest",
+        "dataset_version",
+        "dataset_sha256_digest",
+        "dataset_digest_verified"
+    }
     missing_meta = required_meta - set(meta.keys())
     if missing_meta:
         errors.append(f"Missing required metadata fields: {missing_meta}")
 
+    evaluated_commit = meta.get("evaluated_git_commit", "")
+    if not evaluated_commit or not isinstance(evaluated_commit, str) or not SHA1_REGEX.match(evaluated_commit):
+        errors.append(f"Invalid or non-40-character evaluated_git_commit: '{evaluated_commit}'")
+    elif expected_commit:
+        if evaluated_commit.lower() != expected_commit.lower():
+            errors.append(
+                f"Evaluated commit SHA mismatch! Evaluated ({evaluated_commit}) "
+                f"does not match expected commit ({expected_commit})."
+            )
+
+    wt_status = meta.get("working_tree_status", "")
+    if wt_status not in ("CLEAN", "DIRTY"):
+        errors.append(f"Invalid working_tree_status in metadata: '{wt_status}' (expected 'CLEAN' or 'DIRTY')")
+
+    if require_clean_tree and wt_status != "CLEAN":
+        errors.append(f"Clean Working Tree Assertion Failed! Report metadata specifies working_tree_status='{wt_status}', but clean tree was required.")
+
+    wt_digest = meta.get("working_tree_digest", "")
+    if not wt_digest or not isinstance(wt_digest, str) or not SHA256_REGEX.match(wt_digest):
+        errors.append(f"Invalid working_tree_digest in metadata: '{wt_digest}' (expected 64-char SHA256)")
+
+    # Validate process exit code/status if present
+    if "exit_code" in meta and meta["exit_code"] != 0:
+        errors.append(f"Evaluation process reported non-zero exit_code: {meta['exit_code']}")
+
+    # 4. Independent Dataset SHA-256 Digest Verification against Base-Branch Trusted Baseline
     reported_digest = meta.get("dataset_sha256_digest", "")
 
-    # Load frozen dataset manifest independently
     m_path = Path(manifest_path)
     if not m_path.exists():
         errors.append(f"Dataset manifest missing at path: {manifest_path}")
@@ -191,7 +231,7 @@ def validate_evidence_artifact(
         except Exception as me:
             errors.append(f"Failed to independently verify dataset manifest: {me}")
 
-    # 4. Layer Specific Integrity Checks
+    # 5. Layer Specific Integrity Checks
     layers = data.get("layers", {})
     required_layers = {"layer_a_deterministic", "layer_b_execution_boundary", "layer_c_live_agent_redteam", "layer_d_performance_cost"}
     missing_layers = required_layers - set(layers.keys())
@@ -207,7 +247,7 @@ def validate_evidence_artifact(
     elif layer_a_status != "PASS":
         errors.append(f"Layer A Deterministic Regression failed with status {layer_a_status}")
 
-    # Layer B Check — Supports both 'scenario_summary' and 'scenarios' keys
+    # Layer B Check
     layer_b = layers["layer_b_execution_boundary"]
     layer_b_status = layer_b.get("status")
     if layer_b_status not in VALID_STATUSES:
@@ -226,6 +266,13 @@ def validate_evidence_artifact(
             norm_cid = cid.split("_")[0] if "_" in cid else cid
             evaluated_case_ids.add(norm_cid)
 
+    reported_sc_count = layer_b.get("scenarios_evaluated")
+    if reported_sc_count is not None and reported_sc_count != len(summary_items):
+        errors.append(
+            f"Layer B Scenario Count Mismatch: Reported scenarios_evaluated={reported_sc_count} "
+            f"does not match actual scenario summary entries count ({len(summary_items)})."
+        )
+
     missing_layer_b_cases = MANDATORY_LAYER_B_SCENARIOS - evaluated_case_ids
     if missing_layer_b_cases:
         errors.append(f"Layer B Coverage Violation: Missing mandatory cases: {list(sorted(missing_layer_b_cases))}")
@@ -241,7 +288,15 @@ def validate_evidence_artifact(
     elif layer_c_status != "PASS":
         errors.append(f"Layer C status is {layer_c_status}, expected PASS.")
 
-    # Layer D Check — Independent Verification of Underlying Run Records and Metrics
+    c_breakdown = layer_c.get("scenario_breakdown", [])
+    c_sc_count = layer_c.get("total_scenarios")
+    if isinstance(c_breakdown, list) and c_sc_count is not None and c_sc_count != len(c_breakdown):
+        errors.append(
+            f"Layer C Scenario Count Mismatch: Reported total_scenarios={c_sc_count} "
+            f"does not match actual breakdown count ({len(c_breakdown)})."
+        )
+
+    # Layer D Check
     layer_d = layers["layer_d_performance_cost"]
     layer_d_status = layer_d.get("status")
     if layer_d_status not in VALID_STATUSES:
@@ -259,7 +314,6 @@ def validate_evidence_artifact(
     if not layer_d_records_digest or not isinstance(layer_d_records_digest, str) or len(layer_d_records_digest) != 64:
         errors.append("Layer D Contract Violation: Missing or invalid 'run_records_sha256_digest' in Layer D evidence metadata")
 
-    # Require every mandatory summary metric to be present, numeric, finite, and in [0.0, 100.0]
     reported_acc = layer_d.get("combined_gating_accuracy_pct")
     reported_recall = layer_d.get("combined_gating_recall_pct")
     reported_fpr = layer_d.get("combined_gating_fpr_pct")
@@ -272,7 +326,6 @@ def validate_evidence_artifact(
         elif val < 0.0 or val > 100.0:
             errors.append(f"Layer D Mandatory Metric Out of Range: '{m_name}' value {val}% is outside [0.0, 100.0]")
 
-    # Independent Verification: Load per-case file bytes directly and calculate file SHA-256
     per_case_path = Path(per_case_filepath)
 
     if not per_case_path.exists():
@@ -295,12 +348,10 @@ def validate_evidence_artifact(
                 if sample_count > 0 and len(combined_records) != sample_count:
                     errors.append(f"Layer D Integrity Mismatch: Run-level Combined Gating record count ({len(combined_records)}) does not match reported sample size ({sample_count})")
                 else:
-                    # Require EVERY record to have a non-empty run_id strictly matching layer_d_run_id
                     record_run_ids = {r.get("run_id") for r in combined_records}
                     if len(record_run_ids) != 1 or (layer_d_run_id and layer_d_run_id not in record_run_ids):
                         errors.append(f"Layer D Run ID Binding Mismatch: Run records bound to run_id set {list(record_run_ids)} rather than expected run_id ({layer_d_run_id})")
 
-                    # Require EVERY record to have a non-empty dataset_sha256_digest strictly matching expected_baseline_digest
                     record_dataset_digests = {r.get("dataset_sha256_digest") for r in combined_records}
                     if len(record_dataset_digests) != 1 or expected_baseline_digest not in record_dataset_digests:
                         errors.append(f"Layer D Dataset Binding Failure: Run records bound to invalid or mixed dataset digests {list(record_dataset_digests)}, expected strictly ({expected_baseline_digest})")
@@ -349,7 +400,7 @@ def validate_evidence_artifact(
     if reported_violations and layer_d_status == "PASS":
         errors.append(f"Layer D Integrity Failure: Reported PASS despite mandatory criteria violations: {reported_violations}")
 
-    # 5. Overall Status Consistency & Release Policy Check
+    # 6. Overall Status Consistency & Release Policy Check
     imperfect_layers = [
         name for name, ldata in layers.items()
         if (ldata.get("status") or ldata.get("overall_status")) != "PASS"
@@ -368,6 +419,8 @@ def main():
     parser = argparse.ArgumentParser(description="Validate EpistemicOS Four-Layer Evidence Artifact")
     parser.add_argument("--artifact", default="results/four_layer_evidence.json", help="Path to evidence artifact")
     parser.add_argument("--manifest", default="benchmarks/data/dataset_manifest.json", help="Path to dataset manifest")
+    parser.add_argument("--expected-commit", default=None, help="Expected full 40-character Git SHA to verify against evaluated_git_commit")
+    parser.add_argument("--require-clean-tree", action="store_true", help="Enforce working_tree_status == 'CLEAN'")
     parser.add_argument("--require-full-pass", action="store_true", help="Enforce overall PASS status (e.g. for release workflows)")
     parser.add_argument("--allow-local-constant-fallback", action="store_true", help="Opt-in fallback to local constant when base branch ref is missing (non-CI local testing)")
     args = parser.parse_args()
@@ -376,6 +429,8 @@ def main():
         args.artifact,
         manifest_path=args.manifest,
         require_full_pass=args.require_full_pass,
+        expected_commit=args.expected_commit,
+        require_clean_tree=args.require_clean_tree,
         allow_local_constant_fallback=args.allow_local_constant_fallback
     )
 

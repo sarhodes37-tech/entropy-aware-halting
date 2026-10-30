@@ -63,25 +63,25 @@ jobs:
         run: |
           pytest tests/ --cov=epistemicos --cov-report=xml --cov-report=term-missing
 
-      - name: Execute Consolidated Four-Layer Evidence Pipeline
+      - name: Execute Consolidated Four-Layer Evidence Pipeline (Commit-Pinned)
         env:
           PYTHONPATH: .
         run: |
-          python -m benchmarks.generate_evidence_report
+          python -m benchmarks.generate_evidence_report --commit ${{ github.sha }} --require-clean
 
       - name: CI Enforcement - Validate Security Evidence Invariants (Standard CI)
         if: "!startsWith(github.ref, 'refs/tags/v') && github.event_name != 'release'"
         env:
           PYTHONPATH: .
         run: |
-          python -m benchmarks.validate_evidence --artifact results/four_layer_evidence.json
+          python -m benchmarks.validate_evidence --artifact results/four_layer_evidence.json --expected-commit ${{ github.sha }} --require-clean-tree
 
       - name: CI Enforcement - Validate Security Evidence Invariants (Release CI - Strict Full Pass)
         if: "startsWith(github.ref, 'refs/tags/v') || github.event_name == 'release'"
         env:
           PYTHONPATH: .
         run: |
-          python -m benchmarks.validate_evidence --artifact results/four_layer_evidence.json --require-full-pass
+          python -m benchmarks.validate_evidence --artifact results/four_layer_evidence.json --expected-commit ${{ github.sha }} --require-clean-tree --require-full-pass
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
