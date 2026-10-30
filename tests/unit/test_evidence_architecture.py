@@ -51,15 +51,13 @@ def test_dataset_manifest_integrity():
     assert len(actual_digest) == 64
 
 
-def test_status_code_semantics():
+def test_status_code_semantics(tmp_path):
     """Validates central machine-readable status semantics."""
     valid_statuses = {"PASS", "FAIL", "PARTIAL", "UNTESTED", "BLOCKED_BY_ARCHITECTURE", "INCONCLUSIVE"}
 
-    evidence_path = "results/four_layer_evidence.json"
-    if not os.path.exists(evidence_path):
-        evidence = generate_consolidated_evidence(fast_mode=True)
-    else:
-        evidence = load_json_artifact(evidence_path)
+    out_dir = tmp_path / "results"
+    docs_dir = tmp_path / "docs"
+    evidence = generate_consolidated_evidence(fast_mode=True, output_dir=str(out_dir), docs_dir=str(docs_dir))
 
     assert evidence.get("overall_evaluation_status") in valid_statuses
 
@@ -193,12 +191,14 @@ def test_side_effect_correlation_mismatch_rejected():
     assert len(effects) == 0
 
 
-def test_consolidated_evidence_structure():
+def test_consolidated_evidence_structure(tmp_path):
     """Validates structure and reproducibility metadata of generated four-layer evidence artifact."""
-    evidence_path = "results/four_layer_evidence.json"
-    assert os.path.exists(evidence_path), "Evidence artifact results/four_layer_evidence.json not found."
+    out_dir = tmp_path / "results"
+    docs_dir = tmp_path / "docs"
+    evidence = generate_consolidated_evidence(fast_mode=True, output_dir=str(out_dir), docs_dir=str(docs_dir))
 
-    evidence = load_json_artifact(evidence_path)
+    evidence_path = out_dir / "four_layer_evidence.json"
+    assert os.path.exists(evidence_path), f"Evidence artifact {evidence_path} not found."
 
     assert evidence["title"] == "EpistemicOS Four-Layer Security Evaluation Artifact"
     assert "reproducibility_metadata" in evidence
@@ -206,4 +206,4 @@ def test_consolidated_evidence_structure():
     assert meta["dataset_digest_verified"] is True
     assert len(meta["evaluated_git_commit"]) > 0
 
-    assert os.path.exists("docs/security/four_layer_evidence_report.md")
+    assert os.path.exists(docs_dir / "four_layer_evidence_report.md")

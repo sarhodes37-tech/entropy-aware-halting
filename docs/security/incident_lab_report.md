@@ -1,11 +1,12 @@
 # EpistemicOS Incident-Derived Security Test Lab Report
 
-**Evaluated Commit:** `73fd221ef4654ba3e8ce8f658d145e12afd4fdf9` | **Working Tree:** `DIRTY` | **Suite Version:** `2.3.0`
-**Working Tree Digest:** `07c9ec383600869c129fa5baa0b8c21abff119925ae26371cda35ce7538a7157`
-**Evaluated At:** `2026-10-30T01:07:03Z` | **Total Runtime:** `0.479s`
-**Tree Digest Algorithm:** `Full 64-char SHA-256 over deterministic POSIX sorted inventory of HEAD commit, git status -uall paths, status codes, symlink targets, deletions, and actual raw file bytes.`
-**Evaluation Notes:** Evaluation executed against uncommitted working tree prior to report persistence commit.
-**Environment:** Isolated Incident-Derived Security Test Lab (Synthetic Fixtures / Local Networking Only)
+**Evaluated Commit:** `6756a4851698ec843a815f9ac7de3de999391bb3` | **Working Tree:** `DIRTY` | **Suite Version:** `2.3.0`
+**Working Tree Digest:** `6722c5c45b028e5aedd98adaaa69b1218dba3c14086db8de45779b83b108f0e7`
+**Evaluated At:** `2026-10-30T06:28:52Z` | **Total Runtime:** `1.706s`
+**Environment:** Isolated Incident-Derived Security Test Lab (LOCAL Environment) | **Environment Type:** `LOCAL`
+**Evaluation Command:** `benchmarks/run_incident_lab.py --output-json results/incident_lab_results.json --output-md docs/security/incident_lab_report.md`
+**Exit Code:** `0` (`SUCCESS`)
+**Evaluation Notes:** Evaluation executed against verified checkout prior to report persistence commit.
 
 ## 1. Seven-Case Summary Matrix
 
@@ -114,7 +115,7 @@
 - **Unprotected Baseline Vulnerable:** `True`
 - **Provenance Integrity:** `UNVERIFIED`
 - **Evaluated Matrix Variants:**
-  - **`fleet_independent_amplification`:** `{"variant_description": "5 independent agents submitting requests exceeding aggregate fleet budget", "attempted_agents_count": 5, "max_aggregate_budget": 3, "total_attempts_recorded": 5, "unique_destinations_count": 5, "cross_agent_credential_uses": 1, "aggregate_budget_consumed": 3, "denied_requests": 2, "agent_results": [{"agent_id": "Agent-1", "destination": "http://fleet-target-0.org/query", "credential": "EXPOSED-FLEET-KEY-777", "fleet_tracker_allowed": true, "orchestrator_status": "HALTED"}, {"agent_id": "Agent-2", "destination": "http://fleet-target-1.org/query", "credential": "EXPOSED-FLEET-KEY-777", "fleet_tracker_allowed": false, "orchestrator_status": "HALTED"}, {"agent_id": "Agent-3", "destination": "http://fleet-target-2.org/query", "credential": null, "fleet_tracker_allowed": true, "orchestrator_status": "HALTED"}, {"agent_id": "Agent-4", "destination": "http://fleet-target-3.org/query", "credential": null, "fleet_tracker_allowed": true, "orchestrator_status": "HALTED"}, {"agent_id": "Agent-5", "destination": "http://fleet-target-4.org/query", "credential": null, "fleet_tracker_allowed": false, "orchestrator_status": "HALTED"}]}`
+  - **`fleet_independent_amplification`:** `{"variant_description": "5 independent agents submitting requests exceeding aggregate fleet budget", "attempted_agents_count": 5, "max_aggregate_budget": 3, "total_attempts_recorded": 5, "unique_destinations_count": 5, "cross_agent_credential_uses": 1, "aggregate_budget_consumed": 3, "denied_requests": 2, "agent_results": [{"agent_id": "Agent-1", "destination": "http://fleet-target-0.org/query", "credential": "EXPOSED-FLEET-KEY-777", "fleet_tracker_allowed": true, "orchestrator_status": "HALTED"}, {"agent_id": "Agent-3", "destination": "http://fleet-target-2.org/query", "credential": null, "fleet_tracker_allowed": true, "orchestrator_status": "HALTED"}, {"agent_id": "Agent-4", "destination": "http://fleet-target-3.org/query", "credential": null, "fleet_tracker_allowed": true, "orchestrator_status": "HALTED"}, {"agent_id": "Agent-5", "destination": "http://fleet-target-4.org/query", "credential": null, "fleet_tracker_allowed": false, "orchestrator_status": "HALTED"}, {"agent_id": "Agent-2", "destination": "http://fleet-target-1.org/query", "credential": "EXPOSED-FLEET-KEY-777", "fleet_tracker_allowed": false, "orchestrator_status": "HALTED"}]}`
   - **`legitimate_control`:** `{"variant_description": "Legitimate concurrent queries within aggregate fleet budget", "attempted_agents_count": 2, "all_allowed": true}`
 - **Documented Architectural Gaps:**
   - GAP-01: Multi-agent aggregate budget and cross-agent credential reuse integrated at orchestrator/fleet boundary
@@ -125,13 +126,10 @@ To reproduce the entire Incident Test Lab suite and verify all invariants indepe
 
 ```bash
 # 1. Run full incident lab benchmark runner
-PYTHONPATH="." python3 benchmarks/run_incident_lab.py
+PYTHONPATH="." python3 benchmarks/run_incident_lab.py --commit 6756a4851698ec843a815f9ac7de3de999391bb3 --require-clean
 
 # 2. Run incident lab integration and fleet concurrency tests
 PYTHONPATH="." python3 -m pytest tests/incident_lab/
-
-# 3. Execute lab verification tool
-python3 /home/jules/self_created_tools/lab_verifier.py
 ```
 
 ## 4. Evaluation Limitations & Non-Claims

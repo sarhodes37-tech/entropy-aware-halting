@@ -22,6 +22,7 @@ Adheres strictly to evidence integrity and report accuracy:
 - Leaves production core files untouched.
 """
 
+import argparse
 import json
 import time
 import uuid
@@ -39,6 +40,7 @@ PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
+from benchmarks.eval_metadata import collect_environment_metadata
 from epistemicos.core import EpistemicOrchestrator
 from epistemicos.models import CanonicalProblemRepresentation, PermissionScope
 from epistemicos.gates import PermissionGate, EntropyGate, TriangulationGate
@@ -57,23 +59,29 @@ from epistemicos.provenance import (
 from tests.e2e_security.scenario_fixtures import SyntheticIncidentFixtures
 
 
-def get_git_commit_hash() -> str:
-    try:
-        res = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True)
-        return res.stdout.strip()
-    except Exception:
-        return "UNKNOWN_COMMIT"
-
-
 class EndToEndSecurityEvaluator:
-    def __init__(self, audit_dir: Optional[str] = None):
+    def __init__(
+        self,
+        audit_dir: Optional[str] = None,
+        expected_commit: Optional[str] = None,
+        require_clean: bool = False,
+        root_dir: Optional[str] = None
+    ):
+        self.root_dir = root_dir or PROJECT_ROOT
         if audit_dir:
             self.audit_dir = Path(audit_dir)
         else:
             self.audit_dir = Path(tempfile.gettempdir()) / "epistemicos_e2e_eval"
         self.audit_dir.mkdir(parents=True, exist_ok=True)
         self.fixtures = SyntheticIncidentFixtures()
-        self.commit_sha = get_git_commit_hash()
+        self.env_meta = collect_environment_metadata(
+            suite_name="EpistemicOS End-to-End Security Evaluation",
+            suite_version="1.0.0",
+            expected_commit=expected_commit,
+            require_clean=require_clean,
+            root_dir=self.root_dir
+        )
+        self.commit_sha = self.env_meta["evaluated_git_commit"]
         self.reconciler = ProvenanceReconciler()
 
     # =========================================================================
@@ -363,8 +371,6 @@ class EndToEndSecurityEvaluator:
         baseline_accessed = (len(self.fixtures.resource_counter.unauthorized_accesses) > 0)
 
         events_1 = prov_store.get_events_for_correlation(corr_id_1)
-
-        events_1 = prov_store.get_events_for_correlation(corr_id_1)
         prov_verified = "VERIFIED" if len(events_1) > 0 else "UNVERIFIED"
 
         return {
@@ -507,8 +513,6 @@ class EndToEndSecurityEvaluator:
         self.fixtures.egress_tracker.reset()
         self.fixtures.egress_tracker.record_request("GET", exfil_get_url, payload="exfil_secret_data", exfiltrated="ghp_1234567890")
         baseline_bytes = self.fixtures.egress_tracker.total_bytes_sent
-
-        events_1 = prov_store.get_events_for_correlation(corr_id_1)
 
         events_1 = prov_store.get_events_for_correlation(corr_id_1)
         prov_verified = "VERIFIED" if len(events_1) > 0 else "UNVERIFIED"
@@ -1146,17 +1150,23 @@ class EndToEndSecurityEvaluator:
             "S7_tencent_agent_fleet_amplification": s7_res
         }
 
+        completion_time_utc = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         total_runtime_s = round(time.time() - start_time, 3)
 
+        meta = dict(self.env_meta)
+        meta.update({
+            "completion_timestamp_utc": completion_time_utc,
+            "timestamp": completion_time_utc,
+            "commit_sha": meta["evaluated_git_commit"],
+            "total_scenarios_evaluated": len(all_scenarios),
+            "total_runtime_seconds": total_runtime_s,
+            "exit_code": 0,
+            "exit_status": "SUCCESS",
+            "environment": f"Isolated Synthetic Evaluation Harness ({meta['execution_environment_type']} Environment)"
+        })
+
         output_data = {
-            "metadata": {
-                "evaluation_suite_version": "1.0.0",
-                "commit_sha": self.commit_sha,
-                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                "total_scenarios_evaluated": len(all_scenarios),
-                "total_runtime_seconds": total_runtime_s,
-                "environment": "Isolated Synthetic Evaluation Harness (Zero Live Credentials / External Network Egress)"
-            },
+            "metadata": meta,
             "scenarios": all_scenarios
         }
 
@@ -1193,7 +1203,10 @@ class EndToEndSecurityEvaluator:
             "# EpistemicOS End-to-End Security Evidence Report",
             "",
             f"**Commit SHA:** `{meta['commit_sha']}` | **Suite Version:** `{meta['evaluation_suite_version']}` | **Evaluated At:** `{meta['timestamp']}` | **Runtime:** `{meta['total_runtime_seconds']}s`",
-            f"**Environment:** {meta['environment']}",
+            f"**Environment:** {meta['environment']} | **Environment Type:** `{meta['execution_environment_type']}`",
+            f"**Working Tree Status:** `{meta['working_tree_status']}` | **Working Tree Digest:** `{meta['working_tree_digest']}`",
+            f"**Evaluation Command:** `{meta['evaluation_command']}`",
+            f"**Exit Code:** `{meta['exit_code']}` (`{meta['exit_status']}`)",
             "",
             "## 1. Per-Scenario Execution & Evidence Table",
             "",
@@ -1240,13 +1253,10 @@ class EndToEndSecurityEvaluator:
             "",
             "```bash",
             "# 1. Execute end-to-end security evaluation runner",
-            "python3 -m benchmarks.run_e2e_security_evaluation",
+            "python3 -m benchmarks.run_e2e_security_evaluation --commit " + meta['commit_sha'] + " --require-clean",
             "",
             "# 2. Run Pytest e2e test suite",
             "PYTHONPATH=\".\" python3 -m pytest tests/e2e_security/",
-            "",
-            "# 3. Execute self-created verification tool",
-            "PYTHONPATH=\".\" python3 /home/jules/self_created_tools/e2e_eval_runner.py --verify-invariants",
             "```",
             "",
             "## 4. Evaluation Boundaries & Explicit Limitations",
@@ -1262,11 +1272,18 @@ class EndToEndSecurityEvaluator:
 
 
 def main():
-    evaluator = EndToEndSecurityEvaluator()
-    results = evaluator.run_all_scenarios()
+    parser = argparse.ArgumentParser(description="Run EpistemicOS End-to-End Security Evaluation")
+    parser.add_argument("--commit", default=None, help="Expected full 40-character Git SHA to verify against checked-out HEAD")
+    parser.add_argument("--require-clean", action="store_true", help="Fail closed if source working tree is dirty or has untracked files")
+    parser.add_argument("--output-json", default="results/security_evidence.json", help="Path to write JSON results artifact")
+    parser.add_argument("--output-md", default="docs/security/e2e_security_evidence_report.md", help="Path to write Markdown report artifact")
+    args = parser.parse_args()
+
+    evaluator = EndToEndSecurityEvaluator(expected_commit=args.commit, require_clean=args.require_clean)
+    results = evaluator.run_all_scenarios(output_json_path=args.output_json, output_md_path=args.output_md)
     print(f"E2E Security Evaluation completed across {len(results['scenarios'])} scenarios!")
-    print("Machine-readable output: results/security_evidence.json")
-    print("Human-readable report: docs/security/e2e_security_evidence_report.md")
+    print(f"Machine-readable output: {args.output_json}")
+    print(f"Human-readable report: {args.output_md}")
 
 
 if __name__ == "__main__":

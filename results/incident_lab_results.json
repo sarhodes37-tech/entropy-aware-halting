@@ -1,15 +1,28 @@
 {
   "metadata": {
+    "evaluation_suite_name": "EpistemicOS Incident-Derived Security Test Lab",
     "evaluation_suite_version": "2.3.0",
-    "evaluated_git_commit": "73fd221ef4654ba3e8ce8f658d145e12afd4fdf9",
+    "evaluated_git_commit": "6756a4851698ec843a815f9ac7de3de999391bb3",
     "working_tree_status": "DIRTY",
-    "uncommitted_tree_digest": "07c9ec383600869c129fa5baa0b8c21abff119925ae26371cda35ce7538a7157",
+    "working_tree_digest": "6722c5c45b028e5aedd98adaaa69b1218dba3c14086db8de45779b83b108f0e7",
+    "uncommitted_tracked_changes": 12,
+    "uncommitted_untracked_files": 3,
+    "evaluation_command": "benchmarks/run_incident_lab.py --output-json results/incident_lab_results.json --output-md docs/security/incident_lab_report.md",
+    "python_version": "3.12.13",
+    "operating_system": "Linux-6.8.0-x86_64-with-glibc2.39",
+    "execution_environment_type": "LOCAL",
+    "lockfile_sha256_digest": "9f80340420f1fedb6b0eb4ef820340c039424fcffe7bcc81450add54119c0e23",
+    "start_timestamp_utc": "2026-10-30T06:28:50Z",
+    "completion_timestamp_utc": "2026-10-30T06:28:52Z",
+    "timestamp": "2026-10-30T06:28:52Z",
+    "uncommitted_tree_digest": "6722c5c45b028e5aedd98adaaa69b1218dba3c14086db8de45779b83b108f0e7",
     "tree_digest_algorithm": "Full 64-char SHA-256 over deterministic POSIX sorted inventory of HEAD commit, git status -uall paths, status codes, symlink targets, deletions, and actual raw file bytes.",
-    "evaluation_notes": "Evaluation executed against uncommitted working tree prior to report persistence commit.",
-    "timestamp": "2026-10-30T01:07:03Z",
+    "evaluation_notes": "Evaluation executed against verified checkout prior to report persistence commit.",
     "total_scenarios_evaluated": 7,
-    "total_runtime_seconds": 0.479,
-    "environment": "Isolated Incident-Derived Security Test Lab (Synthetic Fixtures / Local Networking Only)"
+    "total_runtime_seconds": 1.706,
+    "exit_code": 0,
+    "exit_status": "SUCCESS",
+    "environment": "Isolated Incident-Derived Security Test Lab (LOCAL Environment)"
   },
   "scenarios": {
     "Case1_github_credential_exposure": {
@@ -446,13 +459,6 @@
               "orchestrator_status": "HALTED"
             },
             {
-              "agent_id": "Agent-2",
-              "destination": "http://fleet-target-1.org/query",
-              "credential": "EXPOSED-FLEET-KEY-777",
-              "fleet_tracker_allowed": false,
-              "orchestrator_status": "HALTED"
-            },
-            {
               "agent_id": "Agent-3",
               "destination": "http://fleet-target-2.org/query",
               "credential": null,
@@ -470,6 +476,13 @@
               "agent_id": "Agent-5",
               "destination": "http://fleet-target-4.org/query",
               "credential": null,
+              "fleet_tracker_allowed": false,
+              "orchestrator_status": "HALTED"
+            },
+            {
+              "agent_id": "Agent-2",
+              "destination": "http://fleet-target-1.org/query",
+              "credential": "EXPOSED-FLEET-KEY-777",
               "fleet_tracker_allowed": false,
               "orchestrator_status": "HALTED"
             }
