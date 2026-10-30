@@ -284,6 +284,16 @@ def test_observatory_concept_image_and_readme_integration():
     assert "do not represent live system telemetry" in content.lower()
 
 
+def test_provenance_finding_warning_severity_styling_token():
+    """Verifies that app.js maps WARNING severity finding cards to --status-halted-border and --status-halted-bg."""
+    import pathlib
+    js_path = pathlib.Path("epistemicos/ui/static/app.js")
+    js_content = js_path.read_text(encoding="utf-8")
+    assert "} else if (f.severity === 'WARNING') {" in js_content
+    assert "card.style.borderColor = 'var(--status-halted-border)';" in js_content
+    assert "card.style.backgroundColor = 'var(--status-halted-bg)';" in js_content
+
+
 def test_observatory_css_design_foundation_tokens():
     """Verifies that style.css contains the expected Neon Dusk design foundation tokens."""
     import pathlib

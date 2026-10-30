@@ -1497,8 +1497,8 @@ document.addEventListener('DOMContentLoaded', () => {
           card.style.borderColor = 'var(--status-failed-border)';
           card.style.backgroundColor = 'var(--status-failed-bg)';
         } else if (f.severity === 'WARNING') {
-          card.style.borderColor = 'var(--status-partial-border)';
-          card.style.backgroundColor = 'var(--status-partial-bg)';
+          card.style.borderColor = 'var(--status-halted-border)';
+          card.style.backgroundColor = 'var(--status-halted-bg)';
         } else {
           card.style.borderColor = 'var(--border-default)';
         }
