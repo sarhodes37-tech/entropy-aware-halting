@@ -597,6 +597,7 @@ def test_10_rebind_and_fallback_security_regression(registry_setup):
     2. Re-registering the EXACT SAME callable ('is') is permitted (idempotent).
     3. Overwriting with allow_overwrite=True works for internal lifecycle updates.
     4. Execution boundary fails closed if authority executor_registry lacks _get_executor_for_boundary.
+    5. Two distinct callables with colliding qualified identities cannot rebind each other, and capability bound to original cannot execute replacement.
     """
     authority = registry_setup["authority"]
     boundary = registry_setup["boundary"]
@@ -627,7 +628,59 @@ def test_10_rebind_and_fallback_security_regression(registry_setup):
     # Restore original executor
     authority.executor_registry._register_internal("exec_1", original_executor, allow_overwrite=True)
 
-    # 4. Verification that non-conforming registry causes TrustedExecutionBoundary to fail closed
+    # 4. Collision & rebind protection test for local/nested functions sharing qualified names
+    def make_target_callable():
+        def shared_name_func():
+            return "target_A"
+        return shared_name_func
+
+    func_A = make_target_callable()
+    func_B = make_target_callable()
+    assert func_A is not func_B  # Distinct callable objects!
+
+    authority.register_executor("exec_target_A", func_A)
+
+    # Registering func_B under different ID 'exec_target_B' must NOT overwrite qual_id mapping for func_A
+    authority.register_executor("exec_target_B", func_B)
+    assert authority.executor_registry._get_executor_for_boundary("exec_target_A") is func_A
+    assert authority.executor_registry._get_executor_for_boundary("exec_target_B") is func_B
+
+    # Issue capability for func_A
+    pol = Policy(policy_id="p_coll", allowed_operations={"op"}, allowed_resources={"res"})
+    payload = {"op": "op"}
+    dig = boundary.compute_canonical_digest(payload)
+    cap_A, _ = authority.evaluate_and_issue_capability("op", "res", dig, executor_id=func_A, policy=pol)
+
+    ctx_A = ExecutionContext(
+        correlation_id=cap_A.correlation_id,
+        request_id=cap_A.request_id,
+        authorization_token_id=cap_A.token_id,
+        authorized_digest=dig,
+        authorization_granted=True
+    )
+
+    # Executing func_B using capability issued for func_A must be REJECTED by strict identity check ('is')
+    with pytest.raises(PermissionError, match="Executable object identity mismatch"):
+        boundary.execute_protected_action(
+            action_name="op",
+            target="res",
+            request_payload=payload,
+            executor_func=func_B, # Substituted colliding callable!
+            context=ctx_A
+        )
+
+    # Executing func_A using capability issued for func_A succeeds
+    res_A = boundary.execute_protected_action(
+        action_name="op",
+        target="res",
+        request_payload=payload,
+        executor_func=func_A,
+        context=ctx_A
+    )
+    assert res_A["status"] == "SUCCESS"
+    assert res_A["result"] == "target_A"
+
+    # 5. Verification that non-conforming registry causes TrustedExecutionBoundary to fail closed
     class CustomInsecureRegistry:
         def get(self, key):
             return original_executor

@@ -1069,8 +1069,8 @@ class AuthorizationAuthority:
         """Registers an authoritative callable identity in the authority executor registry."""
         self.executor_registry._register_internal(executor_id, executor_func)
         func_qual_id = get_callable_identity(executor_func)
-        if func_qual_id != executor_id:
-            self.executor_registry._register_internal(func_qual_id, executor_func, allow_overwrite=True)
+        if func_qual_id != executor_id and not self.executor_registry.contains(func_qual_id):
+            self.executor_registry._register_internal(func_qual_id, executor_func)
 
     def evaluate_and_issue_capability(
         self,
@@ -1253,9 +1253,8 @@ class AuthorizationAuthority:
                 exec_obj = executor_id
                 executor_id_str = get_callable_identity(exec_obj)
                 self.executor_registry._register_internal(token_id, exec_obj)
-                # Lambdas and anonymous closures share qualitative name '<lambda>'; permit overwrite for anonymous closures
-                allow_lambda_overwrite = (executor_id_str == "<lambda>")
-                self.executor_registry._register_internal(executor_id_str, exec_obj, allow_overwrite=allow_lambda_overwrite)
+                if not self.executor_registry.contains(executor_id_str):
+                    self.executor_registry._register_internal(executor_id_str, exec_obj)
             else:
                 executor_id_str = get_callable_identity(executor_id)
                 if executor_id_str in self.executor_registry:
