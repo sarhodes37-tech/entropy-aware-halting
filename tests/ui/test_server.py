@@ -123,6 +123,10 @@ def test_trace_explorer_mobile_drilldown_structure():
     assert "btn-trace-back-to-detail" in js_content
     assert "Recorded Execution Lifecycle Sequence" in js_content
     assert "Evidence Inspector:" in js_content
+    # Safe DOM verification
+    assert "breadcrumbEl.replaceChildren();" in js_content
+    assert "breadcrumbEl.appendChild(document.createTextNode('Trace: '));" in js_content
+    assert "escapeHTML" not in js_content
 
 
 def test_static_aria_accessibility_attributes():

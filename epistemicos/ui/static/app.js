@@ -123,6 +123,11 @@ document.addEventListener('DOMContentLoaded', () => {
       if (btnBackToList) {
         btnBackToList.addEventListener('click', () => {
           this.updateMobileTraceView('list');
+          // Return focus to selected trace item if possible
+          if (this.state.selectedTraceId) {
+            const selectedItem = document.querySelector('#trace-list .trace-item.active');
+            if (selectedItem) selectedItem.focus();
+          }
         });
       }
 
@@ -130,6 +135,11 @@ document.addEventListener('DOMContentLoaded', () => {
       if (btnBackToDetail) {
         btnBackToDetail.addEventListener('click', () => {
           this.updateMobileTraceView('detail');
+          // Return focus to selected stage card if possible
+          if (this.state.selectedEventSeq !== null && this.state.selectedEventSeq !== undefined) {
+            const selectedStage = document.querySelector('.lifecycle-stage.selected .lifecycle-stage-card');
+            if (selectedStage) selectedStage.focus();
+          }
         });
       }
 
@@ -272,33 +282,33 @@ document.addEventListener('DOMContentLoaded', () => {
         traceNavBar.classList.add('hidden');
         if (btnBackToList) btnBackToList.classList.add('hidden');
         if (btnBackToDetail) btnBackToDetail.classList.add('hidden');
-        if (breadcrumbEl) breadcrumbEl.textContent = '';
+        if (breadcrumbEl) breadcrumbEl.replaceChildren();
       } else if (level === 'detail') {
         traceNavBar.classList.remove('hidden');
         if (btnBackToList) btnBackToList.classList.remove('hidden');
         if (btnBackToDetail) btnBackToDetail.classList.add('hidden');
         if (breadcrumbEl) {
-          breadcrumbEl.innerHTML = `Trace: <strong>${this.escapeHTML(this.state.selectedTraceId)}</strong>`;
+          breadcrumbEl.replaceChildren();
+          breadcrumbEl.appendChild(document.createTextNode('Trace: '));
+          const strong = document.createElement('strong');
+          strong.textContent = this.state.selectedTraceId;
+          breadcrumbEl.appendChild(strong);
         }
       } else if (level === 'event') {
         traceNavBar.classList.remove('hidden');
         if (btnBackToList) btnBackToList.classList.add('hidden');
         if (btnBackToDetail) btnBackToDetail.classList.remove('hidden');
         if (breadcrumbEl) {
-          const seqText = this.state.selectedEventSeq ? ` Event #${this.state.selectedEventSeq}` : '';
-          breadcrumbEl.innerHTML = `Trace: <strong>${this.escapeHTML(this.state.selectedTraceId)}</strong> /${seqText}`;
+          breadcrumbEl.replaceChildren();
+          breadcrumbEl.appendChild(document.createTextNode('Trace: '));
+          const strong = document.createElement('strong');
+          strong.textContent = this.state.selectedTraceId;
+          breadcrumbEl.appendChild(strong);
+          if (this.state.selectedEventSeq !== null && this.state.selectedEventSeq !== undefined) {
+            breadcrumbEl.appendChild(document.createTextNode(` / Event #${this.state.selectedEventSeq}`));
+          }
         }
       }
-    },
-
-    escapeHTML(str) {
-      if (!str) return '';
-      return String(str)
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#039;');
     },
 
     // -------------------------------------------------------------------------
@@ -375,6 +385,9 @@ document.addEventListener('DOMContentLoaded', () => {
       if (st === 'VERIFIED') {
         span.className = 'status-badge status-badge-verified';
         span.textContent = '✓ VERIFIED';
+      } else if (st === 'RECORDED') {
+        span.className = 'status-badge status-badge-not-established';
+        span.textContent = '• RECORDED';
       } else if (st === 'FAILED' || st === 'FAIL') {
         span.className = 'status-badge status-badge-failed';
         span.textContent = '✗ FAILED';
@@ -1233,18 +1246,17 @@ document.addEventListener('DOMContentLoaded', () => {
         timeline.className = 'lifecycle-timeline';
 
         events.forEach((ev, idx) => {
-          const isSelected = (this.state.selectedEventSeq === ev.sequence_number) ||
-            (!this.state.selectedEventSeq && idx === 0 && this.state.mobileTraceLevel === 'event');
+          const isSelected = (this.state.selectedEventSeq !== null && this.state.selectedEventSeq !== undefined && ev.sequence_number === this.state.selectedEventSeq) ||
+            ((this.state.selectedEventSeq === null || this.state.selectedEventSeq === undefined) && idx === 0 && this.state.mobileTraceLevel === 'event');
 
           const stage = document.createElement('div');
-          let statusClass = 'status-unknown';
+          let statusClass = 'status-recorded';
           const type = ev.event_type || 'UNKNOWN';
 
-          if (type === 'EXECUTION_SUCCEEDED') statusClass = 'status-verified';
-          else if (type === 'AUTHORIZATION_GRANTED' || type === 'EXECUTION_STARTED' || type === 'ACTION_PROPOSED') statusClass = 'status-verified';
-          else if (type === 'AUTHORIZATION_DENIED') statusClass = 'status-failed';
+          if (type === 'AUTHORIZATION_DENIED') statusClass = 'status-failed';
           else if (type === 'EGRESS_BLOCKED') statusClass = 'status-halted';
           else if (type === 'EXECUTION_FAILED' || type === 'EXECUTION_INTERRUPTED') statusClass = 'status-failed';
+          else if (type === 'EXECUTION_SUCCEEDED') statusClass = 'status-recorded'; // Recorded outcome stage
 
           stage.className = `lifecycle-stage ${statusClass} ${isSelected ? 'selected' : ''}`;
 
@@ -1253,18 +1265,27 @@ document.addEventListener('DOMContentLoaded', () => {
 
           const node = document.createElement('div');
           node.className = 'lifecycle-stage-node';
-          node.textContent = ev.sequence_number ?? (idx + 1);
+          node.textContent = (ev.sequence_number !== null && ev.sequence_number !== undefined) ? ev.sequence_number : (idx + 1);
 
           const stageCard = document.createElement('div');
           stageCard.className = 'lifecycle-stage-card';
           stageCard.setAttribute('role', 'button');
           stageCard.setAttribute('tabindex', '0');
-          stageCard.setAttribute('aria-label', `Select lifecycle stage #${ev.sequence_number ?? (idx + 1)} ${type}`);
+          stageCard.setAttribute('aria-pressed', isSelected ? 'true' : 'false');
+          const seqDisplay = (ev.sequence_number !== null && ev.sequence_number !== undefined) ? ev.sequence_number : (idx + 1);
+          stageCard.setAttribute('aria-label', `Select lifecycle stage #${seqDisplay} ${type}`);
 
           const handleSelectStage = () => {
             this.state.selectedEventSeq = ev.sequence_number;
             this.updateMobileTraceView('event');
             this.renderTraceDetail(trace, container);
+
+            // Shift focus to Evidence Inspector for keyboard users
+            const inspectorEl = document.getElementById('area-evidence-inspector');
+            if (inspectorEl) {
+              inspectorEl.setAttribute('tabindex', '-1');
+              inspectorEl.focus();
+            }
           };
 
           stageCard.addEventListener('click', handleSelectStage);
@@ -1283,10 +1304,9 @@ document.addEventListener('DOMContentLoaded', () => {
           stageTitle.textContent = type;
 
           const stageBadge = this.createStatusBadge(
-            type === 'EXECUTION_SUCCEEDED' ? 'VERIFIED' :
-            (type === 'AUTHORIZATION_DENIED' ? 'FAILED' :
+            type === 'AUTHORIZATION_DENIED' ? 'FAILED' :
             (type === 'EGRESS_BLOCKED' ? 'HALTED' :
-            (type === 'EXECUTION_FAILED' ? 'FAILED' : 'RECORDED')))
+            (type === 'EXECUTION_FAILED' ? 'FAILED' : 'RECORDED'))
           );
 
           stageHeader.appendChild(stageTitle);
