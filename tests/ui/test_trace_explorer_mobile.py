@@ -151,9 +151,15 @@ def test_mobile_trace_explorer_drilldown_navigation(e2e_server, tmp_path):
             trace_item = page.locator("#trace-list .trace-item").first
             assert trace_item.is_visible()
 
+            # Assert no horizontal page overflow at trace list view
+            assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth"), f"Overflow in trace list at {vp['width']}px"
+
             # Click trace item to drill in
             trace_item.click()
             page.wait_for_selector(".lifecycle-timeline")
+
+            # Assert no horizontal page overflow at trace detail view
+            assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth"), f"Overflow in trace detail at {vp['width']}px"
 
             # Verify no script dialog executed
             assert len(dialogs) == 0
@@ -170,7 +176,7 @@ def test_mobile_trace_explorer_drilldown_navigation(e2e_server, tmp_path):
                 # Verify lifecycle sequence card is present (4 events including sequence 0)
                 assert page.locator(".lifecycle-stage").count() == 4
 
-                # Select stage #0 (ACTION_PROPOSED)
+                # Select stage #0 (sequence 0)
                 stage_card_0 = page.locator(".lifecycle-stage-card").nth(0)
                 stage_card_0.click()
 
@@ -178,7 +184,15 @@ def test_mobile_trace_explorer_drilldown_navigation(e2e_server, tmp_path):
                 page.wait_for_selector("#area-evidence-inspector")
                 assert page.locator("#area-evidence-inspector").is_visible()
 
-                # Select stage #1 (AUTHORIZATION_GRANTED)
+                # Assert no horizontal page overflow at evidence inspector view
+                assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth"), f"Overflow in inspector view at {vp['width']}px"
+
+                # Verify sequence-zero view restoration across tab navigation (Traces -> Overview -> Traces)
+                page.click("#tab-overview")
+                page.click("#tab-traces")
+                assert page.locator("#area-evidence-inspector").is_visible()
+
+                # Select stage #1 (sequence 1)
                 stage_card_1 = page.locator(".lifecycle-stage-card").nth(1)
                 stage_card_1.click()
 

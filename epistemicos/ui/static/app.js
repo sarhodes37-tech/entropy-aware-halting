@@ -257,7 +257,8 @@ document.addEventListener('DOMContentLoaded', () => {
       if (tabName === 'overview') this.loadOverview();
       else if (tabName === 'traces') {
         this.loadTraces();
-        this.updateMobileTraceView(this.state.selectedTraceId ? (this.state.selectedEventSeq ? 'event' : 'detail') : 'list');
+        const hasSelectedEvent = this.state.selectedEventSeq !== null && this.state.selectedEventSeq !== undefined;
+        this.updateMobileTraceView(this.state.selectedTraceId ? (hasSelectedEvent ? 'event' : 'detail') : 'list');
       }
       else if (tabName === 'provenance') this.loadProvenance();
       else if (tabName === 'benchmarks') this.loadBenchmarks();
@@ -1306,7 +1307,7 @@ document.addEventListener('DOMContentLoaded', () => {
           const stageBadge = this.createStatusBadge(
             type === 'AUTHORIZATION_DENIED' ? 'FAILED' :
             (type === 'EGRESS_BLOCKED' ? 'HALTED' :
-            (type === 'EXECUTION_FAILED' ? 'FAILED' : 'RECORDED'))
+            (type === 'EXECUTION_FAILED' || type === 'EXECUTION_INTERRUPTED' ? 'FAILED' : 'RECORDED'))
           );
 
           stageHeader.appendChild(stageTitle);

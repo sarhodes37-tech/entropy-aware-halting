@@ -127,6 +127,10 @@ def test_trace_explorer_mobile_drilldown_structure():
     assert "breadcrumbEl.replaceChildren();" in js_content
     assert "breadcrumbEl.appendChild(document.createTextNode('Trace: '));" in js_content
     assert "escapeHTML" not in js_content
+    # Sequence zero tab restoration verification
+    assert "const hasSelectedEvent = this.state.selectedEventSeq !== null && this.state.selectedEventSeq !== undefined;" in js_content
+    # Consistent stage status mapping verification
+    assert "type === 'EXECUTION_FAILED' || type === 'EXECUTION_INTERRUPTED' ? 'FAILED' : 'RECORDED'" in js_content
 
 
 def test_static_aria_accessibility_attributes():
