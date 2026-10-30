@@ -55,14 +55,14 @@ jobs:
       env:
         PYTHONPATH: .
       run: |
-        python -m benchmarks.validate_evidence --artifact results/four_layer_evidence.json --expected-commit ${{ github.sha }} --require-clean-tree
+        python -m benchmarks.validate_evidence --artifact results/four_layer_evidence.json --manifest-file results/evidence_manifest.json --expected-commit ${{ github.sha }} --require-clean-tree
 
     - name: Validate Four-Layer Security Evidence Invariants (Release CI - Strict Full Pass)
       if: "startsWith(github.ref, 'refs/tags/v') || github.event_name == 'release'"
       env:
         PYTHONPATH: .
       run: |
-        python -m benchmarks.validate_evidence --artifact results/four_layer_evidence.json --expected-commit ${{ github.sha }} --require-clean-tree --require-full-pass
+        python -m benchmarks.validate_evidence --artifact results/four_layer_evidence.json --manifest-file results/evidence_manifest.json --expected-commit ${{ github.sha }} --require-clean-tree --require-full-pass
 
     - name: Archive Benchmark Artifacts
       if: always()

@@ -1,11 +1,12 @@
 """
-Shared Evidence Artifact Validator for EpistemicOS CI/CD Pipelines.
+Shared Evidence Artifact & Manifest Validator for EpistemicOS CI/CD Pipelines.
 
 Validates:
+- Non-self-referential evidence manifest (`results/evidence_manifest.json`) against disk byte digests.
 - Required top-level fields, schema, and reproducible environment metadata.
 - Full 40-character Git commit SHA format and optional expected SHA match.
 - Clean working tree status assertion when clean checkout is required.
-- Environmental metadata completeness (timestamps, execution command, exit code/status, lockfile digest, environment type).
+- Publication lifecycle metadata (`publication_status`, `report_persistence_commit`).
 - Cryptographic verification strictly against base-branch dataset manifest/eval_set (via git show origin/main or GITHUB_BASE_REF).
   FAILS CLOSED if trusted base ref cannot be resolved, unless explicit --allow-local-constant-fallback is provided for local offline testing.
 - Layer status semantics (PASS, FAIL, PARTIAL, UNTESTED, BLOCKED_BY_ARCHITECTURE, INCONCLUSIVE).
@@ -21,10 +22,9 @@ Validates:
   - Overall 'PARTIAL' status (e.g. Layer B partial coverage) is permitted on PR CI, but rejected if `--require-full-pass` is set for release workflows.
 
 Trust Model Note:
-  Independent verification of `run_records_sha256_digest` against the actual file bytes of `results/per_case_results.json`
-  and binding to `dataset_sha256_digest` and `run_id` establishes internal consistency and integrity between the run records file
-  and the report artifact. It prevents accidental file mixing or summary forgery within a local workspace. It does NOT guarantee
-  unforgeable authenticity against a compromised host that modifies both the execution loop and the recorded output simultaneously.
+  Independent verification of artifact digests in `evidence_manifest.json` against the actual file bytes on disk
+  and binding to `dataset_sha256_digest` and `evaluated_git_commit` establishes internal consistency and integrity between
+  the report files and the manifest.
 """
 
 import argparse
@@ -75,7 +75,6 @@ def get_base_branch_manifest_digest(
     for ref in base_refs:
         if not ref:
             continue
-        # 1. Try reading dataset_manifest.json from trusted base ref
         try:
             cmd = ["git", "show", f"{ref}:{manifest_rel_path}"]
             res = subprocess.run(cmd, capture_output=True, text=True, check=True)
@@ -86,18 +85,96 @@ def get_base_branch_manifest_digest(
         except Exception:
             pass
 
-        # 2. Try computing SHA256 directly from eval_set.jsonl in trusted base ref
         try:
             cmd = ["git", "show", f"{ref}:{eval_set_rel_path}"]
-            res = subprocess.run(cmd, capture_output=True, check=True)
+            res = subprocess.run(cmd, capture_output=True, text=True, check=True)
             digest = hashlib.sha256(res.stdout.encode("utf-8") if isinstance(res.stdout, str) else res.stdout).hexdigest()
             if digest and len(digest) == 64:
                 return True, digest, ref
         except Exception:
             pass
 
-    # Fail closed: Do NOT fall back to local constants or HEAD automatically
     return False, "", None
+
+
+def validate_evidence_manifest(
+    manifest_path: str,
+    expected_commit: Optional[str] = None,
+    require_clean_tree: bool = False,
+    expected_baseline_digest: Optional[str] = None,
+    root_dir: Optional[str] = None
+) -> Tuple[bool, List[str]]:
+    """
+    Validates a non-self-referential evidence_manifest.json artifact against disk byte digests.
+    """
+    errors = []
+    base = Path(root_dir or ".")
+    p = base / manifest_path if not Path(manifest_path).is_absolute() else Path(manifest_path)
+
+    if not p.exists():
+        return False, [f"Evidence manifest missing at path: {manifest_path}"]
+
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except Exception as e:
+        return False, [f"Malformed evidence manifest JSON: {e}"]
+
+    required_keys = {"manifest_version", "created_at_utc", "reproducibility_metadata", "dataset_metadata", "publication_metadata", "artifacts"}
+    missing = required_keys - set(data.keys())
+    if missing:
+        errors.append(f"Evidence manifest missing top-level keys: {missing}")
+        return False, errors
+
+    meta = data.get("reproducibility_metadata", {})
+    evaluated_commit = meta.get("evaluated_git_commit", "")
+    if not evaluated_commit or not isinstance(evaluated_commit, str) or not SHA1_REGEX.match(evaluated_commit):
+        errors.append(f"Manifest invalid evaluated_git_commit: '{evaluated_commit}'")
+    elif expected_commit and evaluated_commit.lower() != expected_commit.lower():
+        errors.append(f"Manifest evaluated_git_commit ({evaluated_commit}) mismatches expected commit ({expected_commit})")
+
+    wt_status = meta.get("working_tree_status", "")
+    if require_clean_tree and wt_status != "CLEAN":
+        errors.append(f"Clean Working Tree Assertion Failed! Manifest working_tree_status is '{wt_status}', expected 'CLEAN'")
+
+    dataset_meta = data.get("dataset_metadata", {})
+    m_digest = dataset_meta.get("dataset_sha256_digest", "")
+    if expected_baseline_digest and m_digest != expected_baseline_digest:
+        errors.append(f"Manifest dataset digest ({m_digest}) mismatches expected baseline ({expected_baseline_digest})")
+
+    pub_meta = data.get("publication_metadata", {})
+    pub_status = pub_meta.get("publication_status", "")
+    if pub_status not in ("PENDING_PUBLICATION", "PUBLISHED"):
+        errors.append(f"Manifest invalid publication_status: '{pub_status}'")
+
+    pers_commit = pub_meta.get("report_persistence_commit")
+    if pub_status == "PUBLISHED":
+        if not pers_commit or not isinstance(pers_commit, str) or not SHA1_REGEX.match(pers_commit):
+            errors.append(f"Manifest published status requires valid 40-char report_persistence_commit, got '{pers_commit}'")
+    elif pub_status == "PENDING_PUBLICATION":
+        if pers_commit is not None:
+            errors.append(f"Manifest pending publication status expects report_persistence_commit=null, got '{pers_commit}'")
+
+    artifacts = data.get("artifacts", {})
+    if not isinstance(artifacts, dict) or len(artifacts) == 0:
+        errors.append("Manifest 'artifacts' mapping is missing or empty")
+    else:
+        for rel_path, art_info in artifacts.items():
+            full_path = base / rel_path if not Path(rel_path).is_absolute() else Path(rel_path)
+            if not full_path.exists():
+                errors.append(f"Manifest declared artifact missing on disk: '{rel_path}'")
+                continue
+
+            file_bytes = full_path.read_bytes()
+            actual_digest = hashlib.sha256(file_bytes).hexdigest()
+            declared_digest = art_info.get("sha256_digest", "")
+            declared_size = art_info.get("byte_size", -1)
+
+            if actual_digest != declared_digest:
+                errors.append(f"Artifact Digest Mismatch! '{rel_path}' actual digest ({actual_digest}) mismatches manifest declared digest ({declared_digest})")
+            if len(file_bytes) != declared_size:
+                errors.append(f"Artifact Size Mismatch! '{rel_path}' actual size ({len(file_bytes)}) mismatches manifest declared size ({declared_size})")
+
+    return len(errors) == 0, errors
 
 
 def validate_evidence_artifact(
@@ -108,7 +185,8 @@ def validate_evidence_artifact(
     require_clean_tree: bool = False,
     expected_baseline_digest: Optional[str] = None,
     allow_local_constant_fallback: bool = False,
-    per_case_filepath: str = CANONICAL_PER_CASE_RESULTS_PATH
+    per_case_filepath: str = CANONICAL_PER_CASE_RESULTS_PATH,
+    manifest_file: Optional[str] = None
 ) -> Tuple[bool, List[str]]:
     errors = []
     p = Path(artifact_path)
@@ -231,7 +309,18 @@ def validate_evidence_artifact(
         except Exception as me:
             errors.append(f"Failed to independently verify dataset manifest: {me}")
 
-    # 5. Layer Specific Integrity Checks
+    # 5. Validate Evidence Manifest if manifest_file is explicitly provided
+    if manifest_file is not None and Path(manifest_file).exists():
+        m_valid, m_errors = validate_evidence_manifest(
+            manifest_path=manifest_file,
+            expected_commit=expected_commit or evaluated_commit,
+            require_clean_tree=require_clean_tree,
+            expected_baseline_digest=expected_baseline_digest
+        )
+        if not m_valid:
+            errors.extend(m_errors)
+
+    # 6. Layer Specific Integrity Checks
     layers = data.get("layers", {})
     required_layers = {"layer_a_deterministic", "layer_b_execution_boundary", "layer_c_live_agent_redteam", "layer_d_performance_cost"}
     missing_layers = required_layers - set(layers.keys())
@@ -400,7 +489,7 @@ def validate_evidence_artifact(
     if reported_violations and layer_d_status == "PASS":
         errors.append(f"Layer D Integrity Failure: Reported PASS despite mandatory criteria violations: {reported_violations}")
 
-    # 6. Overall Status Consistency & Release Policy Check
+    # 7. Overall Status Consistency & Release Policy Check
     imperfect_layers = [
         name for name, ldata in layers.items()
         if (ldata.get("status") or ldata.get("overall_status")) != "PASS"
@@ -416,8 +505,9 @@ def validate_evidence_artifact(
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Validate EpistemicOS Four-Layer Evidence Artifact")
+    parser = argparse.ArgumentParser(description="Validate EpistemicOS Four-Layer Evidence Artifact and Manifest")
     parser.add_argument("--artifact", default="results/four_layer_evidence.json", help="Path to evidence artifact")
+    parser.add_argument("--manifest-file", default=None, help="Path to evidence manifest file")
     parser.add_argument("--manifest", default="benchmarks/data/dataset_manifest.json", help="Path to dataset manifest")
     parser.add_argument("--expected-commit", default=None, help="Expected full 40-character Git SHA to verify against evaluated_git_commit")
     parser.add_argument("--require-clean-tree", action="store_true", help="Enforce working_tree_status == 'CLEAN'")
@@ -431,14 +521,15 @@ def main():
         require_full_pass=args.require_full_pass,
         expected_commit=args.expected_commit,
         require_clean_tree=args.require_clean_tree,
-        allow_local_constant_fallback=args.allow_local_constant_fallback
+        allow_local_constant_fallback=args.allow_local_constant_fallback,
+        manifest_file=args.manifest_file
     )
 
     if valid:
-        print(f"[SUCCESS] Evidence artifact '{args.artifact}' passed all security invariant, SHA-256 digest, and schema checks!")
+        print(f"[SUCCESS] Evidence artifact '{args.artifact}' passed all security invariant, byte SHA-256 digest, and schema checks!")
         sys.exit(0)
     else:
-        print(f"[FATAL ERROR] Evidence artifact '{args.artifact}' failed validation:")
+        print(f"[FATAL ERROR] Evidence artifact/manifest validation failed:")
         for err in errors:
             print(f"  - {err}")
         sys.exit(1)

@@ -1,18 +1,16 @@
 # EpistemicOS Consolidated Security & Evaluation Evidence Report
 
-**Overall Status:** `PARTIAL` | **Generated:** 2026-10-30T02:15:04Z
+**Overall Status:** `PARTIAL` | **Generated:** 2026-10-30T02:55:52Z
 
 ## Reproducibility & Environment Metadata
 - **Evaluated Git Commit:** `6756a4851698ec843a815f9ac7de3de999391bb3`
-- **Report Persistence Revision:** `UNCOMMITTED_EVALUATION`
 - **Working Tree Status (Pre-Run):** `DIRTY`
-- **Working Tree Digest:** `051a3a33298f0ceece98bc34d5f50eebfdfd0de2bcc81834078df66e8a77ec76`
+- **Working Tree Digest:** `4ebf58858ce8fdb43445e0b7f651165785a0fb08ded3732fcc8d5aa6eec8e26e`
 - **Evaluation Command:** `/app/benchmarks/generate_evidence_report.py --fast`
 - **Execution Environment:** `LOCAL` (Python 3.12.13, Linux-6.8.0-x86_64-with-glibc2.39)
 - **Lockfile Digest:** `9f80340420f1fedb6b0eb4ef820340c039424fcffe7bcc81450add54119c0e23`
 - **Dataset Version:** `1.0.0-frozen`
 - **Dataset SHA-256 Digest:** `f4e31381a922c1143769ccb887c4841e4a14fedec6eef6569d40eed2956ce873` (Verified: `True`)
-- **Report Artifact SHA-256:** `12bfa1731e30d428f96e359420b76a3401373cfc11cdd701f74eebbe663482b4`
 
 ---
 

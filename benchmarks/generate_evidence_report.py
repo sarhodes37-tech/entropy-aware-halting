@@ -7,7 +7,10 @@ Executes and aggregates evidence across all four evidence layers:
 - Layer C: Deterministic Synthetic Adversarial Harness
 - Layer D: Performance & Cost Benchmarks (N=100 Stratified Benchmark)
 
-Outputs machine-readable `results/four_layer_evidence.json` and human-readable `docs/security/four_layer_evidence_report.md`.
+Outputs:
+- JSON evidence artifact: results/four_layer_evidence.json
+- Markdown report: docs/security/four_layer_evidence_report.md
+- Non-self-referential evidence manifest: results/evidence_manifest.json
 """
 
 import argparse
@@ -25,7 +28,7 @@ PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from benchmarks.eval_metadata import collect_environment_metadata
+from benchmarks.eval_metadata import collect_environment_metadata, create_evidence_manifest
 from benchmarks.run_full_benchmark import ComprehensiveBenchmarkRunner
 from benchmarks.run_live_agent_redteam import SyntheticAdversarialHarnessEvaluator
 
@@ -426,16 +429,32 @@ def generate_consolidated_evidence(
     with open(json_artifact_path, "w", encoding="utf-8") as f:
         json.dump(consolidated_evidence, f, indent=2)
 
-    # Compute digest of generated JSON report artifact itself
-    report_digest = hashlib.sha256(json_artifact_path.read_bytes()).hexdigest()
-    consolidated_evidence["reproducibility_metadata"]["report_artifact_sha256"] = report_digest
-
-    # Re-write with self-referential report digest included
-    with open(json_artifact_path, "w", encoding="utf-8") as f:
-        json.dump(consolidated_evidence, f, indent=2)
-
     md_artifact_path = docs_base / "four_layer_evidence_report.md"
     generate_markdown_report(consolidated_evidence, md_artifact_path)
+
+    # NON-SELF-REFERENTIAL DESIGN:
+    # Compute SHA-256 byte digests over final files on disk AFTER writing them.
+    # Store digests in a separate evidence manifest: results/evidence_manifest.json
+    dataset_info = {
+        "dataset_version": dataset_manifest.get("version", "UNKNOWN"),
+        "dataset_sha256_digest": actual_digest,
+        "dataset_digest_verified": dataset_digest_valid
+    }
+    artifact_paths = [
+        str(json_artifact_path),
+        str(md_artifact_path),
+        str(inc_json_path),
+        str(inc_md_path),
+        str(per_case_path)
+    ]
+    manifest_path = out_base / "evidence_manifest.json"
+    create_evidence_manifest(
+        env_metadata=repro_meta,
+        artifact_paths=artifact_paths,
+        dataset_info=dataset_info,
+        output_manifest_path=str(manifest_path)
+    )
+
     return consolidated_evidence
 
 
@@ -451,7 +470,6 @@ def generate_markdown_report(data: Dict[str, Any], output_path: Optional[Path] =
         "",
         "## Reproducibility & Environment Metadata",
         f"- **Evaluated Git Commit:** `{meta['evaluated_git_commit']}`",
-        f"- **Report Persistence Revision:** `{meta['report_persistence_commit']}`",
         f"- **Working Tree Status (Pre-Run):** `{meta['working_tree_status']}`",
         f"- **Working Tree Digest:** `{meta['working_tree_digest']}`",
         f"- **Evaluation Command:** `{meta['evaluation_command']}`",
@@ -459,7 +477,6 @@ def generate_markdown_report(data: Dict[str, Any], output_path: Optional[Path] =
         f"- **Lockfile Digest:** `{meta['lockfile_sha256_digest']}`",
         f"- **Dataset Version:** `{meta['dataset_version']}`",
         f"- **Dataset SHA-256 Digest:** `{meta['dataset_sha256_digest']}` (Verified: `{meta['dataset_digest_verified']}`)",
-        f"- **Report Artifact SHA-256:** `{meta.get('report_artifact_sha256', 'N/A')}`",
         "",
         "---",
         "",
@@ -541,7 +558,8 @@ def main():
     print("\n=======================================================")
     print(f"Four-Layer Evidence Artifact Generated Successfully!")
     print(f"Overall Evaluation Status: {evidence['overall_evaluation_status']}")
-    print(f"Saved to {args.output_dir}/four_layer_evidence.json and {args.docs_dir}/four_layer_evidence_report.md")
+    print(f"Saved artifacts to {args.output_dir}/ and {args.docs_dir}/")
+    print(f"Non-self-referential manifest written to {args.output_dir}/evidence_manifest.json")
     print("=======================================================")
 
 
