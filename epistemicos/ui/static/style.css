@@ -365,6 +365,12 @@ h2 {
   white-space: nowrap;
 }
 
+.status-badge-available {
+  background-color: var(--status-unknown-bg);
+  color: var(--accent-secondary);
+  border: 1px solid var(--border-default);
+}
+
 .status-badge-verified {
   background-color: var(--status-verified-bg);
   color: var(--status-verified-fg);

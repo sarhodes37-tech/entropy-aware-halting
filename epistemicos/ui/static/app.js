@@ -387,14 +387,40 @@ document.addEventListener('DOMContentLoaded', () => {
       });
     },
 
+    // Pure status decision helper for aggregate benchmark evidence status
+    deriveCombinedBenchmarkStatus(ablStatus, pcStatus) {
+      const s1 = (ablStatus || 'UNAVAILABLE').toUpperCase();
+      const s2 = (pcStatus || 'UNAVAILABLE').toUpperCase();
+
+      // Rule 1: Both usable -> AVAILABLE
+      if (s1 === 'AVAILABLE' && s2 === 'AVAILABLE') {
+        return 'AVAILABLE';
+      }
+
+      // Rule 2: Exactly one usable -> PARTIAL (usable data exists, but evidence set is degraded/incomplete)
+      if (s1 === 'AVAILABLE' || s2 === 'AVAILABLE') {
+        return 'PARTIAL';
+      }
+
+      // Rule 3: Zero usable data (neither is AVAILABLE)
+      // Prioritize error visibility: MALFORMED > EMPTY > UNAVAILABLE
+      if (s1 === 'MALFORMED' || s2 === 'MALFORMED') {
+        return 'MALFORMED';
+      }
+      if (s1 === 'EMPTY' || s2 === 'EMPTY') {
+        return 'EMPTY';
+      }
+      return 'UNAVAILABLE';
+    },
+
     // Helper: Semantic Badge Creator
     createStatusBadge(statusText) {
       const span = document.createElement('span');
       const st = (statusText || 'UNKNOWN').toUpperCase();
 
       if (st === 'AVAILABLE') {
-        span.className = 'status-badge status-badge-verified';
-        span.textContent = '✓ AVAILABLE';
+        span.className = 'status-badge status-badge-available';
+        span.textContent = '● AVAILABLE';
       } else if (st === 'VERIFIED') {
         span.className = 'status-badge status-badge-verified';
         span.textContent = '✓ VERIFIED';
@@ -2254,7 +2280,7 @@ document.addEventListener('DOMContentLoaded', () => {
       // Artifact Status Badge
       const statusBadge = document.getElementById('benchmark-artifacts-status');
       if (statusBadge) {
-        const deriveStatus = (item) => {
+        const deriveItemStatus = (item) => {
           if (item.status) return item.status;
           if (item.error) {
             if (item.error.toLowerCase().includes('malformed') || item.error.toLowerCase().includes('unexpected json structure')) return 'MALFORMED';
@@ -2264,26 +2290,10 @@ document.addEventListener('DOMContentLoaded', () => {
           return item.available ? 'AVAILABLE' : 'UNAVAILABLE';
         };
 
-        const ablStatus = deriveStatus(abl);
-        const pcStatus = deriveStatus(pc);
+        const ablStatus = deriveItemStatus(abl);
+        const pcStatus = deriveItemStatus(pc);
 
-        let statusStr = 'UNAVAILABLE';
-
-        if (ablStatus === 'AVAILABLE' && pcStatus === 'AVAILABLE') {
-          statusStr = 'AVAILABLE';
-        } else if (ablStatus === 'MALFORMED' && pcStatus === 'MALFORMED') {
-          statusStr = 'MALFORMED';
-        } else if ((ablStatus === 'MALFORMED' && pcStatus === 'UNAVAILABLE') || (pcStatus === 'MALFORMED' && ablStatus === 'UNAVAILABLE')) {
-          statusStr = 'MALFORMED';
-        } else if (ablStatus === 'MALFORMED' || pcStatus === 'MALFORMED') {
-          statusStr = 'PARTIAL';
-        } else if (ablStatus === 'AVAILABLE' || pcStatus === 'AVAILABLE') {
-          statusStr = 'PARTIAL';
-        } else if (ablStatus === 'EMPTY' || pcStatus === 'EMPTY') {
-          statusStr = 'EMPTY';
-        } else {
-          statusStr = 'UNAVAILABLE';
-        }
+        const statusStr = this.deriveCombinedBenchmarkStatus(ablStatus, pcStatus);
 
         const badge = this.createStatusBadge(statusStr);
         statusBadge.replaceWith(badge);
