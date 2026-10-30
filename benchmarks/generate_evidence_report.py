@@ -440,12 +440,19 @@ def generate_consolidated_evidence(
         "dataset_sha256_digest": actual_digest,
         "dataset_digest_verified": dataset_digest_valid
     }
+    # Force canonical relative artifact paths relative to output_dir / docs_dir or current working directory
+    def _rel(p: Path) -> str:
+        try:
+            return p.relative_to(Path.cwd()).as_posix()
+        except ValueError:
+            return p.as_posix()
+
     artifact_paths = [
-        str(json_artifact_path),
-        str(md_artifact_path),
-        str(inc_json_path),
-        str(inc_md_path),
-        str(per_case_path)
+        _rel(Path(json_artifact_path)),
+        _rel(Path(md_artifact_path)),
+        _rel(Path(inc_json_path)),
+        _rel(Path(inc_md_path)),
+        _rel(Path(per_case_path))
     ]
     manifest_path = out_base / "evidence_manifest.json"
     create_evidence_manifest(

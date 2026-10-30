@@ -53,6 +53,15 @@ MANDATORY_LAYER_B_SCENARIOS = frozenset({"case1", "case2", "case3", "case4", "ca
 # Explicit, unambiguous artifact path for run-level per-case records
 CANONICAL_PER_CASE_RESULTS_PATH = "results/per_case_results.json"
 
+# Mandatory set of report artifact files required in evidence_manifest.json
+MANDATORY_MANIFEST_ARTIFACTS = frozenset({
+    "results/four_layer_evidence.json",
+    "docs/security/four_layer_evidence_report.md",
+    "results/incident_lab_results.json",
+    "docs/security/incident_lab_report.md",
+    "results/per_case_results.json"
+})
+
 
 def get_base_branch_manifest_digest(
     manifest_rel_path: str = "benchmarks/data/dataset_manifest.json",
@@ -158,6 +167,11 @@ def validate_evidence_manifest(
     if not isinstance(artifacts, dict) or len(artifacts) == 0:
         errors.append("Manifest 'artifacts' mapping is missing or empty")
     else:
+        declared_paths = {Path(p).as_posix() for p in artifacts.keys()}
+        missing_mandatory = MANDATORY_MANIFEST_ARTIFACTS - declared_paths
+        if missing_mandatory:
+            errors.append(f"Manifest Incomplete! Missing required evidence artifact declarations: {list(sorted(missing_mandatory))}")
+
         for rel_path, art_info in artifacts.items():
             full_path = base / rel_path if not Path(rel_path).is_absolute() else Path(rel_path)
             if not full_path.exists():

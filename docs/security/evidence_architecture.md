@@ -104,7 +104,21 @@ Every generated evidence artifact records:
 8. `lockfile_sha256_digest`: SHA-256 digest of `requirements-full-lock.txt` / `requirements-test-lock.txt`.
 9. `dataset_sha256_digest`: SHA-256 digest of `benchmarks/data/eval_set.jsonl` verified against trusted base ref.
 10. `exit_code` & `exit_status`: Explicit process exit code (`0` for `SUCCESS`), reported separately from scenario pass rates.
-11. `report_artifact_sha256`: SHA-256 digest of the final generated report artifact itself.
+11. `report_artifact_sha256`: SHA-256 digest of the final generated report artifact recorded in `results/evidence_manifest.json`.
+
+### Publication Metadata & Working-Tree Digest Scope
+
+#### Publication Metadata Verification vs. Recording
+- **Recorded vs. Verified:** During evaluation run time, publication metadata is recorded as `publication_status: "PENDING_PUBLICATION"` with `report_persistence_commit: null`.
+- **Publication Step:** Upon publishing/committing the report artifacts, `benchmarks/publish_evidence.py` updates `publication_status` to `"PUBLISHED"` and binds the exact 40-character `report_persistence_commit` SHA.
+- **Verification Rule:** `validate_evidence_manifest` verifies that a manifest marked `"PUBLISHED"` contains a valid 40-character Git SHA in `report_persistence_commit` and that all declared file byte digests match disk bytes.
+
+#### Working-Tree Digest Scope & Exclusion Policy
+- **Included in Digest:** All tracked Git files (`git ls-files`) and untracked source files in the project tree. The digest captures content, size, path, and symlink targets.
+- **Excluded Files/Prefixes:** To ensure deterministic evaluation without false positive dirty tree assertions, the working-tree digest computation explicitly excludes:
+  - Output report files generated during evaluation (`results/four_layer_evidence.json`, `docs/security/four_layer_evidence_report.md`, `results/incident_lab_results.json`, `docs/security/incident_lab_report.md`, `results/evidence_manifest.json`, `results/per_case_results.json`, `results/ablation_table.json`).
+  - Transient runtime log and build directories (`logs/`, `tmp/`, `.git/`, `__pycache__`, `.pytest_cache`, `results/`).
+  - Temporary coverage artifacts (`coverage.xml`, `.coverage`).
 
 ---
 

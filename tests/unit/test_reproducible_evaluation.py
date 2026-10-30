@@ -18,11 +18,13 @@ import hashlib
 import json
 import os
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 import pytest
 
 from benchmarks.eval_metadata import (
+    PROJECT_ROOT,
     collect_environment_metadata,
     compute_working_tree_digest,
     create_evidence_manifest,
@@ -62,6 +64,35 @@ def temp_git_repo(tmp_path):
 
     subprocess.run(["git", "add", "."], cwd=repo_dir, check=True, capture_output=True)
     subprocess.run(["git", "commit", "-m", "Initial commit"], cwd=repo_dir, check=True, capture_output=True)
+
+    res = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo_dir, check=True, capture_output=True, text=True)
+    commit_sha = res.stdout.strip()
+
+    return repo_dir, commit_sha
+
+
+@pytest.fixture
+def full_cloned_repo(tmp_path):
+    """Clones the current working repository into an isolated temporary folder for E2E CLI tests."""
+    import shutil
+    repo_dir = tmp_path / "full_repo"
+    subprocess.run(["git", "clone", PROJECT_ROOT, str(repo_dir)], check=True, capture_output=True)
+
+    # Sync uncommitted working tree files into cloned repo
+    for root, dirs, files in os.walk(PROJECT_ROOT):
+        dirs[:] = [d for d in dirs if d not in (".git", "__pycache__", "tmp", "results", "logs", ".pytest_cache", ".venv", "env")]
+        rel_dir = os.path.relpath(root, PROJECT_ROOT)
+        target_dir = repo_dir / rel_dir if rel_dir != "." else repo_dir
+        target_dir.mkdir(parents=True, exist_ok=True)
+        for f in files:
+            if f in ("coverage.xml", ".coverage"):
+                continue
+            shutil.copy2(os.path.join(root, f), target_dir / f)
+
+    subprocess.run(["git", "config", "user.name", "CI User"], cwd=repo_dir, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "ci@example.com"], cwd=repo_dir, check=True, capture_output=True)
+    subprocess.run(["git", "add", "."], cwd=repo_dir, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "Test worktree sync"], cwd=repo_dir, check=True, capture_output=True)
 
     res = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo_dir, check=True, capture_output=True, text=True)
     commit_sha = res.stdout.strip()
@@ -153,8 +184,15 @@ def test_output_generation_outside_source_tree_preserves_clean_status(temp_git_r
 
 def test_publication_lifecycle_and_validation(tmp_path):
     manifest_file = tmp_path / "evidence_manifest.json"
-    art_file = tmp_path / "sample_art.json"
-    art_file.write_text(json.dumps({"data": "test"}), encoding="utf-8")
+
+    # Create all required mandatory files
+    files = []
+    from benchmarks.validate_evidence import MANDATORY_MANIFEST_ARTIFACTS
+    for rel_p in MANDATORY_MANIFEST_ARTIFACTS:
+        fp = tmp_path / rel_p
+        fp.parent.mkdir(parents=True, exist_ok=True)
+        fp.write_text(json.dumps({"content": rel_p}), encoding="utf-8")
+        files.append(rel_p)
 
     env_meta = {
         "evaluation_suite_name": "Test Suite",
@@ -171,7 +209,7 @@ def test_publication_lifecycle_and_validation(tmp_path):
 
     manifest = create_evidence_manifest(
         env_metadata=env_meta,
-        artifact_paths=[str(art_file)],
+        artifact_paths=files,
         dataset_info=dataset_info,
         output_manifest_path=str(manifest_file),
         root_dir=str(tmp_path)
@@ -197,10 +235,79 @@ def test_publication_lifecycle_and_validation(tmp_path):
     assert len(errs_pub) == 0
 
 
-def test_manifest_artifact_tampering_detected(tmp_path):
+def test_manifest_generation_fails_closed_when_mandatory_artifact_missing(tmp_path):
+    manifest_file = tmp_path / "evidence_manifest.json"
+    env_meta = {
+        "evaluation_suite_name": "Test Suite",
+        "evaluation_suite_version": "1.0.0",
+        "evaluated_git_commit": "a" * 40,
+        "working_tree_status": "CLEAN",
+        "working_tree_digest": "0" * 64
+    }
+    dataset_info = {"dataset_version": "1.0.0", "dataset_sha256_digest": "0" * 64, "dataset_digest_verified": True}
+
+    # Attempt to create manifest pointing to non-existent artifact file
+    missing_art = str(tmp_path / "missing_report.json")
+    with pytest.raises(FileNotFoundError, match="Mandatory evidence artifact missing on disk"):
+        create_evidence_manifest(
+            env_metadata=env_meta,
+            artifact_paths=[missing_art],
+            dataset_info=dataset_info,
+            output_manifest_path=str(manifest_file),
+            root_dir=str(tmp_path)
+        )
+
+
+def test_manifest_validation_enforces_mandatory_artifact_set(tmp_path):
     manifest_file = tmp_path / "evidence_manifest.json"
     art_file = tmp_path / "sample_art.json"
-    art_file.write_text(json.dumps({"data": "original"}), encoding="utf-8")
+    art_file.write_text(json.dumps({"data": "test"}), encoding="utf-8")
+
+    env_meta = {
+        "evaluation_suite_name": "Test Suite",
+        "evaluation_suite_version": "1.0.0",
+        "evaluated_git_commit": "a" * 40,
+        "working_tree_status": "CLEAN",
+        "working_tree_digest": "0" * 64
+    }
+    dataset_info = {"dataset_version": "1.0.0", "dataset_sha256_digest": "0" * 64, "dataset_digest_verified": True}
+
+    # Manually write manifest lacking mandatory artifacts
+    manifest_data = {
+        "manifest_version": "1.0.0",
+        "created_at_utc": "2026-10-30T00:00:00Z",
+        "reproducibility_metadata": env_meta,
+        "dataset_metadata": dataset_info,
+        "publication_metadata": {
+            "publication_status": "PENDING_PUBLICATION",
+            "report_persistence_commit": None,
+            "published_at_utc": None
+        },
+        "artifacts": {
+            str(art_file): {
+                "sha256_digest": hashlib.sha256(art_file.read_bytes()).hexdigest(),
+                "byte_size": len(art_file.read_bytes())
+            }
+        }
+    }
+    manifest_file.write_text(json.dumps(manifest_data), encoding="utf-8")
+
+    valid, errors = validate_evidence_manifest(str(manifest_file), expected_commit="a" * 40, root_dir=str(tmp_path))
+    assert valid is False
+    assert any("Missing required evidence artifact declarations" in e for e in errors)
+
+
+def test_manifest_artifact_tampering_detected(tmp_path):
+    manifest_file = tmp_path / "evidence_manifest.json"
+
+    # Create mock required files
+    files = {}
+    from benchmarks.validate_evidence import MANDATORY_MANIFEST_ARTIFACTS
+    for rel_p in MANDATORY_MANIFEST_ARTIFACTS:
+        fp = tmp_path / rel_p
+        fp.parent.mkdir(parents=True, exist_ok=True)
+        fp.write_text(json.dumps({"content": rel_p}), encoding="utf-8")
+        files[rel_p] = fp
 
     env_meta = {
         "evaluation_suite_name": "Test Suite",
@@ -213,57 +320,108 @@ def test_manifest_artifact_tampering_detected(tmp_path):
 
     create_evidence_manifest(
         env_metadata=env_meta,
-        artifact_paths=[str(art_file)],
+        artifact_paths=list(files.keys()),
         dataset_info=dataset_info,
         output_manifest_path=str(manifest_file),
         root_dir=str(tmp_path)
     )
 
-    # Tamper with the artifact file content on disk
-    art_file.write_text(json.dumps({"data": "TAMPERED_CONTENT"}), encoding="utf-8")
+    # Tamper with one artifact file content on disk
+    first_key = list(files.keys())[0]
+    files[first_key].write_text(json.dumps({"data": "TAMPERED_CONTENT"}), encoding="utf-8")
 
     valid, errors = validate_evidence_manifest(str(manifest_file), expected_commit="a" * 40, root_dir=str(tmp_path))
     assert valid is False
     assert any("Artifact Digest Mismatch" in e for e in errors)
 
 
-def test_e2e_full_pipeline_generation_and_validation(tmp_path):
+def test_subprocess_cli_integration_evaluation_and_validation(full_cloned_repo, tmp_path):
+    """
+    Subprocess-level CLI integration test covering commit pinning, clean-tree enforcement,
+    report generation, and manifest validation end-to-end.
+    """
+    repo_dir, commit_sha = full_cloned_repo
+
+    # 1. Run generate_evidence_report via subprocess with --commit and --require-clean
+    gen_cmd = [
+        sys.executable, "-m", "benchmarks.generate_evidence_report",
+        "--fast",
+        "--commit", commit_sha,
+        "--require-clean",
+        "--output-dir", "results",
+        "--docs-dir", "docs/security"
+    ]
+    env = os.environ.copy()
+    env["PYTHONPATH"] = f"{repo_dir}{os.pathsep}{PROJECT_ROOT}"
+
+    res_gen = subprocess.run(gen_cmd, cwd=repo_dir, capture_output=True, text=True, env=env)
+    assert res_gen.returncode == 0, f"Report generation CLI failed!\nSTDOUT: {res_gen.stdout}\nSTDERR: {res_gen.stderr}"
+
+    manifest_p = repo_dir / "results" / "evidence_manifest.json"
+    evidence_p = repo_dir / "results" / "four_layer_evidence.json"
+    assert manifest_p.exists()
+    assert evidence_p.exists()
+
+    # 2. Run validate_evidence via subprocess with --manifest-file and --require-clean-tree
+    val_cmd = [
+        sys.executable, "-m", "benchmarks.validate_evidence",
+        "--artifact", str(evidence_p),
+        "--manifest-file", str(manifest_p),
+        "--expected-commit", commit_sha,
+        "--require-clean-tree",
+        "--allow-local-constant-fallback"
+    ]
+    res_val = subprocess.run(val_cmd, cwd=repo_dir, capture_output=True, text=True, env=env)
+    assert res_val.returncode == 0, f"Validator CLI failed!\nSTDOUT: {res_val.stdout}\nSTDERR: {res_val.stderr}"
+
+
+def test_e2e_full_pipeline_generation_and_validation(full_cloned_repo, tmp_path):
     """
     End-to-end integration test exercising real generate_consolidated_evidence
-    and validate_evidence_artifact / validate_evidence_manifest against results directory.
+    and validate_evidence_artifact / validate_evidence_manifest against results directory in a clean repo.
     """
-    out_dir = tmp_path / "results"
-    docs_dir = tmp_path / "docs_sec"
+    repo_dir, commit_sha = full_cloned_repo
+    out_dir = repo_dir / "results"
+    docs_dir = repo_dir / "docs" / "security"
 
-    evidence = generate_consolidated_evidence(
-        fast_mode=True,
-        require_clean=False,
-        output_dir=str(out_dir),
-        docs_dir=str(docs_dir)
-    )
+    orig_cwd = os.getcwd()
+    os.chdir(repo_dir)
+    try:
+        evidence = generate_consolidated_evidence(
+            fast_mode=True,
+            expected_commit=commit_sha,
+            require_clean=True,
+            output_dir="results",
+            docs_dir="docs/security"
+        )
 
-    assert evidence["overall_evaluation_status"] in ("PASS", "PARTIAL")
+        assert evidence["overall_evaluation_status"] in ("PASS", "PARTIAL")
 
-    manifest_path = out_dir / "evidence_manifest.json"
-    assert manifest_path.exists()
+        manifest_path = out_dir / "evidence_manifest.json"
+        assert manifest_path.exists()
 
-    manifest_data = json.loads(manifest_path.read_text(encoding="utf-8"))
-    assert manifest_data["publication_metadata"]["publication_status"] == "PENDING_PUBLICATION"
+        manifest_data = json.loads(manifest_path.read_text(encoding="utf-8"))
+        assert manifest_data["publication_metadata"]["publication_status"] == "PENDING_PUBLICATION"
 
-    # Verify manifest byte digests match actual files on disk
-    for rel_p, art_info in manifest_data["artifacts"].items():
-        p = Path(rel_p)
-        assert p.exists()
-        actual_bytes = p.read_bytes()
-        actual_hash = hashlib.sha256(actual_bytes).hexdigest()
-        assert actual_hash == art_info["sha256_digest"]
-        assert len(actual_bytes) == art_info["byte_size"]
+        # Verify manifest byte digests match actual files on disk
+        for rel_p, art_info in manifest_data["artifacts"].items():
+            p = repo_dir / rel_p
+            assert p.exists()
+            actual_bytes = p.read_bytes()
+            actual_hash = hashlib.sha256(actual_bytes).hexdigest()
+            assert actual_hash == art_info["sha256_digest"]
+            assert len(actual_bytes) == art_info["byte_size"]
 
-    # Validate evidence artifact and manifest
-    valid, errors = validate_evidence_artifact(
-        artifact_path=str(out_dir / "four_layer_evidence.json"),
-        manifest_file=str(manifest_path),
-        allow_local_constant_fallback=True
-    )
-    assert valid is True
-    assert len(errors) == 0
+        # Validate evidence artifact and manifest
+        valid, errors = validate_evidence_artifact(
+            artifact_path=str(out_dir / "four_layer_evidence.json"),
+            manifest_file=str(manifest_path),
+            expected_commit=commit_sha,
+            require_clean_tree=True,
+            allow_local_constant_fallback=True,
+            per_case_filepath=str(out_dir / "per_case_results.json")
+        )
+        assert valid is True, f"Validation failed with errors: {errors}"
+        assert len(errors) == 0
+    finally:
+        os.chdir(orig_cwd)
