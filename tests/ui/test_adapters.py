@@ -313,7 +313,8 @@ def test_benchmark_data_status_matrix_eight_cases(tmp_path):
 
 def test_combined_benchmark_status_full_matrix():
     """
-    Direct unit test for frontend combined status decision policy covering all 11 matrix combinations:
+    Direct unit test for frontend combined status decision policy deriveCombinedBenchmarkStatus()
+    covering all 11 matrix combinations plus unknown and missing status values:
     1. AVAILABLE + AVAILABLE -> AVAILABLE
     2. AVAILABLE + UNAVAILABLE -> PARTIAL
     3. AVAILABLE + EMPTY -> PARTIAL
@@ -325,9 +326,27 @@ def test_combined_benchmark_status_full_matrix():
     9. MALFORMED + AVAILABLE -> PARTIAL
     10. MALFORMED + MALFORMED -> MALFORMED
     11. EMPTY + EMPTY -> EMPTY
+    12. UNKNOWN / missing status values -> handled safely without returning AVAILABLE
     """
-    # Import or read decision policy logic from app.js to test directly via JavaScript evaluation / Python equivalent
-    # Python mirror of app.js deriveCombinedBenchmarkStatus(s1, s2):
+    matrix = [
+        ("AVAILABLE", "AVAILABLE", "AVAILABLE"),
+        ("AVAILABLE", "UNAVAILABLE", "PARTIAL"),
+        ("AVAILABLE", "EMPTY", "PARTIAL"),
+        ("AVAILABLE", "MALFORMED", "PARTIAL"),
+        ("UNAVAILABLE", "UNAVAILABLE", "UNAVAILABLE"),
+        ("EMPTY", "UNAVAILABLE", "EMPTY"),
+        ("MALFORMED", "UNAVAILABLE", "MALFORMED"),
+        ("MALFORMED", "EMPTY", "MALFORMED"),
+        ("MALFORMED", "AVAILABLE", "PARTIAL"),
+        ("MALFORMED", "MALFORMED", "MALFORMED"),
+        ("EMPTY", "EMPTY", "EMPTY"),
+        ("UNKNOWN", "UNKNOWN", "UNAVAILABLE"),
+        ("UNKNOWN", "AVAILABLE", "PARTIAL"),
+        ("MALFORMED", "UNKNOWN", "MALFORMED"),
+        (None, None, "UNAVAILABLE")
+    ]
+
+    # 1. Test Python mirror policy
     def derive_combined_status(s1, s2):
         s1 = (s1 or "UNAVAILABLE").upper()
         s2 = (s2 or "UNAVAILABLE").upper()
@@ -341,23 +360,32 @@ def test_combined_benchmark_status_full_matrix():
             return "EMPTY"
         return "UNAVAILABLE"
 
-    matrix = [
-        ("AVAILABLE", "AVAILABLE", "AVAILABLE"),
-        ("AVAILABLE", "UNAVAILABLE", "PARTIAL"),
-        ("AVAILABLE", "EMPTY", "PARTIAL"),
-        ("AVAILABLE", "MALFORMED", "PARTIAL"),
-        ("UNAVAILABLE", "UNAVAILABLE", "UNAVAILABLE"),
-        ("EMPTY", "UNAVAILABLE", "EMPTY"),
-        ("MALFORMED", "UNAVAILABLE", "MALFORMED"),
-        ("MALFORMED", "EMPTY", "MALFORMED"),
-        ("MALFORMED", "AVAILABLE", "PARTIAL"),
-        ("MALFORMED", "MALFORMED", "MALFORMED"),
-        ("EMPTY", "EMPTY", "EMPTY")
-    ]
-
     for abl_st, pc_st, expected in matrix:
         actual = derive_combined_status(abl_st, pc_st)
         assert actual == expected, f"Failed for ({abl_st}, {pc_st}): expected {expected}, got {actual}"
+
+    # 2. Test actual JS function in epistemicos/ui/static/app.js via Node.js
+    import subprocess
+    app_js_path = Path("epistemicos/ui/static/app.js")
+    if app_js_path.exists():
+        eval_script = f"""
+        const fs = require('fs');
+        const code = fs.readFileSync('{app_js_path}', 'utf8');
+        const fnMatch = code.match(/deriveCombinedBenchmarkStatus\\(ablStatus, pcStatus\\)\\s*\\{{([\\s\\S]*?)\\n    \\}},/);
+        if (!fnMatch) {{ console.error("Function not found"); process.exit(1); }}
+        const fn = new Function('ablStatus', 'pcStatus', fnMatch[1]);
+        const testCases = {json.dumps(matrix)};
+        for (const [s1, s2, expected] of testCases) {{
+            const actual = fn(s1, s2);
+            if (actual !== expected) {{
+                console.error(`JS Failure for (${{s1}}, ${{s2}}): expected ${{expected}}, got ${{actual}}`);
+                process.exit(1);
+            }}
+        }}
+        console.log("ALL_JS_TESTS_PASSED");
+        """
+        res = subprocess.run(["node", "-e", eval_script], capture_output=True, text=True)
+        assert res.returncode == 0 and "ALL_JS_TESTS_PASSED" in res.stdout, f"JS decision policy failure:\nSTDOUT: {res.stdout}\nSTDERR: {res.stderr}"
 
 
 def test_benchmark_data_each_artifact_missing_independently(tmp_path):

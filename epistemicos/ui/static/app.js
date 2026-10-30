@@ -2324,43 +2324,46 @@ document.addEventListener('DOMContentLoaded', () => {
       const alertContainer = document.getElementById('benchmark-artifacts-alert-container');
       if (alertContainer) {
         alertContainer.innerHTML = '';
-        if (abl.error) {
-          const ablErrCard = document.createElement('div');
-          ablErrCard.className = 'status-block';
-          ablErrCard.style.borderColor = 'var(--status-failed-border)';
-          ablErrCard.style.backgroundColor = 'var(--status-failed-bg)';
-          ablErrCard.style.fontSize = '0.8rem';
-          ablErrCard.style.marginBottom = '0.5rem';
+
+        // Preserve visibility of individual artifact status and errors whenever any artifact is degraded or missing
+        const ablItemStatus = (abl.status || (abl.error ? (abl.error.toLowerCase().includes('malformed') ? 'MALFORMED' : (abl.error.toLowerCase().includes('empty') ? 'EMPTY' : 'UNAVAILABLE')) : (abl.available ? 'AVAILABLE' : 'UNAVAILABLE'))).toUpperCase();
+        const pcItemStatus = (pc.status || (pc.error ? (pc.error.toLowerCase().includes('malformed') ? 'MALFORMED' : (pc.error.toLowerCase().includes('empty') ? 'EMPTY' : 'UNAVAILABLE')) : (pc.available ? 'AVAILABLE' : 'UNAVAILABLE'))).toUpperCase();
+
+        if (ablItemStatus !== 'AVAILABLE' || pcItemStatus !== 'AVAILABLE') {
+          const breakdownCard = document.createElement('div');
+          breakdownCard.className = 'status-block';
+          breakdownCard.style.fontSize = '0.8rem';
+          breakdownCard.style.marginTop = '0.5rem';
+
+          if (ablItemStatus === 'MALFORMED' || pcItemStatus === 'MALFORMED') {
+            breakdownCard.style.borderColor = 'var(--status-failed-border)';
+            breakdownCard.style.backgroundColor = 'var(--status-failed-bg)';
+          } else {
+            breakdownCard.style.borderColor = 'var(--border-default)';
+          }
 
           const title = document.createElement('strong');
-          title.className = 'text-danger';
-          title.textContent = 'Ablation Table Artifact Status: ';
+          title.style.display = 'block';
+          title.style.marginBottom = '0.35rem';
+          title.textContent = 'Individual Artifact Status Breakdown:';
+          breakdownCard.appendChild(title);
 
-          const msg = document.createElement('span');
-          msg.textContent = abl.error;
+          const ul = document.createElement('ul');
+          ul.style.marginLeft = '1.2rem';
+          ul.style.display = 'flex';
+          ul.style.flexDirection = 'column';
+          ul.style.gap = '0.25rem';
 
-          ablErrCard.appendChild(title);
-          ablErrCard.appendChild(msg);
-          alertContainer.appendChild(ablErrCard);
-        }
+          const liAbl = document.createElement('li');
+          liAbl.textContent = `Ablation Table (ablation_table.json): ${ablItemStatus}${abl.error ? ' — ' + abl.error : ''}`;
+          ul.appendChild(liAbl);
 
-        if (pc.error) {
-          const pcErrCard = document.createElement('div');
-          pcErrCard.className = 'status-block';
-          pcErrCard.style.borderColor = 'var(--status-failed-border)';
-          pcErrCard.style.backgroundColor = 'var(--status-failed-bg)';
-          pcErrCard.style.fontSize = '0.8rem';
+          const liPc = document.createElement('li');
+          liPc.textContent = `Per-Case Results (per_case_results.json): ${pcItemStatus}${pc.error ? ' — ' + pc.error : ''}`;
+          ul.appendChild(liPc);
 
-          const title = document.createElement('strong');
-          title.className = 'text-danger';
-          title.textContent = 'Per-Case Results Artifact Status: ';
-
-          const msg = document.createElement('span');
-          msg.textContent = pc.error;
-
-          pcErrCard.appendChild(title);
-          pcErrCard.appendChild(msg);
-          alertContainer.appendChild(pcErrCard);
+          breakdownCard.appendChild(ul);
+          alertContainer.appendChild(breakdownCard);
         }
       }
     },
