@@ -907,9 +907,10 @@ class ExecutorRegistry:
     """
     Thread-safe, encapsulated registry mapping executor IDs and single-use token IDs
     to trusted executor callables.
-    Restricts raw dictionary enumeration methods (keys, values, items, __iter__) to prevent
-    ordinary callers from iterating over and extracting registered raw executor function references.
-    Supports thread-safe get(), pop(), register(), contains(), __getitem__, __setitem__, and __contains__.
+    Restricts public retrieval and mutation methods (.get(), __getitem__, __setitem__, keys(), values(), items(), __iter__)
+    to prevent ordinary callers from retrieving or replacing registered raw executor function references.
+    Exposes narrow internal methods (_get_executor_for_boundary, _register_internal, _pop_internal)
+    used exclusively by AuthorizationAuthority and TrustedExecutionBoundary.
     """
 
     def __init__(self, initial_mapping: Optional[Union[Dict[str, Any], "ExecutorRegistry"]] = None):
@@ -922,37 +923,44 @@ class ExecutorRegistry:
             elif isinstance(initial_mapping, dict):
                 self._store.update(initial_mapping)
 
-    def register(self, key: str, executor_func: Any) -> None:
+    def _register_internal(self, key: str, executor_func: Any) -> None:
+        """Internal registration method used exclusively by AuthorizationAuthority."""
         with self._lock:
             self._store[key] = executor_func
 
-    def get(self, key: str, default: Any = None) -> Any:
+    def _get_executor_for_boundary(self, key: str, default: Any = None) -> Any:
+        """Internal lookup method used exclusively by AuthorizationAuthority & TrustedExecutionBoundary."""
         with self._lock:
             return self._store.get(key, default)
 
-    def pop(self, key: str, default: Any = None) -> Any:
+    def _pop_internal(self, key: str, default: Any = None) -> Any:
+        """Internal removal method used exclusively by AuthorizationAuthority & TrustedExecutionBoundary."""
         with self._lock:
             return self._store.pop(key, default)
 
     def contains(self, key: str) -> bool:
+        """Public metadata check: returns True if an executor is registered for key, without exposing the raw callable."""
         with self._lock:
             return key in self._store
 
-    def __getitem__(self, key: str) -> Any:
-        with self._lock:
-            return self._store[key]
-
-    def __setitem__(self, key: str, value: Any) -> None:
-        with self._lock:
-            self._store[key] = value
-
     def __contains__(self, key: Any) -> bool:
+        """Public metadata check: supports 'key in registry' syntax without exposing raw callables."""
         with self._lock:
             return key in self._store
 
     def __len__(self) -> int:
+        """Public metadata check: returns count of registered executors."""
         with self._lock:
             return len(self._store)
+
+    def get(self, key: str, default: Any = None) -> Any:
+        raise PermissionError("Access denied: Raw executor retrieval via ExecutorRegistry.get() is restricted")
+
+    def __getitem__(self, key: str) -> Any:
+        raise PermissionError("Access denied: Raw executor retrieval via ExecutorRegistry item lookup is restricted")
+
+    def __setitem__(self, key: str, value: Any) -> None:
+        raise PermissionError("Access denied: Direct ExecutorRegistry mutation via item assignment is restricted")
 
     def keys(self):
         raise TypeError("ExecutorRegistry object does not support iteration or key enumeration")
@@ -1051,10 +1059,10 @@ class AuthorizationAuthority:
 
     def register_executor(self, executor_id: str, executor_func: Any) -> None:
         """Registers an authoritative callable identity in the authority executor registry."""
-        self.executor_registry[executor_id] = executor_func
+        self.executor_registry._register_internal(executor_id, executor_func)
         func_qual_id = get_callable_identity(executor_func)
         if func_qual_id != executor_id:
-            self.executor_registry[func_qual_id] = executor_func
+            self.executor_registry._register_internal(func_qual_id, executor_func)
 
     def evaluate_and_issue_capability(
         self,
@@ -1236,12 +1244,14 @@ class AuthorizationAuthority:
             if callable(executor_id):
                 exec_obj = executor_id
                 executor_id_str = get_callable_identity(exec_obj)
-                self.executor_registry[token_id] = exec_obj
-                self.executor_registry[executor_id_str] = exec_obj
+                self.executor_registry._register_internal(token_id, exec_obj)
+                self.executor_registry._register_internal(executor_id_str, exec_obj)
             else:
                 executor_id_str = get_callable_identity(executor_id)
                 if executor_id_str in self.executor_registry:
-                    self.executor_registry[token_id] = self.executor_registry[executor_id_str]
+                    bound_exec = self.executor_registry._get_executor_for_boundary(executor_id_str)
+                    if bound_exec:
+                        self.executor_registry._register_internal(token_id, bound_exec)
 
             cap = Capability(
                 token_id=token_id,

@@ -260,7 +260,11 @@ class TrustedToolWrapper:
             return res
         finally:
             if cap and authority and hasattr(authority, "executor_registry"):
-                authority.executor_registry.pop(cap.token_id, None)
+                exec_reg = authority.executor_registry
+                if hasattr(exec_reg, "_pop_internal"):
+                    exec_reg._pop_internal(cap.token_id, None)
+                else:
+                    exec_reg.pop(cap.token_id, None)
 
 
 class TrustedToolRegistry:

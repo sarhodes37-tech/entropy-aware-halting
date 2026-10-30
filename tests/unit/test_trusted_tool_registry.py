@@ -456,7 +456,7 @@ def test_9_executor_reference_encapsulation_and_boundary_regression(registry_set
     # 1. Verify removal of public executor_func
     assert not hasattr(wrapper, "executor_func")
 
-    # 2. Verify ExecutorRegistry enumeration restriction
+    # 2. Verify ExecutorRegistry public retrieval and mutation restrictions
     exec_reg = authority.executor_registry
     with pytest.raises(TypeError, match="does not support iteration or key enumeration"):
         exec_reg.keys()
@@ -467,9 +467,21 @@ def test_9_executor_reference_encapsulation_and_boundary_regression(registry_set
     with pytest.raises(TypeError, match="is not iterable"):
         iter(exec_reg)
 
-    # Verify registered lookup still works as expected
+    # Public .get() and item lookup are restricted
+    with pytest.raises(PermissionError, match=r"Access denied: Raw executor retrieval via ExecutorRegistry\.get\(\) is restricted"):
+        exec_reg.get(wrapper.executor_id)
+
+    with pytest.raises(PermissionError, match=r"Access denied: Raw executor retrieval via ExecutorRegistry item lookup is restricted"):
+        _ = exec_reg[wrapper.executor_id]
+
+    # Public mutation via item assignment is restricted
+    with pytest.raises(PermissionError, match=r"Access denied: Direct ExecutorRegistry mutation via item assignment is restricted"):
+        exec_reg[wrapper.executor_id] = lambda: "malicious"
+
+    # Metadata checking works without leaking raw callables
     assert wrapper.executor_id in exec_reg
-    assert exec_reg.get(wrapper.executor_id) is mock_read
+    assert exec_reg.contains(wrapper.executor_id) is True
+    assert len(exec_reg) >= 1
 
     # 3. Successful authorized tool invocation
     res = wrapper(path="/app/data.json")
