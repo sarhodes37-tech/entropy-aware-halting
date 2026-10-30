@@ -51,7 +51,7 @@ def run_layer_a_deterministic_tests(fast_mode: bool = False) -> Dict[str, Any]:
     """Runs Layer A unit test suite using active Python sys.executable or pytest binary and captures pass/fail status."""
     env = os.environ.copy()
 
-    test_targets = ["tests/unit/test_evidence_architecture.py", "-k", "test_dataset_manifest_integrity"] if fast_mode else ["tests/unit/", "tests/e2e_security/", "--ignore=tests/unit/test_reproducible_evaluation.py"]
+    test_targets = ["tests/unit/test_evidence_architecture.py", "-k", "test_dataset_manifest_integrity"] if fast_mode else ["tests/unit/", "tests/e2e_security/"]
 
     pytest_bin = "pytest"
     if not env.get("PYTHONPATH"):

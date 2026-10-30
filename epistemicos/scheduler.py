@@ -127,8 +127,6 @@ class EntropyAwareScheduler:
             for v in probabilities:
                 if isinstance(v, (list, tuple, dict, set)):
                     raise ValueError("Probabilities must be a 1D distribution sequence")
-                if not isinstance(v, (int, float, str)) or isinstance(v, bool):
-                    raise TypeError("Probability element must be a real number or convertible scalar")
                 fval = float(v)
                 if math.isnan(fval) or math.isinf(fval):
                     raise ValueError("Probabilities cannot contain NaN or non-finite values")
