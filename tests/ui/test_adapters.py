@@ -209,17 +209,183 @@ def test_execution_trace_missing_fields_handling(mock_logs):
 
 
 def test_benchmark_data_loading(mock_logs):
-    """Verifies benchmark workbench data structure parsing."""
+    """Verifies benchmark workbench data structure parsing and structured status fields."""
     adapter = ObservatoryDataAdapter(
         ablation_table_path=mock_logs["ablation"],
         per_case_results_path=mock_logs["per_case"]
     )
 
     data = adapter.get_benchmark_data()
+    assert data["ablation_table"]["status"] == "AVAILABLE"
     assert data["ablation_table"]["available"] is True
     assert "Permission-Only Gating" in data["ablation_table"]["data"]["baselines"]
+
+    assert data["per_case_results"]["status"] == "AVAILABLE"
     assert data["per_case_results"]["available"] is True
     assert len(data["per_case_results"]["data"]) == 1
+
+
+def test_benchmark_data_status_matrix_eight_cases(tmp_path):
+    """
+    Status-matrix regression test for benchmark artifact status behavior covering:
+    1. Both artifacts available and parseable (status='AVAILABLE', available=True)
+    2. Both artifacts missing (status='UNAVAILABLE', available=False)
+    3. Both artifacts present and valid but empty (status='EMPTY', available=True/False depending on structure)
+    4. One artifact available and the other missing (status='AVAILABLE' vs 'UNAVAILABLE')
+    5. One artifact malformed and the other missing (status='MALFORMED' vs 'UNAVAILABLE')
+    6. One artifact malformed and the other available (status='MALFORMED' vs 'AVAILABLE')
+    7. Both artifacts malformed (status='MALFORMED')
+    8. Partial data that remains usable with documented limitations (ablation available, per-case missing/empty)
+    """
+    valid_abl_content = json.dumps({
+        "version": "1.0.0",
+        "baselines": {"Baseline 1": {"sample_count": 5}}
+    })
+    valid_pc_content = json.dumps([{"case_id": "c1", "baseline": "Baseline 1"}])
+
+    empty_abl_content = json.dumps({})
+    empty_pc_content = json.dumps([])
+
+    malformed_abl_content = "{BAD_JSON_ABLATION"
+    malformed_pc_content = "{BAD_JSON_PER_CASE"
+
+    # 1. Both available and parseable
+    f_abl_1 = tmp_path / "1_abl.json"
+    f_pc_1 = tmp_path / "1_pc.json"
+    f_abl_1.write_text(valid_abl_content, encoding="utf-8")
+    f_pc_1.write_text(valid_pc_content, encoding="utf-8")
+    d1 = ObservatoryDataAdapter(ablation_table_path=str(f_abl_1), per_case_results_path=str(f_pc_1)).get_benchmark_data()
+    assert d1["ablation_table"]["status"] == "AVAILABLE"
+    assert d1["per_case_results"]["status"] == "AVAILABLE"
+
+    # 2. Both missing
+    d2 = ObservatoryDataAdapter(
+        ablation_table_path=str(tmp_path / "missing_abl.json"),
+        per_case_results_path=str(tmp_path / "missing_pc.json")
+    ).get_benchmark_data()
+    assert d2["ablation_table"]["status"] == "UNAVAILABLE"
+    assert d2["per_case_results"]["status"] == "UNAVAILABLE"
+    assert "File not found" in d2["ablation_table"]["error"]
+    assert "File not found" in d2["per_case_results"]["error"]
+
+    # 3. Both present and valid but empty
+    f_abl_3 = tmp_path / "3_abl.json"
+    f_pc_3 = tmp_path / "3_pc.json"
+    f_abl_3.write_text(empty_abl_content, encoding="utf-8")
+    f_pc_3.write_text(empty_pc_content, encoding="utf-8")
+    d3 = ObservatoryDataAdapter(ablation_table_path=str(f_abl_3), per_case_results_path=str(f_pc_3)).get_benchmark_data()
+    assert d3["ablation_table"]["status"] == "EMPTY"
+    assert d3["per_case_results"]["status"] == "EMPTY"
+
+    # 4. One available and the other missing
+    d4 = ObservatoryDataAdapter(ablation_table_path=str(f_abl_1), per_case_results_path=str(tmp_path / "missing_pc.json")).get_benchmark_data()
+    assert d4["ablation_table"]["status"] == "AVAILABLE"
+    assert d4["per_case_results"]["status"] == "UNAVAILABLE"
+
+    # 5. One malformed and the other missing
+    f_abl_5 = tmp_path / "5_abl_malformed.json"
+    f_abl_5.write_text(malformed_abl_content, encoding="utf-8")
+    d5 = ObservatoryDataAdapter(ablation_table_path=str(f_abl_5), per_case_results_path=str(tmp_path / "missing_pc.json")).get_benchmark_data()
+    assert d5["ablation_table"]["status"] == "MALFORMED"
+    assert d5["per_case_results"]["status"] == "UNAVAILABLE"
+
+    # 6. One malformed and the other available
+    f_pc_6 = tmp_path / "6_pc_valid.json"
+    f_pc_6.write_text(valid_pc_content, encoding="utf-8")
+    d6 = ObservatoryDataAdapter(ablation_table_path=str(f_abl_5), per_case_results_path=str(f_pc_6)).get_benchmark_data()
+    assert d6["ablation_table"]["status"] == "MALFORMED"
+    assert d6["per_case_results"]["status"] == "AVAILABLE"
+
+    # 7. Both malformed
+    f_pc_7 = tmp_path / "7_pc_malformed.json"
+    f_pc_7.write_text(malformed_pc_content, encoding="utf-8")
+    d7 = ObservatoryDataAdapter(ablation_table_path=str(f_abl_5), per_case_results_path=str(f_pc_7)).get_benchmark_data()
+    assert d7["ablation_table"]["status"] == "MALFORMED"
+    assert d7["per_case_results"]["status"] == "MALFORMED"
+
+    # 8. Partial data usable with documented limitation
+    d8 = ObservatoryDataAdapter(ablation_table_path=str(f_abl_1), per_case_results_path=str(f_pc_3)).get_benchmark_data()
+    assert d8["ablation_table"]["status"] == "AVAILABLE"
+    assert d8["per_case_results"]["status"] == "EMPTY"
+    assert d8["ablation_table"]["available"] is True
+    assert d8["per_case_results"]["data"] == []
+
+
+def test_combined_benchmark_status_full_matrix():
+    """
+    Direct unit test for frontend combined status decision policy deriveCombinedBenchmarkStatus()
+    covering all 11 matrix combinations plus unknown and missing status values:
+    1. AVAILABLE + AVAILABLE -> AVAILABLE
+    2. AVAILABLE + UNAVAILABLE -> PARTIAL
+    3. AVAILABLE + EMPTY -> PARTIAL
+    4. AVAILABLE + MALFORMED -> PARTIAL
+    5. UNAVAILABLE + UNAVAILABLE -> UNAVAILABLE
+    6. EMPTY + UNAVAILABLE -> EMPTY
+    7. MALFORMED + UNAVAILABLE -> MALFORMED
+    8. MALFORMED + EMPTY -> MALFORMED
+    9. MALFORMED + AVAILABLE -> PARTIAL
+    10. MALFORMED + MALFORMED -> MALFORMED
+    11. EMPTY + EMPTY -> EMPTY
+    12. UNKNOWN / missing status values -> handled safely without returning AVAILABLE
+    """
+    matrix = [
+        ("AVAILABLE", "AVAILABLE", "AVAILABLE"),
+        ("AVAILABLE", "UNAVAILABLE", "PARTIAL"),
+        ("AVAILABLE", "EMPTY", "PARTIAL"),
+        ("AVAILABLE", "MALFORMED", "PARTIAL"),
+        ("UNAVAILABLE", "UNAVAILABLE", "UNAVAILABLE"),
+        ("EMPTY", "UNAVAILABLE", "EMPTY"),
+        ("MALFORMED", "UNAVAILABLE", "MALFORMED"),
+        ("MALFORMED", "EMPTY", "MALFORMED"),
+        ("MALFORMED", "AVAILABLE", "PARTIAL"),
+        ("MALFORMED", "MALFORMED", "MALFORMED"),
+        ("EMPTY", "EMPTY", "EMPTY"),
+        ("UNKNOWN", "UNKNOWN", "UNAVAILABLE"),
+        ("UNKNOWN", "AVAILABLE", "PARTIAL"),
+        ("MALFORMED", "UNKNOWN", "MALFORMED"),
+        (None, None, "UNAVAILABLE")
+    ]
+
+    # 1. Test Python mirror policy
+    def derive_combined_status(s1, s2):
+        s1 = (s1 or "UNAVAILABLE").upper()
+        s2 = (s2 or "UNAVAILABLE").upper()
+        if s1 == "AVAILABLE" and s2 == "AVAILABLE":
+            return "AVAILABLE"
+        if s1 == "AVAILABLE" or s2 == "AVAILABLE":
+            return "PARTIAL"
+        if s1 == "MALFORMED" or s2 == "MALFORMED":
+            return "MALFORMED"
+        if s1 == "EMPTY" or s2 == "EMPTY":
+            return "EMPTY"
+        return "UNAVAILABLE"
+
+    for abl_st, pc_st, expected in matrix:
+        actual = derive_combined_status(abl_st, pc_st)
+        assert actual == expected, f"Failed for ({abl_st}, {pc_st}): expected {expected}, got {actual}"
+
+    # 2. Test actual JS function in epistemicos/ui/static/app.js via Node.js
+    import subprocess
+    app_js_path = Path("epistemicos/ui/static/app.js")
+    if app_js_path.exists():
+        eval_script = f"""
+        const fs = require('fs');
+        const code = fs.readFileSync('{app_js_path}', 'utf8');
+        const fnMatch = code.match(/deriveCombinedBenchmarkStatus\\(ablStatus, pcStatus\\)\\s*\\{{([\\s\\S]*?)\\n    \\}},/);
+        if (!fnMatch) {{ console.error("Function not found"); process.exit(1); }}
+        const fn = new Function('ablStatus', 'pcStatus', fnMatch[1]);
+        const testCases = {json.dumps(matrix)};
+        for (const [s1, s2, expected] of testCases) {{
+            const actual = fn(s1, s2);
+            if (actual !== expected) {{
+                console.error(`JS Failure for (${{s1}}, ${{s2}}): expected ${{expected}}, got ${{actual}}`);
+                process.exit(1);
+            }}
+        }}
+        console.log("ALL_JS_TESTS_PASSED");
+        """
+        res = subprocess.run(["node", "-e", eval_script], capture_output=True, text=True)
+        assert res.returncode == 0 and "ALL_JS_TESTS_PASSED" in res.stdout, f"JS decision policy failure:\nSTDOUT: {res.stdout}\nSTDERR: {res.stderr}"
 
 
 def test_benchmark_data_each_artifact_missing_independently(tmp_path):

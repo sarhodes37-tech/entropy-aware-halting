@@ -192,6 +192,7 @@ def test_static_aria_accessibility_attributes():
     assert 'id="threshold-ablations-container"' in content
     assert 'id="benchmark-case-search"' in content
     assert 'id="benchmark-case-baseline-filter"' in content
+    assert 'id="benchmark-case-family-filter"' in content
     assert 'id="benchmark-case-outcome-filter"' in content
     assert 'id="benchmark-case-list"' in content
     assert 'id="benchmark-case-content"' in content

@@ -127,6 +127,7 @@ body {
 .text-cyan { color: var(--accent-interactive); }
 .text-primary { color: var(--text-primary); }
 .text-center { text-align: center; }
+.text-right { text-align: right; }
 
 /* -------------------------------------------------------------------------
  * Application Shell & Navigation (Desktop Persistent Sidebar)
@@ -362,6 +363,12 @@ h2 {
   text-transform: uppercase;
   letter-spacing: 0.03em;
   white-space: nowrap;
+}
+
+.status-badge-available {
+  background-color: var(--status-unknown-bg);
+  color: var(--accent-secondary);
+  border: 1px solid var(--border-default);
 }
 
 .status-badge-verified {

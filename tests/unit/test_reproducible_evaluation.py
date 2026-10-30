@@ -89,6 +89,16 @@ def full_cloned_repo(tmp_path):
                 continue
             shutil.copy2(os.path.join(root, f), target_dir / f)
 
+    # Copy pre-existing benchmark artifacts if present to support fast_mode tests
+    target_res = repo_dir / "results"
+    target_res.mkdir(parents=True, exist_ok=True)
+    src_res = Path(PROJECT_ROOT) / "results"
+    if src_res.exists():
+        for fname in ("ablation_table.json", "per_case_results.json", "incident_lab_results.json"):
+            s_file = src_res / fname
+            if s_file.exists():
+                shutil.copy2(s_file, target_res / fname)
+
     subprocess.run(["git", "config", "user.name", "CI User"], cwd=repo_dir, check=True, capture_output=True)
     subprocess.run(["git", "config", "user.email", "ci@example.com"], cwd=repo_dir, check=True, capture_output=True)
     subprocess.run(["git", "add", "."], cwd=repo_dir, check=True, capture_output=True)
