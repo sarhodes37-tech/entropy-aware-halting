@@ -1,11 +1,11 @@
 # EpistemicOS Consolidated Security & Evaluation Evidence Report
 
-**Overall Status:** `PARTIAL` | **Generated:** 2026-10-30T03:19:16Z
+**Overall Status:** `PARTIAL` | **Generated:** 2026-10-30T06:28:52Z
 
 ## Reproducibility & Environment Metadata
 - **Evaluated Git Commit:** `6756a4851698ec843a815f9ac7de3de999391bb3`
 - **Working Tree Status (Pre-Run):** `DIRTY`
-- **Working Tree Digest:** `1c5a71f8923a157f925d232b181ccaac3f1546e9dd4f5898900bf3231d8bf063`
+- **Working Tree Digest:** `6722c5c45b028e5aedd98adaaa69b1218dba3c14086db8de45779b83b108f0e7`
 - **Evaluation Command:** `/app/benchmarks/generate_evidence_report.py --fast`
 - **Execution Environment:** `LOCAL` (Python 3.12.13, Linux-6.8.0-x86_64-with-glibc2.39)
 - **Lockfile Digest:** `9f80340420f1fedb6b0eb4ef820340c039424fcffe7bcc81450add54119c0e23`
@@ -16,7 +16,7 @@
 
 ## Layer A: Deterministic Regression
 - **Status:** `PASS`
-- **Test Command:** `/home/jules/.pyenv/versions/3.12.13/bin/python3 -m pytest tests/unit/test_evidence_architecture.py -k test_dataset_manifest_integrity -q --tb=no`
+- **Test Command:** `/home/jules/.pyenv/versions/3.12.13/bin/python -m pytest tests/unit/test_evidence_architecture.py -k test_dataset_manifest_integrity -q --tb=no`
 - **Summary:** .                                                                        [100%]
 
 ---
