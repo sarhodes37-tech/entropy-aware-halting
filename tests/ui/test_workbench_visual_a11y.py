@@ -62,7 +62,12 @@ def parse_css_custom_properties(css_content):
 
 
 def test_parsed_design_tokens_contrast_and_gradient_surfaces():
-    """Parse actual design tokens from style.css and verify contrast against solid surfaces and gradient stops."""
+    """Parse actual design tokens from style.css and verify contrast against solid surfaces and gradient stops.
+
+    NOTE: Gradient contrast is evaluated here as a token-level analytical approximation across all
+    gradient stop boundary colors (e.g. #17122B, #1A152E, #18132C, #1F183B) rather than sampling
+    rendered gradient bitmaps in the browser.
+    """
     style_path = Path(__file__).parent.parent.parent / "epistemicos" / "ui" / "static" / "style.css"
     css_content = style_path.read_text(encoding="utf-8")
     tokens = parse_css_custom_properties(css_content)
@@ -224,7 +229,13 @@ def a11y_e2e_server(tmp_path):
 
 @pytest.mark.skipif(not PLAYWRIGHT_AVAILABLE, reason="playwright not installed")
 def test_rendered_component_contrast_browser(a11y_e2e_server):
-    """Inspect computed styles on rendered DOM elements in the browser and verify WCAG 2.2 AA contrast."""
+    """Inspect computed styles on rendered DOM elements in the browser and verify WCAG 2.2 AA contrast.
+
+    NOTE: This browser test evaluates contrast against rendered solid and alpha-composited
+    `backgroundColor` layers accumulated up the DOM tree to the base canvas. It does NOT sample
+    or claim to measure multi-stop CSS gradient backgrounds (backgroundImage), which are tested
+    analytically across gradient stop tokens in `test_parsed_design_tokens_contrast_and_gradient_surfaces`.
+    """
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         page = browser.new_page(viewport={"width": 1440, "height": 900})
@@ -470,7 +481,8 @@ def test_forced_colors_behavior_browser(a11y_e2e_server):
 @pytest.mark.skipif(not PLAYWRIGHT_AVAILABLE, reason="playwright not installed")
 def test_workbench_cross_viewport_responsiveness_and_screenshots(a11y_e2e_server):
     """Verify zero horizontal overflow, component visibility, and capture screenshots across all 7 viewports."""
-    verification_dir = Path("/home/jules/verification")
+    import os
+    verification_dir = Path(os.environ.get("VERIFICATION_DIR", "/home/jules/verification" if Path("/home/jules").exists() else Path.cwd() / "verification"))
     verification_dir.mkdir(parents=True, exist_ok=True)
 
     required_viewports = [
