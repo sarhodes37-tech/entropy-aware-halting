@@ -891,3 +891,53 @@ def test_audit_record_for_denied_attempt(tmp_path):
     assert inherited_audit_entry["event_type"] == "DETERMINISTIC_HALT"
     assert inherited_audit_entry["gate_name"] == "AuthorizationAuthority"
     assert "DURABLE_DENIAL_ACTIVE" in inherited_audit_entry["reason"]
+
+
+def test_helper_normalize_target_path_direct():
+    """
+    Direct unit test for CapabilityRegistry._normalize_target_path helper.
+    Validates host extraction, relative vs absolute paths, dot segment resolution,
+    backslash collapsing, and percent-encoded separators.
+    """
+    assert CapabilityRegistry._normalize_target_path("") == ("", "/")
+    assert CapabilityRegistry._normalize_target_path("foo/bar") == ("", "/foo/bar")
+    assert CapabilityRegistry._normalize_target_path("/foo/bar/") == ("", "/foo/bar")
+    assert CapabilityRegistry._normalize_target_path("/foo/baz/../bar") == ("", "/foo/bar")
+    assert CapabilityRegistry._normalize_target_path(r"/foo\bar\baz") == ("", "/foo/bar/baz")
+    assert CapabilityRegistry._normalize_target_path("http://host-a.internal:8080/api/v1") == ("host-a.internal:8080", "/api/v1")
+    assert CapabilityRegistry._normalize_target_path("https://host-b.internal/api%2Fv1%2Fsub") == ("host-b.internal", "/api/v1/sub")
+
+
+def test_helper_find_inherited_denial_direct(tmp_path):
+    """
+    Direct unit test for CapabilityRegistry._find_inherited_denial helper.
+    Validates direct match, downward subpath inheritance, host wildcards,
+    and denial classification matching without needing full orchestrator dispatch.
+    """
+    denial_log = tmp_path / "find_inherited_denial.jsonl"
+    reg = CapabilityRegistry(denial_log_path=str(denial_log))
+
+    # Record active parent denial
+    reg._denied_records[("TASK-DIRECT-01", "delete_db", "/data/storage")] = {
+        "status": "ACTIVE",
+        "action_name": "delete_db",
+        "target": "/data/storage",
+        "reason": "Direct test restriction"
+    }
+
+    # 1. Matching subpath should return inherited record with metadata
+    res = reg._find_inherited_denial("TASK-DIRECT-01", "delete_db", "/data/storage/subfolder")
+    assert res is not None
+    assert res["inherited_from"]["action_name"] == "delete_db"
+    assert res["inherited_from"]["target"] == "/data/storage"
+
+    # 2. Unrelated path for same task should not match
+    assert reg._find_inherited_denial("TASK-DIRECT-01", "delete_db", "/other/path") is None
+
+    # 3. Different task should not match
+    assert reg._find_inherited_denial("TASK-OTHER-02", "delete_db", "/data/storage/subfolder") is None
+
+    # 4. Same action category (state mutation) should inherit restriction
+    res_cat = reg._find_inherited_denial("TASK-DIRECT-01", "destructive_shell", "/data/storage")
+    assert res_cat is not None
+    assert res_cat["inherited_from"]["action_name"] == "delete_db"
