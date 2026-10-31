@@ -168,6 +168,130 @@ def test_record_event_payload_too_large(temp_audit_file):
         audit.record_event(event)
 
 
+# =====================================================================
+# AUDIT TRAIL ERROR PATHS & FALLBACKS
+# =====================================================================
+
+def test_audit_fsync_oserror_fallback_handling(temp_audit_file):
+    """
+    Validates that TamperEvidentAuditTrail gracefully catches OSError on os.fsync during record_event.
+
+    Durability Contract Note:
+    TamperEvidentAuditTrail implements best-effort physical durability on local filesystems.
+    In environments where fsync is not supported or fails with OSError (e.g. certain network mounts,
+    virtualized file descriptors, or restricted container runtimes), record_event flushes in-memory
+    buffers (f.flush()) and swallows the OSError so audit logging does not abort execution.
+    The caller receives the formatted entry_data confirming buffer write, but hardware sync is best-effort.
+    """
+    audit = TamperEvidentAuditTrail(temp_audit_file)
+    event = AuditEvent(
+        event_type=AuditLogLevel.INFO,
+        gate_name="fsync_gate",
+        reason="test_fsync_error_handling",
+        model_id="test_model",
+        payload_snippet="payload_for_fsync_fallback"
+    )
+
+    with patch("os.fsync", side_effect=OSError("Sync to storage device not supported")) as mock_fsync:
+        recorded = audit.record_event(event)
+
+    # Explicitly assert that os.fsync was invoked exactly once and the OSError path was executed
+    mock_fsync.assert_called_once()
+    assert recorded is not None
+    assert recorded["gate_name"] == "fsync_gate"
+    assert recorded["reason"] == "test_fsync_error_handling"
+    assert os.path.exists(temp_audit_file)
+
+    # Verify chain integrity after write with fsync fallback
+    is_valid, count, err = audit.verify_chain_integrity()
+    assert is_valid is True
+    assert count == 1
+    assert err is None
+
+
+def test_audit_get_last_hash_reload_and_uncached_fallback(temp_audit_file):
+    """Validates TamperEvidentAuditTrail._get_last_hash with force_reload=True, cache handling, and corrupted log fallback."""
+    audit = TamperEvidentAuditTrail(temp_audit_file)
+
+    # When log file does not exist or is empty, returns genesis hash
+    audit.last_hash = None
+    initial_hash = audit._get_last_hash(force_reload=False)
+    assert initial_hash == audit.genesis_hash
+    assert audit.last_hash == audit.genesis_hash
+
+    # Cached hit branch (force_reload=False and last_hash is not None)
+    audit.last_hash = "pre_cached_entry_hash"
+    assert audit._get_last_hash(force_reload=False) == "pre_cached_entry_hash"
+
+    # Record first event
+    e1 = audit.record_event(AuditEvent(AuditLogLevel.INFO, "gate1", "reason1", "model1", "snippet1"))
+    expected_hash_1 = e1["entry_hash"]
+
+    # Invalidate cached last_hash and verify fallback recalculation
+    audit.last_hash = None
+    recovered_hash = audit._get_last_hash(force_reload=False)
+    assert recovered_hash == expected_hash_1
+    assert audit.last_hash == expected_hash_1
+
+    # Force reload even when cached
+    audit.last_hash = "stale_hash_value"
+    reloaded_hash = audit._get_last_hash(force_reload=True)
+    assert reloaded_hash == expected_hash_1
+    assert audit.last_hash == expected_hash_1
+
+    # Simulate log corruption (malformed trailing JSON)
+    with open(temp_audit_file, "a", encoding="utf-8") as f:
+        f.write('{"event_id": "malformed_trailing_entry", "incomplete": \n')
+
+    # Verify behavior of inspect_log_health and _get_last_hash on corrupted log
+    is_healthy, last_valid_h, err_msg = audit.inspect_log_health()
+    assert is_healthy is False
+    assert last_valid_h == expected_hash_1
+    assert "Malformed JSON" in err_msg
+
+    audit.last_hash = None
+    recovered_on_corrupt = audit._get_last_hash(force_reload=False)
+    assert recovered_on_corrupt == expected_hash_1
+    assert audit.last_hash == expected_hash_1
+
+    # Verify that record_event refuses to append to corrupted log and fails closed
+    with pytest.raises(RuntimeError, match="Cannot write to audit trail: Log corruption detected"):
+        audit.record_event(AuditEvent(AuditLogLevel.INFO, "gate2", "reason2", "model2", "snippet2"))
+
+
+def test_audit_sanitize_string_value_bearer_and_email_branches():
+    """Validates fast-path string value sanitization for Bearer tokens, emails, and UUID-shaped string preservation."""
+    from epistemicos.audit import _sanitize_string_value
+
+    # Bearer pattern branch
+    bearer_raw = "Authorization: Bearer secret_token_xyz"
+    sanitized_bearer = _sanitize_string_value(bearer_raw)
+    assert "secret_token_xyz" not in sanitized_bearer
+    assert "Bearer [REDACTED]" in sanitized_bearer
+
+    # Email pattern branch
+    email_raw = "User email is admin@example.corp."
+    sanitized_email = _sanitize_string_value(email_raw)
+    assert "admin@example.corp" not in sanitized_email
+    assert "[REDACTED_EMAIL]" in sanitized_email
+
+    # Combined with trigger character check
+    combined_raw = "Contact: support@acme.org with token Bearer token_999 and api_key=value123"
+    sanitized_combined = _sanitize_string_value(combined_raw)
+    assert "support@acme.org" not in sanitized_combined
+    assert "[REDACTED_EMAIL]" in sanitized_combined
+    assert "token_999" not in sanitized_combined
+    assert "Bearer [REDACTED]" in sanitized_combined
+    assert "api_key=[REDACTED]" in sanitized_combined
+
+    # Fast-path length 36 UUID-shaped string preservation (Line 56):
+    # Verifies that strings matching standard 8-4-4-4-12 hexadecimal UUID shape are preserved intact
+    # to maintain correlation IDs without being altered by phone/SSN digit redactions.
+    uuid_shaped_string = "12345678-1234-5678-1234-567812345678"
+    assert len(uuid_shaped_string) == 36
+    assert _sanitize_string_value(uuid_shaped_string) == uuid_shaped_string
+
+
 def test_f8_tamper_evident_audit_trail_hmac_keying(temp_audit_file):
     """F8 Regression: Verifies that configuring TamperEvidentAuditTrail with hmac_key uses HMAC-SHA256 for chain integrity."""
     secret_key = b"audit_trail_secret_key"
