@@ -77,11 +77,11 @@ To ensure complete scientific transparency, EpistemicOS clearly distinguishes be
 | Interface Surface | Telemetry Source | Verification Status | Artifact Backing |
 | :--- | :--- | :--- | :--- |
 | **Benchmark Workbench** (`#view-benchmarks`, Fig. 3) | **Actual Measured Telemetry** | Verified Empirical Evidence | `results/ablation_table.json`, `results/per_case_results.json` ($N=100$) |
-| **Observatory Control Room** (Fig. 4 below) | **Illustrative Design Concept** | Conceptual Mockup / Future Architecture | Synthetic sample traces (does not represent live continuous agent fleet) |
+| **Observatory Control Room** (Fig. 4 below) | **Illustrative Design Concept** | Conceptual Mockup / Future Architecture | Synthetic sample traces (do not represent live system telemetry) |
 
 ![Conceptual mockup of the EpistemicOS Observatory Control Room showing real-time agent telemetry stream, audit verification dials, and execution traces](docs/figures/observatory-concept.png)
 
-*Figure 4 — EpistemicOS Observatory Control Room (Conceptual Design Model): Illustrative architectural mockup showing proposed continuous real-time fleet telemetry and live streaming audit dials. Not representative of live multi-agent production monitoring.*
+*Figure 4 — EpistemicOS Observatory Control Room (Conceptual Design Model): Illustrative design concept showing proposed continuous real-time fleet telemetry and live streaming audit dials. Depicted metrics, timestamps, and traces do not represent live system telemetry.*
 
 ---
 
