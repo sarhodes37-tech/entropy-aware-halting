@@ -455,43 +455,51 @@ def test_downstream_resource_fencing_operation_contract(tmp_path):
 
 def test_concurrent_competing_delayed_resource_operations():
     """
-    Atomic resource-side fencing: concurrent delayed operations cannot apply
-    after a newer generation has been committed.
+    Atomic resource-side fencing: once generation 2 has been accepted by the resource,
+    a delayed generation-1 operation must never execute, regardless of thread interleaving.
+
+    Deterministic Ordering:
+    1. Commit generation 2 to the resource.
+    2. Release a delayed generation-1 operation from a barrier.
+    3. Assert it raises PermissionError.
+    4. Assert the resource's operation history contains no generation-1 operation after generation 2.
     """
     resource = MockFencedDatabase()
     scope = "task:concurrent_ops|target::/shared_db"
 
+    # 1. Commit generation 2 to the resource
+    res_gen2 = resource.validate_and_execute(2, scope, {"data": "authoritative_op_gen2"})
+    assert res_gen2["status"] == "APPLIED"
+    assert resource.scope_watermarks[scope] == 2
+
+    # 2. Coordinate release of a delayed generation-1 worker thread via barrier
     barrier = threading.Barrier(2)
-    results = {}
+    delayed_results = {}
 
     def delayed_op_worker():
-        # Simulates a delayed operation with Gen 1
         barrier.wait()
         try:
-            results["delayed"] = resource.validate_and_execute(1, scope, {"data": "delayed_op"})
+            delayed_results["result"] = resource.validate_and_execute(1, scope, {"data": "stale_delayed_op_gen1"})
         except Exception as e:
-            results["delayed_error"] = e
+            delayed_results["error"] = e
 
-    def newer_op_worker():
-        # Simulates a current operation with Gen 2
-        barrier.wait()
-        try:
-            results["newer"] = resource.validate_and_execute(2, scope, {"data": "newer_op"})
-        except Exception as e:
-            results["newer_error"] = e
+    delayed_thread = threading.Thread(target=delayed_op_worker)
+    delayed_thread.start()
 
-    t1 = threading.Thread(target=delayed_op_worker)
-    t2 = threading.Thread(target=newer_op_worker)
-    t1.start()
-    t2.start()
-    t1.join()
-    t2.join()
+    # Release worker from barrier
+    barrier.wait()
+    delayed_thread.join(timeout=5)
 
-    # The high water mark must advance to 2
-    assert resource.scope_watermarks[scope] == 2
-    # If the newer operation linearized first, the delayed operation MUST be rejected
-    if "newer" in results and "delayed_error" in results:
-        assert isinstance(results["delayed_error"], PermissionError)
+    # 3. Assert it raises PermissionError with Stale fencing token message
+    assert "error" in delayed_results
+    assert isinstance(delayed_results["error"], PermissionError)
+    assert "Stale fencing token 1 < current 2" in str(delayed_results["error"])
+
+    # 4. Assert the resource operation history contains strictly the gen 2 operation, and no gen 1 operation
+    applied_generations = [op["generation"] for op in resource.operations if op["scope_key"] == scope]
+    assert applied_generations == [2]
+    applied_state_gens = [st["generation"] for st in resource.scope_state.get(scope, [])]
+    assert applied_state_gens == [2]
 
 
 def test_unfenced_resource_demonstrates_documented_limitation():
