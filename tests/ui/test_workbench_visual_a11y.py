@@ -80,24 +80,29 @@ def test_parsed_design_tokens_contrast_and_gradient_surfaces():
         "subtle": parse_hex_color(tokens["--bg-subtle"]),
     }
 
-    # Gradient surface stop boundaries used across cards and panels
-    gradient_stops = {
-        "sidebar_bottom (#17122B)": (23, 18, 43),
-        "card_bottom (#1A152E)": (26, 21, 46),
-        "metric_bottom (#18132C)": (24, 19, 44),
-        "derived_summary_bottom (#1F183B)": (31, 24, 59),
-    }
+    # Extract gradient stop boundary colors dynamically from CSS linear-gradient declarations
+    gradient_matches = re.findall(r'linear-gradient\([^)]+\)', css_content)
+    gradient_stops = {}
+    for g in set(gradient_matches):
+        hex_colors = re.findall(r'#[0-9a-fA-F]{6}', g)
+        for h in hex_colors:
+            gradient_stops[f"css_gradient_stop_{h.upper()}"] = parse_hex_color(h)
 
     all_backgrounds = {**bg_surfaces, **gradient_stops}
 
-    # Normal text tokens (require >= 4.5:1)
+    # Text tokens evaluated against normal text threshold (>= 4.5:1)
+    # Note: --accent-secondary and --status-failed-fg are used on normal-sized text elements
+    # (e.g. .status-badge-available, .badge-FAILED, .text-danger, and alert badges).
+    # Both are set to #FF83B8, which exceeds the normal-text threshold (>= 4.5:1) across all surfaces.
     normal_text_tokens = {
         "--text-primary": parse_hex_color(tokens["--text-primary"]),
         "--text-secondary": parse_hex_color(tokens["--text-secondary"]),
         "--text-muted": parse_hex_color(tokens["--text-muted"]),
         "--accent-primary": parse_hex_color(tokens["--accent-primary"]),
+        "--accent-secondary": parse_hex_color(tokens["--accent-secondary"]),
         "--accent-interactive": parse_hex_color(tokens["--accent-interactive"]),
         "--status-verified-fg": parse_hex_color(tokens["--status-verified-fg"]),
+        "--status-failed-fg": parse_hex_color(tokens["--status-failed-fg"]),
         "--status-halted-fg": parse_hex_color(tokens["--status-halted-fg"]),
     }
 
@@ -105,17 +110,6 @@ def test_parsed_design_tokens_contrast_and_gradient_surfaces():
         for fg_token, fg_rgb in normal_text_tokens.items():
             ratio = compute_contrast_ratio(fg_rgb, bg_rgb)
             assert ratio >= 4.5, f"Token {fg_token} against background '{bg_name}' has contrast {ratio:.2f}:1 (< 4.5:1)"
-
-    # Large text & graphical boundary tokens (require >= 3.0:1)
-    large_text_tokens = {
-        "--accent-secondary": parse_hex_color(tokens["--accent-secondary"]),
-        "--status-failed-fg": parse_hex_color(tokens["--status-failed-fg"]),
-    }
-
-    for bg_name, bg_rgb in all_backgrounds.items():
-        for fg_token, fg_rgb in large_text_tokens.items():
-            ratio = compute_contrast_ratio(fg_rgb, bg_rgb)
-            assert ratio >= 3.0, f"Token {fg_token} against background '{bg_name}' has contrast {ratio:.2f}:1 (< 3.0:1)"
 
 
 @pytest.fixture
