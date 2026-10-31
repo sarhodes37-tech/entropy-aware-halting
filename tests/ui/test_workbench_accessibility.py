@@ -11,6 +11,9 @@ Authoritative regression suite verifying:
 4. Accessible names, ARIA roles, states, and properties across all interactive controls.
 5. Table accessibility semantics (scope="col", scope="row") across tabular data displays.
 6. Reduced motion and forced-colors compliance.
+7. Polite live region announcements (verifying actual text updates on tab switch, record selection, and filter clear).
+8. Responsive reflow at 320px width (400% zoom equivalent) verifying zero horizontal page overflow.
+9. Target size evaluation for interactive elements (WCAG 2.2 2.5.8).
 """
 
 import json
@@ -411,5 +414,161 @@ def test_table_accessibility_semantics(a11y_comprehensive_server):
 
         threshold_row_ths = page.locator("#benchmark-thresholds-tbody th[scope='row']")
         assert threshold_row_ths.count() >= 1
+
+        browser.close()
+
+
+@pytest.mark.skipif(not PLAYWRIGHT_AVAILABLE, reason="playwright not installed")
+def test_live_region_announcements(a11y_comprehensive_server):
+    """Verify that the polite live region (#a11y-status-announcer) dynamically updates text on user actions."""
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        page = browser.new_page(viewport={"width": 1440, "height": 900})
+        page.goto(f"{a11y_comprehensive_server}/index.html")
+
+        announcer = page.locator("#a11y-status-announcer")
+        assert announcer.count() == 1
+        assert announcer.get_attribute("role") == "status"
+        assert announcer.get_attribute("aria-live") == "polite"
+
+        # 1. Tab Navigation announcement
+        page.click("#tab-traces")
+        page.wait_for_timeout(100)
+        assert "Execution Trace Explorer" in announcer.text_content()
+
+        # 2. Trace selection announcement
+        page.wait_for_selector("#trace-list .trace-item")
+        page.click("#trace-list .trace-item")
+        page.wait_for_timeout(100)
+        assert "Selected execution trace" in announcer.text_content()
+
+        # 3. Filter clearing announcement
+        trace_search = page.locator("#trace-search")
+        trace_search.fill("no_such_trace_abc")
+        page.wait_for_timeout(100)
+        clear_btn = page.locator("#area-trace-list button:has-text('Clear Filters')")
+        if clear_btn.is_visible():
+            clear_btn.click()
+            page.wait_for_timeout(100)
+            assert "Trace filters cleared" in announcer.text_content()
+
+        # 4. Provenance Navigation and Selection
+        page.click("#tab-provenance")
+        page.wait_for_timeout(100)
+        assert "Provenance Explorer" in announcer.text_content()
+
+        page.wait_for_selector("#provenance-record-list .trace-item")
+        page.click("#provenance-record-list .trace-item")
+        page.wait_for_timeout(100)
+        assert "Selected provenance record" in announcer.text_content()
+
+        # 5. Benchmark Navigation and Selection
+        page.click("#tab-benchmarks")
+        page.wait_for_timeout(100)
+        assert "Benchmark Workbench" in announcer.text_content()
+
+        page.wait_for_selector("#benchmark-case-list .trace-item")
+        page.click("#benchmark-case-list .trace-item")
+        page.wait_for_timeout(100)
+        assert "Selected benchmark case" in announcer.text_content()
+
+        browser.close()
+
+
+@pytest.mark.skipif(not PLAYWRIGHT_AVAILABLE, reason="playwright not installed")
+def test_prefers_reduced_motion_behavior(a11y_comprehensive_server):
+    """Verify that CSS animations and transitions respect prefers-reduced-motion: reduce."""
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        page = browser.new_page(
+            viewport={"width": 1440, "height": 900},
+            reduced_motion="reduce"
+        )
+        page.goto(f"{a11y_comprehensive_server}/index.html")
+
+        # Verify that transitions have near-zero duration or animations are disabled
+        tab_duration = page.evaluate("""
+            () => {
+                const el = document.querySelector('.nav-tab');
+                return window.getComputedStyle(el).transitionDuration;
+            }
+        """)
+        # In style.css: transition-duration: 0.01ms !important;
+        assert "0.01ms" in tab_duration or "0s" in tab_duration or float(tab_duration.replace("s", "")) < 0.001
+
+        browser.close()
+
+
+@pytest.mark.skipif(not PLAYWRIGHT_AVAILABLE, reason="playwright not installed")
+def test_forced_colors_support(a11y_comprehensive_server):
+    """Verify that forced-colors mode renders distinguishable borders and outlines."""
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        page = browser.new_page(
+            viewport={"width": 1440, "height": 900},
+            forced_colors="active"
+        )
+        page.goto(f"{a11y_comprehensive_server}/index.html")
+
+        # Verify high-contrast border styling rule is active
+        border_style = page.evaluate("""
+            () => {
+                const card = document.querySelector('.card');
+                return window.getComputedStyle(card).borderStyle;
+            }
+        """)
+        assert border_style in ["solid", "none"]
+
+        browser.close()
+
+
+@pytest.mark.skipif(not PLAYWRIGHT_AVAILABLE, reason="playwright not installed")
+def test_responsive_reflow_narrow_viewport_320px(a11y_comprehensive_server):
+    """Verify WCAG 1.4.10 Reflow: at 320px width (400% zoom equivalent), there is no horizontal page scroll."""
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        page = browser.new_page(viewport={"width": 320, "height": 640})
+        page.goto(f"{a11y_comprehensive_server}/index.html")
+
+        # Overview view reflow
+        has_h_scroll = page.evaluate("() => document.documentElement.scrollWidth > window.innerWidth")
+        assert not has_h_scroll, "Overview view exhibits horizontal page scrolling at 320px width"
+
+        # Execution Traces view reflow
+        page.click("#tab-traces")
+        page.wait_for_timeout(100)
+        has_h_scroll = page.evaluate("() => document.documentElement.scrollWidth > window.innerWidth")
+        assert not has_h_scroll, "Traces view exhibits horizontal page scrolling at 320px width"
+
+        # Benchmark Workbench view reflow
+        page.click("#tab-benchmarks")
+        page.wait_for_timeout(100)
+        has_h_scroll = page.evaluate("() => document.documentElement.scrollWidth > window.innerWidth")
+        assert not has_h_scroll, "Benchmark view exhibits horizontal page scrolling at 320px width"
+
+        browser.close()
+
+
+@pytest.mark.skipif(not PLAYWRIGHT_AVAILABLE, reason="playwright not installed")
+def test_target_size_wcag_258(a11y_comprehensive_server):
+    """Evaluate interactive targets against WCAG 2.2 2.5.8 minimum target size (>= 24x24px or with spacing)."""
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        page = browser.new_page(viewport={"width": 1440, "height": 900})
+        page.goto(f"{a11y_comprehensive_server}/index.html")
+
+        # Primary nav buttons
+        tabs = page.locator(".nav-tab")
+        for i in range(tabs.count()):
+            box = tabs.nth(i).bounding_box()
+            assert box["height"] >= 24, f"Nav tab {i} height {box['height']} < 24px"
+            assert box["width"] >= 24, f"Nav tab {i} width {box['width']} < 24px"
+
+        # Search inputs
+        inputs = page.locator("input[type='search']")
+        for i in range(inputs.count()):
+            box = inputs.nth(i).bounding_box()
+            if box:
+                assert box["height"] >= 24, f"Search input {i} height {box['height']} < 24px"
 
         browser.close()

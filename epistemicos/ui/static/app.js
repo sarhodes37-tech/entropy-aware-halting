@@ -273,6 +273,8 @@ document.addEventListener('DOMContentLoaded', () => {
         panel.classList.toggle('active', panel.id === `view-${tabName}`);
       });
 
+      this.announce(`Navigated to ${tabTitles[tabName] || tabName}`);
+
       if (tabName === 'overview') this.loadOverview();
       else if (tabName === 'traces') {
         this.loadTraces();
@@ -855,6 +857,7 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             const statusFilter = document.getElementById('trace-status-filter');
             if (statusFilter) statusFilter.value = 'ALL';
+              this.announce('Trace filters cleared. Showing all traces.');
             this.renderTracesList();
           });
 
@@ -943,6 +946,7 @@ document.addEventListener('DOMContentLoaded', () => {
     async selectTrace(correlationId) {
       this.state.selectedTraceId = correlationId;
       this.state.selectedEventSeq = null;
+      this.announce(`Selected execution trace ${correlationId}`);
       this.renderTracesList();
 
       const emptyDiv = document.getElementById('trace-detail-empty');
@@ -1824,6 +1828,7 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             const typeFilter = document.getElementById('provenance-type-filter');
             if (typeFilter) typeFilter.value = 'ALL';
+            this.announce('Provenance filters cleared. Showing all records.');
             this.renderProvenanceRecordList();
           });
 
@@ -1912,6 +1917,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     selectProvenanceRecord(recId) {
       this.state.selectedRecordId = recId;
+      this.announce(`Selected provenance record ${recId}`);
       this.renderProvenanceRecordList();
 
       const emptyDiv = document.getElementById('provenance-inspector-empty');
@@ -2832,6 +2838,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (famSelect) famSelect.value = 'ALL';
             const outcomeSelect = document.getElementById('benchmark-case-outcome-filter');
             if (outcomeSelect) outcomeSelect.value = 'ALL';
+            this.announce('Benchmark case filters cleared. Showing all cases.');
             this.renderBenchmarkCasesList();
           });
 
@@ -2932,6 +2939,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
     selectBenchmarkCase(caseRecord, index) {
       this.state.selectedCaseIndex = index;
+      if (caseRecord && caseRecord.case_id) {
+        this.announce(`Selected benchmark case ${caseRecord.case_id}`);
+      }
       this.renderBenchmarkCasesList();
 
       const emptyDiv = document.getElementById('benchmark-case-empty');

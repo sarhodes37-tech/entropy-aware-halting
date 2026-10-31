@@ -55,7 +55,7 @@ jobs:
 
       - name: Install Playwright & Chromium
         run: |
-          pip install playwright>=1.40.0
+          pip install "playwright>=1.40.0"
           playwright install --with-deps chromium
 
       - name: Run Playwright Browser Accessibility Tests
