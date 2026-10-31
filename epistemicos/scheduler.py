@@ -34,7 +34,8 @@ class EntropyAwareScheduler:
         stagnation_window=3,
         confidence_threshold=0.01,
         utility_epsilon=0.5,
-        minimum_steps_before_convergence=3
+        minimum_steps_before_convergence=3,
+        executor=None
     ):
         specs = [
             ("value_of_information", value_of_information, "number", True),
@@ -75,6 +76,8 @@ class EntropyAwareScheduler:
         self.best_step = -1
         self.best_utility = float("-inf")
         self.initial_entropy = None
+        self._executor = executor
+        self._running = True
 
     def reset(self) -> None:
         """Resets trajectory state tracking metrics for a new execution trajectory/session."""
@@ -86,6 +89,13 @@ class EntropyAwareScheduler:
         self.best_step = -1
         self.best_utility = float("-inf")
         self.initial_entropy = None
+        self._running = True
+
+    def shutdown(self, wait: bool = True):
+        """Shuts down the underlying task executor if configured and marks scheduler as not running."""
+        if self._executor is not None:
+            self._executor.shutdown(wait=wait)
+        self._running = False
 
     def entropy(self, probabilities):
         """
