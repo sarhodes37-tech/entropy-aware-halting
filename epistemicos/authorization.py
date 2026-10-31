@@ -1417,7 +1417,7 @@ class CapabilityRegistry:
         Evaluates downward restriction inheritance across alternative execution paths/endpoints
         for the same task. Matches by host, subpath inheritance, and action category or wildcard.
         """
-        from epistemicos.action_policy import ActionRegistry, ActionCategory
+        from epistemicos.action_policy import ActionRegistry
 
         registry = getattr(self, "_action_registry", None) or ActionRegistry()
         req_cat = registry.classify_action(action_name)
