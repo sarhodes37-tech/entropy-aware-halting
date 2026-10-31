@@ -18,14 +18,29 @@ from pathlib import Path
 from dataclasses import dataclass, field, asdict
 from typing import Dict, Any, List, Optional, Tuple, Set, Protocol, runtime_checkable
 
-@runtime_checkable
-class FencedResource(Protocol):
+from abc import ABCMeta
+from unittest.mock import NonCallableMagicMock
+
+class FencedResource(metaclass=ABCMeta):
     """
-    Protocol for downstream resources capable of enforcing atomic fencing validation.
-    When an executor implements this protocol, the execution boundary provides the fencing token.
+    Protocol for downstream resources capable of enforcing atomic resource-side fencing validation.
+
+    Downstream Resource Contract:
+    The resource must validate the fencing generation atomically with the consequential operation
+    under resource-level synchronization (e.g. lock or atomic compare-and-swap). A resource must
+    validate both `fencing_token` and `scope_key` against its independent high-water marks, ensuring
+    independent scopes cannot invalidate or impersonate each other.
     """
-    def validate_and_execute(self, fencing_token: int, *args: Any, **kwargs: Any) -> Any:
-        ...
+    @classmethod
+    def __subclasshook__(cls, C):
+        if issubclass(C, NonCallableMagicMock):
+            return False
+        if any("validate_and_execute" in B.__dict__ for B in C.__mro__):
+            return True
+        return NotImplemented
+
+    def validate_and_execute(self, fencing_token: int, scope_key: str, *args: Any, **kwargs: Any) -> Any:
+        raise NotImplementedError
 
 
 from epistemicos.audit import _sanitize_sensitive_data, ReceiptGenerator
@@ -466,9 +481,9 @@ class TrustedExecutionBoundary:
         # Execute under BaseException catching to handle interruptions and errors
         try:
             effective_fence = getattr(cap, "fencing_token", None) if cap else None
-            # If the underlying executor is a FencedResource or wrapper accepting fencing_token:
+            effective_scope = getattr(cap, "scope_key", None) if cap else getattr(context, "scope_key", None)
             if isinstance(executor_func, FencedResource):
-                result = executor_func.validate_and_execute(effective_fence)
+                result = executor_func.validate_and_execute(effective_fence, effective_scope)
             else:
                 result = executor_func()
         except Exception as e:

@@ -371,8 +371,7 @@ def test_subprocess_cli_integration_evaluation_and_validation(full_cloned_repo, 
         "--docs-dir", "docs/security"
     ]
     env = os.environ.copy()
-    site_pkgs = os.popen("python -c 'import site; print(site.getsitepackages()[0])'").read().strip()
-    env["PYTHONPATH"] = f"{repo_dir}{os.pathsep}{PROJECT_ROOT}{os.pathsep}{site_pkgs}"
+    env["PYTHONPATH"] = f"{repo_dir}{os.pathsep}{PROJECT_ROOT}"
 
     res_gen = subprocess.run(gen_cmd, cwd=repo_dir, capture_output=True, text=True, env=env)
     assert res_gen.returncode == 0, f"Report generation CLI failed!\nSTDOUT: {res_gen.stdout}\nSTDERR: {res_gen.stderr}"

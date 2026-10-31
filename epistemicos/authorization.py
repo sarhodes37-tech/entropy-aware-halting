@@ -660,7 +660,17 @@ class FileAuthorizationStore(AuthorizationStore):
                             continue
 
                         rec_type = rec.get("type")
-                        if rec_type == "REGISTER_CAPABILITY":
+                        if rec_type == "ISSUE_CAPABILITY":
+                            tok = rec.get("token_id")
+                            sk = rec.get("scope_key")
+                            f_val = rec.get("fencing_token")
+                            if not tok or not sk or f_val is None:
+                                if self.fail_closed:
+                                    raise RuntimeError(f"Corrupted ISSUE_CAPABILITY record at line {line_idx} in {self.store_path}")
+                                continue
+                            caps[tok] = rec.get("data")
+                            fencing[sk] = max(fencing.get(sk, 0), int(f_val))
+                        elif rec_type == "REGISTER_CAPABILITY":
                             tok = rec.get("token_id")
                             if not tok:
                                 if self.fail_closed:
@@ -740,23 +750,16 @@ class FileAuthorizationStore(AuthorizationStore):
                     cap.signature = signing_func(cap)
                 data = cap.to_dict() if hasattr(cap, "to_dict") else cap
 
-                # Atomic dual-record journal commit: FENCE + REGISTER_CAPABILITY
-                records = [
-                    {
-                        "type": "FENCE",
-                        "scope_key": scope_key,
-                        "fencing_token": new_fence,
-                        "timestamp": time.time()
-                    },
-                    {
-                        "type": "REGISTER_CAPABILITY",
-                        "token_id": cap.token_id,
-                        "data": data,
-                        "timestamp": time.time()
-                    }
-                ]
-                for r in records:
-                    self._append_record_under_lock(r)
+                # Atomic single-event journal commit: ISSUE_CAPABILITY
+                issue_rec = {
+                    "type": "ISSUE_CAPABILITY",
+                    "scope_key": scope_key,
+                    "fencing_token": new_fence,
+                    "token_id": cap.token_id,
+                    "data": data,
+                    "timestamp": time.time()
+                }
+                self._append_record_under_lock(issue_rec)
 
                 self._scope_fencing_generations[scope_key] = new_fence
                 self._capabilities[cap.token_id] = data

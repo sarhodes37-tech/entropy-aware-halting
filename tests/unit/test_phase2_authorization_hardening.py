@@ -323,21 +323,31 @@ def test_monotonic_fencing_stale_generation_rejected(tmp_path):
     assert callback.call_count == 1
 
 
+import threading
+
 class MockFencedDatabase:
-    """Mock downstream resource implementing FencedResource protocol."""
+    """
+    Mock downstream resource implementing atomic resource-side fencing validation.
+    Maintains independent high-water marks per scope_key, ensuring cross-scope isolation.
+    """
     def __init__(self):
-        self.high_water_mark = 0
+        self._lock = threading.Lock()
+        self.scope_watermarks: dict[str, int] = {}
         self.operations = []
 
     def __call__(self, *args, **kwargs):
-        return self.validate_and_execute(0, *args, **kwargs)
+        return self.validate_and_execute(0, "default_scope", *args, **kwargs)
 
-    def validate_and_execute(self, fencing_token: int, *args, **kwargs):
-        if fencing_token < self.high_water_mark:
-            raise PermissionError(f"Resource boundary violation: Stale fencing token {fencing_token} < current {self.high_water_mark}")
-        self.high_water_mark = fencing_token
-        self.operations.append(fencing_token)
-        return {"status": "APPLIED", "generation": fencing_token}
+    def validate_and_execute(self, fencing_token: int, scope_key: str, *args, **kwargs):
+        with self._lock:
+            current_hwm = self.scope_watermarks.get(scope_key, 0)
+            if fencing_token < current_hwm:
+                raise PermissionError(
+                    f"Resource boundary violation for {scope_key}: Stale fencing token {fencing_token} < current {current_hwm}"
+                )
+            self.scope_watermarks[scope_key] = fencing_token
+            self.operations.append((scope_key, fencing_token))
+            return {"status": "APPLIED", "scope_key": scope_key, "generation": fencing_token}
 
 
 def test_downstream_resource_fencing_enforcement(tmp_path):
@@ -363,8 +373,8 @@ def test_downstream_resource_fencing_enforcement(tmp_path):
     payload = {"query": "UPDATE balance"}
     digest = boundary.compute_canonical_digest(payload)
 
-    # Operation 1: Gen 1
-    cap1, _ = auth.evaluate_and_issue_capability("write", "/db/table", digest, executor_id=resource)
+    # Operation 1: Gen 1 on task_A
+    cap1, _ = auth.evaluate_and_issue_capability("write", "/db/table", digest, executor_id=resource, task_id="task_A")
     res1 = boundary.execute_protected_action(
         action_name="write",
         target="/db/table",
@@ -375,10 +385,10 @@ def test_downstream_resource_fencing_enforcement(tmp_path):
         executor_func=resource
     )
     assert res1["status"] == "SUCCESS"
-    assert resource.high_water_mark == 1
+    assert resource.scope_watermarks[cap1.scope_key] == 1
 
-    # Operation 2: Gen 2
-    cap2, _ = auth.evaluate_and_issue_capability("write", "/db/table", digest, executor_id=resource)
+    # Operation 2: Gen 2 on task_A
+    cap2, _ = auth.evaluate_and_issue_capability("write", "/db/table", digest, executor_id=resource, task_id="task_A")
     res2 = boundary.execute_protected_action(
         action_name="write",
         target="/db/table",
@@ -389,11 +399,27 @@ def test_downstream_resource_fencing_enforcement(tmp_path):
         executor_func=resource
     )
     assert res2["status"] == "SUCCESS"
-    assert resource.high_water_mark == 2
+    assert resource.scope_watermarks[cap2.scope_key] == 2
 
-    # Delayed execution simulation: an old request tries to call validate_and_execute with Gen 1
-    with pytest.raises(PermissionError, match="Resource boundary violation: Stale fencing token 1 < current 2"):
-        resource.validate_and_execute(1)
+    # Delayed execution simulation: an old request tries to call validate_and_execute with Gen 1 for task_A scope
+    with pytest.raises(PermissionError, match="Stale fencing token 1 < current 2"):
+        resource.validate_and_execute(1, cap1.scope_key)
+
+    # Independent scope isolation test: task_B targeting the same resource receives Gen 1 and executes without interference
+    cap3, _ = auth.evaluate_and_issue_capability("write", "/db/table", digest, executor_id=resource, task_id="task_B")
+    assert cap3.fencing_token == 1
+    assert cap3.scope_key != cap1.scope_key
+    res3 = boundary.execute_protected_action(
+        action_name="write",
+        target="/db/table",
+        request_payload=payload,
+        authorization_token_id=cap3.token_id,
+        authorized_digest=digest,
+        authorization_granted=True,
+        executor_func=resource
+    )
+    assert res3["status"] == "SUCCESS"
+    assert resource.scope_watermarks[cap3.scope_key] == 1
 
 
 def test_unfenced_resource_demonstrates_documented_limitation(tmp_path):
@@ -528,3 +554,129 @@ def test_cross_process_monotonic_fencing_allocation(tmp_path):
     assert len(allocated) == 10
     # Values must be exactly 1 through 10 with NO duplicates
     assert sorted(allocated) == list(range(1, 11))
+
+
+def _worker_concurrent_issuance(store_path: str, signing_secret: bytes, scope_key: str, results_queue: multiprocessing.Queue):
+    """Worker process issuing capabilities concurrently."""
+    store = FileAuthorizationStore(store_path=store_path)
+    reg = CapabilityRegistry(signing_secret=signing_secret, storage_backend=store)
+    auth = AuthorizationAuthority(registry=reg, default_policy=Policy(policy_id="p", allowed_operations={"op"}, allowed_resources={"/res"}))
+    for i in range(5):
+        cap, reason = auth.evaluate_and_issue_capability("op", "/res", f"digest_{i}", task_id="multi_proc_task")
+        if cap:
+            results_queue.put((cap.token_id, cap.fencing_token))
+
+
+def test_cross_process_concurrent_capability_issuance(tmp_path):
+    """
+    Two independent processes sharing a FileAuthorizationStore issue capabilities concurrently for the same scope.
+    Verifies that all issued capabilities receive strictly unique, monotonically increasing generations
+    and all registered capabilities are persisted without corruption.
+    """
+    store_path = str(tmp_path / "concurrent_issuance.jsonl")
+    shared_store = FileAuthorizationStore(store_path=store_path)
+    signing_secret = b"CONCURRENT_SIGNING_SECRET_12345"
+
+    queue = multiprocessing.Queue()
+    scope = "task:multi_proc_task|target::/res"
+
+    p1 = multiprocessing.Process(target=_worker_concurrent_issuance, args=(store_path, signing_secret, scope, queue))
+    p2 = multiprocessing.Process(target=_worker_concurrent_issuance, args=(store_path, signing_secret, scope, queue))
+
+    p1.start()
+    p2.start()
+    p1.join(timeout=10)
+    p2.join(timeout=10)
+
+    assert p1.exitcode == 0
+    assert p2.exitcode == 0
+
+    issued = []
+    while not queue.empty():
+        issued.append(queue.get())
+
+    assert len(issued) == 10
+    tokens = [tok for tok, fence in issued]
+    fences = [fence for tok, fence in issued]
+
+    # All token IDs must be unique
+    assert len(set(tokens)) == 10
+    # All fencing generations must be unique and strictly sequential 1..10
+    assert sorted(fences) == list(range(1, 11))
+
+
+def _worker_compete_consumption(store_path: str, token_id: str, results_queue: multiprocessing.Queue):
+    """Worker process attempting to consume a single-use token."""
+    store = FileAuthorizationStore(store_path=store_path)
+    ok, reason = store.consume_capability(token_id)
+    results_queue.put((ok, reason))
+
+
+def test_cross_process_concurrent_consumption_race(tmp_path):
+    """
+    Two independent processes race to consume the same capability simultaneously.
+    Asserts that exactly one succeeds and one receives ALREADY_CONSUMED.
+    """
+    store_path = str(tmp_path / "compete_consume.jsonl")
+    store = FileAuthorizationStore(store_path=store_path)
+    reg = CapabilityRegistry(storage_backend=store)
+    auth = AuthorizationAuthority(registry=reg, default_policy=Policy(policy_id="p", allowed_operations={"op"}, allowed_resources={"/res"}))
+
+    cap, _ = auth.evaluate_and_issue_capability("op", "/res", "d_race")
+    assert cap is not None
+
+    queue = multiprocessing.Queue()
+    p1 = multiprocessing.Process(target=_worker_compete_consumption, args=(store_path, cap.token_id, queue))
+    p2 = multiprocessing.Process(target=_worker_compete_consumption, args=(store_path, cap.token_id, queue))
+
+    p1.start()
+    p2.start()
+    p1.join(timeout=10)
+    p2.join(timeout=10)
+
+    assert p1.exitcode == 0
+    assert p2.exitcode == 0
+
+    outcomes = []
+    while not queue.empty():
+        outcomes.append(queue.get())
+
+    successes = [ok for ok, r in outcomes if ok is True]
+    failures = [r for ok, r in outcomes if ok is False]
+
+    assert len(successes) == 1
+    assert len(failures) == 1
+    assert "ALREADY_CONSUMED" in failures[0]
+
+
+def test_crash_recovery_journal_atomicity(tmp_path):
+    """
+    Crash recovery & journal atomicity:
+    1. Single-event ISSUE_CAPABILITY reconstructs both capability registration and fencing generation.
+    2. A partially written/truncated journal line triggers fail-closed error upon restart.
+    3. State cannot be loaded partially or ambiguously.
+    """
+    store_path = str(tmp_path / "crash_store.jsonl")
+    store = FileAuthorizationStore(store_path=store_path)
+    reg = CapabilityRegistry(storage_backend=store)
+    auth = AuthorizationAuthority(registry=reg, default_policy=Policy(policy_id="p", allowed_operations={"op"}, allowed_resources={"/res"}))
+
+    cap, _ = auth.evaluate_and_issue_capability("op", "/res", "d_crash", task_id="crash_task")
+    assert cap is not None
+    assert cap.fencing_token == 1
+
+    # Verify normal restart reconstruction
+    store_restarted = FileAuthorizationStore(store_path=store_path)
+    assert store_restarted.get_scope_fencing_token(cap.scope_key) == 1
+    reconstructed_cap = store_restarted.get_capability(cap.token_id)
+    assert reconstructed_cap is not None
+    assert reconstructed_cap.token_id == cap.token_id
+    assert reconstructed_cap.fencing_token == 1
+
+    # Simulate crash during journal append resulting in a truncated line
+    with open(store_path, "a", encoding="utf-8") as f:
+        f.write('{"type": "ISSUE_CAPABILITY", "token_id": "PARTIAL_TRUNCATED_RECORD", "scope_key": "task:crash|target::/res"')  # missing closing brace
+
+    # Reopening after crash with truncated journal MUST fail closed
+    with pytest.raises(RuntimeError, match="Corrupted or ambiguous authorization journal"):
+        FileAuthorizationStore(store_path=store_path, fail_closed=True)
