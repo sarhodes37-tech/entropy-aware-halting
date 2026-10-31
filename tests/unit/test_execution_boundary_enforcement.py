@@ -909,22 +909,19 @@ def test_authorized_execution_positive_control():
 def test_negative_control_authorization_bypass_detected():
     """
     Negative-control test:
-    Demonstrates that if an execution boundary preserves capability verification but skips ONLY
-    the Option A object identity check (calling the passed callable directly once capability is verified),
-    a substituted callable would execute. Confirms that the production boundary strictly blocks substitution.
+    Demonstrates that an unhardened boundary that verifies capability tokens but omits
+    Option A object identity and registry checks (directly calling the passed executor_func)
+    allows a substituted callable to execute. Confirms that the production boundary strictly
+    blocks such substitution.
     """
     from epistemicos.authorization import Policy, Capability, get_callable_identity
     from epistemicos.provenance import TrustedExecutionBoundary
 
-    # Use functions with identical identity string to isolate Option A object identity ('is') check
     def worker_action():
         return {"status": "LEGIT"}
 
     def substitute_action():
         return {"status": "SUBSTITUTED"}
-
-    # Mock get_callable_identity so both share the same identifier string, isolating Option A check
-    shared_id = "test_module.worker_action"
 
     orchestrator = EpistemicOrchestrator()
     payload = {"action": "transfer"}
@@ -1018,14 +1015,15 @@ def test_negative_control_authorization_bypass_detected():
 
 def test_concurrent_execution_boundary_single_use_enforcement():
     """
-    Deterministic concurrent regression test:
-    Coordinates multiple concurrent threads attempting to consume the same single-use capability
-    simultaneously through TrustedExecutionBoundary.execute_protected_action.
-    Asserts:
+    In-process multi-threaded regression test:
+    Coordinates two concurrent threads synchronized at boundary entry attempting to execute
+    the same single-use capability through TrustedExecutionBoundary.execute_protected_action.
+    Verifies:
     1. Exactly one execution succeeds.
     2. The protected executor is called exactly once.
     3. The concurrent attempt is rejected as an already-consumed replay attempt.
     4. No second side effect occurs.
+    (Note: This is an application-level in-process regression test, not a formal proof of distributed atomicity).
     """
     import threading
     from epistemicos.authorization import Policy
