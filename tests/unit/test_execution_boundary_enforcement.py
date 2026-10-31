@@ -444,3 +444,644 @@ def test_revoked_expired_replayed_grant_denied():
         )
 
     assert execution_callback.call_count == 1
+
+
+def test_zero_side_effect_no_capability_supplied():
+    """1. No capability supplied: auth_granted=False or token_id missing."""
+    executor = MagicMock(return_value={"status": "UNAUTHORIZED_SIDE_EFFECT"})
+    orchestrator = EpistemicOrchestrator()
+    payload = {"data": "test"}
+
+    exec_ctx = ExecutionContext(
+        correlation_id="corr-no-cap",
+        request_id="req-no-cap",
+        authorization_token_id="",
+        authorized_digest="digest",
+        authorization_granted=False
+    )
+    with pytest.raises(PermissionError, match="Authorization was not granted"):
+        orchestrator.execution_boundary.execute_protected_action(
+            action_name="run",
+            target="/res",
+            request_payload=payload,
+            executor_func=executor,
+            context=exec_ctx
+        )
+    assert executor.call_count == 0
+
+
+def test_zero_side_effect_invalid_malformed_capability():
+    """2. Invalid or malformed capability: token_id is unknown or signature is forged."""
+    executor = MagicMock(return_value={"status": "FORGED"})
+    orchestrator = EpistemicOrchestrator()
+    payload = {"data": "test"}
+    digest = orchestrator.execution_boundary.compute_canonical_digest(payload)
+
+    exec_ctx = ExecutionContext(
+        correlation_id="corr-bad-token",
+        request_id="req-bad-token",
+        authorization_token_id="AUTH-CAP-NONEXISTENT-TOKEN",
+        authorized_digest=digest,
+        authorization_granted=True
+    )
+    with pytest.raises(PermissionError, match="CAPABILITY_VERIFICATION_FAILED_UNKNOWN_TOKEN"):
+        orchestrator.execution_boundary.execute_protected_action(
+            action_name="run",
+            target="/res",
+            request_payload=payload,
+            executor_func=executor,
+            context=exec_ctx
+        )
+    assert executor.call_count == 0
+
+
+def test_zero_side_effect_expired_capability():
+    """3. Expired capability: capability expires_at is in the past (clock-controlled)."""
+    from epistemicos.authorization import Policy
+    executor = MagicMock(return_value={"status": "EXPIRED"})
+    orchestrator = EpistemicOrchestrator()
+    payload = {"data": "test"}
+    digest = orchestrator.execution_boundary.compute_canonical_digest(payload)
+
+    policy = Policy(policy_id="p-exp", allowed_operations={"run"}, allowed_resources={"/res"}, token_ttl_seconds=300.0)
+    cap, _ = orchestrator.authority.evaluate_and_issue_capability(
+        action_name="run",
+        target="/res",
+        canonical_request_digest=digest,
+        correlation_id="corr-exp",
+        request_id="req-exp",
+        executor_id=executor,
+        policy=policy,
+        current_time=1000.0
+    )
+    # Fast-forward capability expiration deterministically without timing sleep
+    cap.expires_at = 900.0
+
+    exec_ctx = ExecutionContext(
+        correlation_id="corr-exp",
+        request_id="req-exp",
+        authorization_token_id=cap.token_id,
+        authorized_digest=digest,
+        authorization_granted=True
+    )
+    with pytest.raises(PermissionError, match="CAPABILITY_VERIFICATION_FAILED_EXPIRED_TOKEN"):
+        orchestrator.execution_boundary.execute_protected_action(
+            action_name="run",
+            target="/res",
+            request_payload=payload,
+            executor_func=executor,
+            context=exec_ctx
+        )
+    assert executor.call_count == 0
+
+
+def test_zero_side_effect_capability_bound_to_different_executor():
+    """4. Capability bound to a different executor ID."""
+    from epistemicos.authorization import Policy
+    legit_executor = MagicMock(return_value={"status": "LEGIT"})
+    different_executor = MagicMock(return_value={"status": "DIFFERENT"})
+    orchestrator = EpistemicOrchestrator()
+    payload = {"data": "test"}
+    digest = orchestrator.execution_boundary.compute_canonical_digest(payload)
+
+    policy = Policy(policy_id="p-diff", allowed_operations={"run"}, allowed_resources={"/res"})
+    cap, _ = orchestrator.authority.evaluate_and_issue_capability(
+        action_name="run",
+        target="/res",
+        canonical_request_digest=digest,
+        correlation_id="corr-diff",
+        request_id="req-diff",
+        executor_id=legit_executor,
+        policy=policy
+    )
+
+    exec_ctx = ExecutionContext(
+        correlation_id="corr-diff",
+        request_id="req-diff",
+        authorization_token_id=cap.token_id,
+        authorized_digest=digest,
+        authorization_granted=True
+    )
+    with pytest.raises(PermissionError, match="CAPABILITY_VERIFICATION_FAILED_EXECUTOR_MISMATCH"):
+        orchestrator.execution_boundary.execute_protected_action(
+            action_name="run",
+            target="/res",
+            request_payload=payload,
+            executor_func=different_executor,
+            context=exec_ctx
+        )
+    assert legit_executor.call_count == 0
+    assert different_executor.call_count == 0
+
+
+def test_zero_side_effect_executor_substitution_attempt():
+    """5. Executor substitution attempt: different callable passed with same qualname/identity."""
+    from epistemicos.authorization import Policy
+    def original_fn():
+        return {"status": "ORIGINAL"}
+
+    substitute_fn = MagicMock(return_value={"status": "SUBSTITUTED"})
+    orchestrator = EpistemicOrchestrator()
+    payload = {"data": "test"}
+    digest = orchestrator.execution_boundary.compute_canonical_digest(payload)
+
+    policy = Policy(policy_id="p-sub", allowed_operations={"run"}, allowed_resources={"/res"})
+    cap, _ = orchestrator.authority.evaluate_and_issue_capability(
+        action_name="run",
+        target="/res",
+        canonical_request_digest=digest,
+        correlation_id="corr-sub",
+        request_id="req-sub",
+        executor_id=original_fn,
+        policy=policy
+    )
+
+    exec_ctx = ExecutionContext(
+        correlation_id="corr-sub",
+        request_id="req-sub",
+        authorization_token_id=cap.token_id,
+        authorized_digest=digest,
+        authorization_granted=True
+    )
+    with pytest.raises(PermissionError, match="Executable object identity mismatch|CAPABILITY_VERIFICATION_FAILED_EXECUTOR_MISMATCH"):
+        orchestrator.execution_boundary.execute_protected_action(
+            action_name="run",
+            target="/res",
+            request_payload=payload,
+            executor_func=substitute_fn,
+            context=exec_ctx
+        )
+    assert substitute_fn.call_count == 0
+
+
+def test_zero_side_effect_target_resource_mismatch():
+    """6a. Target resource mismatch: granted /public, requested /secret."""
+    from epistemicos.authorization import Policy
+    executor = MagicMock(return_value={"status": "EXECUTED"})
+    orchestrator = EpistemicOrchestrator()
+    payload = {"data": "test"}
+    digest = orchestrator.execution_boundary.compute_canonical_digest(payload)
+
+    policy = Policy(policy_id="p-mis-target", allowed_operations={"read"}, allowed_resources={"/public"})
+    cap, _ = orchestrator.authority.evaluate_and_issue_capability(
+        action_name="read",
+        target="/public",
+        canonical_request_digest=digest,
+        correlation_id="corr-mis-target",
+        request_id="req-mis-target",
+        executor_id=executor,
+        policy=policy
+    )
+
+    exec_ctx = ExecutionContext(
+        correlation_id="corr-mis-target",
+        request_id="req-mis-target",
+        authorization_token_id=cap.token_id,
+        authorized_digest=digest,
+        authorization_granted=True
+    )
+    with pytest.raises(PermissionError, match="CAPABILITY_VERIFICATION_FAILED_TARGET_MISMATCH"):
+        orchestrator.execution_boundary.execute_protected_action(
+            action_name="read",
+            target="/secret",
+            request_payload=payload,
+            executor_func=executor,
+            context=exec_ctx
+        )
+    assert executor.call_count == 0
+
+    # Positive control: correctly authorized target succeeds
+    res = orchestrator.execution_boundary.execute_protected_action(
+        action_name="read",
+        target="/public",
+        request_payload=payload,
+        executor_func=executor,
+        context=exec_ctx
+    )
+    assert res["status"] == "SUCCESS"
+    assert executor.call_count == 1
+
+
+def test_zero_side_effect_action_mismatch():
+    """6b. Action mismatch: granted 'read', requested 'write'."""
+    from epistemicos.authorization import Policy
+    executor = MagicMock(return_value={"status": "EXECUTED"})
+    orchestrator = EpistemicOrchestrator()
+    payload = {"data": "test"}
+    digest = orchestrator.execution_boundary.compute_canonical_digest(payload)
+
+    policy = Policy(policy_id="p-mis-action", allowed_operations={"read", "write"}, allowed_resources={"/public"})
+    cap, _ = orchestrator.authority.evaluate_and_issue_capability(
+        action_name="read",
+        target="/public",
+        canonical_request_digest=digest,
+        correlation_id="corr-mis-action",
+        request_id="req-mis-action",
+        executor_id=executor,
+        policy=policy
+    )
+
+    exec_ctx = ExecutionContext(
+        correlation_id="corr-mis-action",
+        request_id="req-mis-action",
+        authorization_token_id=cap.token_id,
+        authorized_digest=digest,
+        authorization_granted=True
+    )
+    # Attempt execution with mismatched action 'write'
+    with pytest.raises(PermissionError, match="CAPABILITY_VERIFICATION_FAILED_ACTION_MISMATCH"):
+        orchestrator.execution_boundary.execute_protected_action(
+            action_name="write",
+            target="/public",
+            request_payload=payload,
+            executor_func=executor,
+            context=exec_ctx
+        )
+    assert executor.call_count == 0
+
+    # Positive control: correctly authorized action 'read' succeeds
+    res = orchestrator.execution_boundary.execute_protected_action(
+        action_name="read",
+        target="/public",
+        request_payload=payload,
+        executor_func=executor,
+        context=exec_ctx
+    )
+    assert res["status"] == "SUCCESS"
+    assert executor.call_count == 1
+
+
+def test_zero_side_effect_unauthorized_direct_or_alternate_invocation():
+    """7. Unauthorized direct or alternate invocation bypassing registration."""
+    unregistered_executor = MagicMock(return_value={"status": "UNREGISTERED_SIDE_EFFECT"})
+    orchestrator = EpistemicOrchestrator()
+    payload = {"data": "test"}
+    digest = orchestrator.execution_boundary.compute_canonical_digest(payload)
+
+    exec_ctx = ExecutionContext(
+        correlation_id="corr-unreg",
+        request_id="req-unreg",
+        authorization_token_id="AUTH-CAP-UNREGISTERED",
+        authorized_digest=digest,
+        authorization_granted=True
+    )
+    with pytest.raises(PermissionError, match="CAPABILITY_VERIFICATION_FAILED_UNKNOWN_TOKEN"):
+        orchestrator.execution_boundary.execute_protected_action(
+            action_name="run",
+            target="/res",
+            request_payload=payload,
+            executor_func=unregistered_executor,
+            context=exec_ctx
+        )
+    assert unregistered_executor.call_count == 0
+
+
+def test_zero_side_effect_missing_trusted_executor_registration():
+    """8. Missing trusted executor registration in ExecutorRegistry."""
+    from epistemicos.authorization import Capability, get_callable_identity
+    executor = MagicMock(return_value={"status": "UNREGISTERED"})
+    orchestrator = EpistemicOrchestrator()
+    payload = {"data": "test"}
+    digest = orchestrator.execution_boundary.compute_canonical_digest(payload)
+    exec_id = get_callable_identity(executor)
+
+    cap = Capability(
+        token_id="AUTH-CAP-MISSING-REG",
+        principal_id="agent_default",
+        correlation_id="corr-missing-reg",
+        request_id="req-missing-reg",
+        action_name="run",
+        target="/res",
+        canonical_request_digest=digest,
+        executor_id=exec_id,
+        policy_version="1.0.0",
+        created_at=1000.0,
+        expires_at=9999999999.0
+    )
+    orchestrator.authority.registry.register_capability(cap)
+
+    exec_ctx = ExecutionContext(
+        correlation_id="corr-missing-reg",
+        request_id="req-missing-reg",
+        authorization_token_id=cap.token_id,
+        authorized_digest=digest,
+        authorization_granted=True
+    )
+    with pytest.raises(PermissionError, match="Unregistered callable object cannot execute"):
+        orchestrator.execution_boundary.execute_protected_action(
+            action_name="run",
+            target="/res",
+            request_payload=payload,
+            executor_func=executor,
+            context=exec_ctx
+        )
+    assert executor.call_count == 0
+
+
+def test_zero_side_effect_identity_collision_or_rebinding_attempt():
+    """9. Identity collision or rebinding attempt in ExecutorRegistry."""
+    def fn_a():
+        return {"status": "FN_A"}
+
+    def fn_b():
+        return {"status": "FN_B"}
+
+    orchestrator = EpistemicOrchestrator()
+    reg = orchestrator.authority.executor_registry
+    reg._register_internal("shared_key", fn_a)
+
+    with pytest.raises(ValueError, match="Cannot overwrite existing executor ID"):
+        reg._register_internal("shared_key", fn_b)
+
+
+def test_zero_side_effect_single_use_replay_prevention():
+    """10. Single-use replay prevention: consumed token cannot authorize a second execution."""
+    from epistemicos.authorization import Policy
+    executor = MagicMock(return_value={"status": "RETRY"})
+    orchestrator = EpistemicOrchestrator()
+    payload = {"data": "test"}
+    digest = orchestrator.execution_boundary.compute_canonical_digest(payload)
+
+    policy = Policy(policy_id="p-retry", allowed_operations={"run"}, allowed_resources={"/res"})
+    cap, _ = orchestrator.authority.evaluate_and_issue_capability(
+        action_name="run",
+        target="/res",
+        canonical_request_digest=digest,
+        correlation_id="corr-retry",
+        request_id="req-retry",
+        executor_id=executor,
+        policy=policy
+    )
+
+    exec_ctx = ExecutionContext(
+        correlation_id="corr-retry",
+        request_id="req-retry",
+        authorization_token_id=cap.token_id,
+        authorized_digest=digest,
+        authorization_granted=True
+    )
+
+    res = orchestrator.execution_boundary.execute_protected_action(
+        action_name="run",
+        target="/res",
+        request_payload=payload,
+        executor_func=executor,
+        context=exec_ctx
+    )
+    assert res["status"] == "SUCCESS"
+    assert executor.call_count == 1
+
+    with pytest.raises(PermissionError, match="has already been consumed"):
+        orchestrator.execution_boundary.execute_protected_action(
+            action_name="run",
+            target="/res",
+            request_payload=payload,
+            executor_func=executor,
+            context=exec_ctx
+        )
+    assert executor.call_count == 1
+
+
+def test_zero_side_effect_internal_exception_before_execution():
+    """11. Internal exception before execution (digest mismatch or payload change)."""
+    executor = MagicMock(return_value={"status": "EXECUTED"})
+    orchestrator = EpistemicOrchestrator()
+    payload = {"data": "original"}
+
+    exec_ctx = ExecutionContext(
+        correlation_id="corr-err",
+        request_id="req-err",
+        authorization_token_id="AUTH-CAP-ERR",
+        authorized_digest="wrong-digest",
+        authorization_granted=True
+    )
+
+    with pytest.raises(ValueError, match="Request payload digest changed"):
+        orchestrator.execution_boundary.execute_protected_action(
+            action_name="run",
+            target="/res",
+            request_payload=payload,
+            executor_func=executor,
+            context=exec_ctx
+        )
+    assert executor.call_count == 0
+
+
+def test_authorized_execution_positive_control():
+    """12. Legitimate authorized operation (positive control) executes exactly once."""
+    from epistemicos.authorization import Policy
+    executor = MagicMock(return_value={"status": "SUCCESS_RESULT"})
+    orchestrator = EpistemicOrchestrator()
+    payload = {"data": "valid"}
+    digest = orchestrator.execution_boundary.compute_canonical_digest(payload)
+
+    policy = Policy(policy_id="p-pos", allowed_operations={"run"}, allowed_resources={"/res"})
+    cap, _ = orchestrator.authority.evaluate_and_issue_capability(
+        action_name="run",
+        target="/res",
+        canonical_request_digest=digest,
+        correlation_id="corr-pos",
+        request_id="req-pos",
+        executor_id=executor,
+        policy=policy
+    )
+
+    exec_ctx = ExecutionContext(
+        correlation_id="corr-pos",
+        request_id="req-pos",
+        authorization_token_id=cap.token_id,
+        authorized_digest=digest,
+        authorization_granted=True
+    )
+
+    res = orchestrator.execution_boundary.execute_protected_action(
+        action_name="run",
+        target="/res",
+        request_payload=payload,
+        executor_func=executor,
+        context=exec_ctx
+    )
+    assert res["status"] == "SUCCESS"
+    assert res["result"] == {"status": "SUCCESS_RESULT"}
+    assert executor.call_count == 1
+
+
+def test_negative_control_authorization_bypass_detected():
+    """
+    Negative-control test:
+    Demonstrates that an unhardened boundary that verifies capability tokens but omits
+    Option A object identity and registry checks (directly calling the passed executor_func)
+    allows a substituted callable to execute. Confirms that the production boundary strictly
+    blocks such substitution.
+    """
+    from epistemicos.authorization import Policy, Capability, get_callable_identity
+    from epistemicos.provenance import TrustedExecutionBoundary
+
+    def worker_action():
+        return {"status": "LEGIT"}
+
+    def substitute_action():
+        return {"status": "SUBSTITUTED"}
+
+    orchestrator = EpistemicOrchestrator()
+    payload = {"action": "transfer"}
+    digest = orchestrator.execution_boundary.compute_canonical_digest(payload)
+
+    policy = Policy(policy_id="p-neg", allowed_operations={"run"}, allowed_resources={"/res"})
+    cap, _ = orchestrator.authority.evaluate_and_issue_capability(
+        action_name="run",
+        target="/res",
+        canonical_request_digest=digest,
+        correlation_id="corr-neg",
+        request_id="req-neg",
+        executor_id=worker_action,
+        policy=policy
+    )
+
+    exec_ctx = ExecutionContext(
+        correlation_id="corr-neg",
+        request_id="req-neg",
+        authorization_token_id=cap.token_id,
+        authorized_digest=digest,
+        authorization_granted=True
+    )
+
+    # Simulated vulnerable boundary: executes capability verification but omits Option A identity check
+    class OptionAVulnerableBoundary(TrustedExecutionBoundary):
+        def execute_protected_action(self, action_name, target, request_payload, *args, **kwargs):
+            # Calls verify_capability to ensure token is valid, but skips Option A executor_func is bound_callable check
+            ctx = kwargs.get("context") or (args[0] if args else None)
+            exec_func = kwargs.get("executor_func")
+            auth_token_id = ctx.authorization_token_id
+            curr_digest = self.compute_canonical_digest(request_payload)
+            valid, reason, _ = self.authority.verify_capability(
+                token_id=auth_token_id,
+                action_name=action_name,
+                target=target,
+                canonical_request_digest=curr_digest,
+                executor_id=get_callable_identity(worker_action),
+                correlation_id=ctx.correlation_id,
+                request_id=ctx.request_id,
+                policy_version=ctx.policy_version
+            )
+            if not valid:
+                raise PermissionError(f"Rejected: {reason}")
+            # Vulnerability: calls exec_func directly without verifying exec_func is registered callable!
+            return {"status": "SUCCESS", "result": exec_func()}
+
+    vuln_boundary = OptionAVulnerableBoundary(
+        provenance_store=orchestrator.execution_boundary.store,
+        authority=orchestrator.authority
+    )
+
+    # Vulnerable boundary permits substitute execution when capability is valid
+    vuln_res = vuln_boundary.execute_protected_action(
+        action_name="run",
+        target="/res",
+        request_payload=payload,
+        executor_func=substitute_action,
+        context=exec_ctx
+    )
+    assert vuln_res["result"] == {"status": "SUBSTITUTED"}
+
+    # Fresh capability for production boundary check
+    cap2, _ = orchestrator.authority.evaluate_and_issue_capability(
+        action_name="run",
+        target="/res",
+        canonical_request_digest=digest,
+        correlation_id="corr-neg-2",
+        request_id="req-neg-2",
+        executor_id=worker_action,
+        policy=policy
+    )
+    exec_ctx2 = ExecutionContext(
+        correlation_id="corr-neg-2",
+        request_id="req-neg-2",
+        authorization_token_id=cap2.token_id,
+        authorized_digest=digest,
+        authorization_granted=True
+    )
+
+    # Production boundary strictly blocks the substituted callable
+    with pytest.raises(PermissionError, match="Executable object identity mismatch|CAPABILITY_VERIFICATION_FAILED_EXECUTOR_MISMATCH"):
+        orchestrator.execution_boundary.execute_protected_action(
+            action_name="run",
+            target="/res",
+            request_payload=payload,
+            executor_func=substitute_action,
+            context=exec_ctx2
+        )
+
+
+def test_concurrent_execution_boundary_single_use_enforcement():
+    """
+    In-process multi-threaded regression test:
+    Coordinates two concurrent threads synchronized at boundary entry attempting to execute
+    the same single-use capability through TrustedExecutionBoundary.execute_protected_action.
+    Verifies:
+    1. Exactly one execution succeeds.
+    2. The protected executor is called exactly once.
+    3. The concurrent attempt is rejected as an already-consumed replay attempt.
+    4. No second side effect occurs.
+    (Note: This is an application-level in-process regression test, not a formal proof of distributed atomicity).
+    """
+    import threading
+    from epistemicos.authorization import Policy
+
+    executor = MagicMock(return_value={"status": "SIDE_EFFECT_PRODUCED"})
+    orchestrator = EpistemicOrchestrator()
+    payload = {"amount": 500}
+    digest = orchestrator.execution_boundary.compute_canonical_digest(payload)
+
+    policy = Policy(policy_id="p-conc", allowed_operations={"transfer"}, allowed_resources={"account_a"})
+    cap, _ = orchestrator.authority.evaluate_and_issue_capability(
+        action_name="transfer",
+        target="account_a",
+        canonical_request_digest=digest,
+        correlation_id="corr-conc",
+        request_id="req-conc",
+        executor_id=executor,
+        policy=policy
+    )
+
+    exec_ctx = ExecutionContext(
+        correlation_id="corr-conc",
+        request_id="req-conc",
+        authorization_token_id=cap.token_id,
+        authorized_digest=digest,
+        authorization_granted=True
+    )
+
+    barrier = threading.Barrier(2)
+    results = []
+    errors = []
+
+    def worker():
+        try:
+            barrier.wait()
+            res = orchestrator.execution_boundary.execute_protected_action(
+                action_name="transfer",
+                target="account_a",
+                request_payload=payload,
+                executor_func=executor,
+                context=exec_ctx
+            )
+            results.append(res)
+        except Exception as e:
+            errors.append(e)
+
+    t1 = threading.Thread(target=worker)
+    t2 = threading.Thread(target=worker)
+
+    t1.start()
+    t2.start()
+    t1.join()
+    t2.join()
+
+    # Invariants under contention:
+    assert len(results) == 1, f"Expected exactly 1 successful execution, got {len(results)}"
+    assert results[0]["status"] == "SUCCESS"
+    assert executor.call_count == 1, f"Expected executor to be called exactly once, got {executor.call_count}"
+    assert len(errors) == 1, f"Expected exactly 1 thread to be rejected, got {len(errors)}"
+    assert isinstance(errors[0], PermissionError)
+    assert "has already been consumed" in str(errors[0])
