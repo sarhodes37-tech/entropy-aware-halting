@@ -613,28 +613,28 @@ def test_zero_side_effect_executor_substitution_attempt():
     assert substitute_fn.call_count == 0
 
 
-def test_zero_side_effect_action_or_resource_mismatch():
-    """6. Action or resource mismatch."""
+def test_zero_side_effect_target_resource_mismatch():
+    """6a. Target resource mismatch: granted /public, requested /secret."""
     from epistemicos.authorization import Policy
     executor = MagicMock(return_value={"status": "EXECUTED"})
     orchestrator = EpistemicOrchestrator()
     payload = {"data": "test"}
     digest = orchestrator.execution_boundary.compute_canonical_digest(payload)
 
-    policy = Policy(policy_id="p-mis", allowed_operations={"read"}, allowed_resources={"/public"})
+    policy = Policy(policy_id="p-mis-target", allowed_operations={"read"}, allowed_resources={"/public"})
     cap, _ = orchestrator.authority.evaluate_and_issue_capability(
         action_name="read",
         target="/public",
         canonical_request_digest=digest,
-        correlation_id="corr-mis",
-        request_id="req-mis",
+        correlation_id="corr-mis-target",
+        request_id="req-mis-target",
         executor_id=executor,
         policy=policy
     )
 
     exec_ctx = ExecutionContext(
-        correlation_id="corr-mis",
-        request_id="req-mis",
+        correlation_id="corr-mis-target",
+        request_id="req-mis-target",
         authorization_token_id=cap.token_id,
         authorized_digest=digest,
         authorization_granted=True
@@ -648,6 +648,66 @@ def test_zero_side_effect_action_or_resource_mismatch():
             context=exec_ctx
         )
     assert executor.call_count == 0
+
+    # Positive control: correctly authorized target succeeds
+    res = orchestrator.execution_boundary.execute_protected_action(
+        action_name="read",
+        target="/public",
+        request_payload=payload,
+        executor_func=executor,
+        context=exec_ctx
+    )
+    assert res["status"] == "SUCCESS"
+    assert executor.call_count == 1
+
+
+def test_zero_side_effect_action_mismatch():
+    """6b. Action mismatch: granted 'read', requested 'write'."""
+    from epistemicos.authorization import Policy
+    executor = MagicMock(return_value={"status": "EXECUTED"})
+    orchestrator = EpistemicOrchestrator()
+    payload = {"data": "test"}
+    digest = orchestrator.execution_boundary.compute_canonical_digest(payload)
+
+    policy = Policy(policy_id="p-mis-action", allowed_operations={"read", "write"}, allowed_resources={"/public"})
+    cap, _ = orchestrator.authority.evaluate_and_issue_capability(
+        action_name="read",
+        target="/public",
+        canonical_request_digest=digest,
+        correlation_id="corr-mis-action",
+        request_id="req-mis-action",
+        executor_id=executor,
+        policy=policy
+    )
+
+    exec_ctx = ExecutionContext(
+        correlation_id="corr-mis-action",
+        request_id="req-mis-action",
+        authorization_token_id=cap.token_id,
+        authorized_digest=digest,
+        authorization_granted=True
+    )
+    # Attempt execution with mismatched action 'write'
+    with pytest.raises(PermissionError, match="CAPABILITY_VERIFICATION_FAILED_ACTION_MISMATCH"):
+        orchestrator.execution_boundary.execute_protected_action(
+            action_name="write",
+            target="/public",
+            request_payload=payload,
+            executor_func=executor,
+            context=exec_ctx
+        )
+    assert executor.call_count == 0
+
+    # Positive control: correctly authorized action 'read' succeeds
+    res = orchestrator.execution_boundary.execute_protected_action(
+        action_name="read",
+        target="/public",
+        request_payload=payload,
+        executor_func=executor,
+        context=exec_ctx
+    )
+    assert res["status"] == "SUCCESS"
+    assert executor.call_count == 1
 
 
 def test_zero_side_effect_unauthorized_direct_or_alternate_invocation():
@@ -733,8 +793,8 @@ def test_zero_side_effect_identity_collision_or_rebinding_attempt():
         reg._register_internal("shared_key", fn_b)
 
 
-def test_zero_side_effect_authorization_failure_during_delegation_or_retry():
-    """10. Authorization failure during delegation or retry (replay of consumed token)."""
+def test_zero_side_effect_single_use_replay_prevention():
+    """10. Single-use replay prevention: consumed token cannot authorize a second execution."""
     from epistemicos.authorization import Policy
     executor = MagicMock(return_value={"status": "RETRY"})
     orchestrator = EpistemicOrchestrator()
