@@ -433,6 +433,101 @@ def test_differential_rehydration_empty_and_edge_inputs():
     )
 
 
+def test_differential_rehydration_allowed_placeholders_filter():
+    """
+    Validates explicit authorization filtering (allowed_placeholders):
+    - allowed_placeholders=None (all authorized)
+    - allowlist containing exactly one registered placeholder
+    - empty allowlist set() (none authorized)
+    - allowlist containing unknown or fabricated placeholders
+    - multiple registered placeholders where only a subset is authorized
+    Asserts exact string outputs and differential equivalence.
+    """
+    master_key = b"H_FILTER" * 4
+    ref = ReferenceLocalMappingVault(master_key=master_key)
+    opt = LocalMappingVault(master_key=master_key)
+
+    sid = "sess_auth_filter"
+    # Register 3 distinct entities
+    d1 = DetectionResult(
+        category=SensitivityCategory.NAME,
+        value="Alice",
+        span=(0, 5),
+        confidence=1.0,
+        detector_type="p",
+    )
+    d2 = DetectionResult(
+        category=SensitivityCategory.EMAIL,
+        value="bob@example.com",
+        span=(0, 15),
+        confidence=1.0,
+        detector_type="p",
+    )
+    d3 = DetectionResult(
+        category=SensitivityCategory.PHONE,
+        value="555-0199",
+        span=(0, 8),
+        confidence=1.0,
+        detector_type="p",
+    )
+
+    p1 = opt.get_or_create_pseudonym(sid, d1)  # PERSON_1
+    p2 = opt.get_or_create_pseudonym(sid, d2)  # EMAIL_1@sanitized.local
+    p3 = opt.get_or_create_pseudonym(sid, d3)  # PHONE_NUMBER_1
+    ref.get_or_create_pseudonym(sid, d1)
+    ref.get_or_create_pseudonym(sid, d2)
+    ref.get_or_create_pseudonym(sid, d3)
+
+    template = f"Contact {p1} at {p2} or call {p3}."
+
+    # 1. allowed_placeholders is None -> All authorized
+    res_ref_none = ref.rehydrate(sid, template, allowed_placeholders=None)
+    res_opt_none = opt.rehydrate(sid, template, allowed_placeholders=None)
+    assert res_opt_none == res_ref_none
+    assert res_opt_none == "Contact Alice at bob@example.com or call 555-0199."
+
+    # 2. Allowlist containing exactly one registered placeholder (p1 only)
+    res_ref_p1 = ref.rehydrate(sid, template, allowed_placeholders={p1})
+    res_opt_p1 = opt.rehydrate(sid, template, allowed_placeholders={p1})
+    assert res_opt_p1 == res_ref_p1
+    assert res_opt_p1 == f"Contact Alice at {p2} or call {p3}."
+
+    # 3. Empty allowlist set() -> Nothing rehydrated
+    res_ref_empty = ref.rehydrate(sid, template, allowed_placeholders=set())
+    res_opt_empty = opt.rehydrate(sid, template, allowed_placeholders=set())
+    assert res_opt_empty == res_ref_empty
+    assert res_opt_empty == template
+
+    # 4. Allowlist containing only unknown or fabricated placeholders
+    fabricated_allowlist = {"PERSON_999", "FABRICATED_PLACEHOLDER_1"}
+    res_ref_fab = ref.rehydrate(
+        sid, template, allowed_placeholders=fabricated_allowlist
+    )
+    res_opt_fab = opt.rehydrate(
+        sid, template, allowed_placeholders=fabricated_allowlist
+    )
+    assert res_opt_fab == res_ref_fab
+    assert res_opt_fab == template
+
+    # 5. Allowlist containing a subset of valid placeholders plus fabricated ones (p2, p3 + unknown)
+    mixed_allowlist = {p2, p3, "FABRICATED_TOKEN"}
+    res_ref_mixed = ref.rehydrate(sid, template, allowed_placeholders=mixed_allowlist)
+    res_opt_mixed = opt.rehydrate(sid, template, allowed_placeholders=mixed_allowlist)
+    assert res_opt_mixed == res_ref_mixed
+    assert res_opt_mixed == f"Contact {p1} at bob@example.com or call 555-0199."
+
+    # 6. Verify that an unregistered placeholder in text is never substituted even if in allowlist
+    text_with_unregistered = f"Hello {p1} and UNREGISTERED_1."
+    res_opt_unreg = opt.rehydrate(
+        sid, text_with_unregistered, allowed_placeholders={p1, "UNREGISTERED_1"}
+    )
+    res_ref_unreg = ref.rehydrate(
+        sid, text_with_unregistered, allowed_placeholders={p1, "UNREGISTERED_1"}
+    )
+    assert res_opt_unreg == res_ref_unreg
+    assert res_opt_unreg == "Hello Alice and UNREGISTERED_1."
+
+
 # =====================================================================
 # 2. DIFFERENTIAL CASE-INSENSITIVE LOOKUP TESTS
 # =====================================================================
