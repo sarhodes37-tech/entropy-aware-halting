@@ -233,6 +233,16 @@ document.addEventListener('DOMContentLoaded', () => {
       });
     },
 
+    announce(message) {
+      const announcer = document.getElementById('a11y-status-announcer');
+      if (announcer) {
+        announcer.textContent = '';
+        setTimeout(() => {
+          announcer.textContent = message;
+        }, 50);
+      }
+    },
+
     switchTab(tabName) {
       this.state.currentTab = tabName;
       document.querySelectorAll('.nav-tab').forEach(btn => {
@@ -745,6 +755,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
       const errLi = document.createElement('li');
       errLi.className = 'text-danger text-center';
+      errLi.setAttribute('role', 'option');
+      errLi.setAttribute('aria-selected', 'false');
       errLi.style.padding = '1.5rem 1rem';
 
       const msgSpan = document.createElement('span');
@@ -782,6 +794,7 @@ document.addEventListener('DOMContentLoaded', () => {
     renderTracesList() {
       const traceListUl = document.getElementById('trace-list');
       if (!traceListUl) return;
+      const areaTraceList = document.getElementById('area-trace-list');
       traceListUl.innerHTML = '';
 
       let filtered = this.state.tracesData.filter(t => {
@@ -807,17 +820,24 @@ document.addEventListener('DOMContentLoaded', () => {
         countBadge.setAttribute('aria-label', total === visible ? `${total} traces` : `${visible} of ${total} traces shown`);
       }
 
+      // Clean up any previously attached clear-action bar
+      const existingTraceClear = areaTraceList?.querySelector('.stream-clear-action-bar');
+      if (existingTraceClear) existingTraceClear.remove();
+
       if (filtered.length === 0) {
         const emptyLi = document.createElement('li');
         emptyLi.className = 'text-muted text-center';
+        emptyLi.setAttribute('role', 'option');
+        emptyLi.setAttribute('aria-selected', 'false');
         emptyLi.style.padding = '1.5rem 1rem';
 
         const hasFilters = this.state.traceSearchQuery || this.state.traceFilterStatus !== 'ALL';
         if (hasFilters) {
-          const msgSpan = document.createElement('span');
-          msgSpan.style.display = 'block';
-          msgSpan.style.marginBottom = '0.5rem';
-          msgSpan.textContent = 'No execution traces match active filter query.';
+          emptyLi.textContent = 'No execution traces match active filter query.';
+
+          const clearBar = document.createElement('div');
+          clearBar.className = 'stream-clear-action-bar text-center';
+          clearBar.style.padding = '0.5rem 1rem 1rem';
 
           const clearBtn = document.createElement('button');
           clearBtn.type = 'button';
@@ -838,8 +858,8 @@ document.addEventListener('DOMContentLoaded', () => {
             this.renderTracesList();
           });
 
-          emptyLi.appendChild(msgSpan);
-          emptyLi.appendChild(clearBtn);
+          clearBar.appendChild(clearBtn);
+          areaTraceList?.appendChild(clearBar);
         } else {
           emptyLi.textContent = 'No execution traces recorded in local provenance or audit log.';
         }
@@ -1514,6 +1534,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
         const pre = document.createElement('pre');
         pre.className = 'inspector-block';
+        pre.setAttribute('tabindex', '0');
+        pre.setAttribute('role', 'region');
+        pre.setAttribute('aria-label', 'Raw Event JSON Record');
         pre.textContent = JSON.stringify(selectedEv, null, 2);
         jsonCard.appendChild(pre);
 
@@ -1560,6 +1583,8 @@ document.addEventListener('DOMContentLoaded', () => {
         recListUl.innerHTML = '';
         const errLi = document.createElement('li');
         errLi.className = 'text-danger text-center';
+        errLi.setAttribute('role', 'option');
+        errLi.setAttribute('aria-selected', 'false');
         errLi.style.padding = '1.5rem 1rem';
 
         const msgSpan = document.createElement('span');
@@ -1731,6 +1756,7 @@ document.addEventListener('DOMContentLoaded', () => {
     renderProvenanceRecordList() {
       const listUl = document.getElementById('provenance-record-list');
       if (!listUl) return;
+      const areaProvList = document.getElementById('area-provenance-list');
       listUl.innerHTML = '';
 
       const data = this.state.provenanceData;
@@ -1763,17 +1789,24 @@ document.addEventListener('DOMContentLoaded', () => {
         countBadge.setAttribute('aria-label', total === visible ? `${total} records` : `${visible} of ${total} records shown`);
       }
 
+      // Clean up any previously attached clear-action bar
+      const existingProvClear = areaProvList?.querySelector('.stream-clear-action-bar');
+      if (existingProvClear) existingProvClear.remove();
+
       if (filtered.length === 0) {
         const emptyLi = document.createElement('li');
         emptyLi.className = 'text-muted text-center';
+        emptyLi.setAttribute('role', 'option');
+        emptyLi.setAttribute('aria-selected', 'false');
         emptyLi.style.padding = '1.5rem 1rem';
 
         const hasFilters = this.state.provenanceSearchQuery || this.state.provenanceFilterType !== 'ALL';
         if (hasFilters) {
-          const msgSpan = document.createElement('span');
-          msgSpan.style.display = 'block';
-          msgSpan.style.marginBottom = '0.5rem';
-          msgSpan.textContent = 'No provenance records match active search query or filter.';
+          emptyLi.textContent = 'No provenance records match active search query or filter.';
+
+          const clearBar = document.createElement('div');
+          clearBar.className = 'stream-clear-action-bar text-center';
+          clearBar.style.padding = '0.5rem 1rem 1rem';
 
           const clearBtn = document.createElement('button');
           clearBtn.type = 'button';
@@ -1794,8 +1827,8 @@ document.addEventListener('DOMContentLoaded', () => {
             this.renderProvenanceRecordList();
           });
 
-          emptyLi.appendChild(msgSpan);
-          emptyLi.appendChild(clearBtn);
+          clearBar.appendChild(clearBtn);
+          areaProvList?.appendChild(clearBar);
         } else {
           emptyLi.textContent = 'No provenance records present in log stream.';
         }
@@ -2115,6 +2148,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
       const pre = document.createElement('pre');
       pre.className = 'inspector-block';
+      pre.setAttribute('tabindex', '0');
+      pre.setAttribute('role', 'region');
+      pre.setAttribute('aria-label', 'Original Raw Record JSON Payload');
       pre.textContent = JSON.stringify(record, null, 2);
 
       jsonCard.appendChild(pre);
@@ -2157,6 +2193,8 @@ document.addEventListener('DOMContentLoaded', () => {
         caseListUl.innerHTML = '';
         const errLi = document.createElement('li');
         errLi.className = 'text-danger text-center';
+        errLi.setAttribute('role', 'option');
+        errLi.setAttribute('aria-selected', 'false');
         errLi.style.padding = '1.5rem 1rem';
 
         const msgSpan = document.createElement('span');
@@ -2448,9 +2486,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
             const tr = document.createElement('tr');
 
-            // Name
-            const tdName = document.createElement('td');
+            // Name (Row header)
+            const tdName = document.createElement('th');
+            tdName.setAttribute('scope', 'row');
             tdName.style.fontWeight = '600';
+            tdName.style.textAlign = 'left';
             tdName.textContent = bName;
 
             // Samples
@@ -2555,9 +2595,11 @@ document.addEventListener('DOMContentLoaded', () => {
             const c = comps[cName] || {};
             const tr = document.createElement('tr');
 
-            const tdName = document.createElement('td');
+            const tdName = document.createElement('th');
+            tdName.setAttribute('scope', 'row');
             tdName.style.fontWeight = '600';
             tdName.style.fontSize = '0.8rem';
+            tdName.style.textAlign = 'left';
             tdName.textContent = cName;
 
             const tdDiscA = document.createElement('td');
@@ -2619,9 +2661,11 @@ document.addEventListener('DOMContentLoaded', () => {
             const item = ta[k] || {};
             const tr = document.createElement('tr');
 
-            const tdZ = document.createElement('td');
+            const tdZ = document.createElement('th');
+            tdZ.setAttribute('scope', 'row');
             tdZ.className = 'font-mono';
             tdZ.style.fontWeight = '700';
+            tdZ.style.textAlign = 'left';
             tdZ.textContent = (item.z_threshold !== undefined && item.z_threshold !== null) ? `Z = ${item.z_threshold}` : k;
 
             const tdTc = document.createElement('td');
@@ -2674,6 +2718,7 @@ document.addEventListener('DOMContentLoaded', () => {
     renderBenchmarkCasesList() {
       const listUl = document.getElementById('benchmark-case-list');
       if (!listUl) return;
+      const areaCaseList = document.getElementById('area-benchmark-case-list');
       listUl.innerHTML = '';
 
       const data = this.state.benchmarkData || {};
@@ -2683,6 +2728,8 @@ document.addEventListener('DOMContentLoaded', () => {
       if (!pc.available || caseList.length === 0) {
         const emptyLi = document.createElement('li');
         emptyLi.className = 'text-muted text-center';
+        emptyLi.setAttribute('role', 'option');
+        emptyLi.setAttribute('aria-selected', 'false');
         emptyLi.style.padding = '1.5rem 1rem';
         emptyLi.textContent = pc.error || 'No per-case evaluation results available.';
         listUl.appendChild(emptyLi);
@@ -2744,17 +2791,24 @@ document.addEventListener('DOMContentLoaded', () => {
         countBadge.setAttribute('aria-label', total === visible ? `${total} cases` : `${visible} of ${total} cases shown`);
       }
 
+      // Clean up any previously attached clear-action bar
+      const existingCaseClear = areaCaseList?.querySelector('.stream-clear-action-bar');
+      if (existingCaseClear) existingCaseClear.remove();
+
       if (filtered.length === 0) {
         const emptyLi = document.createElement('li');
         emptyLi.className = 'text-muted text-center';
+        emptyLi.setAttribute('role', 'option');
+        emptyLi.setAttribute('aria-selected', 'false');
         emptyLi.style.padding = '1.5rem 1rem';
 
         const hasFilters = this.state.caseSearchQuery || this.state.caseBaselineFilter !== 'ALL' || this.state.caseFamilyFilter !== 'ALL' || this.state.caseOutcomeFilter !== 'ALL';
         if (hasFilters) {
-          const msgSpan = document.createElement('span');
-          msgSpan.style.display = 'block';
-          msgSpan.style.marginBottom = '0.5rem';
-          msgSpan.textContent = 'No benchmark cases match active search query or filter.';
+          emptyLi.textContent = 'No benchmark cases match active search query or filter.';
+
+          const clearBar = document.createElement('div');
+          clearBar.className = 'stream-clear-action-bar text-center';
+          clearBar.style.padding = '0.5rem 1rem 1rem';
 
           const clearBtn = document.createElement('button');
           clearBtn.type = 'button';
@@ -2781,8 +2835,8 @@ document.addEventListener('DOMContentLoaded', () => {
             this.renderBenchmarkCasesList();
           });
 
-          emptyLi.appendChild(msgSpan);
-          emptyLi.appendChild(clearBtn);
+          clearBar.appendChild(clearBtn);
+          areaCaseList?.appendChild(clearBar);
         } else {
           emptyLi.textContent = 'No recorded benchmark case instances in artifact.';
         }
@@ -3026,6 +3080,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
       const pre = document.createElement('pre');
       pre.className = 'inspector-block';
+      pre.setAttribute('tabindex', '0');
+      pre.setAttribute('role', 'region');
+      pre.setAttribute('aria-label', 'Original Raw Case JSON Payload');
       pre.textContent = JSON.stringify(c, null, 2);
 
       jsonCard.appendChild(pre);
