@@ -1070,6 +1070,7 @@ class CapabilityRegistry:
         lock_path = (self.denial_log_path + ".lock") if self.denial_log_path else None
 
         with self._lock:
+            self._check_poisoned()
             if lock_path:
                 if not has_fcntl:
                     if self.fail_closed_persistence:
@@ -1091,6 +1092,8 @@ class CapabilityRegistry:
                                 raise RuntimeError(f"Lock registry failure: unable to acquire interprocess file lock ({str(e)})") from e
                     self._file_lock_count += 1
 
+            # Re-verify poisoned state under the interprocess file lock and thread lock
+            self._check_poisoned()
             try:
                 yield
             finally:

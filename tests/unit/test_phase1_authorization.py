@@ -2148,3 +2148,173 @@ def test_phase1_critical_investigation_restart_after_rollback_failure(tmp_path):
     # This proves empirically that the in-memory _is_poisoned flag does NOT survive process termination/restart.
     assert denied_after_restart is False
     assert rec2 is None
+
+
+def test_phase1_poison_guard_concurrency_race(tmp_path):
+    """
+    Concurrency Race Regression Test:
+    Verifies that a thread blocking on lock_registry() rechecks poisoned state
+    immediately upon acquiring self._lock (and under interprocess file lock),
+    preventing any check-then-lock time-of-check-to-time-of-use (TOCTOU) race.
+    """
+    log_path = tmp_path / "test_concurrency_poison.jsonl"
+    registry = CapabilityRegistry(
+        denial_log_path=str(log_path),
+        fail_closed_persistence=False
+    )
+
+    t1_holding = threading.Event()
+    t2_blocked = threading.Event()
+    t2_outcome = {}
+
+    def worker_poison():
+        with registry.lock_registry():
+            t1_holding.set()
+            # Wait for thread 2 to attempt lock acquisition
+            t2_blocked.wait(timeout=2.0)
+            time.sleep(0.02)
+            # Poison registry while holding lock
+            registry._is_poisoned = True
+
+    def worker_waiter():
+        t1_holding.wait(timeout=2.0)
+        t2_blocked.set()
+        try:
+            with registry.lock_registry():
+                t2_outcome["status"] = "ACQUIRED"
+        except Exception as e:
+            t2_outcome["status"] = "ERROR"
+            t2_outcome["error"] = e
+
+    t1 = threading.Thread(target=worker_poison)
+    t2 = threading.Thread(target=worker_waiter)
+
+    t1.start()
+    t2.start()
+    t1.join()
+    t2.join()
+
+    assert t2_outcome.get("status") == "ERROR"
+    assert "poisoned state" in str(t2_outcome.get("error"))
+
+
+def test_phase1_public_issuance_same_approval_cross_target_replay_and_fencing():
+    """
+    Public Issuance & Fencing Analysis Test:
+    Investigates evaluate_and_issue_capability() behavior when two capabilities share one approval ID.
+
+    Scenario A: Same target / same scope
+    - Capability 1 is issued at fencing generation G.
+    - Capability 2 is issued at fencing generation G + 1.
+    - Fencing tokens strictly advance per scope, invalidating Capability 1 for execution (STALE_FENCING_TOKEN).
+    - However, Capability 2 remains executable.
+
+    Scenario B: Different targets / independent scopes
+    - If approvals could be repurposed across targets, both could be issued without mutual fencing invalidation.
+    - However, HumanApprovalRecord binds action_name and target; cross-target issuance is rejected at issuance.
+
+    Scenario C: When two capabilities sharing an approval are both issued, consuming one capability
+    strictly invalidates the other via verification rejection and consumption rejection.
+    """
+    authority = AuthorizationAuthority()
+    policy = Policy(
+        policy_id="pol-pub-fencing",
+        allowed_operations={"API_WRITE"},
+        allowed_resources={"endpoint_a", "endpoint_b"},
+        required_human_approval_operations={"API_WRITE"}
+    )
+    authority.default_policy = policy
+
+    exec_func = lambda: "RUN"
+    authority.register_executor("exec_api", exec_func)
+    digest = "c" * 64
+
+    # 1. Target binding check: an approval bound to endpoint_a CANNOT issue a capability for endpoint_b
+    approval_a = HumanApprovalRecord(
+        approval_id="APP-PUB-001",
+        approver_id="approver_pub",
+        action_name="API_WRITE",
+        target="endpoint_a",
+        action_digest=digest,
+        request_id="req-pub-1"
+    )
+    approval_a.sign(authority.approval_signing_secret)
+
+    cap_wrong_target, reason_wrong_target = authority.evaluate_and_issue_capability(
+        action_name="API_WRITE",
+        target="endpoint_b",
+        canonical_request_digest=digest,
+        executor_id="exec_api",
+        request_id="req-pub-1",
+        human_approval_input=approval_a,
+        policy=policy
+    )
+    assert cap_wrong_target is None
+    assert reason_wrong_target == "AUTHORIZATION_DENIED_HUMAN_APPROVAL_BINDING_MISMATCH"
+
+    # 2. Sequential public issuance for same scope
+    cap1, r1 = authority.evaluate_and_issue_capability(
+        action_name="API_WRITE",
+        target="endpoint_a",
+        canonical_request_digest=digest,
+        executor_id="exec_api",
+        request_id="req-pub-1",
+        human_approval_input=approval_a,
+        policy=policy
+    )
+    assert cap1 is not None
+    assert r1 == "AUTHORIZATION_GRANTED"
+    assert cap1.fencing_token == 1
+
+    cap2, r2 = authority.evaluate_and_issue_capability(
+        action_name="API_WRITE",
+        target="endpoint_a",
+        canonical_request_digest=digest,
+        executor_id="exec_api",
+        request_id="req-pub-1",
+        human_approval_input=approval_a,
+        policy=policy
+    )
+    assert cap2 is not None
+    assert r2 == "AUTHORIZATION_GRANTED"
+    assert cap2.fencing_token == 2
+
+    # Invariant: cap1 fencing generation is now stale because cap2 advanced the scope generation
+    valid_c1, reason_c1, _ = authority.verify_capability(
+        token_id=cap1.token_id,
+        action_name="API_WRITE",
+        target="endpoint_a",
+        canonical_request_digest=digest,
+        executor_id="exec_api",
+        request_id="req-pub-1"
+    )
+    assert valid_c1 is False
+    assert "CAPABILITY_VERIFICATION_FAILED_STALE_FENCING_TOKEN" in reason_c1
+
+    # Invariant: cap2 has generation 2 and verifies successfully before consumption
+    valid_c2, reason_c2, _ = authority.verify_capability(
+        token_id=cap2.token_id,
+        action_name="API_WRITE",
+        target="endpoint_a",
+        canonical_request_digest=digest,
+        executor_id="exec_api",
+        request_id="req-pub-1"
+    )
+    assert valid_c2 is True
+    assert reason_c2 == "CAPABILITY_VERIFIED"
+
+    # Consume cap2
+    assert authority.registry.consume_token(cap2.token_id) is True
+
+    # After consumption of cap2, the approval is consumed; attempting to issue a third capability fails
+    cap3, r3 = authority.evaluate_and_issue_capability(
+        action_name="API_WRITE",
+        target="endpoint_a",
+        canonical_request_digest=digest,
+        executor_id="exec_api",
+        request_id="req-pub-1",
+        human_approval_input=approval_a,
+        policy=policy
+    )
+    assert cap3 is None
+    assert r3 == "AUTHORIZATION_DENIED_HUMAN_APPROVAL_REPLAYED"
