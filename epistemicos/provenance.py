@@ -39,7 +39,18 @@ class FencedResource(metaclass=ABCMeta):
             return True
         return NotImplemented
 
-    def validate_and_execute(self, fencing_token: int, scope_key: str, *args: Any, **kwargs: Any) -> Any:
+    def validate_and_execute(
+        self,
+        fencing_token: int,
+        scope_key: str,
+        operation_payload: Any = None,
+        *args: Any,
+        **kwargs: Any
+    ) -> Any:
+        """
+        Atomically validates fencing_token against the resource high-water mark for scope_key
+        and executes the requested operation with operation_payload inside the atomic boundary.
+        """
         raise NotImplementedError
 
 
@@ -483,7 +494,7 @@ class TrustedExecutionBoundary:
             effective_fence = getattr(cap, "fencing_token", None) if cap else None
             effective_scope = getattr(cap, "scope_key", None) if cap else getattr(context, "scope_key", None)
             if isinstance(executor_func, FencedResource):
-                result = executor_func.validate_and_execute(effective_fence, effective_scope)
+                result = executor_func.validate_and_execute(effective_fence, effective_scope, request_payload)
             else:
                 result = executor_func()
         except Exception as e:
