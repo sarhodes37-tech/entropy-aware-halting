@@ -14,8 +14,11 @@ import hashlib
 import json
 import math
 import threading
+import os
+from abc import ABC, abstractmethod
 from typing import Dict, Any, List, Optional, Set, Union, Tuple
 from dataclasses import dataclass, field, asdict
+from urllib.parse import urlparse, unquote
 
 
 GENERIC_CONTINUATION_PATTERNS = frozenset({
@@ -316,6 +319,647 @@ class Policy:
         return executor_id in self.allowed_executors
 
 
+def normalize_target_scope(raw_target: str) -> str:
+    """
+    Canonicalizes target resource string into a normalized scope identifier.
+    Strips trailing slashes, resolves traversal dots and unquotes percent-encoded paths,
+    and isolates hostname/port if present.
+    """
+    if not raw_target:
+        return "target:/:/"
+    str_target = str(raw_target).strip()
+    if "://" in str_target:
+        parsed = urlparse(str_target)
+        netloc = parsed.netloc.lower().strip() if parsed.netloc else ""
+        raw_path = parsed.path or "/"
+    else:
+        netloc = ""
+        raw_path = str_target if str_target.startswith("/") else "/" + str_target
+        if "?" in raw_path or "#" in raw_path:
+            parsed = urlparse("http://localhost" + raw_path)
+            raw_path = parsed.path or "/"
+    clean_path = unquote(raw_path).replace("\\", "/")
+    norm_path = os.path.normpath(clean_path)
+    if norm_path in (".", "", "/"):
+        norm_path = "/"
+    else:
+        norm_path = norm_path.rstrip("/")
+    return f"target:{netloc}:{norm_path}"
+
+
+def canonicalize_fencing_scope(task_id: Optional[str], target: str) -> str:
+    """
+    Derives canonical execution scope key for monotonic fencing token generation and tracking.
+    Binds the canonical task_id and normalized target path/endpoint.
+    """
+    t_id = (task_id or "").strip()
+    task_part = f"task:{t_id}" if t_id else "task:__GLOBAL__"
+    target_part = normalize_target_scope(target)
+    return f"{task_part}|{target_part}"
+
+
+class AuthorizationStore(ABC):
+    """
+    Abstract interface for authoritative capability and fencing token storage.
+    Provides atomic, fail-closed state transitions for capability registration,
+    consumption, revocation, and scope-level monotonic fencing token allocation.
+    """
+
+    @abstractmethod
+    def issue_and_register_capability(self, cap: Any, signing_func: Any) -> Any:
+        """
+        Atomically allocates the next fencing token generation for the capability scope,
+        finalizes the capability (fencing_token, scope_key), invokes signing_func(cap),
+        and commits the registration record and fencing advance as a single atomic transaction.
+        """
+        pass
+
+    @abstractmethod
+    def register_capability(self, cap: Any) -> None:
+        """Atomically registers a signed capability in authoritative storage."""
+        pass
+
+    @abstractmethod
+    def get_capability(self, token_id: str) -> Optional[Any]:
+        """Retrieves a capability by token_id from authoritative storage."""
+        pass
+
+    @abstractmethod
+    def is_consumed(self, token_id: str) -> bool:
+        """Checks if a capability token has already been consumed."""
+        pass
+
+    @abstractmethod
+    def is_revoked(self, token_id: str) -> bool:
+        """Checks if a capability token has been revoked."""
+        pass
+
+    @abstractmethod
+    def is_approval_consumed(self, approval_id: str) -> bool:
+        """Checks if a human approval ID has been consumed."""
+        pass
+
+    @abstractmethod
+    def consume_capability(self, token_id: str, expected_fencing_token: Optional[int] = None) -> Tuple[bool, str]:
+        """
+        Atomically consumes a single-use capability token.
+        Linearization Point: Committing the CONSUME transaction in authoritative storage.
+        Rejects replay attempts, revoked tokens, and stale fencing tokens.
+        Returns (success, reason_code).
+        """
+        pass
+
+    @abstractmethod
+    def revoke_capability(self, token_id: str, reason: str = "") -> Tuple[bool, str]:
+        """
+        Atomically revokes a capability token.
+        Linearization Point: Committing the REVOKE transaction in authoritative storage.
+        If already consumed, revocation cannot undo completed consumption.
+        Returns (success, reason_code).
+        """
+        pass
+
+    @abstractmethod
+    def get_scope_fencing_token(self, scope_key: str) -> int:
+        """Returns the authoritative highest fencing generation allocated for scope_key."""
+        pass
+
+    @abstractmethod
+    def allocate_fencing_token(self, scope_key: str) -> int:
+        """
+        Atomically allocates and advances the monotonic fencing token generation for scope_key.
+        Returns the newly allocated fencing token generation >= 1.
+        """
+        pass
+
+
+class InMemoryAuthorizationStore(AuthorizationStore):
+    """
+    In-memory reference AuthorizationStore protected by threading.RLock.
+    Suitable for single-process test isolation; does NOT provide cross-process safety.
+    """
+
+    def __init__(self):
+        self._lock = threading.RLock()
+        self._capabilities: Dict[str, Any] = {}
+        self._consumed_tokens: Set[str] = set()
+        self._revoked_tokens: Set[str] = set()
+        self._consumed_approvals: Set[str] = set()
+        self._scope_fencing_generations: Dict[str, int] = {}
+
+    def issue_and_register_capability(self, cap: Any, signing_func: Any) -> Any:
+        with self._lock:
+            scope_key = getattr(cap, "scope_key", None) or canonicalize_fencing_scope(cap.task_id, cap.target)
+            cap.scope_key = scope_key
+            cur_fence = self._scope_fencing_generations.get(scope_key, 0)
+            new_fence = cur_fence + 1
+            cap.fencing_token = new_fence
+            self._scope_fencing_generations[scope_key] = new_fence
+            if signing_func:
+                cap.signature = signing_func(cap)
+            data = cap.to_dict() if hasattr(cap, "to_dict") else cap
+            self._capabilities[cap.token_id] = cap
+            return cap
+
+    def register_capability(self, cap: Any) -> None:
+        with self._lock:
+            scope_key = getattr(cap, "scope_key", None) or canonicalize_fencing_scope(getattr(cap, "task_id", None), getattr(cap, "target", ""))
+            cap.scope_key = scope_key
+            fence_val = getattr(cap, "fencing_token", 1) or 1
+            cur_fence = self._scope_fencing_generations.get(scope_key, 0)
+            if fence_val > cur_fence:
+                self._scope_fencing_generations[scope_key] = fence_val
+            self._capabilities[cap.token_id] = cap
+
+    def get_capability(self, token_id: str) -> Optional[Any]:
+        with self._lock:
+            return self._capabilities.get(token_id)
+
+    def is_consumed(self, token_id: str) -> bool:
+        with self._lock:
+            return token_id in self._consumed_tokens
+
+    def is_revoked(self, token_id: str) -> bool:
+        with self._lock:
+            return token_id in self._revoked_tokens
+
+    def is_approval_consumed(self, approval_id: str) -> bool:
+        with self._lock:
+            return approval_id in self._consumed_approvals
+
+    def consume_capability(self, token_id: str, expected_fencing_token: Optional[int] = None) -> Tuple[bool, str]:
+        with self._lock:
+            if token_id in self._revoked_tokens:
+                return False, "CAPABILITY_CONSUMPTION_FAILED_REVOKED"
+            if token_id in self._consumed_tokens:
+                return False, "CAPABILITY_CONSUMPTION_FAILED_ALREADY_CONSUMED"
+            cap_obj = self._capabilities.get(token_id)
+            if not cap_obj:
+                return False, "CAPABILITY_CONSUMPTION_FAILED_UNKNOWN_TOKEN"
+
+            scope_key = getattr(cap_obj, "scope_key", None) or (cap_obj.get("scope_key") if isinstance(cap_obj, dict) else None)
+            cap_fence = getattr(cap_obj, "fencing_token", None) or (cap_obj.get("fencing_token") if isinstance(cap_obj, dict) else 1)
+            if expected_fencing_token is not None and expected_fencing_token != cap_fence:
+                return False, f"CAPABILITY_CONSUMPTION_FAILED_FENCING_TOKEN_MISMATCH: expected {expected_fencing_token}, got {cap_fence}"
+
+            if scope_key:
+                auth_fence = self._scope_fencing_generations.get(scope_key, 0)
+                if cap_fence < auth_fence:
+                    return False, f"CAPABILITY_CONSUMPTION_FAILED_STALE_FENCING_TOKEN: token generation {cap_fence} < authoritative scope generation {auth_fence}"
+                if cap_fence > auth_fence:
+                    return False, f"CAPABILITY_CONSUMPTION_FAILED_FUTURE_FENCING_TOKEN: token generation {cap_fence} > authoritative scope generation {auth_fence}"
+
+            approval_id = None
+            human_app = getattr(cap_obj, "human_approval", None) or (cap_obj.get("human_approval") if isinstance(cap_obj, dict) else None)
+            if human_app:
+                approval_id = getattr(human_app, "approval_id", None) or (human_app.get("approval_id") if isinstance(human_app, dict) else None)
+                if approval_id and approval_id in self._consumed_approvals:
+                    return False, "CAPABILITY_CONSUMPTION_FAILED_APPROVAL_REPLAYED"
+
+            self._consumed_tokens.add(token_id)
+            if approval_id:
+                self._consumed_approvals.add(approval_id)
+            return True, "CAPABILITY_CONSUMED_SUCCESSFULLY"
+
+    def revoke_capability(self, token_id: str, reason: str = "") -> Tuple[bool, str]:
+        with self._lock:
+            if token_id in self._consumed_tokens:
+                return False, "CAPABILITY_REVOCATION_REJECTED_ALREADY_CONSUMED"
+            if token_id in self._revoked_tokens:
+                return True, "CAPABILITY_ALREADY_REVOKED"
+            self._revoked_tokens.add(token_id)
+            return True, "CAPABILITY_REVOKED_SUCCESSFULLY"
+
+    def get_scope_fencing_token(self, scope_key: str) -> int:
+        with self._lock:
+            return self._scope_fencing_generations.get(scope_key, 0)
+
+    def allocate_fencing_token(self, scope_key: str) -> int:
+        with self._lock:
+            cur = self._scope_fencing_generations.get(scope_key, 0)
+            nxt = cur + 1
+            self._scope_fencing_generations[scope_key] = nxt
+            return nxt
+
+
+class FileAuthorizationStore(AuthorizationStore):
+    """
+    Authoritative file-backed AuthorizationStore providing cross-process synchronization
+    via advisory POSIX file locking (fcntl.flock) and synchronous fsync updates.
+
+    Architectural Boundary and Deployment Notice:
+    - Supported Environment: Local multi-process or container environments sharing a POSIX-compliant
+      local filesystem supporting fcntl.flock advisory locking.
+    - Unsupported Environments / Limitations: Does NOT provide cross-node or distributed atomicity
+      over NFS, SMB, CIFS, or distributed filesystems where fcntl flock semantics or fsync guarantees
+      may be broken or decoupled. For multi-node distributed deployments, an external consensus-backed
+      store (e.g. distributed transactional KV or Raft-backed coordinator) is required.
+    - Transactional Model: Complete read-modify-write transactions are executed inside exclusive flock (LOCK_EX).
+      All transactions write to durable append-only journal with f.flush() and os.fsync() before state mutation.
+    - Fail-Closed Semantics: Any corrupted record, malformed JSON, unparseable line, lock failure,
+      or I/O error immediately fails closed by raising RuntimeError and halting execution.
+    """
+
+    def __init__(
+        self,
+        store_path: str = "logs/authorization_store.jsonl",
+        lock_path: Optional[str] = None,
+        fail_closed: bool = True
+    ):
+        self.store_path = store_path
+        self.lock_path = lock_path or (store_path + ".lock")
+        self.fail_closed = fail_closed
+        self._thread_lock = threading.RLock()
+        self._lock_file = None
+        self._lock_depth = 0
+
+        self._capabilities: Dict[str, Any] = {}
+        self._consumed_tokens: Set[str] = set()
+        self._revoked_tokens: Set[str] = set()
+        self._consumed_approvals: Set[str] = set()
+        self._scope_fencing_generations: Dict[str, int] = {}
+
+        os.makedirs(os.path.dirname(os.path.abspath(store_path)) or ".", exist_ok=True)
+        self._sync_from_disk(acquire_lock=True)
+
+    def _acquire_flock(self):
+        try:
+            import fcntl
+            has_fcntl = True
+        except ImportError:
+            has_fcntl = False
+
+        if not has_fcntl and self.fail_closed:
+            raise RuntimeError("FileAuthorizationStore requires fcntl.flock for interprocess authorization atomicity")
+
+        if self._lock_depth == 0:
+            os.makedirs(os.path.dirname(os.path.abspath(self.lock_path)) or ".", exist_ok=True)
+            self._lock_file = open(self.lock_path, "a", encoding="utf-8")
+            if has_fcntl:
+                try:
+                    fcntl.flock(self._lock_file.fileno(), fcntl.LOCK_EX)
+                except Exception as e:
+                    try:
+                        self._lock_file.close()
+                    except Exception:
+                        pass
+                    self._lock_file = None
+                    if self.fail_closed:
+                        raise RuntimeError(f"Failed to acquire interprocess flock on {self.lock_path}: {e}") from e
+                    raise
+        self._lock_depth += 1
+
+    def _release_flock(self):
+        try:
+            import fcntl
+            has_fcntl = True
+        except ImportError:
+            has_fcntl = False
+
+        if self._lock_depth > 0:
+            self._lock_depth -= 1
+            if self._lock_depth == 0 and self._lock_file:
+                try:
+                    if has_fcntl:
+                        fcntl.flock(self._lock_file.fileno(), fcntl.LOCK_UN)
+                except Exception as e:
+                    if self.fail_closed:
+                        raise RuntimeError(f"Failed to release interprocess flock on {self.lock_path}: {e}") from e
+                finally:
+                    try:
+                        self._lock_file.close()
+                    except Exception:
+                        pass
+                    self._lock_file = None
+
+    def _sync_from_disk(self, acquire_lock: bool = True):
+        with self._thread_lock:
+            if acquire_lock:
+                self._acquire_flock()
+            try:
+                if not os.path.exists(self.store_path):
+                    return
+                caps: Dict[str, Any] = {}
+                consumed: Set[str] = set()
+                revoked: Set[str] = set()
+                approvals: Set[str] = set()
+                fencing: Dict[str, int] = {}
+
+                with open(self.store_path, "r", encoding="utf-8") as f:
+                    for line_idx, line in enumerate(f, start=1):
+                        l = line.strip()
+                        if not l:
+                            continue
+                        try:
+                            rec = json.loads(l)
+                            if not isinstance(rec, dict):
+                                raise ValueError("Record is not a JSON object")
+                        except Exception as e:
+                            if self.fail_closed:
+                                raise RuntimeError(f"Corrupted or ambiguous authorization journal record at line {line_idx} in {self.store_path}: {l}") from e
+                            continue
+
+                        rec_type = rec.get("type")
+                        if rec_type == "REGISTER_CAPABILITY":
+                            tok = rec.get("token_id")
+                            if not tok:
+                                if self.fail_closed:
+                                    raise RuntimeError(f"Corrupted REGISTER_CAPABILITY missing token_id at line {line_idx}")
+                                continue
+                            caps[tok] = rec.get("data")
+                        elif rec_type == "CONSUME":
+                            tok = rec.get("token_id")
+                            if not tok:
+                                if self.fail_closed:
+                                    raise RuntimeError(f"Corrupted CONSUME missing token_id at line {line_idx}")
+                                continue
+                            consumed.add(tok)
+                            app_id = rec.get("approval_id")
+                            if app_id:
+                                approvals.add(app_id)
+                        elif rec_type == "REVOKE":
+                            tok = rec.get("token_id")
+                            if not tok:
+                                if self.fail_closed:
+                                    raise RuntimeError(f"Corrupted REVOKE missing token_id at line {line_idx}")
+                                continue
+                            revoked.add(tok)
+                        elif rec_type == "FENCE":
+                            sk = rec.get("scope_key")
+                            tok = rec.get("fencing_token")
+                            if not sk or tok is None:
+                                if self.fail_closed:
+                                    raise RuntimeError(f"Corrupted FENCE record at line {line_idx}")
+                                continue
+                            tok_int = int(tok)
+                            fencing[sk] = max(fencing.get(sk, 0), tok_int)
+                        elif rec_type == "INIT":
+                            pass
+                        else:
+                            if self.fail_closed:
+                                raise RuntimeError(f"Unknown or ambiguous record type '{rec_type}' at line {line_idx} in {self.store_path}")
+
+                self._capabilities = caps
+                self._consumed_tokens = consumed
+                self._revoked_tokens = revoked
+                self._consumed_approvals = approvals
+                self._scope_fencing_generations = fencing
+            finally:
+                if acquire_lock:
+                    self._release_flock()
+
+    def _append_record_under_lock(self, rec: Dict[str, Any]):
+        try:
+            def _json_default(obj):
+                if isinstance(obj, (set, frozenset)):
+                    return list(obj)
+                if hasattr(obj, "to_dict"):
+                    return obj.to_dict()
+                raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
+
+            with open(self.store_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(rec, default=_json_default) + "\n")
+                f.flush()
+                os.fsync(f.fileno())
+        except Exception as e:
+            if self.fail_closed:
+                raise RuntimeError(f"Authoritative storage failure: unable to persist authorization journal record ({str(e)})") from e
+            raise
+
+    def issue_and_register_capability(self, cap: Any, signing_func: Any) -> Any:
+        with self._thread_lock:
+            self._acquire_flock()
+            try:
+                self._sync_from_disk(acquire_lock=False)
+                scope_key = getattr(cap, "scope_key", None) or canonicalize_fencing_scope(cap.task_id, cap.target)
+                cap.scope_key = scope_key
+                cur_fence = self._scope_fencing_generations.get(scope_key, 0)
+                new_fence = cur_fence + 1
+                cap.fencing_token = new_fence
+                if signing_func:
+                    cap.signature = signing_func(cap)
+                data = cap.to_dict() if hasattr(cap, "to_dict") else cap
+
+                # Atomic dual-record journal commit: FENCE + REGISTER_CAPABILITY
+                records = [
+                    {
+                        "type": "FENCE",
+                        "scope_key": scope_key,
+                        "fencing_token": new_fence,
+                        "timestamp": time.time()
+                    },
+                    {
+                        "type": "REGISTER_CAPABILITY",
+                        "token_id": cap.token_id,
+                        "data": data,
+                        "timestamp": time.time()
+                    }
+                ]
+                for r in records:
+                    self._append_record_under_lock(r)
+
+                self._scope_fencing_generations[scope_key] = new_fence
+                self._capabilities[cap.token_id] = data
+                return cap
+            finally:
+                self._release_flock()
+
+    def register_capability(self, cap: Any) -> None:
+        with self._thread_lock:
+            self._acquire_flock()
+            try:
+                self._sync_from_disk(acquire_lock=False)
+                scope_key = getattr(cap, "scope_key", None) or canonicalize_fencing_scope(getattr(cap, "task_id", None), getattr(cap, "target", ""))
+                cap.scope_key = scope_key
+                fence_val = getattr(cap, "fencing_token", 1) or 1
+                cur_fence = self._scope_fencing_generations.get(scope_key, 0)
+                records = []
+                if fence_val > cur_fence:
+                    records.append({
+                        "type": "FENCE",
+                        "scope_key": scope_key,
+                        "fencing_token": fence_val,
+                        "timestamp": time.time()
+                    })
+                    self._scope_fencing_generations[scope_key] = fence_val
+                data = cap.to_dict() if hasattr(cap, "to_dict") else cap
+                records.append({
+                    "type": "REGISTER_CAPABILITY",
+                    "token_id": cap.token_id,
+                    "data": data,
+                    "timestamp": time.time()
+                })
+                for r in records:
+                    self._append_record_under_lock(r)
+                self._capabilities[cap.token_id] = data
+            finally:
+                self._release_flock()
+
+    def get_capability(self, token_id: str) -> Optional[Any]:
+        with self._thread_lock:
+            self._acquire_flock()
+            try:
+                self._sync_from_disk(acquire_lock=False)
+                cap_data = self._capabilities.get(token_id)
+                if isinstance(cap_data, dict):
+                    app_record = None
+                    app_data = cap_data.get("human_approval")
+                    if app_data and isinstance(app_data, dict):
+                        app_record = HumanApprovalRecord.from_input(app_data)
+                    elif isinstance(app_data, HumanApprovalRecord):
+                        app_record = app_data
+                    return Capability(
+                        token_id=cap_data["token_id"],
+                        principal_id=cap_data["principal_id"],
+                        correlation_id=cap_data["correlation_id"],
+                        request_id=cap_data["request_id"],
+                        action_name=cap_data["action_name"],
+                        target=cap_data["target"],
+                        canonical_request_digest=cap_data["canonical_request_digest"],
+                        executor_id=cap_data["executor_id"],
+                        policy_version=cap_data["policy_version"],
+                        created_at=float(cap_data["created_at"]),
+                        expires_at=float(cap_data["expires_at"]),
+                        task_id=cap_data.get("task_id"),
+                        contract_version=cap_data.get("contract_version"),
+                        contract_digest=cap_data.get("contract_digest"),
+                        required_success_evidence=set(cap_data.get("required_success_evidence") or []),
+                        human_approval=app_record,
+                        issuer_id=cap_data.get("issuer_id", "TrustedAuthorizationAuthority"),
+                        signature=cap_data.get("signature"),
+                        fencing_token=int(cap_data.get("fencing_token", 1)),
+                        scope_key=cap_data.get("scope_key")
+                    )
+                return cap_data
+            finally:
+                self._release_flock()
+
+    def is_consumed(self, token_id: str) -> bool:
+        with self._thread_lock:
+            self._acquire_flock()
+            try:
+                self._sync_from_disk(acquire_lock=False)
+                return token_id in self._consumed_tokens
+            finally:
+                self._release_flock()
+
+    def is_revoked(self, token_id: str) -> bool:
+        with self._thread_lock:
+            self._acquire_flock()
+            try:
+                self._sync_from_disk(acquire_lock=False)
+                return token_id in self._revoked_tokens
+            finally:
+                self._release_flock()
+
+    def is_approval_consumed(self, approval_id: str) -> bool:
+        with self._thread_lock:
+            self._acquire_flock()
+            try:
+                self._sync_from_disk(acquire_lock=False)
+                return approval_id in self._consumed_approvals
+            finally:
+                self._release_flock()
+
+    def consume_capability(self, token_id: str, expected_fencing_token: Optional[int] = None) -> Tuple[bool, str]:
+        with self._thread_lock:
+            self._acquire_flock()
+            try:
+                self._sync_from_disk(acquire_lock=False)
+                if token_id in self._revoked_tokens:
+                    return False, "CAPABILITY_CONSUMPTION_FAILED_REVOKED"
+                if token_id in self._consumed_tokens:
+                    return False, "CAPABILITY_CONSUMPTION_FAILED_ALREADY_CONSUMED"
+
+                cap_data = self._capabilities.get(token_id)
+                if not cap_data:
+                    return False, "CAPABILITY_CONSUMPTION_FAILED_UNKNOWN_TOKEN"
+
+                scope_key = cap_data.get("scope_key") if isinstance(cap_data, dict) else getattr(cap_data, "scope_key", None)
+                cap_fence = int(cap_data.get("fencing_token", 1) if isinstance(cap_data, dict) else getattr(cap_data, "fencing_token", 1))
+                if expected_fencing_token is not None and expected_fencing_token != cap_fence:
+                    return False, f"CAPABILITY_CONSUMPTION_FAILED_FENCING_TOKEN_MISMATCH: expected {expected_fencing_token}, got {cap_fence}"
+
+                if scope_key:
+                    auth_fence = self._scope_fencing_generations.get(scope_key, 0)
+                    if cap_fence < auth_fence:
+                        return False, f"CAPABILITY_CONSUMPTION_FAILED_STALE_FENCING_TOKEN: token generation {cap_fence} < authoritative scope generation {auth_fence}"
+                    if cap_fence > auth_fence:
+                        return False, f"CAPABILITY_CONSUMPTION_FAILED_FUTURE_FENCING_TOKEN: token generation {cap_fence} > authoritative scope generation {auth_fence}"
+
+                approval_id = None
+                human_app = cap_data.get("human_approval") if isinstance(cap_data, dict) else getattr(cap_data, "human_approval", None)
+                if human_app:
+                    approval_id = human_app.get("approval_id") if isinstance(human_app, dict) else getattr(human_app, "approval_id", None)
+                    if approval_id and approval_id in self._consumed_approvals:
+                        return False, "CAPABILITY_CONSUMPTION_FAILED_APPROVAL_REPLAYED"
+
+                rec = {
+                    "type": "CONSUME",
+                    "token_id": token_id,
+                    "approval_id": approval_id,
+                    "fencing_token": cap_fence,
+                    "timestamp": time.time()
+                }
+                self._append_record_under_lock(rec)
+                self._consumed_tokens.add(token_id)
+                if approval_id:
+                    self._consumed_approvals.add(approval_id)
+                return True, "CAPABILITY_CONSUMED_SUCCESSFULLY"
+            finally:
+                self._release_flock()
+
+    def revoke_capability(self, token_id: str, reason: str = "") -> Tuple[bool, str]:
+        with self._thread_lock:
+            self._acquire_flock()
+            try:
+                self._sync_from_disk(acquire_lock=False)
+                if token_id in self._consumed_tokens:
+                    return False, "CAPABILITY_REVOCATION_REJECTED_ALREADY_CONSUMED"
+                if token_id in self._revoked_tokens:
+                    return True, "CAPABILITY_ALREADY_REVOKED"
+
+                rec = {
+                    "type": "REVOKE",
+                    "token_id": token_id,
+                    "reason": reason,
+                    "timestamp": time.time()
+                }
+                self._append_record_under_lock(rec)
+                self._revoked_tokens.add(token_id)
+                return True, "CAPABILITY_REVOKED_SUCCESSFULLY"
+            finally:
+                self._release_flock()
+
+    def get_scope_fencing_token(self, scope_key: str) -> int:
+        with self._thread_lock:
+            self._acquire_flock()
+            try:
+                self._sync_from_disk(acquire_lock=False)
+                return self._scope_fencing_generations.get(scope_key, 0)
+            finally:
+                self._release_flock()
+
+    def allocate_fencing_token(self, scope_key: str) -> int:
+        with self._thread_lock:
+            self._acquire_flock()
+            try:
+                self._sync_from_disk(acquire_lock=False)
+                cur = self._scope_fencing_generations.get(scope_key, 0)
+                nxt = cur + 1
+                rec = {
+                    "type": "FENCE",
+                    "scope_key": scope_key,
+                    "fencing_token": nxt,
+                    "timestamp": time.time()
+                }
+                self._append_record_under_lock(rec)
+                self._scope_fencing_generations[scope_key] = nxt
+                return nxt
+            finally:
+                self._release_flock()
+
+
 @dataclass
 class Capability:
     """
@@ -340,6 +984,8 @@ class Capability:
     human_approval: Optional[HumanApprovalRecord] = None
     issuer_id: str = "TrustedAuthorizationAuthority"
     signature: Optional[str] = None
+    fencing_token: int = 1
+    scope_key: Optional[str] = None
 
     def is_expired(self, current_time: Optional[float] = None) -> bool:
         now = current_time if current_time is not None else time.time()
@@ -347,6 +993,8 @@ class Capability:
 
     def to_dict(self) -> Dict[str, Any]:
         data = asdict(self)
+        if isinstance(data.get("required_success_evidence"), (set, frozenset)):
+            data["required_success_evidence"] = list(data["required_success_evidence"])
         if self.human_approval and hasattr(self.human_approval, "to_dict"):
             data["human_approval"] = self.human_approval.to_dict()
         return data
@@ -369,21 +1017,20 @@ class CapabilityRegistry:
         self,
         signing_secret: Optional[bytes] = None,
         denial_log_path: str = "logs/denial_registry.jsonl",
-        fail_closed_persistence: bool = True
+        fail_closed_persistence: bool = True,
+        storage_backend: Optional[AuthorizationStore] = None
     ):
         self._lock = threading.RLock()
         self._file_lock_count = 0
         self._lock_file_obj = None
-        self._capabilities: Dict[str, Capability] = {}
-        self._consumed_tokens: Set[str] = set()
-        self._consumed_approvals: Set[str] = set()
-        self._revoked_tokens: Set[str] = set()
         self._denied_records: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
         self.denial_log_path = denial_log_path
         self.fail_closed_persistence = fail_closed_persistence
 
         if self.fail_closed_persistence and not self.denial_log_path:
             raise ValueError("Configuration error: denial_log_path is required when fail_closed_persistence=True")
+
+        self.storage = storage_backend if storage_backend is not None else InMemoryAuthorizationStore()
 
         self.signing_secret = signing_secret or hashlib.sha256(f"EPISTEMICOS_CAP_KEY_{uuid.uuid4()}".encode("utf-8")).digest()
         self._load_persistent_denials()
@@ -502,7 +1149,9 @@ class CapabilityRegistry:
                 raise RuntimeError(f"Failed to load persistent denial log: {str(e)}") from e
 
     def sign_capability(self, cap: Capability) -> str:
-        payload = f"{cap.token_id}:{cap.principal_id}:{cap.correlation_id}:{cap.request_id}:{cap.action_name}:{cap.target}:{cap.canonical_request_digest}:{cap.executor_id}:{cap.policy_version}:{cap.task_id or ''}:{cap.contract_version or ''}:{cap.contract_digest or ''}:{cap.expires_at}"
+        effective_scope = getattr(cap, "scope_key", None) or canonicalize_fencing_scope(cap.task_id, cap.target)
+        effective_fence = getattr(cap, "fencing_token", 1)
+        payload = f"{cap.token_id}:{cap.principal_id}:{cap.correlation_id}:{cap.request_id}:{cap.action_name}:{cap.target}:{cap.canonical_request_digest}:{cap.executor_id}:{cap.policy_version}:{cap.task_id or ''}:{cap.contract_version or ''}:{cap.contract_digest or ''}:{cap.expires_at}:{effective_fence}:{effective_scope}"
         return hmac.new(self.signing_secret, payload.encode("utf-8"), hashlib.sha256).hexdigest()
 
     def _record_denial_unlocked(
@@ -839,45 +1488,77 @@ class CapabilityRegistry:
                 policy_version=policy_version
             )
 
+    @property
+    def _capabilities(self) -> Dict[str, Any]:
+        if hasattr(self.storage, "_capabilities"):
+            return self.storage._capabilities
+        return {}
+
+    @property
+    def _consumed_tokens(self) -> Set[str]:
+        if hasattr(self.storage, "_consumed_tokens"):
+            return self.storage._consumed_tokens
+        return set()
+
+    @property
+    def _revoked_tokens(self) -> Set[str]:
+        if hasattr(self.storage, "_revoked_tokens"):
+            return self.storage._revoked_tokens
+        return set()
+
+    @property
+    def _consumed_approvals(self) -> Set[str]:
+        if hasattr(self.storage, "_consumed_approvals"):
+            return self.storage._consumed_approvals
+        return set()
+
+    def issue_and_register_capability(self, cap: Capability) -> Capability:
+        return self.storage.issue_and_register_capability(cap, self.sign_capability)
+
     def register_capability(self, cap: Capability) -> None:
         with self._lock:
+            if not getattr(cap, "scope_key", None):
+                cap.scope_key = canonicalize_fencing_scope(cap.task_id, cap.target)
+            if getattr(cap, "fencing_token", None) is None:
+                cap.fencing_token = 1
             cap.signature = self.sign_capability(cap)
-            self._capabilities[cap.token_id] = cap
+            self.storage.register_capability(cap)
 
     def get_capability(self, token_id: str) -> Optional[Capability]:
         with self._lock:
-            return self._capabilities.get(token_id)
+            cap = self.storage.get_capability(token_id)
+            if cap is not None and not isinstance(cap, Capability):
+                pass
+            return cap
 
     def is_consumed(self, token_id: str) -> bool:
         with self._lock:
-            return token_id in self._consumed_tokens
+            return self.storage.is_consumed(token_id)
 
     def is_revoked(self, token_id: str) -> bool:
         with self._lock:
-            return token_id in self._revoked_tokens
+            return self.storage.is_revoked(token_id)
 
     def is_approval_consumed(self, approval_id: str) -> bool:
         with self._lock:
-            return approval_id in self._consumed_approvals
+            return self.storage.is_approval_consumed(approval_id)
 
-    def consume_token(self, token_id: str) -> bool:
+    def consume_token(self, token_id: str, expected_fencing_token: Optional[int] = None) -> bool:
         """
-        Atomically consumes a single-use token. Returns True if consumed, False if already consumed or revoked.
+        Atomically consumes a single-use token in authoritative storage.
+        Returns True if consumed successfully, False if already consumed, revoked, or stale fencing token.
         """
         with self._lock:
-            if token_id in self._consumed_tokens or token_id in self._revoked_tokens:
-                return False
-            cap = self._capabilities.get(token_id)
-            if cap and cap.human_approval:
-                if cap.human_approval.approval_id in self._consumed_approvals:
-                    return False
-                self._consumed_approvals.add(cap.human_approval.approval_id)
-            self._consumed_tokens.add(token_id)
-            return True
+            ok, _ = self.storage.consume_capability(token_id, expected_fencing_token=expected_fencing_token)
+            return ok
 
-    def revoke_token(self, token_id: str) -> None:
+    def revoke_token(self, token_id: str, reason: str = "") -> Tuple[bool, str]:
         with self._lock:
-            self._revoked_tokens.add(token_id)
+            return self.storage.revoke_capability(token_id, reason=reason)
+
+    def get_scope_fencing_token(self, scope_key: str) -> int:
+        with self._lock:
+            return self.storage.get_scope_fencing_token(scope_key)
 
 
 def get_callable_identity(func: Any) -> str:
@@ -1263,6 +1944,7 @@ class AuthorizationAuthority:
                     if bound_exec:
                         self.executor_registry._register_internal(token_id, bound_exec)
 
+            canonical_scope = canonicalize_fencing_scope(effective_task_id, target)
             cap = Capability(
                 token_id=token_id,
                 principal_id=principal_id,
@@ -1279,10 +1961,12 @@ class AuthorizationAuthority:
                 contract_version=contract_obj.contract_version if contract_obj else None,
                 contract_digest=contract_obj.compute_contract_digest() if contract_obj else None,
                 required_success_evidence=set(contract_obj.success_evidence_requirements) if contract_obj else set(),
-                human_approval=approval_record
+                human_approval=approval_record,
+                scope_key=canonical_scope
             )
 
-            self.registry.register_capability(cap)
+            # Atomic issuance: advances fencing generation and persists capability atomically
+            cap = self.registry.issue_and_register_capability(cap)
             return cap, "AUTHORIZATION_GRANTED"
 
     def verify_capability(
@@ -1358,5 +2042,16 @@ class AuthorizationAuthority:
 
         if contract_version is not None and cap.contract_version != contract_version:
             return False, f"CAPABILITY_VERIFICATION_FAILED_CONTRACT_VERSION_MISMATCH: granted '{cap.contract_version}', requested '{contract_version}'", cap
+
+        # Strict Exact Fencing Generation Verification against authoritative storage
+        scope_key = getattr(cap, "scope_key", None) or canonicalize_fencing_scope(cap.task_id, cap.target)
+        auth_fencing_gen = self.registry.get_scope_fencing_token(scope_key)
+        cap_fencing_gen = getattr(cap, "fencing_token", 1)
+
+        if auth_fencing_gen > 0 and cap_fencing_gen != auth_fencing_gen:
+            if cap_fencing_gen < auth_fencing_gen:
+                return False, f"CAPABILITY_VERIFICATION_FAILED_STALE_FENCING_TOKEN: token generation {cap_fencing_gen} < authoritative scope generation {auth_fencing_gen}", cap
+            else:
+                return False, f"CAPABILITY_VERIFICATION_FAILED_FUTURE_FENCING_TOKEN: token generation {cap_fencing_gen} > authoritative scope generation {auth_fencing_gen}", cap
 
         return True, "CAPABILITY_VERIFIED", cap

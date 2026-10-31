@@ -91,6 +91,7 @@ class EpistemicOrchestrator:
         )
         self.authority = authority or getattr(self.execution_boundary, "authority", None) or AuthorizationAuthority()
         self.execution_boundary.authority = self.authority
+        self.execution_boundary.registry = self.authority.registry
 
         # Initialize Governance Gates in priority order
         self.shower_curtain = ShowerCurtainEngine(audit_log_path=self.audit_log_path)
@@ -728,7 +729,9 @@ class EpistemicOrchestrator:
                         policy_version=getattr(valid_grant_event, "policy_version", None) or cap.policy_version,
                         task_id=cap.task_id,
                         contract_version=cap.contract_version,
-                        required_success_evidence=set(cap.required_success_evidence) if cap and cap.required_success_evidence else set()
+                        required_success_evidence=set(cap.required_success_evidence) if cap and cap.required_success_evidence else set(),
+                        fencing_token=getattr(cap, "fencing_token", None) if cap else None,
+                        scope_key=getattr(cap, "scope_key", None) if cap else None
                     )
 
                     try:

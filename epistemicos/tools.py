@@ -227,7 +227,9 @@ class TrustedToolWrapper:
             policy_version=cap.policy_version,
             task_id=cap.task_id,
             contract_version=cap.contract_version,
-            required_success_evidence=set(cap.required_success_evidence) if cap.required_success_evidence else set()
+            required_success_evidence=set(cap.required_success_evidence) if cap.required_success_evidence else set(),
+            fencing_token=cap.fencing_token,
+            scope_key=cap.scope_key
         )
 
         # Record AUTHORIZATION_GRANTED event in provenance store

@@ -612,8 +612,8 @@ def test_trusted_execution_boundary_validation(tmp_path):
 
     exec_func = lambda: True
     policy = Policy(policy_id="p1", allowed_operations={"ACT"}, allowed_resources={"TGT"})
-    cap3, _ = boundary.authority.evaluate_and_issue_capability("ACT", "TGT", digest, correlation_id="c1", request_id="r1", executor_id=exec_func, policy=policy)
-    cap4, _ = boundary.authority.evaluate_and_issue_capability("ACT", "TGT", digest, correlation_id="c1", request_id="r1", executor_id=exec_func, policy=policy)
+    cap3, _ = boundary.authority.evaluate_and_issue_capability("ACT", "TGT", digest, correlation_id="c1", request_id="r1", executor_id=exec_func, policy=policy, task_id="task_3")
+    cap4, _ = boundary.authority.evaluate_and_issue_capability("ACT", "TGT", digest, correlation_id="c1", request_id="r1", executor_id=exec_func, policy=policy, task_id="task_4")
 
     # Reject authorization not granted
     with pytest.raises(PermissionError, match="Authorization was not granted"):
