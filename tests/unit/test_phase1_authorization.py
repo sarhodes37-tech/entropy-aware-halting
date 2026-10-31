@@ -2029,20 +2029,26 @@ def test_phase1_clearance_append_failure_and_rollback_failure_poisons_registry(t
     assert current_content.startswith(original_log_content)
 
 
-def test_phase1_critical_investigation_restart_after_rollback_failure(tmp_path):
+def test_phase1_unresolved_limitation_restart_recovery_after_rollback_failure(tmp_path):
     """
-    Critical Investigation: Poisoned Registry Recovery Across Restart
-    Investigates whether a complete or partial clearance record written before fsync
-    failure is replayed on restart by a new CapabilityRegistry instance loading the same file.
+    Unresolved Failure-Model Characterization:
+    Durable Restart Recovery After Persistence Rollback Failure.
+
+    IMPORTANT ARCHITECTURAL LIMITATION NOTICE:
+    This test characterizes an unresolved fail-open recovery limitation across OS process restarts.
+    It proves that process-local poisoning (_is_poisoned = True) protects the current process only,
+    and that if a complete clearance JSON line was written before fsync and rollback failure,
+    a newly started CapabilityRegistry instance loading the log file will read the complete line
+    and remove the active denial.
 
     Scenario:
     1. Initial active denial is durably recorded.
-    2. A clearance record is completely written to the file.
+    2. A clearance record is completely written to the file buffer.
     3. fsync fails.
-    4. Rollback fails.
-    5. Registry 1 is poisoned in memory.
+    4. Rollback fails (both os.ftruncate and f.truncate fail).
+    5. Registry 1 enters _is_poisoned = True in memory.
     6. Process restarts: new CapabilityRegistry loads the same denial log.
-    7. FINDING EVALUATION: Does the new instance load the CLEARED record, removing the denial?
+    7. FINDING: Without a multi-phase commit journal, the uncommitted clearance is replayed on restart.
     """
     denial_log = tmp_path / "denial_restart_investigation.jsonl"
     reg1 = CapabilityRegistry(
@@ -2152,10 +2158,15 @@ def test_phase1_critical_investigation_restart_after_rollback_failure(tmp_path):
 
 def test_phase1_poison_guard_concurrency_race(tmp_path):
     """
-    Concurrency Race Regression Test:
-    Verifies that a thread blocking on lock_registry() rechecks poisoned state
-    immediately upon acquiring self._lock (and under interprocess file lock),
-    preventing any check-then-lock time-of-check-to-time-of-use (TOCTOU) race.
+    Concurrency Race Regression Test (Strictly Deterministic, No Sleeps):
+    Proves the exact check-then-lock TOCTOU sequence:
+    1. Thread A acquires registry lock via lock_registry() and holds it.
+    2. Thread B enters lock_registry() and passes the initial pre-lock _check_poisoned() check.
+    3. Thread B demonstrably invokes acquire() on the registry lock and is blocked waiting.
+    4. Thread A sets _is_poisoned = True while still holding the lock.
+    5. Thread A releases the lock.
+    6. Thread B wakes up with the acquired lock and MUST fail at the in-lock _check_poisoned() check.
+    7. Assert Thread B never enters the protected block.
     """
     log_path = tmp_path / "test_concurrency_poison.jsonl"
     registry = CapabilityRegistry(
@@ -2163,38 +2174,83 @@ def test_phase1_poison_guard_concurrency_race(tmp_path):
         fail_closed_persistence=False
     )
 
+    # Use a test-only instrumented wrapper around registry._lock to observe
+    # the exact moment Thread B attempts acquire() without modifying production code.
+    class InstrumentedLockWrapper:
+        def __init__(self, real_lock):
+            self._real = real_lock
+            self.on_acquire_hook = None
+
+        def acquire(self, blocking=True, timeout=-1):
+            if self.on_acquire_hook:
+                self.on_acquire_hook()
+            return self._real.acquire(blocking, timeout)
+
+        def release(self):
+            return self._real.release()
+
+        def __enter__(self):
+            return self.acquire()
+
+        def __exit__(self, t, v, tb):
+            self.release()
+
+    real_lock = registry._lock
+    instrumented_lock = InstrumentedLockWrapper(real_lock)
+    registry._lock = instrumented_lock
+
     t1_holding = threading.Event()
-    t2_blocked = threading.Event()
+    t2_started_acquire = threading.Event()
+    t1_can_release = threading.Event()
     t2_outcome = {}
 
-    def worker_poison():
-        with registry.lock_registry():
-            t1_holding.set()
-            # Wait for thread 2 to attempt lock acquisition
-            t2_blocked.wait(timeout=2.0)
-            time.sleep(0.02)
-            # Poison registry while holding lock
-            registry._is_poisoned = True
-
-    def worker_waiter():
-        t1_holding.wait(timeout=2.0)
-        t2_blocked.set()
+    def thread_a_poisoner():
         try:
             with registry.lock_registry():
-                t2_outcome["status"] = "ACQUIRED"
+                # 1. Thread A holds lock
+                t1_holding.set()
+                # 3. Wait until Thread B has demonstrably entered acquire()
+                t2_started_acquire.wait(timeout=5.0)
+                # 4. Poison registry while holding lock
+                registry._is_poisoned = True
+                # Signal Thread A to release
+                t1_can_release.set()
         except Exception as e:
-            t2_outcome["status"] = "ERROR"
+            t2_outcome["thread_a_error"] = e
+
+    def thread_b_waiter():
+        # Wait until Thread A has lock
+        t1_holding.wait(timeout=5.0)
+
+        # Hook to prove Thread B is about to block inside acquire()
+        def on_acquire():
+            instrumented_lock.on_acquire_hook = None
+            t2_started_acquire.set()
+
+        instrumented_lock.on_acquire_hook = on_acquire
+        try:
+            with registry.lock_registry():
+                # Must NEVER be reached
+                t2_outcome["entered_protected_context"] = True
+        except Exception as e:
             t2_outcome["error"] = e
 
-    t1 = threading.Thread(target=worker_poison)
-    t2 = threading.Thread(target=worker_waiter)
+    t1 = threading.Thread(target=thread_a_poisoner)
+    t2 = threading.Thread(target=thread_b_waiter)
 
-    t1.start()
-    t2.start()
-    t1.join()
-    t2.join()
+    try:
+        t1.start()
+        t2.start()
+    finally:
+        t1.join(timeout=5.0)
+        t2.join(timeout=5.0)
 
-    assert t2_outcome.get("status") == "ERROR"
+    # Restore real lock
+    registry._lock = real_lock
+
+    assert "thread_a_error" not in t2_outcome
+    assert t2_outcome.get("entered_protected_context") is not True
+    assert isinstance(t2_outcome.get("error"), RuntimeError)
     assert "poisoned state" in str(t2_outcome.get("error"))
 
 

@@ -1022,6 +1022,12 @@ class CapabilityRegistry:
     - Fail-closed registry poisoning: If append or fsync fails and rollback truncation cannot be guaranteed
       under fail-closed persistence, the registry transitions to a poisoned state (_is_poisoned = True)
       and rejects all subsequent authorization, denial checking, clearance, and token operations.
+    - Explicit Persistence Guarantee Limitation: Process-local registry poisoning protects the current OS
+      process only. Ambiguous persistence failure (e.g. an un-fsynced append write where rollback truncation
+      fails) can leave a complete valid JSON record on disk that is visible to a new process instance.
+      Restart recovery after failed fsync and failed rollback is not currently guaranteed to preserve
+      the in-memory failure/poisoned state across process termination/restart. Multiphase transaction logging
+      is deferred pending a formal persistence recovery protocol.
     """
 
     def __init__(
