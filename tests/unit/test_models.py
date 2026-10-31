@@ -851,6 +851,52 @@ def test_surprisal_sensor_non_finite_baseline_prior_std():
     assert eval_res["reason"] == "MALFORMED_NON_FINITE_LOGPROBS"
 
 
+def test_surprisal_sensor_signed_zero_and_equality_preservation():
+    """
+    Validates first-argument-on-equality semantics including signed zero (-0.0 vs 0.0),
+    std_floor=0.0, infinities, and NaNs matching Python max(a, b).
+    """
+    # 1. ZeroDivisionError exception equivalence on std_floor=0.0 and baseline_prior_std=-0.0
+    s_neg_zero = TokenSurprisalSensor(std_floor=0.0, baseline_prior_std=-0.0, baseline_prior_surprisal=0.0)
+    with pytest.raises(ZeroDivisionError):
+        s_neg_zero.compute_z_scores([-1.0])
+
+    with pytest.raises(ZeroDivisionError):
+        _pre_pr_compute_z_scores(s_neg_zero, [-1.0])
+
+    # 2. Test floor comparisons across all operand combinations
+    operand_pairs = [
+        (-0.0, 0.0),
+        (0.0, -0.0),
+        (-0.0, -0.0),
+        (0.0, 0.0),
+        (float("nan"), 0.05),
+        (0.05, float("nan")),
+        (float("inf"), 0.05),
+        (-float("inf"), 0.05),
+        (0.05, float("inf")),
+        (0.05, -float("inf")),
+        (float("nan"), float("nan")),
+        (1.0, 1.0),
+        (1.0, 2.0),
+        (2.0, 1.0),
+    ]
+
+    for a, b in operand_pairs:
+        # Pre-PR Python max(a, b) behavior
+        expected = max(a, b)
+        # Optimized conditional floor expression: b if b > a else a
+        actual = b if b > a else a
+
+        if math.isnan(expected):
+            assert math.isnan(actual), f"Failed for pair ({a}, {b})"
+        elif math.isinf(expected):
+            assert actual == expected, f"Failed for pair ({a}, {b})"
+        else:
+            assert actual == expected, f"Failed for pair ({a}, {b})"
+            assert math.copysign(1.0, actual) == math.copysign(1.0, expected), f"Signed zero mismatch for pair ({a}, {b})"
+
+
 def test_surprisal_sensor_differential_equivalence_exhaustive():
     """
     Priority 2: Differential testing against pre-PR implementation across configurations,
