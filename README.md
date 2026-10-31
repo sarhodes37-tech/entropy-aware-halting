@@ -2,40 +2,86 @@
 
 EpistemicOS is an experimental low-latency security middleware designed to enforce deterministic halting, authorization policies, privacy controls, and execution governance for Large Language Model (LLM) workflows. It intercepts structural collapse, N-gram loops, epistemic hallucinations, unauthorized tool-calling vectors, and sensitive data leakage prior to execution within configured control plane boundaries.
 
+### Navigation
+
+- [System Architecture-at-a-Glance](#system-architecture-at-a-glance)
+- [Observatory & Benchmark Workbench](#epistemicos-observatory--benchmark-workbench)
+- [Control Plane Mechanics & Invariants](#control-plane-mechanics--architectural-invariants)
+- [Authorization Scope & Resource Extraction](#authorization-scope--resource-extraction-refinement)
+- [Measured Benchmark Results](#measured-benchmark-results)
+- [Quickstart & Requirements](#quickstart--requirements)
+- [Verified Execution & Tests](#verified-execution--verification-commands)
+- [Security Hardening & Limitations](#security-hardening--trust-boundaries)
+- [Research Documentation](#research-notes--formal-specifications)
+
 ---
 
-## 🏛 System Architecture & Control Plane Implementation
+## 🏛 System Architecture-at-a-Glance
 
-### Control Plane Architecture Diagram
+### Control Plane Pipeline
 
-![EpistemicOS Control Plane Architecture](docs/figures/control_plane.svg)
+![Diagram of the EpistemicOS Control Plane Architecture showing the progression from Ingress Workload through ShowerCurtainGate, EntropyGate, PermissionGate, and TriangulationGate into the Trusted Execution Boundary, with fail-closed paths to Audit Trail and Vector Revocation](docs/figures/control_plane.svg)
 
 *Figure 1 — EpistemicOS Control Plane Architecture: Workloads route through ordered governance gates before reaching the trusted execution boundary. Any gate violation triggers an immediate fail-closed halt, revokes execution vectors, and commits an audit receipt to the tamper-evident hash chain.*
+
+#### Architecture Flow Breakdown
+1. **Ingress Workload:** Client prompts, tool-invocation proposals, and contextual token logprobs enter the orchestrated pipeline.
+2. **ShowerCurtainGate (Stage 0):** Enforces local data minimization, cryptographic pseudonym mapping, and pre-flight egress inspection. Halts immediately upon detecting raw PII or secret egress.
+3. **EntropyGate (Stage 1):** Analyzes token surprisal ($h = -\log p$) and semantic uncertainty across generation steps. Halts structural degeneration, infinite loops, and epistemic drift.
+4. **PermissionGate (Stage 2):** Performs strict dynamic capability verification. Enforces task contracts, resource scope binding, and signature validation. Fails closed if capability tokens are forged, missing, or mismatched.
+5. **TriangulationGate (Stage 3):** Computes consensus across multi-model or semantic sampling ensembles to halt ungrounded or divergent outputs.
+6. **Trusted Execution Boundary & Safe Dispatch:** Verifies execution tokens against registered callables with zero-side-effect enforcement. Safe actions invoke authorized tools; halted actions revoke vectors and record cryptographic audit receipts.
 
 ---
 
 ### Shower Curtain Privacy Architecture
 
-![Shower Curtain Privacy Boundary](docs/figures/shower_curtain_boundary.svg)
+![Diagram of the Shower Curtain Privacy Boundary illustrating raw user request processing through detection, policy, local mapping vault, egress gate to external LLM provider, and inbound response rehydration](docs/figures/shower_curtain_boundary.svg)
 
 *Figure 2 — Shower Curtain Privacy Boundary: Local data sanitization, session-scoped pseudonym mapping, egress fail-closed policy enforcement, and inbound response inspection.*
 
+#### Privacy Boundary Mechanics
 The **Shower Curtain** subsystem forms a local-first privacy boundary mediating interaction between client applications and external inference providers:
 
-* **Local Trust Boundary:** Sensitive PII, financial data, and authentication credentials remain within the local client perimeter.
-* **Multi-Stage Processing:** Ingress workloads pass through deterministic detection (Stage A), classification and policy evaluation (Stage B), local pseudonym mapping (Stage C), context minimization (Stage D), and serialized egress gate inspection (Stage E).
-* **Session Pseudonyms & Zero Credential Leakage:** Reversible pseudonyms replace identifiable entities within isolated session scopes. Credentials and secrets are strictly redacted or blocked and cannot be rehydrated inbound.
-* **Fail-Closed Egress Enforcement:** Egress payloads are serialized and inspected prior to provider transmission. Unsanitized sensitive data or policy violations trigger immediate execution halts.
+* **Local Trust Boundary:** Sensitive PII, financial data, and authentication credentials remain exclusively within the local host memory.
+* **Deterministic Detection & Interval Merging (Stages A & D):** Employs compiled pattern matchers and $O(\log N)$ disjoint interval merging to extract entities, tokens, and file paths.
+* **Policy Rule Matrix (Stage B):** Evaluates classification rules (`PASS`, `REDACT`, `BLOCK`) against extracted entity types.
+* **Local Mapping Vault (Stage C):** Assigns HMAC-keyed reversible pseudonyms (`<PSEUDONYM_ID>`) within isolated session scopes. Secrets and API keys are permanently stripped and cannot be rehydrated inbound.
+* **Pre-Flight Wire Inspection (Stage E):** Pre-serialization inspection intercepts socket egress. If unsanitized data escapes local masking, transmission halts immediately.
+* **Inbound Inspection & Authorized Rehydration (Stage F):** Validates external provider response integrity and inverts pseudonyms strictly from the authenticated local vault before returning content to the client.
 
 For detailed architecture specifications and security guarantees, see [`docs/SHOWER_CURTAIN_ARCHITECTURE.md`](docs/SHOWER_CURTAIN_ARCHITECTURE.md).
 
 ---
 
-### EpistemicOS Observatory Control Room
+## 🔬 EpistemicOS Observatory & Benchmark Workbench
 
-![EpistemicOS Observatory Interface](docs/figures/observatory-concept.png)
+EpistemicOS provides an integrated browser-based instrumentation workbench for evaluating gate decisions, inspecting execution traces, and reviewing empirical benchmark evidence.
 
-*Figure 3 — EpistemicOS Observatory Control Room: Real-time telemetry monitoring, audit verification, and execution trace exploration interface. Depicted metrics, timestamps, and benchmark results are an illustrative design concept and do not represent live system telemetry.*
+### Current Workbench Implementation (Empirical Results)
+
+![Benchmark Workbench user interface displaying run identity, condition comparison metrics table with 100% combined gating accuracy, and per-case results inspector with status badges](docs/figures/workbench-current.png)
+
+*Figure 3 — EpistemicOS Benchmark Workbench: Genuine user interface screenshot rendering actual measured evaluation records ($N = 100$ held-out dataset) and stratified condition comparisons across all six gating configurations. Aggregate evidence status is verified (`AVAILABLE`), with full per-case classification filters (`TC`, `TR`, `FC`, `FR`) and interactive inspection.*
+
+### Interface Architecture & Visual System
+
+* **Research-Grade Visual Language:** Built with the Midnight Violet / Graphite-Plum design system (`#120F24`, `#1D1833`), accented by calibrated cyan (`#64DED9`), electric lavender (`#B69AFF`), and high-contrast semantic indicators.
+* **Accessibility Compliance:** WCAG 2.2 AA compliant contrast across all foreground text and surface backgrounds, high-visibility keyboard focus rings, dedicated skip-links, and non-color-dependent status glyphs (`✓ VERIFIED`, `● AVAILABLE`, `⚠ HALTED`).
+* **Zero-Dependency Security:** Client SPA runs without external CDNs or remote dependencies, utilizing strict DOM element creation (`textContent`) to eliminate client-side script execution vectors.
+
+### Telemetry Context: Empirical Benchmark Evidence vs. Design Concept
+
+To ensure complete scientific transparency, EpistemicOS clearly distinguishes between verified empirical benchmark telemetry and illustrative design concepts:
+
+| Interface Surface | Telemetry Source | Verification Status | Artifact Backing |
+| :--- | :--- | :--- | :--- |
+| **Benchmark Workbench** (`#view-benchmarks`, Fig. 3) | **Actual Measured Telemetry** | Verified Empirical Evidence | `results/ablation_table.json`, `results/per_case_results.json` ($N=100$) |
+| **Observatory Control Room** (Fig. 4 below) | **Illustrative Design Concept** | Conceptual Mockup / Future Architecture | Synthetic sample traces (do not represent live system telemetry) |
+
+![Conceptual mockup of the EpistemicOS Observatory Control Room showing real-time agent telemetry stream, audit verification dials, and execution traces](docs/figures/observatory-concept.png)
+
+*Figure 4 — EpistemicOS Observatory Control Room (Conceptual Design Model): Illustrative design concept showing proposed continuous real-time fleet telemetry and live streaming audit dials. Depicted metrics, timestamps, and traces do not represent live system telemetry.*
 
 ---
 
@@ -236,3 +282,16 @@ EpistemicOS enforces `trust_remote_code=False` by default across both `epistemic
 
 ### Tamper-Evident Audit Trail
 All intercepted violations and sanitization events are logged cryptographically via SHA-256 chained entry hashes. PII and credentials are sanitized before log entry emission.
+
+---
+
+## 📚 Research Notes & Formal Specifications
+
+Comprehensive research documentation, mathematical formulations, and threat models:
+
+* **[Shower Curtain Privacy Architecture](docs/SHOWER_CURTAIN_ARCHITECTURE.md):** Formal specification of local data masking, HMAC pseudonym vaults, and pre-flight wire inspection.
+* **[Mathematical Foundations](docs/mathematical_foundation.md):** Theoretical derivations for token surprisal Z-scores, Bayesian belief updating, and Shannon entropy halting.
+* **[Experimental Audit & Scope Verification](docs/audit_guarantees.md):** Detailed analysis of authorization scope resolution, regression fixes, and verification guarantees.
+* **[Limitations & Threat Modeling](docs/LIMITATIONS.md):** Explicit analysis of operating system trust boundaries, synthetic evaluation boundaries, and adversarial threat coverage.
+* **[On-Policy Decision Steering](docs/research_notes/on_policy_decision_steering.md):** Research specification for dynamic steering and risk calibration in autonomous LLM agent execution.
+* **[Provenance & Audit Chains](docs/provenance.md):** Cryptographic specifications for tamper-evident provenance graphs and execution receipts.
