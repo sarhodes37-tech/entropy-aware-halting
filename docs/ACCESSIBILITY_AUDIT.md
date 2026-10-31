@@ -1,7 +1,7 @@
 # EpistemicOS Control Plane Observatory & Benchmark Workbench
 ## Dedicated Accessibility Audit & WCAG 2.2 Level AA Remediation Report
 
-**Audit Date:** March 30, 2026 (Third-Pass Hardening Revision)
+**Audit Date:** October 31, 2026 (Fourth-Pass Hardening Revision)
 **Target Specification:** Web Content Accessibility Guidelines (WCAG) 2.2 Level AA
 **Repository:** `sarhodes37-tech/entropy-aware-halting` (PR #321)
 **Evaluation Scope:** EpistemicOS Control Plane Observatory SPA & Benchmark Workbench UI (`epistemicos/ui/static/`)
@@ -26,10 +26,11 @@ To ensure complete verification integrity, the audit categorizes findings across
 
 1. **Automated Scanner Checks (`axe-core` v4.10.2):**
    - Headless automated scans using vendored `axe.min.js` (v4.10.2) evaluating rulesets (`wcag2a`, `wcag2aa`, `wcag21a`, `wcag21aa`, `wcag22aa`) across all 4 primary application views and complex interactive states (selected traces, evidence inspectors, provenance details, benchmark cases, and empty filter states).
-2. **Automated Playwright Browser Interaction Tests:**
-   - 14 dedicated browser UI tests executed in the `test-ui-browser` CI job:
+2. **Automated Playwright Browser Interaction & Geometric Tests:**
+   - 19 dedicated tests executed in the UI test suite:
      - 6 visual accessibility and layout tests in `tests/ui/test_workbench_visual_a11y.py` (contrast checks across base and surface backgrounds, gradient stops, mobile viewport horizontal overflow bounds, and focus outlines).
-     - 8 accessibility regression tests in `tests/ui/test_workbench_accessibility.py` (axe-core scans, keyboard navigation and focus management workflows, table scopes, live region announcements, reduced motion emulation, forced-colors emulation, 320px responsive reflow, and target size evaluation under WCAG 2.5.8).
+     - 8 browser integration tests in `tests/ui/test_workbench_accessibility.py` (axe-core scans, keyboard navigation and focus management workflows, table scopes, live region announcements, reduced motion emulation, forced-colors emulation with computed style assertions, 320px responsive reflow, and comprehensive target size evaluation under WCAG 2.5.8).
+     - 5 deterministic geometric unit tests in `tests/ui/test_workbench_accessibility.py` validating the normative WCAG 2.5.8 24px diameter circle spacing evaluator across direct sizing, spacing exception, near neighbor collision, overlapping targets, and exact boundary condition.
 3. **Manual Code & Layout Inspection:**
    - Review of HTML landmark hierarchy, element attributes, DOM reading sequence, and CSS styles.
 4. **Assistive Technology Limitations (Screen Readers):**
@@ -98,7 +99,7 @@ To ensure complete verification integrity, the audit categorizes findings across
 | **2.5.3 Label in Name** | A | Buttons, tabs | **PASS** | axe scan, DOM inspection | Accessible names match or contain visible text strings. |
 | **2.5.4 Motion Actuation** | A | N/A | **NOT APPLICABLE** | Codebase inspection | No device shaking or motion actuation. |
 | **2.5.7 Dragging Movements** | AA | N/A | **NOT APPLICABLE** | Codebase inspection | No drag-and-drop operations exist. |
-| **2.5.8 Target Size (Minimum)** | AA | Interactive buttons, tabs, inputs | **PARTIAL** | `test_target_size_wcag_258` | Evaluated across all 4 views: navigation tabs, search inputs, select dropdowns, and option rows satisfy >= 24x24px. Compact copy buttons satisfy the spacing exception; full manual touch validation on real mobile devices remains recommended. |
+| **2.5.8 Target Size (Minimum)** | AA | Interactive buttons, tabs, inputs | **PASS** | `test_target_size_wcag_258` and 5 unit tests | Evaluated across all 4 views: navigation tabs, search inputs, select dropdowns, and option rows satisfy >= 24x24px. Compact copy buttons satisfy the normative 24px diameter circle spacing exception without class-based exemptions. |
 | **3.1.1 Language of Page** | A | Document root | **PASS** | HTML inspection | `<html lang="en">` is declared at the document root. |
 | **3.1.2 Language of Parts** | AA | Technical content | **NOT APPLICABLE** | Codebase inspection | Content is entirely English. |
 | **3.2.1 On Focus** | A | Search inputs, tabs | **PASS** | Playwright interaction tests | Focusing an element does not automatically trigger context changes or form submissions. |
@@ -113,7 +114,7 @@ To ensure complete verification integrity, the audit categorizes findings across
 | **3.3.7 Redundant Entry** | A | N/A | **NOT APPLICABLE** | System architecture | Read-only telemetry interface with no multi-step forms. |
 | **3.3.8 Accessible Authentication (Minimum)** | AA | N/A | **NOT APPLICABLE** | System architecture | Authentication handled externally; no password/cognitive function tests in UI. |
 | **4.1.2 Name, Role, Value** | A | Custom controls, listboxes, tabs | **PASS** | `test_axe_core_scans_across_all_views_and_interactive_states`, Playwright tests | Tabs, listbox items, and buttons have correct roles and dynamic state attributes (`aria-selected`, `aria-pressed`, `aria-busy`). |
-| **4.1.3 Status Messages** | AA | Status announcer live region | **PASS** | `test_live_region_announcements` | Dedicated `#a11y-status-announcer` (`role="status"`, `aria-live="polite"`) updates text on view changes, filter resets, and selections. |
+| **4.1.3 Status Messages** | AA | Status announcer live region | **PASS** | `test_live_region_announcements` | Dedicated `#a11y-status-announcer` (`role="status"`, `aria-live="polite"`) updates text dynamically on view changes, filter resets, and selections. |
 
 ---
 
@@ -145,5 +146,5 @@ To perform manual assistive technology verification in a production desktop/mobi
 ## 6. Conclusion & Remaining Verification Scope
 
 - **Remediation Completed:** High-impact accessibility barriers (invalid listbox children, keyboard-inaccessible scrollable regions, missing table header scopes, shell redirection syntax errors, and dormant live regions) were successfully remediated without altering benchmark scoring or visual density.
-- **Automated Regression Suite:** 14 browser UI tests (6 visual/layout tests and 8 comprehensive accessibility tests including full axe-core scans) pass cleanly in CI under Playwright 1.58.0.
+- **Automated Regression Suite:** 19 tests (6 visual/layout tests, 8 browser accessibility tests including full axe-core scans, and 5 geometric unit tests) pass cleanly in CI under Playwright 1.58.0.
 - **Verification Integrity Disclosure:** The application satisfies all programmatic requirements of WCAG 2.2 Level AA verifiable via automated testing and DOM analysis. Full Level AA conformance cannot be claimed until manual screen reader speech verification (Section 5) is formally performed by a qualified human tester.

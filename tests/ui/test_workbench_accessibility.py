@@ -14,10 +14,11 @@ Authoritative regression suite verifying:
 7. Forced-colors compliance (emulating forced-colors: active and asserting visible solid card boundaries, active tab boundaries, and distinguishable focus outlines).
 8. Polite live region announcements (verifying actual, dynamic non-empty text updates on tab switch, record selection, and filter clear).
 9. Responsive reflow at 320px width (400% zoom equivalent) verifying zero document-level horizontal page overflow across all 4 views while distinguishing intentional scroll containers.
-10. Target size evaluation for interactive elements under WCAG 2.2 2.5.8 across all primary views, accounting for the spacing exception.
+10. Target size evaluation for interactive elements under WCAG 2.2 2.5.8 across all primary views, implementing normative geometric circle spacing evaluation.
 """
 
 import json
+import math
 import threading
 import time
 from pathlib import Path
@@ -35,6 +36,126 @@ except ImportError:
 
 AXE_SCRIPT_PATH = Path(__file__).parent / "vendor" / "axe.min.js"
 
+
+def evaluate_target_size_wcag_258(target, neighbors):
+    """
+    Evaluate WCAG 2.2 Success Criterion 2.5.8 Target Size (Minimum) (Level AA).
+
+    Normative Rule:
+    The size of the target for pointer inputs is at least 24 by 24 CSS pixels, except where:
+    - Spacing Exception: Undersized targets (those less than 24 by 24 CSS pixels) are positioned
+      such that if a 24 CSS pixel diameter circle is centered on the bounding box of each,
+      the circles do not intersect another target or the circle for another target.
+      (Equivalently: Euclidean distance between centers of two 24px circles must be >= 24px,
+       and target center to edge of any other target must not intersect).
+
+    Args:
+        target: dict with {"x": float, "y": float, "width": float, "height": float, "id": str}
+        neighbors: list of dicts with same structure for all other interactive targets on the page.
+
+    Returns:
+        (bool, str): (passes, reason)
+    """
+    tw = target.get("width", 0)
+    th = target.get("height", 0)
+
+    # 1. Direct pass if >= 24x24 CSS pixels
+    if tw >= 24.0 and th >= 24.0:
+        return True, "Meets 24x24px minimum"
+
+    # 2. Spacing exception evaluation:
+    # A 24px diameter circle centered on the target bounding box (radius R = 12px)
+    # Target center: (cx, cy)
+    cx = target["x"] + tw / 2.0
+    cy = target["y"] + th / 2.0
+    radius = 12.0  # 24px diameter / 2
+
+    for n in neighbors:
+        if n.get("id") == target.get("id"):
+            continue
+
+        nw = n.get("width", 0)
+        nh = n.get("height", 0)
+        ncx = n["x"] + nw / 2.0
+        ncy = n["y"] + nh / 2.0
+
+        # If neighbor is also undersized or evaluated via circles, circle-to-circle collision:
+        # Distance between centers must be >= 24px (12px + 12px)
+        center_dist = math.sqrt((cx - ncx) ** 2 + (cy - ncy) ** 2)
+
+        # In addition, circle must not intersect the neighbor target bounding box:
+        # Closest point on rectangle n to circle center (cx, cy)
+        closest_x = max(n["x"], min(cx, n["x"] + nw))
+        closest_y = max(n["y"], min(cy, n["y"] + nh))
+        dist_to_neighbor_rect = math.sqrt((cx - closest_x) ** 2 + (cy - closest_y) ** 2)
+
+        if dist_to_neighbor_rect < radius:
+            return False, f"Circle (radius {radius}px) intersects neighbor '{n.get('id', 'unknown')}' (distance {dist_to_neighbor_rect:.2f}px < {radius}px)"
+
+        if center_dist < 24.0:
+            return False, f"24px circle intersects circle of neighbor '{n.get('id', 'unknown')}' (center distance {center_dist:.2f}px < 24px)"
+
+    return True, "Satisfies WCAG 2.5.8 spacing exception (24px non-intersecting circle)"
+
+
+# ==============================================================================
+# Deterministic Unit Tests for WCAG 2.5.8 Geometric Evaluator
+# ==============================================================================
+
+def test_unit_target_size_meets_minimum():
+    """A target that is at least 24x24 CSS pixels satisfies the criterion directly."""
+    target = {"id": "t1", "x": 10, "y": 10, "width": 24, "height": 24}
+    passed, reason = evaluate_target_size_wcag_258(target, [])
+    assert passed
+    assert "Meets 24x24px minimum" in reason
+
+
+def test_unit_target_size_undersized_satisfies_spacing_exception():
+    """An undersized target (e.g. 16x16) separated from neighbors by >= 24px center distance satisfies spacing exception."""
+    target = {"id": "t1", "x": 0, "y": 0, "width": 16, "height": 16}  # center at (8, 8)
+    # Neighbor center at (40, 8), distance = 32px > 24px; closest edge at x=32, dist to center (8) = 24px >= 12px
+    neighbor = {"id": "n1", "x": 32, "y": 0, "width": 16, "height": 16}
+    passed, reason = evaluate_target_size_wcag_258(target, [neighbor])
+    assert passed
+    assert "Satisfies WCAG 2.5.8 spacing exception" in reason
+
+
+def test_unit_target_size_undersized_fails_too_close():
+    """An undersized target fails if neighboring target center is closer than 24px."""
+    target = {"id": "t1", "x": 0, "y": 0, "width": 16, "height": 16}  # center (8, 8)
+    # Neighbor center at (20, 8), distance = 12px < 24px
+    neighbor = {"id": "n1", "x": 12, "y": 0, "width": 16, "height": 16}
+    passed, reason = evaluate_target_size_wcag_258(target, [neighbor])
+    assert not passed
+    assert "intersects" in reason
+
+
+def test_unit_target_size_overlapping_targets_fail():
+    """Overlapping targets fail the spacing exception."""
+    target = {"id": "t1", "x": 10, "y": 10, "width": 16, "height": 16}
+    neighbor = {"id": "n1", "x": 12, "y": 12, "width": 16, "height": 16}
+    passed, reason = evaluate_target_size_wcag_258(target, [neighbor])
+    assert not passed
+
+
+def test_unit_target_size_exact_boundary_threshold():
+    """Exact boundary condition: at 24.0px center distance and >= 12px edge distance."""
+    target = {"id": "t1", "x": 0, "y": 0, "width": 10, "height": 10}  # center (5, 5)
+    # Center at (29, 5), center distance = 24.0px
+    # Target center to neighbor edge: neighbor x=24..34, distance from 5 to 24 = 19px >= 12px
+    neighbor = {"id": "n1", "x": 24, "y": 0, "width": 10, "height": 10}
+    passed, reason = evaluate_target_size_wcag_258(target, [neighbor])
+    assert passed
+
+    # Shift neighbor closer by 0.5px -> center distance = 23.5px < 24px -> must fail
+    neighbor_close = {"id": "n2", "x": 23.5, "y": 0, "width": 10, "height": 10}
+    passed_close, reason_close = evaluate_target_size_wcag_258(target, [neighbor_close])
+    assert not passed_close
+
+
+# ==============================================================================
+# Playwright Server Fixture & Browser Integration Tests
+# ==============================================================================
 
 @pytest.fixture
 def a11y_comprehensive_server(tmp_path):
@@ -509,7 +630,7 @@ def test_prefers_reduced_motion_behavior(a11y_comprehensive_server):
 
 @pytest.mark.skipif(not PLAYWRIGHT_AVAILABLE, reason="playwright not installed")
 def test_forced_colors_support(a11y_comprehensive_server):
-    """Verify that under forced-colors: active, containers render distinguishable solid boundaries and focus outlines."""
+    """Verify that under forced-colors: active, containers render distinguishable solid boundaries, focus outlines, and distinct states."""
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         page = browser.new_page(
@@ -518,33 +639,89 @@ def test_forced_colors_support(a11y_comprehensive_server):
         )
         page.goto(f"{a11y_comprehensive_server}/index.html")
 
-        # 1. Verify card boundaries render explicit solid border styles
-        card_border_style = page.evaluate("""
+        # 1. Verify card boundaries render explicit solid border styles with non-zero width
+        card_styles = page.evaluate("""
             () => {
                 const card = document.querySelector('.card');
-                return window.getComputedStyle(card).borderStyle;
+                const cs = window.getComputedStyle(card);
+                return {
+                    borderStyle: cs.borderStyle,
+                    borderWidth: parseFloat(cs.borderTopWidth || '0'),
+                    borderColor: cs.borderTopColor
+                };
             }
         """)
-        assert card_border_style == "solid", f"Card borderStyle expected 'solid' under forced-colors, got '{card_border_style}'"
+        assert card_styles["borderStyle"] == "solid", f"Card borderStyle expected 'solid' under forced-colors, got '{card_styles['borderStyle']}'"
+        assert card_styles["borderWidth"] > 0, "Card borderWidth expected > 0 under forced-colors"
+        assert card_styles["borderColor"] not in ["transparent", "rgba(0, 0, 0, 0)"], "Card borderColor must not be transparent"
 
-        # 2. Verify active navigation tab has a visible border affordance
-        active_tab_border = page.evaluate("""
+        # 2. Verify active vs inactive navigation tabs have distinguishable state affordances
+        tab_states = page.evaluate("""
             () => {
                 const activeTab = document.querySelector('.nav-tab.active');
-                return window.getComputedStyle(activeTab).borderStyle;
+                const inactiveTabs = Array.from(document.querySelectorAll('.nav-tab:not(.active)'));
+                const csActive = window.getComputedStyle(activeTab);
+                const csInactive = window.getComputedStyle(inactiveTabs[0]);
+                return {
+                    activeSelected: activeTab.getAttribute('aria-selected'),
+                    activeBorder: csActive.borderBottomWidth,
+                    inactiveBorder: csInactive.borderBottomWidth,
+                    activeBg: csActive.backgroundColor,
+                    inactiveBg: csInactive.backgroundColor
+                };
             }
         """)
-        assert active_tab_border == "solid", f"Active tab borderStyle expected 'solid' under forced-colors, got '{active_tab_border}'"
+        assert tab_states["activeSelected"] == "true"
+        # Verify active and inactive tabs have distinguishable border or background
+        has_distinction = (tab_states["activeBorder"] != tab_states["inactiveBorder"]) or (tab_states["activeBg"] != tab_states["inactiveBg"])
+        assert has_distinction, "Active and inactive tabs must have distinguishable computed visual affordances under forced-colors"
 
-        # 3. Verify focus outlines remain distinguishable when interactive element is focused
-        page.focus("#btn-refresh-overview")
-        outline_style = page.evaluate("""
+        # 3. Verify focus outlines remain distinguishable when keyboard focus moves via Tab key
+        page.keyboard.press("Tab") # focuses skip-link
+        page.keyboard.press("Tab") # focuses tab-overview button
+        outline_styles = page.evaluate("""
             () => {
-                const btn = document.getElementById('btn-refresh-overview');
-                return window.getComputedStyle(btn).outlineStyle;
+                const focused = document.activeElement;
+                const cs = window.getComputedStyle(focused);
+                return {
+                    tag: focused.tagName,
+                    id: focused.id,
+                    outlineStyle: cs.outlineStyle,
+                    outlineWidth: parseFloat(cs.outlineWidth || '0'),
+                    outlineColor: cs.outlineColor
+                };
             }
         """)
-        assert outline_style == "solid", f"Focus outlineStyle expected 'solid' under forced-colors, got '{outline_style}'"
+        assert outline_styles["outlineStyle"] == "solid", f"Focus outlineStyle expected 'solid', got '{outline_styles['outlineStyle']}'"
+        assert outline_styles["outlineWidth"] > 0, f"Focus outlineWidth must be > 0, got {outline_styles['outlineWidth']}"
+        assert outline_styles["outlineColor"] not in ["transparent", "rgba(0, 0, 0, 0)"], "Focus outlineColor must be visible"
+
+        # 4. Text readable against computed background
+        text_colors = page.evaluate("""
+            () => {
+                const title = document.querySelector('h1, h2');
+                const cs = window.getComputedStyle(title);
+                return {
+                    color: cs.color,
+                    bg: cs.backgroundColor
+                };
+            }
+        """)
+        assert text_colors["color"] != text_colors["bg"], "Text color must not match background color under forced-colors"
+
+        # 5. Negative control: verify our test detects suppressed outlines
+        negative_control = page.evaluate("""
+            () => {
+                const dummy = document.createElement('button');
+                dummy.style.outline = 'none';
+                document.body.appendChild(dummy);
+                const cs = window.getComputedStyle(dummy);
+                const isSuppressed = cs.outlineStyle === 'none' || parseFloat(cs.outlineWidth || '0') === 0;
+                dummy.remove();
+                return isSuppressed;
+            }
+        """)
+        assert negative_control, "Test harness must detect suppressed outline under negative control"
 
         browser.close()
 
@@ -571,7 +748,6 @@ def test_responsive_reflow_narrow_viewport_320px(a11y_comprehensive_server):
 
         # 1. Overview View Reflow
         assert_view_reflow("view-overview", "Overview")
-        # Ensure refresh button is reachable and within viewport
         refresh_box = page.locator("#btn-refresh-overview").bounding_box()
         assert refresh_box and refresh_box["x"] >= 0 and (refresh_box["x"] + refresh_box["width"]) <= 320
 
@@ -596,9 +772,9 @@ def test_responsive_reflow_narrow_viewport_320px(a11y_comprehensive_server):
         # In Benchmark Workbench, verify that table-responsive container allows intentional internal horizontal scrolling
         table_container = page.locator("#view-benchmarks .table-responsive").first
         assert table_container.is_visible()
-        # The table container itself must fit within 320px
         table_box = table_container.bounding_box()
         assert table_box["width"] <= 320
+
         # The internal table inside .table-responsive can have scrollWidth >= clientWidth (intentional internal scroll)
         internal_scroll = page.evaluate("""
             () => {
@@ -613,13 +789,15 @@ def test_responsive_reflow_narrow_viewport_320px(a11y_comprehensive_server):
 
 @pytest.mark.skipif(not PLAYWRIGHT_AVAILABLE, reason="playwright not installed")
 def test_target_size_wcag_258(a11y_comprehensive_server):
-    """Evaluate interactive targets against WCAG 2.2 2.5.8 minimum target size (>= 24x24 CSS pixels or spacing exception)."""
+    """
+    Evaluate interactive targets against WCAG 2.2 2.5.8 minimum target size (>= 24x24 CSS pixels).
+    Applies normative 24px diameter circle spacing exception without class-based exemptions.
+    """
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         page = browser.new_page(viewport={"width": 1440, "height": 900})
         page.goto(f"{a11y_comprehensive_server}/index.html")
 
-        # Evaluate actionable controls across all views
         views = [
             ("#tab-overview", "#view-overview"),
             ("#tab-traces", "#view-traces"),
@@ -633,42 +811,35 @@ def test_target_size_wcag_258(a11y_comprehensive_server):
             page.click(tab_selector)
             page.wait_for_timeout(100)
 
-            # Query actionable elements: buttons, search inputs, select dropdowns, and option items
-            controls = page.locator(f"{view_selector} button, {view_selector} select, {view_selector} input[type='search'], {view_selector} li.trace-item")
-            count = controls.count()
+            # Query all interactive targets in current view and shell navigation
+            interactive_data = page.evaluate("""
+                (selector) => {
+                    const selectorStr = selector + ' button, ' + selector + ' select, ' + selector + ' input[type="search"], ' + selector + ' li.trace-item, .nav-tab';
+                    const elements = Array.from(document.querySelectorAll(selectorStr));
+                    return elements.map((el, idx) => {
+                        const rect = el.getBoundingClientRect();
+                        const tag = el.tagName.toLowerCase();
+                        const text = (el.textContent || el.getAttribute('aria-label') || '').trim().replace(/\\s+/g, ' ').substring(0, 30);
+                        const id = el.id ? '#' + el.id : (el.className ? '.' + el.className.split(' ')[0] : tag + '_' + idx);
+                        return {
+                            id: id + '_' + idx,
+                            tag: tag,
+                            text: text,
+                            x: rect.x,
+                            y: rect.y,
+                            width: rect.width,
+                            height: rect.height,
+                            visible: rect.width > 0 && rect.height > 0 && window.getComputedStyle(el).visibility !== 'hidden'
+                        };
+                    }).filter(e => e.visible);
+                }
+            """, view_selector)
 
-            for i in range(count):
-                el = controls.nth(i)
-                if not el.is_visible():
-                    continue
-
-                box = el.bounding_box()
-                if not box:
-                    continue
-
-                w, h = box["width"], box["height"]
-
-                # Under WCAG 2.2 2.5.8 (Level AA): Target size must be at least 24x24 CSS pixels,
-                # UNLESS the spacing exception applies (target diameter + distance to adjacent targets is >= 24px)
-                # or inline in a sentence of text.
-                if w < 24 or h < 24:
-                    tag = el.evaluate("e => e.tagName.toLowerCase()")
-                    text = el.evaluate("e => (e.textContent || e.getAttribute('aria-label') || '').trim()").replace("\n", " ")[:30]
-                    # Check spacing exception: verify distance to nearest sibling or container margin
-                    spacing_ok = el.evaluate("""
-                        (e) => {
-                            const rect = e.getBoundingClientRect();
-                            const parent = e.parentElement;
-                            if (!parent) return false;
-                            // Check if element has spacing around it
-                            const style = window.getComputedStyle(e);
-                            const margin = parseFloat(style.marginLeft) + parseFloat(style.marginRight);
-                            const padding = parseFloat(style.paddingLeft) + parseFloat(style.paddingRight);
-                            return (rect.width + margin >= 24) || (rect.height + margin >= 24) || e.classList.contains('copy-btn');
-                        }
-                    """)
-                    if not spacing_ok:
-                        failures.append(f"View {view_selector} [{tag}] '{text}': {w:.1f}x{h:.1f}px (fails 24x24px and spacing exception)")
+            for target in interactive_data:
+                # Geometric circle evaluation without class-based exemptions
+                passed, reason = evaluate_target_size_wcag_258(target, interactive_data)
+                if not passed:
+                    failures.append(f"View {view_selector} [{target['tag']}] '{target['text']}' ({target['width']:.1f}x{target['height']:.1f}px): {reason}")
 
         if failures:
             pytest.fail(f"WCAG 2.5.8 target size failures detected:\n" + "\n".join(failures))
