@@ -18,7 +18,7 @@
   /* Text Contrast Hierarchy */
   --text-primary: #F5F0FF;     /* Soft white */
   --text-secondary: #B6A9CA;   /* Muted lavender */
-  --text-muted: #8A7CA8;       /* Deep muted lavender */
+  --text-muted: #9889B8;       /* Deep muted lavender (adjusted for >= 4.5:1 WCAG AA contrast) */
 
   /* Borders & Dividers */
   --border-default: #44365F;   /* Dusty violet */
@@ -142,7 +142,7 @@ body {
 .app-sidebar {
   width: var(--sidebar-width);
   min-width: var(--sidebar-width);
-  background-color: var(--bg-surface);
+  background: linear-gradient(180deg, #1D1833 0%, #17122B 100%);
   border-right: 1px solid var(--border-default);
   display: flex;
   flex-direction: column;
@@ -447,7 +447,7 @@ h2 {
  * Shared Cards, Metric Reflow Grid, & Sections
  * ------------------------------------------------------------------------- */
 .card {
-  background-color: var(--bg-surface);
+  background: linear-gradient(180deg, #1D1833 0%, #1A152E 100%);
   border: 1px solid var(--border-default);
   border-radius: var(--radius-md);
   padding: 1.25rem;
@@ -487,7 +487,7 @@ h2 {
 }
 
 .metric-card {
-  background-color: var(--bg-surface);
+  background: linear-gradient(180deg, #1D1833 0%, #18132C 100%);
   border: 1px solid var(--border-default);
   border-radius: var(--radius-md);
   padding: 1.1rem;
@@ -546,7 +546,7 @@ h2 {
 
 .section-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
   gap: 1.25rem;
 }
 
@@ -717,7 +717,7 @@ h2 {
 }
 
 .derived-summary-card {
-  background-color: var(--bg-subtle);
+  background: linear-gradient(180deg, #18132E 0%, #1F183B 100%);
   border: 1px solid var(--border-default);
   border-left: 3px solid var(--accent-primary);
   border-radius: var(--radius-sm);
@@ -1230,9 +1230,15 @@ h2 {
 .trace-item:focus-visible,
 .quick-entry-btn:focus-visible,
 .copy-btn:focus-visible,
-.data-table tr.clickable:focus-visible {
-  outline: 2px solid var(--accent-interactive);
-  outline-offset: -2px;
+.data-table tr.clickable:focus-visible,
+.btn-back:focus-visible,
+.lifecycle-stage-card:focus-visible,
+.skip-link:focus-visible,
+a:focus-visible,
+button:focus-visible {
+  outline: 2px solid var(--accent-interactive) !important;
+  outline-offset: 2px !important;
+  box-shadow: 0 0 0 4px rgba(100, 222, 217, 0.25) !important;
 }
 
 /* App Footer */
@@ -1480,9 +1486,28 @@ h2 {
 /* Reduced Motion Preference */
 @media (prefers-reduced-motion: reduce) {
   .refresh-icon.spin {
-    animation: none;
+    animation: none !important;
   }
-  * {
-    transition: none !important;
+  *, ::before, ::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Forced Colors / High Contrast System Support */
+@media (forced-colors: active) {
+  .nav-tab.active,
+  .trace-item.active,
+  .quick-entry-btn,
+  .btn-refresh,
+  .status-badge,
+  .badge {
+    border: 2px solid ButtonText !important;
+  }
+  .nav-tab.active {
+    background-color: Highlight !important;
+    color: HighlightText !important;
   }
 }
