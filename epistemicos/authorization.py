@@ -1010,10 +1010,18 @@ class CapabilityRegistry:
     """
     Thread-safe, persistent server-side capability registry and single-use token manager.
 
-    Deployment Replay Guarantee Notice:
-    Cross-process durable denial tracking and clearance serialization use atomic append-only file persistence
-    with fsync and file locking (fcntl.flock). Single-use capability token consumption and approval replay tracking
-    are thread-safe and process-synchronous.
+    Architectural Guarantees & Constraints:
+    - Thread-level consumption atomicity is provided by the existing registry lock (_lock).
+    - Ordinary approval-consumption state is process-local and thread-safe.
+    - Independent processes do not share ordinary consumed-approval state unless backed by
+      a synchronized AuthorizationStore (e.g., FileAuthorizationStore).
+    - Ordinary consumed approvals in default in-memory storage are not durable across restarts.
+    - Verification is a point-in-time check; atomic consumption remains the execution boundary's responsibility.
+    - Interprocess durable denial tracking and clearance serialization use atomic append-only file persistence
+      with fsync and file locking (fcntl.flock).
+    - Fail-closed registry poisoning: If append or fsync fails and rollback truncation cannot be guaranteed
+      under fail-closed persistence, the registry transitions to a poisoned state (_is_poisoned = True)
+      and rejects all subsequent authorization, denial checking, clearance, and token operations.
     """
 
     def __init__(
@@ -1024,6 +1032,7 @@ class CapabilityRegistry:
         storage_backend: Optional[AuthorizationStore] = None
     ):
         self._lock = threading.RLock()
+        self._is_poisoned: bool = False
         self._file_lock_count = 0
         self._lock_file_obj = None
         self._denied_records: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
@@ -1038,6 +1047,11 @@ class CapabilityRegistry:
         self.signing_secret = signing_secret or hashlib.sha256(f"EPISTEMICOS_CAP_KEY_{uuid.uuid4()}".encode("utf-8")).digest()
         self._load_persistent_denials()
 
+    def _check_poisoned(self) -> None:
+        """Enforces fail-closed rejection if registry entered an unrecoverable poisoned state."""
+        if self._is_poisoned:
+            raise RuntimeError("CapabilityRegistry is in a poisoned state due to unrecoverable persistence rollback failure")
+
     @contextlib.contextmanager
     def lock_registry(self):
         """
@@ -1045,6 +1059,7 @@ class CapabilityRegistry:
         on the denial log lockfile to ensure strict atomicity across processes during authorization evaluations.
         Re-entrant for nested acquisitions on the same process thread.
         """
+        self._check_poisoned()
         import os
         try:
             import fcntl
@@ -1166,6 +1181,7 @@ class CapabilityRegistry:
         contract_version: str = "1.0.0",
         policy_version: str = "1.0.0"
     ) -> None:
+        self._check_poisoned()
         import os
         try:
             import fcntl
@@ -1214,6 +1230,7 @@ class CapabilityRegistry:
                                 rollback_failed = True
 
                         if rollback_failed and self.fail_closed_persistence:
+                            self._is_poisoned = True
                             raise RuntimeError(f"Denial persistence failure and rollback truncation failure: on-disk state uncertain ({str(primary_err)})") from primary_err
                         raise
                     finally:
@@ -1353,6 +1370,7 @@ class CapabilityRegistry:
                                     rollback_failed = True
 
                             if rollback_failed and self.fail_closed_persistence:
+                                self._is_poisoned = True
                                 raise RuntimeError(f"Denial persistence failure and rollback truncation failure: on-disk clearance state uncertain ({str(primary_err)})") from primary_err
                             raise
                         finally:
@@ -1379,6 +1397,7 @@ class CapabilityRegistry:
         contract_version: str = "1.0.0",
         policy_version: str = "1.0.0"
     ) -> Tuple[bool, Optional[Dict[str, Any]]]:
+        self._check_poisoned()
         task_id = str(task_id).strip()
         action_name = str(action_name).strip()
         target = str(target).strip()
@@ -1516,10 +1535,13 @@ class CapabilityRegistry:
         return set()
 
     def issue_and_register_capability(self, cap: Capability) -> Capability:
-        return self.storage.issue_and_register_capability(cap, self.sign_capability)
+        with self._lock:
+            self._check_poisoned()
+            return self.storage.issue_and_register_capability(cap, self.sign_capability)
 
     def register_capability(self, cap: Capability) -> None:
         with self._lock:
+            self._check_poisoned()
             if not getattr(cap, "scope_key", None):
                 cap.scope_key = canonicalize_fencing_scope(cap.task_id, cap.target)
             if getattr(cap, "fencing_token", None) is None:
@@ -1529,6 +1551,7 @@ class CapabilityRegistry:
 
     def get_capability(self, token_id: str) -> Optional[Capability]:
         with self._lock:
+            self._check_poisoned()
             cap = self.storage.get_capability(token_id)
             if cap is not None and not isinstance(cap, Capability):
                 pass
@@ -1536,14 +1559,17 @@ class CapabilityRegistry:
 
     def is_consumed(self, token_id: str) -> bool:
         with self._lock:
+            self._check_poisoned()
             return self.storage.is_consumed(token_id)
 
     def is_revoked(self, token_id: str) -> bool:
         with self._lock:
+            self._check_poisoned()
             return self.storage.is_revoked(token_id)
 
     def is_approval_consumed(self, approval_id: str) -> bool:
         with self._lock:
+            self._check_poisoned()
             return self.storage.is_approval_consumed(approval_id)
 
     def consume_token(self, token_id: str, expected_fencing_token: Optional[int] = None) -> bool:
@@ -1552,15 +1578,18 @@ class CapabilityRegistry:
         Returns True if consumed successfully, False if already consumed, revoked, or stale fencing token.
         """
         with self._lock:
+            self._check_poisoned()
             ok, _ = self.storage.consume_capability(token_id, expected_fencing_token=expected_fencing_token)
             return ok
 
     def revoke_token(self, token_id: str, reason: str = "") -> Tuple[bool, str]:
         with self._lock:
+            self._check_poisoned()
             return self.storage.revoke_capability(token_id, reason=reason)
 
     def get_scope_fencing_token(self, scope_key: str) -> int:
         with self._lock:
+            self._check_poisoned()
             return self.storage.get_scope_fencing_token(scope_key)
 
 
@@ -2005,6 +2034,13 @@ class AuthorizationAuthority:
 
         if self.registry.is_consumed(token_id):
             return False, "CAPABILITY_VERIFICATION_FAILED_REPLAY_TOKEN_ALREADY_CONSUMED: Authorization token has already been consumed", None
+
+        # Check whether associated human approval ID has already been consumed (read-only verification)
+        human_app = getattr(cap, "human_approval", None) or (cap.get("human_approval") if isinstance(cap, dict) else None)
+        if human_app:
+            approval_id = getattr(human_app, "approval_id", None) or (human_app.get("approval_id") if isinstance(human_app, dict) else None)
+            if approval_id and self.registry.is_approval_consumed(approval_id):
+                return False, "CAPABILITY_VERIFICATION_FAILED_REPLAY_HUMAN_APPROVAL_ALREADY_CONSUMED", None
 
         if cap.is_expired(current_time):
             return False, "CAPABILITY_VERIFICATION_FAILED_EXPIRED_TOKEN", None
