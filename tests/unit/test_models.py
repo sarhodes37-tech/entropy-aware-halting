@@ -750,3 +750,170 @@ def test_cpr_mask_egress_payload_redaction():
 
     # 3. Model raw_payload itself is unchanged by mask_egress_payload()
     assert "API_KEY" in cpr.raw_payload
+
+
+# ==========================================
+# SURPRISAL SENSOR NUMERICAL STABILITY & EQUIVALENCE TESTS
+# ==========================================
+
+def _pre_pr_compute_z_scores(sensor, logprobs):
+    """Isolated reference implementation matching the exact pre-PR implementation."""
+    if not logprobs:
+        return []
+
+    sanitized_logprobs = []
+    for i, lp in enumerate(logprobs):
+        if type(lp) in (float, int):
+            if math.isnan(lp) or math.isinf(lp):
+                raise ValueError(f"Malformed or non-finite logprob encountered at index {i}: {lp}")
+            sanitized_logprobs.append(float(lp))
+        else:
+            try:
+                val = float(lp)
+                if math.isnan(val) or math.isinf(val):
+                    raise ValueError(f"Malformed or non-finite logprob encountered at index {i}: {val}")
+                sanitized_logprobs.append(val)
+            except (TypeError, ValueError) as e:
+                raise ValueError(f"Malformed or non-finite logprob encountered at index {i}: {lp}") from e
+
+    surprisals = [-lp for lp in sanitized_logprobs]
+    z_scores = []
+
+    sum_x = 0.0
+    sum_sq = 0.0
+
+    for i, h in enumerate(surprisals):
+        if i < 2:
+            std_prior = max(sensor.baseline_prior_std, sensor.std_floor)
+            z_scores.append(float((h - sensor.baseline_prior_surprisal) / std_prior))
+            sum_x += h
+            sum_sq += h * h
+            continue
+
+        n = min(i, sensor.window_size)
+        mean_h = sum_x / n
+        variance = (sum_sq / n) - (mean_h * mean_h)
+        if variance < 0.0:
+            variance = 0.0
+
+        std_h = max(math.sqrt(variance), sensor.std_floor)
+        z_scores.append(float((h - mean_h) / std_h))
+
+        sum_x += h
+        sum_sq += h * h
+
+        if i >= sensor.window_size:
+            old_val = surprisals[i - sensor.window_size]
+            sum_x -= old_val
+            sum_sq -= old_val * old_val
+
+    return z_scores
+
+
+def test_surprisal_sensor_intermediate_overflow_nan_preservation():
+    """
+    Priority 1 & 2: Validates that arithmetic overflow in running sum-of-squares (producing inf - inf = nan)
+    correctly propagates NaN z-scores and triggers evaluate() fail-closed rejection.
+    """
+    sensor = TokenSurprisalSensor(window_size=2)
+    # 1e200 squared overflows float to inf. When sliding window subtracts 1e200^2, inf - inf produces nan.
+    overflow_logprobs = [-1e200, -1.0, -1.0, -1.0]
+
+    z_scores_opt = sensor.compute_z_scores(overflow_logprobs)
+    z_scores_ref = _pre_pr_compute_z_scores(sensor, overflow_logprobs)
+
+    assert len(z_scores_opt) == len(z_scores_ref) == 4
+    for opt, ref in zip(z_scores_opt, z_scores_ref):
+        if math.isnan(ref):
+            assert math.isnan(opt), f"Expected NaN propagation, got {opt}"
+        else:
+            assert opt == ref
+
+    # Verify evaluate() rejects non-finite derived scores
+    eval_result = sensor.evaluate(overflow_logprobs)
+    assert eval_result["passed"] is False
+    assert eval_result["reason"] == "MALFORMED_NON_FINITE_LOGPROBS"
+    assert "Derived Z-scores contain" in eval_result["error"]
+
+
+def test_surprisal_sensor_non_finite_baseline_prior_std():
+    """
+    Priority 1: Validates that non-finite baseline_prior_std (e.g. NaN) is preserved
+    in warm-up token z-scores rather than silently masked by std_floor.
+    """
+    nan_sensor = TokenSurprisalSensor(baseline_prior_std=float("nan"))
+    z_scores = nan_sensor.compute_z_scores([-0.5, -0.5, -0.5])
+    assert math.isnan(z_scores[0])
+    assert math.isnan(z_scores[1])
+
+    eval_res = nan_sensor.evaluate([-0.5, -0.5, -0.5])
+    assert eval_res["passed"] is False
+    assert eval_res["reason"] == "MALFORMED_NON_FINITE_LOGPROBS"
+
+
+def test_surprisal_sensor_differential_equivalence_exhaustive():
+    """
+    Priority 2: Differential testing against pre-PR implementation across configurations,
+    types, and edge cases.
+    """
+    test_configs = [
+        {"window_size": 1, "std_floor": 0.05, "baseline_prior_std": 1.0, "baseline_prior_surprisal": 1.0},
+        {"window_size": 5, "std_floor": 0.1, "baseline_prior_std": 2.0, "baseline_prior_surprisal": 0.5},
+        {"window_size": 20, "std_floor": 0.001, "baseline_prior_std": 0.5, "baseline_prior_surprisal": 1.5},
+    ]
+
+    class CustomFloat(float):
+        pass
+
+    class CustomInt(int):
+        pass
+
+    test_sequences = [
+        [],  # Empty
+        [-0.1],  # Length 1
+        [-0.1, -0.2],  # Length 2
+        [-0.5, -0.25, -0.1, -0.05, -0.8, -1.2, -0.3],  # Typical
+        [CustomFloat(-0.2), CustomInt(-1), -0.5],  # Custom numeric subclasses
+        ["-0.3", "-0.7", "-0.1"],  # String float-convertible
+        [-1e50, -2e50, -1e50, -5e50],  # Large-magnitude finite
+        [-1e200, -1.0, -1.0, -1.0],  # Intermediate overflow
+    ]
+
+    for cfg in test_configs:
+        sensor = TokenSurprisalSensor(**cfg)
+        for seq in test_sequences:
+            opt = sensor.compute_z_scores(seq)
+            ref = _pre_pr_compute_z_scores(sensor, seq)
+
+            assert len(opt) == len(ref)
+            for val_opt, val_ref in zip(opt, ref):
+                if math.isnan(val_ref):
+                    assert math.isnan(val_opt)
+                elif math.isinf(val_ref):
+                    assert val_opt == val_ref
+                else:
+                    assert math.isclose(val_opt, val_ref, rel_tol=1e-12, abs_tol=1e-12)
+
+    # Test error equivalence for malformed inputs (NaN, +/- inf, invalid strings)
+    error_sequences = [
+        [float("nan")],
+        [float("inf")],
+        [float("-inf")],
+        ["not_a_number"],
+    ]
+    sensor = TokenSurprisalSensor()
+    for seq in error_sequences:
+        err_opt, err_ref = None, None
+        try:
+            sensor.compute_z_scores(seq)
+        except Exception as e:
+            err_opt = (type(e), str(e))
+
+        try:
+            _pre_pr_compute_z_scores(sensor, seq)
+        except Exception as e:
+            err_ref = (type(e), str(e))
+
+        assert err_opt is not None
+        assert err_ref is not None
+        assert err_opt == err_ref

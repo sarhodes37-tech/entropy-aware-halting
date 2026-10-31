@@ -162,7 +162,8 @@ class TokenSurprisalSensor:
         window_size = self.window_size
         std_floor = self.std_floor
         baseline_prior_std = self.baseline_prior_std
-        std_prior = baseline_prior_std if baseline_prior_std > std_floor else std_floor
+        # Preserve NaN propagation semantics for non-finite configuration inputs (matching max(baseline_prior_std, std_floor))
+        std_prior = baseline_prior_std if (baseline_prior_std > std_floor or isnan_(baseline_prior_std)) else std_floor
         baseline_prior_surprisal = self.baseline_prior_surprisal
 
         for i, h in enumerate(surprisals):
@@ -180,7 +181,8 @@ class TokenSurprisalSensor:
                 variance = 0.0
 
             var_sqrt = sqrt_(variance)
-            std_h = var_sqrt if var_sqrt > std_floor else std_floor
+            # Preserve NaN propagation semantics for numerical instability / arithmetic overflow (matching max(math.sqrt(variance), std_floor))
+            std_h = var_sqrt if (var_sqrt > std_floor or isnan_(var_sqrt)) else std_floor
             z_scores.append(float((h - mean_h) / std_h))
 
             sum_x += h
