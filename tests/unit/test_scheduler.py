@@ -6,8 +6,14 @@ OPTIMAL_CONVERGENCE, IRREDUCIBLE_UNCERTAINTY).
 
 import pytest
 
-# Safely import torch or skip the entire module during core-isolation runs
-torch = pytest.importorskip("torch")
+from concurrent.futures import ThreadPoolExecutor
+from unittest.mock import MagicMock
+import pytest
+
+try:
+    import torch
+except ImportError:
+    torch = None
 
 from epistemicos.scheduler import EntropyAwareScheduler
 
@@ -115,9 +121,10 @@ def test_scheduler_entropy():
     entropy_list = scheduler.entropy([0.5, 0.5])
     assert pytest.approx(entropy_list, 0.0001) == 1.0
 
-    # Test with torch tensor
-    entropy_tensor = scheduler.entropy(torch.tensor([0.5, 0.5]))
-    assert pytest.approx(entropy_tensor, 0.0001) == 1.0
+    # Test with torch tensor if torch is installed
+    if torch is not None:
+        entropy_tensor = scheduler.entropy(torch.tensor([0.5, 0.5]))
+        assert pytest.approx(entropy_tensor, 0.0001) == 1.0
 
     # Test deterministic distribution (should be close to 0)
     entropy_deterministic = scheduler.entropy([1.0, 0.0])
@@ -132,21 +139,35 @@ def test_entropy_negative_probabilities():
     """Ensures negative probability entries raise ValueError."""
     scheduler = EntropyAwareScheduler()
     with pytest.raises(ValueError, match="Probabilities cannot contain negative values"):
-        scheduler.entropy(torch.tensor([-0.5, 1.5]))
+        scheduler.entropy([-0.5, 1.5])
+
+    if torch is not None:
+        with pytest.raises(ValueError, match="Probabilities cannot contain negative values"):
+            scheduler.entropy(torch.tensor([-0.5, 1.5]))
 
 
 def test_scheduler_entropy_math_exact():
     """Precision numerical tests for entropy metric implementation."""
     scheduler = EntropyAwareScheduler()
 
-    ent_2 = scheduler.entropy(torch.tensor([0.5, 0.5]))
-    assert abs(ent_2 - 1.0) < 1e-5
+    if torch is not None:
+        ent_2 = scheduler.entropy(torch.tensor([0.5, 0.5]))
+        assert abs(ent_2 - 1.0) < 1e-5
 
-    ent_1_0 = scheduler.entropy(torch.tensor([1.0, 0.0]))
-    assert abs(ent_1_0 - 0.0) < 1e-5
+        ent_1_0 = scheduler.entropy(torch.tensor([1.0, 0.0]))
+        assert abs(ent_1_0 - 0.0) < 1e-5
 
-    ent_4 = scheduler.entropy(torch.tensor([0.25, 0.25, 0.25, 0.25]))
-    assert abs(ent_4 - 2.0) < 1e-5
+        ent_4 = scheduler.entropy(torch.tensor([0.25, 0.25, 0.25, 0.25]))
+        assert abs(ent_4 - 2.0) < 1e-5
+    else:
+        ent_2 = scheduler.entropy([0.5, 0.5])
+        assert abs(ent_2 - 1.0) < 1e-5
+
+        ent_1_0 = scheduler.entropy([1.0, 0.0])
+        assert abs(ent_1_0 - 0.0) < 1e-5
+
+        ent_4 = scheduler.entropy([0.25, 0.25, 0.25, 0.25])
+        assert abs(ent_4 - 2.0) < 1e-5
 
 
 def test_scheduler_entropy_math_exact_list():
@@ -163,8 +184,8 @@ def test_scheduler_entropy_math_exact_list():
 def test_scheduler_step_eta_calculation():
     """Validates marginal yield calculation (eta = (delta_h / initial_h) * V / cost)."""
     scheduler = EntropyAwareScheduler()
-    scheduler.step(torch.tensor([0.5, 0.5]), cost=10, state="s1")
-    scheduler.step(torch.tensor([1.0, 0.0]), cost=5, state="s2")
+    scheduler.step([0.5, 0.5], cost=10, state="s1")
+    scheduler.step([1.0, 0.0], cost=5, state="s2")
     assert pytest.approx(scheduler.history[-1].eta, abs=1e-5) == 20.0
 
 
@@ -172,11 +193,11 @@ def test_scheduler_step_negative_yield():
     """Validates NEGATIVE_YIELD directive trigger when entropy continuously increases."""
     scheduler = EntropyAwareScheduler(negative_yield_window=2, divergence_threshold=0.15)
 
-    scheduler.step(torch.tensor([1.0, 0.0, 0.0, 0.0]), cost=1, state="s1")
-    res1 = scheduler.step(torch.tensor([0.5, 0.5, 0.0, 0.0]), cost=1, state="s2")
+    scheduler.step([1.0, 0.0, 0.0, 0.0], cost=1, state="s1")
+    res1 = scheduler.step([0.5, 0.5, 0.0, 0.0], cost=1, state="s2")
     assert res1.directive == "CONTINUE"
 
-    res2 = scheduler.step(torch.tensor([0.25, 0.25, 0.25, 0.25]), cost=1, state="s3")
+    res2 = scheduler.step([0.25, 0.25, 0.25, 0.25], cost=1, state="s3")
     assert res2.directive == "NEGATIVE_YIELD"
     assert res2.halt is True
 
@@ -189,10 +210,10 @@ def test_scheduler_step_optimal_convergence():
         utility_epsilon=0.5
     )
 
-    scheduler.step(torch.tensor([0.5, 0.5]), cost=0, state="s1")
-    scheduler.step(torch.tensor([1.0, 0.0]), cost=0, state="s2")
+    scheduler.step([0.5, 0.5], cost=0, state="s1")
+    scheduler.step([1.0, 0.0], cost=0, state="s2")
 
-    res = scheduler.step(torch.tensor([1.0, 0.0]), cost=0, state="s3")
+    res = scheduler.step([1.0, 0.0], cost=0, state="s3")
     assert res.directive == "OPTIMAL_CONVERGENCE"
     assert res.halt is True
 
@@ -201,15 +222,15 @@ def test_scheduler_step_irreducible_uncertainty():
     """Validates IRREDUCIBLE_UNCERTAINTY directive across stagnation windows requiring real transition deltas."""
     scheduler = EntropyAwareScheduler(stagnation_window=2, entropy_delta_threshold=0.01)
 
-    scheduler.step(torch.tensor([0.5, 0.5]), cost=0, state="s1") # step 0
+    scheduler.step([0.5, 0.5], cost=0, state="s1") # step 0
 
-    res1 = scheduler.step(torch.tensor([0.5, 0.5]), cost=0, state="s2") # step 1 (1 real delta)
+    res1 = scheduler.step([0.5, 0.5], cost=0, state="s2") # step 1 (1 real delta)
     assert res1.directive == "CONTINUE"
 
-    res2 = scheduler.step(torch.tensor([0.5, 0.5]), cost=0, state="s3") # step 2 (2 real deltas = stagnation_window)
+    res2 = scheduler.step([0.5, 0.5], cost=0, state="s3") # step 2 (2 real deltas = stagnation_window)
     assert res2.directive == "IRREDUCIBLE_UNCERTAINTY"
     
-    res3 = scheduler.step(torch.tensor([0.5, 0.5]), cost=0, state="s4") # step 3
+    res3 = scheduler.step([0.5, 0.5], cost=0, state="s4") # step 3
     assert res3.directive == "IRREDUCIBLE_UNCERTAINTY"
     assert res3.halt is True
 
@@ -217,8 +238,8 @@ def test_scheduler_step_irreducible_uncertainty():
 def test_scheduler_reset():
     """Validates that reset() clears all state tracking metrics."""
     scheduler = EntropyAwareScheduler()
-    scheduler.step(torch.tensor([0.5, 0.5]), cost=10, state="s1")
-    scheduler.step(torch.tensor([1.0, 0.0]), cost=5, state="s2")
+    scheduler.step([0.5, 0.5], cost=10, state="s1")
+    scheduler.step([1.0, 0.0], cost=5, state="s2")
 
     assert len(scheduler.history) == 2
     assert scheduler.total_cost == 15
@@ -278,3 +299,118 @@ def test_step_cost_validation(invalid_cost):
     scheduler = EntropyAwareScheduler()
     with pytest.raises(ValueError, match="Cost must be"):
         scheduler.step([0.5, 0.5], cost=invalid_cost, state="s0")
+
+
+# =====================================================================
+# SHUTDOWN & EXECUTOR LIFECYCLE TESTS
+# =====================================================================
+
+def test_scheduler_shutdown_with_thread_pool_executor_wait_true():
+    """
+    Validates that shutdown(wait=True) on a scheduler configured with ThreadPoolExecutor:
+    1. Sets scheduler._running to False.
+    2. Allows in-flight and queued mock tasks to complete cleanly without error.
+    3. Rejects new tasks submitted to the executor after shutdown with RuntimeError.
+    """
+    def mock_worker_task(x: int) -> int:
+        return x * 10
+
+    executor = ThreadPoolExecutor(max_workers=2)
+    scheduler = EntropyAwareScheduler(executor=executor)
+
+    assert scheduler._running is True
+    assert scheduler._executor is executor
+
+    # Submit a small batch of mock tasks
+    futures = [executor.submit(mock_worker_task, i) for i in range(5)]
+
+    # Initiate clean shutdown with wait=True
+    scheduler.shutdown(wait=True)
+
+    assert scheduler._running is False
+
+    # Verify all tasks completed and resolved their expected results cleanly
+    for i, fut in enumerate(futures):
+        assert fut.done() is True
+        assert fut.result() == i * 10
+
+    # Verify executor rejects subsequent task submissions
+    with pytest.raises(RuntimeError):
+        executor.submit(mock_worker_task, 99)
+
+
+def test_scheduler_shutdown_with_thread_pool_executor_wait_false():
+    """Validates shutdown(wait=False) sets _running to False and initiates executor shutdown."""
+    def mock_worker_task(x: int) -> int:
+        return x + 1
+
+    executor = ThreadPoolExecutor(max_workers=2)
+    scheduler = EntropyAwareScheduler(executor=executor)
+
+    fut = executor.submit(mock_worker_task, 41)
+    scheduler.shutdown(wait=False)
+
+    assert scheduler._running is False
+
+    # After shutdown(wait=False), new task submissions must still be rejected
+    with pytest.raises(RuntimeError):
+        executor.submit(mock_worker_task, 42)
+
+    # Clean up thread pool for test hygiene
+    executor.shutdown(wait=True)
+    assert fut.result() == 42
+
+
+def test_scheduler_shutdown_mock_executor_argument_forwarding():
+    """Validates that shutdown() forwards wait argument accurately to the underlying executor."""
+    mock_executor = MagicMock()
+    scheduler = EntropyAwareScheduler(executor=mock_executor)
+
+    assert scheduler._running is True
+
+    # 1. Default wait=True
+    scheduler.shutdown()
+    mock_executor.shutdown.assert_called_once_with(wait=True)
+    assert scheduler._running is False
+
+    # 2. Explicit wait=False
+    mock_executor.reset_mock()
+    scheduler.shutdown(wait=False)
+    mock_executor.shutdown.assert_called_once_with(wait=False)
+    assert scheduler._running is False
+
+
+def test_scheduler_shutdown_default_no_executor():
+    """Validates that shutdown() executes cleanly without error when no executor is configured."""
+    scheduler = EntropyAwareScheduler()
+    assert scheduler._executor is None
+    assert scheduler._running is True
+
+    scheduler.shutdown(wait=True)
+    assert scheduler._running is False
+
+    scheduler.shutdown(wait=False)
+    assert scheduler._running is False
+
+
+def test_scheduler_reset_restores_running_state():
+    """Validates that reset() re-enables _running to True after a shutdown."""
+    scheduler = EntropyAwareScheduler()
+    scheduler.shutdown()
+    assert scheduler._running is False
+
+    scheduler.reset()
+    assert scheduler._running is True
+
+
+def test_scheduler_shutdown_idempotent():
+    """Validates that calling shutdown() multiple times is safe, idempotent, and error-free."""
+    mock_executor = MagicMock()
+    scheduler = EntropyAwareScheduler(executor=mock_executor)
+
+    scheduler.shutdown(wait=True)
+    scheduler.shutdown(wait=True)
+    scheduler.shutdown(wait=False)
+
+    assert scheduler._running is False
+    assert mock_executor.shutdown.call_count == 3
