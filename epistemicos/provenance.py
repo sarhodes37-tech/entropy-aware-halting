@@ -16,7 +16,43 @@ import threading
 from enum import Enum
 from pathlib import Path
 from dataclasses import dataclass, field, asdict
-from typing import Dict, Any, List, Optional, Tuple, Set
+from typing import Dict, Any, List, Optional, Tuple, Set, Protocol, runtime_checkable
+
+from abc import ABCMeta
+from unittest.mock import NonCallableMagicMock
+
+class FencedResource(metaclass=ABCMeta):
+    """
+    Protocol for downstream resources capable of enforcing atomic resource-side fencing validation.
+
+    Downstream Resource Contract:
+    The resource must validate the fencing generation atomically with the consequential operation
+    under resource-level synchronization (e.g. lock or atomic compare-and-swap). A resource must
+    validate both `fencing_token` and `scope_key` against its independent high-water marks, ensuring
+    independent scopes cannot invalidate or impersonate each other.
+    """
+    @classmethod
+    def __subclasshook__(cls, C):
+        if issubclass(C, NonCallableMagicMock):
+            return False
+        if any("validate_and_execute" in B.__dict__ for B in C.__mro__):
+            return True
+        return NotImplemented
+
+    def validate_and_execute(
+        self,
+        fencing_token: int,
+        scope_key: str,
+        operation_payload: Any = None,
+        *args: Any,
+        **kwargs: Any
+    ) -> Any:
+        """
+        Atomically validates fencing_token against the resource high-water mark for scope_key
+        and executes the requested operation with operation_payload inside the atomic boundary.
+        """
+        raise NotImplementedError
+
 
 from epistemicos.audit import _sanitize_sensitive_data, ReceiptGenerator
 from epistemicos.authorization import AuthorizationAuthority, CapabilityRegistry, Capability, get_callable_identity
@@ -64,6 +100,8 @@ class ExecutionContext:
     task_id: Optional[str] = None
     contract_version: Optional[str] = None
     required_success_evidence: Set[str] = field(default_factory=set)
+    fencing_token: Optional[int] = None
+    scope_key: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         data = asdict(self)
@@ -86,6 +124,8 @@ class ProvenanceEvent:
     timestamp: str
     authorization_token_id: Optional[str] = None
     execution_attempt_id: Optional[str] = None
+    fencing_token: Optional[int] = None
+    scope_key: Optional[str] = None
     decision: Optional[str] = None
     policy_version: Optional[str] = None
     outcome: Optional[Dict[str, Any]] = None
@@ -384,9 +424,12 @@ class TrustedExecutionBoundary:
             else:
                 raise PermissionError(f"Execution rejected: Unregistered callable object cannot execute capability bound to '{cap.executor_id if cap else executor_id}'")
 
-        # Atomic token consumption and retry check
+        # Atomic token consumption and retry check against authoritative storage
         with self._lock:
-            if not self.registry.consume_token(auth_token_id):
+            expected_fence = getattr(cap, "fencing_token", None) if cap else getattr(context, "fencing_token", None)
+            if not self.registry.consume_token(auth_token_id, expected_fencing_token=expected_fence):
+                if self.registry.is_revoked(auth_token_id):
+                    raise PermissionError(f"Authorization token {auth_token_id} has been revoked")
                 raise PermissionError(f"Authorization token {auth_token_id} has already been consumed (replay attempt)")
 
             if attempt_id in self._consumed_attempts:
@@ -409,7 +452,9 @@ class TrustedExecutionBoundary:
             timestamp=now_ts,
             authorization_token_id=auth_token_id,
             execution_attempt_id=attempt_id,
-            policy_version=pol_version
+            policy_version=pol_version,
+            fencing_token=getattr(cap, "fencing_token", None) if cap else None,
+            scope_key=getattr(cap, "scope_key", None) if cap else None
         )
         self.store.record_event(start_event)
 
@@ -446,7 +491,12 @@ class TrustedExecutionBoundary:
 
         # Execute under BaseException catching to handle interruptions and errors
         try:
-            result = executor_func()
+            effective_fence = getattr(cap, "fencing_token", None) if cap else None
+            effective_scope = getattr(cap, "scope_key", None) if cap else getattr(context, "scope_key", None)
+            if isinstance(executor_func, FencedResource):
+                result = executor_func.validate_and_execute(effective_fence, effective_scope, request_payload)
+            else:
+                result = executor_func()
         except Exception as e:
             end_ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
             fail_event = ProvenanceEvent(
