@@ -2158,15 +2158,16 @@ def test_phase1_unresolved_limitation_restart_recovery_after_rollback_failure(tm
 
 def test_phase1_poison_guard_concurrency_race(tmp_path):
     """
-    Concurrency Race Regression Test (Strictly Deterministic, No Sleeps):
+    Concurrency Race Regression Test (Strictly Deterministic Lock Contention):
     Proves the exact check-then-lock TOCTOU sequence:
     1. Thread A acquires registry lock via lock_registry() and holds it.
     2. Thread B enters lock_registry() and passes the initial pre-lock _check_poisoned() check.
-    3. Thread B demonstrably invokes acquire() on the registry lock and is blocked waiting.
-    4. Thread A sets _is_poisoned = True while still holding the lock.
+    3. Thread B reaches the lock boundary and attempts non-blocking acquire(), which returns False,
+       conclusively demonstrating that Thread B is in contention and blocked by Thread A owning the lock.
+    4. While Thread A STILL holds the lock and Thread B is demonstrably blocked, Thread A poisons the registry.
     5. Thread A releases the lock.
-    6. Thread B wakes up with the acquired lock and MUST fail at the in-lock _check_poisoned() check.
-    7. Assert Thread B never enters the protected block.
+    6. Thread B completes blocking acquire() on the underlying lock and MUST fail at the in-lock _check_poisoned() check.
+    7. Assert Thread B never enters the protected context and fails specifically with the poisoned RuntimeError.
     """
     log_path = tmp_path / "test_concurrency_poison.jsonl"
     registry = CapabilityRegistry(
@@ -2174,16 +2175,36 @@ def test_phase1_poison_guard_concurrency_race(tmp_path):
         fail_closed_persistence=False
     )
 
-    # Use a test-only instrumented wrapper around registry._lock to observe
-    # the exact moment Thread B attempts acquire() without modifying production code.
-    class InstrumentedLockWrapper:
+    class ContentionProvingLock:
         def __init__(self, real_lock):
             self._real = real_lock
-            self.on_acquire_hook = None
+            self.thread_b = None
+            self.b_passed_pre_check = threading.Event()
+            self.b_contention_proven = threading.Event()
+            self.a_poisoned_signal = threading.Event()
+            self.b_acquired_underlying = threading.Event()
 
         def acquire(self, blocking=True, timeout=-1):
-            if self.on_acquire_hook:
-                self.on_acquire_hook()
+            if self.thread_b is not None and threading.current_thread() == self.thread_b:
+                # Thread B is entering lock acquisition.
+                # Prove actual contention: non-blocking acquire MUST fail because Thread A holds the lock.
+                contention_verified = not self._real.acquire(blocking=False)
+                if contention_verified:
+                    self.b_contention_proven.set()
+                else:
+                    # Contention was not verified (Thread A did not hold lock) -> fail closed
+                    self._real.release()
+                    raise RuntimeError("Contention verification failed: Thread B unexpectedly acquired lock")
+
+                # Block Thread B until Thread A has poisoned the registry while holding the lock
+                if not self.a_poisoned_signal.wait(timeout=5.0):
+                    raise TimeoutError("Deadlock guard: Thread A did not signal poisoning within timeout")
+
+                # Thread B now executes the real blocking acquire
+                res = self._real.acquire(blocking=True)
+                if res:
+                    self.b_acquired_underlying.set()
+                return res
             return self._real.acquire(blocking, timeout)
 
         def release(self):
@@ -2196,47 +2217,44 @@ def test_phase1_poison_guard_concurrency_race(tmp_path):
             self.release()
 
     real_lock = registry._lock
-    instrumented_lock = InstrumentedLockWrapper(real_lock)
-    registry._lock = instrumented_lock
+    contention_lock = ContentionProvingLock(real_lock)
+    registry._lock = contention_lock
 
     t1_holding = threading.Event()
-    t2_started_acquire = threading.Event()
-    t1_can_release = threading.Event()
-    t2_outcome = {}
+    worker_errors = {}
+    thread_b_entered = []
 
     def thread_a_poisoner():
         try:
             with registry.lock_registry():
                 # 1. Thread A holds lock
                 t1_holding.set()
-                # 3. Wait until Thread B has demonstrably entered acquire()
-                t2_started_acquire.wait(timeout=5.0)
-                # 4. Poison registry while holding lock
+                # 3. Wait until Thread B has demonstrably proven contention on the underlying lock
+                if not contention_lock.b_contention_proven.wait(timeout=5.0):
+                    raise TimeoutError("Deadlock guard: Thread B never reached contention state")
+                # 4. Set poison state while Thread A STILL holds the lock
                 registry._is_poisoned = True
-                # Signal Thread A to release
-                t1_can_release.set()
+                # Signal Thread B that poisoning has occurred
+                contention_lock.a_poisoned_signal.set()
         except Exception as e:
-            t2_outcome["thread_a_error"] = e
+            worker_errors["thread_a"] = e
 
     def thread_b_waiter():
-        # Wait until Thread A has lock
-        t1_holding.wait(timeout=5.0)
-
-        # Hook to prove Thread B is about to block inside acquire()
-        def on_acquire():
-            instrumented_lock.on_acquire_hook = None
-            t2_started_acquire.set()
-
-        instrumented_lock.on_acquire_hook = on_acquire
         try:
+            # Wait until Thread A has acquired the lock
+            if not t1_holding.wait(timeout=5.0):
+                raise TimeoutError("Deadlock guard: Thread A never acquired lock")
+
+            # Thread B enters lock_registry(): passes initial pre-lock check, blocks on lock
             with registry.lock_registry():
-                # Must NEVER be reached
-                t2_outcome["entered_protected_context"] = True
+                # Invariant: Thread B must NEVER enter the protected block
+                thread_b_entered.append(True)
         except Exception as e:
-            t2_outcome["error"] = e
+            worker_errors["thread_b"] = e
 
     t1 = threading.Thread(target=thread_a_poisoner)
     t2 = threading.Thread(target=thread_b_waiter)
+    contention_lock.thread_b = t2
 
     try:
         t1.start()
@@ -2244,14 +2262,25 @@ def test_phase1_poison_guard_concurrency_race(tmp_path):
     finally:
         t1.join(timeout=5.0)
         t2.join(timeout=5.0)
+        # Restore real lock in finally block to ensure clean state even on assertion failures
+        registry._lock = real_lock
 
-    # Restore real lock
-    registry._lock = real_lock
+    # Verify both worker threads terminated cleanly
+    assert not t1.is_alive(), "Thread A did not terminate"
+    assert not t2.is_alive(), "Thread B did not terminate"
 
-    assert "thread_a_error" not in t2_outcome
-    assert t2_outcome.get("entered_protected_context") is not True
-    assert isinstance(t2_outcome.get("error"), RuntimeError)
-    assert "poisoned state" in str(t2_outcome.get("error"))
+    # Surface any worker errors from Thread A
+    assert "thread_a" not in worker_errors, f"Thread A encountered unexpected error: {worker_errors.get('thread_a')}"
+
+    # Verify Thread B was blocked on the lock and then acquired it
+    assert contention_lock.b_contention_proven.is_set(), "Thread B never proved lock contention"
+    assert contention_lock.b_acquired_underlying.is_set(), "Thread B never acquired underlying lock"
+
+    # Invariant: Thread B was rejected by in-lock _check_poisoned() and never entered the protected context
+    assert len(thread_b_entered) == 0, "Thread B entered protected context despite poisoned state!"
+    assert "thread_b" in worker_errors, "Thread B did not raise an exception"
+    assert isinstance(worker_errors["thread_b"], RuntimeError)
+    assert "CapabilityRegistry is in a poisoned state" in str(worker_errors["thread_b"])
 
 
 def test_phase1_public_issuance_same_approval_cross_target_replay_and_fencing():
