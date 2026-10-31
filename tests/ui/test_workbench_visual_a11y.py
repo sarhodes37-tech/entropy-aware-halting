@@ -232,13 +232,21 @@ def test_rendered_component_contrast_browser(a11y_e2e_server):
         page.click("#tab-benchmarks")
         page.wait_for_selector("#benchmark-run-summary-card")
 
-        # Elements to inspect
-        contrast_checks = page.evaluate("""
+        # Elements to inspect with dynamically computed background colors and proper regex parsing
+        contrast_checks = page.evaluate(r"""
             () => {
                 function parseRgb(str) {
-                    const m = str.match(/rgba?\\((\\d+),\\s*(\\d+),\\s*(\\d+)/);
-                    return m ? [parseInt(m[1]), parseInt(m[2]), parseInt(m[3])] : [245, 240, 255];
+                    if (!str) return null;
+                    const m = str.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
+                    return m ? [parseInt(m[1]), parseInt(m[2]), parseInt(m[3])] : null;
                 }
+
+                // Verify parseRgb operates correctly on standard browser computed values
+                const testVal = parseRgb("rgb(245, 240, 255)");
+                if (!testVal || testVal[0] !== 245 || testVal[1] !== 240 || testVal[2] !== 255) {
+                    throw new Error("parseRgb failed to parse rgb(245, 240, 255)");
+                }
+
                 function luminance(rgb) {
                     const [r, g, b] = rgb.map(c => {
                         const n = c / 255;
@@ -246,14 +254,44 @@ def test_rendered_component_contrast_browser(a11y_e2e_server):
                     });
                     return 0.2126 * r + 0.7152 * g + 0.0722 * b;
                 }
+
                 function contrast(rgb1, rgb2) {
                     const l1 = luminance(rgb1);
                     const l2 = luminance(rgb2);
                     return (Math.max(l1, l2) + 0.05) / (Math.min(l1, l2) + 0.05);
                 }
 
-                // Reference background is deep plum surface rgb(29, 24, 51)
-                const bgRgb = [29, 24, 51];
+                function getEffectiveBackground(el) {
+                    let curr = el;
+                    const layers = [];
+                    while (curr && curr !== document.documentElement) {
+                        const style = window.getComputedStyle(curr);
+                        const bg = style.backgroundColor;
+                        if (bg) {
+                            const m = bg.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)/);
+                            if (m) {
+                                const alpha = m[4] !== undefined ? parseFloat(m[4]) : 1.0;
+                                if (alpha > 0) {
+                                    layers.push({
+                                        rgb: [parseInt(m[1]), parseInt(m[2]), parseInt(m[3])],
+                                        alpha: alpha
+                                    });
+                                }
+                            }
+                        }
+                        curr = curr.parentElement;
+                    }
+
+                    // Composite over base solid background #120F24 -> rgb(18, 15, 36)
+                    let composite = [18, 15, 36];
+                    for (let i = layers.length - 1; i >= 0; i--) {
+                        const layer = layers[i];
+                        composite = composite.map((baseC, idx) => {
+                            return Math.round(layer.rgb[idx] * layer.alpha + baseC * (1 - layer.alpha));
+                        });
+                    }
+                    return composite;
+                }
 
                 const selectors = [
                     'h2',
@@ -270,21 +308,33 @@ def test_rendered_component_contrast_browser(a11y_e2e_server):
                     if (!el) return { selector: sel, found: false };
                     const style = window.getComputedStyle(el);
                     const fgRgb = parseRgb(style.color);
+                    if (!fgRgb) {
+                        return { selector: sel, found: true, error: `Could not parse color: ${style.color}` };
+                    }
+                    const bgRgb = getEffectiveBackground(el);
                     const ratio = contrast(fgRgb, bgRgb);
                     const fontSize = parseFloat(style.fontSize);
                     const fontWeight = parseInt(style.fontWeight) || 400;
                     const isLarge = fontSize >= 24 || (fontSize >= 18.66 && fontWeight >= 700);
-                    return { selector: sel, found: true, ratio, isLarge, color: style.color };
+                    return {
+                        selector: sel,
+                        found: true,
+                        ratio,
+                        isLarge,
+                        color: style.color,
+                        bgColor: `rgb(${bgRgb.join(', ')})`
+                    };
                 });
             }
         """)
 
         for check in contrast_checks:
             assert check["found"], f"Selector {check['selector']} not found in rendered DOM"
+            assert "error" not in check, f"Error in check for {check['selector']}: {check.get('error')}"
             required_threshold = 3.0 if check["isLarge"] else 4.5
             assert check["ratio"] >= required_threshold, (
-                f"Element {check['selector']} color {check['color']} has contrast {check['ratio']:.2f}:1 "
-                f"(requires {required_threshold}:1)"
+                f"Element {check['selector']} color {check['color']} against {check['bgColor']} "
+                f"has contrast {check['ratio']:.2f}:1 (requires {required_threshold}:1)"
             )
 
         browser.close()
@@ -375,8 +425,15 @@ def test_reduced_motion_behavior_browser(a11y_e2e_server):
         """)
 
         # Under reduced motion, animation is 'none' or duration is effectively instantaneous (<= 0.01s)
-        duration_s = float(motion_styles["animationDuration"].replace("s", "").replace("m", "")) if motion_styles["animationDuration"] else 0.0
-        assert motion_styles["animationName"] == "none" or duration_s <= 0.01
+        anim_duration_s = float(motion_styles["animationDuration"].replace("s", "").replace("m", "")) if motion_styles["animationDuration"] else 0.0
+        assert motion_styles["animationName"] == "none" or anim_duration_s <= 0.01
+
+        # Assert transitionDuration is effectively instantaneous (<= 0.01s)
+        trans_duration_s = float(motion_styles["transitionDuration"].replace("s", "").replace("m", "")) if motion_styles["transitionDuration"] else 0.0
+        assert trans_duration_s <= 0.01, f"Expected transitionDuration to be curtailed under reduced-motion, got {motion_styles['transitionDuration']}"
+
+        # Assert scrollBehavior is 'auto' (instantaneous scrolling rather than smooth)
+        assert motion_styles["scrollBehavior"] == "auto", f"Expected scrollBehavior 'auto', got {motion_styles['scrollBehavior']}"
 
         browser.close()
 
