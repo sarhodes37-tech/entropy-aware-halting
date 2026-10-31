@@ -2179,14 +2179,15 @@ def test_phase1_poison_guard_concurrency_race(tmp_path):
         def __init__(self, real_lock):
             self._real = real_lock
             self.thread_b = None
-            self.b_passed_pre_check = threading.Event()
             self.b_contention_proven = threading.Event()
             self.a_poisoned_signal = threading.Event()
             self.b_acquired_underlying = threading.Event()
+            self._b_tested = False
 
         def acquire(self, blocking=True, timeout=-1):
-            if self.thread_b is not None and threading.current_thread() == self.thread_b:
-                # Thread B is entering lock acquisition.
+            if self.thread_b is not None and threading.current_thread() == self.thread_b and not self._b_tested:
+                self._b_tested = True
+                # Thread B is entering lock acquisition for the first time.
                 # Prove actual contention: non-blocking acquire MUST fail because Thread A holds the lock.
                 contention_verified = not self._real.acquire(blocking=False)
                 if contention_verified:
@@ -2259,15 +2260,24 @@ def test_phase1_poison_guard_concurrency_race(tmp_path):
     try:
         t1.start()
         t2.start()
-    finally:
         t1.join(timeout=5.0)
         t2.join(timeout=5.0)
-        # Restore real lock in finally block to ensure clean state even on assertion failures
+    finally:
+        # Signal synchronization events to release any waiting workers on failure/cancellation
+        t1_holding.set()
+        contention_lock.b_contention_proven.set()
+        contention_lock.a_poisoned_signal.set()
+
+        t1.join(timeout=1.0)
+        t2.join(timeout=1.0)
+
+        # Verify termination established before restoring the underlying lock
+        t1_alive = t1.is_alive()
+        t2_alive = t2.is_alive()
         registry._lock = real_lock
 
-    # Verify both worker threads terminated cleanly
-    assert not t1.is_alive(), "Thread A did not terminate"
-    assert not t2.is_alive(), "Thread B did not terminate"
+    assert not t1_alive, "Thread A did not terminate"
+    assert not t2_alive, "Thread B did not terminate"
 
     # Surface any worker errors from Thread A
     assert "thread_a" not in worker_errors, f"Thread A encountered unexpected error: {worker_errors.get('thread_a')}"
