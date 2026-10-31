@@ -173,7 +173,16 @@ def test_record_event_payload_too_large(temp_audit_file):
 # =====================================================================
 
 def test_audit_fsync_oserror_fallback_handling(temp_audit_file):
-    """Validates that TamperEvidentAuditTrail gracefully catches OSError on os.fsync during record_event."""
+    """
+    Validates that TamperEvidentAuditTrail gracefully catches OSError on os.fsync during record_event.
+
+    Durability Contract Note:
+    TamperEvidentAuditTrail implements best-effort physical durability on local filesystems.
+    In environments where fsync is not supported or fails with OSError (e.g. certain network mounts,
+    virtualized file descriptors, or restricted container runtimes), record_event flushes in-memory
+    buffers (f.flush()) and swallows the OSError so audit logging does not abort execution.
+    The caller receives the formatted entry_data confirming buffer write, but hardware sync is best-effort.
+    """
     audit = TamperEvidentAuditTrail(temp_audit_file)
     event = AuditEvent(
         event_type=AuditLogLevel.INFO,
@@ -183,9 +192,11 @@ def test_audit_fsync_oserror_fallback_handling(temp_audit_file):
         payload_snippet="payload_for_fsync_fallback"
     )
 
-    with patch("os.fsync", side_effect=OSError("Sync to storage device not supported")):
+    with patch("os.fsync", side_effect=OSError("Sync to storage device not supported")) as mock_fsync:
         recorded = audit.record_event(event)
 
+    # Explicitly assert that os.fsync was invoked exactly once and the OSError path was executed
+    mock_fsync.assert_called_once()
     assert recorded is not None
     assert recorded["gate_name"] == "fsync_gate"
     assert recorded["reason"] == "test_fsync_error_handling"
@@ -199,7 +210,7 @@ def test_audit_fsync_oserror_fallback_handling(temp_audit_file):
 
 
 def test_audit_get_last_hash_reload_and_uncached_fallback(temp_audit_file):
-    """Validates TamperEvidentAuditTrail._get_last_hash with force_reload=True and uninitialized cache."""
+    """Validates TamperEvidentAuditTrail._get_last_hash with force_reload=True, cache handling, and corrupted log fallback."""
     audit = TamperEvidentAuditTrail(temp_audit_file)
 
     # When log file does not exist or is empty, returns genesis hash
@@ -228,9 +239,28 @@ def test_audit_get_last_hash_reload_and_uncached_fallback(temp_audit_file):
     assert reloaded_hash == expected_hash_1
     assert audit.last_hash == expected_hash_1
 
+    # Simulate log corruption (malformed trailing JSON)
+    with open(temp_audit_file, "a", encoding="utf-8") as f:
+        f.write('{"event_id": "malformed_trailing_entry", "incomplete": \n')
+
+    # Verify behavior of inspect_log_health and _get_last_hash on corrupted log
+    is_healthy, last_valid_h, err_msg = audit.inspect_log_health()
+    assert is_healthy is False
+    assert last_valid_h == expected_hash_1
+    assert "Malformed JSON" in err_msg
+
+    audit.last_hash = None
+    recovered_on_corrupt = audit._get_last_hash(force_reload=False)
+    assert recovered_on_corrupt == expected_hash_1
+    assert audit.last_hash == expected_hash_1
+
+    # Verify that record_event refuses to append to corrupted log and fails closed
+    with pytest.raises(RuntimeError, match="Cannot write to audit trail: Log corruption detected"):
+        audit.record_event(AuditEvent(AuditLogLevel.INFO, "gate2", "reason2", "model2", "snippet2"))
+
 
 def test_audit_sanitize_string_value_bearer_and_email_branches():
-    """Validates fast-path string value sanitization for Bearer tokens and email addresses."""
+    """Validates fast-path string value sanitization for Bearer tokens, emails, and UUID-shaped string preservation."""
     from epistemicos.audit import _sanitize_string_value
 
     # Bearer pattern branch
@@ -254,10 +284,12 @@ def test_audit_sanitize_string_value_bearer_and_email_branches():
     assert "Bearer [REDACTED]" in sanitized_combined
     assert "api_key=[REDACTED]" in sanitized_combined
 
-    # Fast-path length 36 UUID preservation (Line 56)
-    valid_uuid = "12345678-1234-5678-1234-567812345678"
-    assert len(valid_uuid) == 36
-    assert _sanitize_string_value(valid_uuid) == valid_uuid
+    # Fast-path length 36 UUID-shaped string preservation (Line 56):
+    # Verifies that strings matching standard 8-4-4-4-12 hexadecimal UUID shape are preserved intact
+    # to maintain correlation IDs without being altered by phone/SSN digit redactions.
+    uuid_shaped_string = "12345678-1234-5678-1234-567812345678"
+    assert len(uuid_shaped_string) == 36
+    assert _sanitize_string_value(uuid_shaped_string) == uuid_shaped_string
 
 
 def test_f8_tamper_evident_audit_trail_hmac_keying(temp_audit_file):
