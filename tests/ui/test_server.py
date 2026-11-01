@@ -489,7 +489,12 @@ def test_api_route_edge_cases(test_server):
     assert exc_info.value.code == HTTPStatus.BAD_REQUEST
     assert exc_info.value.headers.get("X-Content-Type-Options") == "nosniff"
 
-    # Test GET /api/trace/ with oversized correlation ID
+    # Test GET /api/trace/ with exactly 128 chars (boundary passes length check to lookup)
+    with pytest.raises(urllib.error.HTTPError) as exc_info:
+        urllib.request.urlopen(f"{test_server}/api/trace/{'a' * 128}")
+    assert exc_info.value.code == HTTPStatus.NOT_FOUND
+
+    # Test GET /api/trace/ with 129 chars (exceeds 128 max length, rejected with BAD_REQUEST)
     with pytest.raises(urllib.error.HTTPError) as exc_info:
         urllib.request.urlopen(f"{test_server}/api/trace/{'a' * 129}")
     assert exc_info.value.code == HTTPStatus.BAD_REQUEST
@@ -505,10 +510,17 @@ def test_api_route_edge_cases(test_server):
 
 def test_deep_encoding_traversal_prevention(test_server):
     """Verifies that deep encoding beyond 3 passes cannot escape the static directory and is blocked at validation."""
+    from urllib.parse import quote
+    # Path requiring more than 10 decoding rounds (% encoded 11 times)
+    eleven_encoded = "%"
+    for _ in range(11):
+        eleven_encoded = quote(eleven_encoded, safe="")
+
     deep_paths = [
         "/%2525252e%2525252e/%2525252e%2525252e/etc/passwd",
         "/api/%2525252e%2525252e/audit.py",
-        "/..%5c..%5c/etc/passwd"
+        "/..%5c..%5c/etc/passwd",
+        f"/{eleven_encoded}"
     ]
     for dp in deep_paths:
         with pytest.raises(urllib.error.HTTPError) as exc_info:
