@@ -2274,10 +2274,11 @@ def test_phase1_poison_guard_concurrency_race(tmp_path):
         # Verify termination established before restoring the underlying lock
         t1_alive = t1.is_alive()
         t2_alive = t2.is_alive()
-        registry._lock = real_lock
+        if not t1_alive and not t2_alive:
+            registry._lock = real_lock
 
-    assert not t1_alive, "Thread A did not terminate"
-    assert not t2_alive, "Thread B did not terminate"
+    assert not t1_alive, "Thread A did not terminate; underlying lock not restored"
+    assert not t2_alive, "Thread B did not terminate; underlying lock not restored"
 
     # Surface any worker errors from Thread A
     assert "thread_a" not in worker_errors, f"Thread A encountered unexpected error: {worker_errors.get('thread_a')}"
