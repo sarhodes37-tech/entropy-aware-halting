@@ -718,6 +718,30 @@ def test_live_region_announcements(a11y_comprehensive_server):
         page.wait_for_function("() => document.getElementById('a11y-status-announcer').textContent.length > 0")
         assert "Selected benchmark case" in announcer.text_content()
 
+        # 6. Overview Refresh Live Announcements (Success & Failure paths)
+        page.click("#tab-overview")
+        page.wait_for_selector("#view-overview.active")
+        # Wait for tab switch initial loadOverview to finish
+        page.wait_for_function("() => document.getElementById('a11y-status-announcer').textContent === 'Overview metrics updated.'")
+
+        # Test successful refresh path
+        page.evaluate("() => { document.getElementById('a11y-status-announcer').textContent = ''; }")
+        page.wait_for_selector("#btn-refresh-overview:not([disabled])")
+        page.click("#btn-refresh-overview")
+        page.wait_for_function("() => document.getElementById('a11y-status-announcer').textContent === 'Overview metrics updated.'")
+        assert announcer.text_content() == "Overview metrics updated."
+
+        # Wait for button to be re-enabled
+        page.wait_for_selector("#btn-refresh-overview:not([disabled])")
+
+        # Test failed refresh path: route /api/overview to fail
+        page.route("**/api/overview", lambda route: route.abort())
+        page.evaluate("() => { document.getElementById('a11y-status-announcer').textContent = ''; }")
+        page.click("#btn-refresh-overview")
+        page.wait_for_function("() => document.getElementById('a11y-status-announcer').textContent.length > 0")
+        assert announcer.text_content() == "Failed to update overview metrics."
+        page.unroute("**/api/overview")
+
         browser.close()
 
 

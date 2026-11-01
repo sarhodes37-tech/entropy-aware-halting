@@ -529,8 +529,6 @@ document.addEventListener('DOMContentLoaded', () => {
         updatedEl.textContent = `Updated at ${timeStr}`;
       }
 
-      this.announce('Overview metrics updated.');
-
       const m = data.metrics || {};
       this.setText('metric-total-executions', (m.total_executions !== null && m.total_executions !== undefined) ? m.total_executions : 'UNAVAILABLE');
       this.setText('metric-denials', (m.authorization_denials !== null && m.authorization_denials !== undefined) ? m.authorization_denials : 'UNAVAILABLE');
@@ -642,6 +640,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
       // Render Overview Recent Traces
       this.renderOverviewRecentTraces();
+
+      this.announce('Overview metrics updated.');
     },
 
     renderOverviewRecentTraces() {
