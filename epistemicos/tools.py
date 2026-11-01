@@ -75,6 +75,21 @@ class TrustedToolWrapper:
             ActionCategory.NETWORK_READ
         )
 
+        # Validate inspectable executor signature
+        try:
+            self._executor_sig = inspect.signature(self._executor_func)
+        except Exception as e:
+            if not self.is_read_only:
+                raise ValueError(f"TrustedToolWrapper initialization failed: Executor signature must be inspectable for mutating operation '{self.action_name}' ({str(e)})") from e
+            self._executor_sig = None
+
+        # Validate that target_param exists in executor's inspectable signature
+        if self.target_param and self._executor_sig:
+            if self.target_param not in self._executor_sig.parameters:
+                raise ValueError(
+                    f"TrustedToolWrapper initialization failed: target_param '{self.target_param}' does not exist in executor signature parameters: {list(self._executor_sig.parameters.keys())}"
+                )
+
         # Register executor with the underlying authority
         if self.registry and self.registry.authority:
             self.registry.authority.register_executor(self.executor_id, self._executor_func)
@@ -256,16 +271,48 @@ class TrustedToolWrapper:
             if "target" in sig_params and "target" not in call_kwargs and exec_target is not None:
                 call_kwargs["target"] = exec_target
 
-            # SEC-03: Verify that authorized target is exactly the resource targeted by the executor across all recognized target parameter sources
-            all_target_param_names = [self.target_param, "target", "path", "file", "filepath", "node", "endpoint", "url", "resource", "filename", "destination"]
+            # SEC-03: Verify that authorized target is exactly the resource targeted by the executor
             bound_for_exec = sig.bind_partial(*args, **call_kwargs)
-            for param_name in all_target_param_names:
-                if param_name and param_name in bound_for_exec.arguments:
+
+            # 1. Verify standard target_param if registered
+            if self.target_param and self.target_param in bound_for_exec.arguments:
+                bound_val = str(bound_for_exec.arguments[self.target_param]).strip()
+                if bound_val != exec_target:
+                    raise PermissionError(
+                        f"Tool execution rejected: Authorized target '{exec_target}' differs from executor target parameter '{bound_val}' (via target_param '{self.target_param}')"
+                    )
+
+            # 2. Check all recognized target parameter names
+            recognized_target_names = ("target", "path", "file", "filepath", "node", "endpoint", "url", "resource", "filename", "destination")
+            for param_name in recognized_target_names:
+                if param_name in bound_for_exec.arguments:
                     bound_val = str(bound_for_exec.arguments[param_name]).strip()
                     if bound_val and bound_val != exec_target:
                         raise PermissionError(
                             f"Tool execution rejected: Authorized target '{exec_target}' differs from executor target parameter '{bound_val}' (via parameter '{param_name}')"
                         )
+
+            # 3. Verifiable binding contract for mutating operations:
+            # Check any string argument whose parameter name implies resource/identity targeting
+            if not self.is_read_only:
+                target_like_keywords = ("key", "id", "account", "table", "db", "entity", "dest", "item", "record")
+                found_bound_target = False
+                for p_name, p_val in bound_for_exec.arguments.items():
+                    if isinstance(p_val, str) and str(p_val).strip() == exec_target:
+                        found_bound_target = True
+                    elif isinstance(p_val, str) and any(k in p_name.lower() for k in target_like_keywords):
+                        bound_str = str(p_val).strip()
+                        if bound_str and bound_str != exec_target:
+                            raise PermissionError(
+                                f"Tool execution rejected: Authorized target '{exec_target}' differs from executor argument '{bound_str}' (via parameter '{p_name}')"
+                            )
+
+                # If dynamic args were supplied to mutating action, at least one argument must bind to the authorized target
+                if (args or call_kwargs) and not found_bound_target and not self.default_target:
+                    raise PermissionError(
+                        f"Tool execution rejected: Verifiable target binding contract failed; no executor argument bound to authorized target '{exec_target}'"
+                    )
+
         except PermissionError:
             raise
         except (ValueError, TypeError) as bind_err:
