@@ -1410,60 +1410,63 @@ class CapabilityRegistry:
         task_id = str(task_id).strip()
         action_name = str(action_name).strip()
         target = str(target).strip()
-
-        # Re-sync from persistent storage to enforce cross-process durability
-        self._load_persistent_denials()
-
-        key = (task_id, action_name, target)
-        rec = self._denied_records.get(key)
-        if rec and rec.get("status") == "ACTIVE":
-            # Denial is active regardless of contract_version changes, unless explicitly cleared
-            return True, rec
-
-        # Restriction Inheritance Check across alternative execution paths/endpoints for same task
-        from urllib.parse import urlparse
-        from epistemicos.action_policy import ActionRegistry, ActionCategory
-
-        registry = getattr(self, "_action_registry", None) or ActionRegistry()
-        req_cat = registry.classify_action(action_name)
-
+    @staticmethod
+    def _normalize_target_path(raw_target: str) -> Tuple[str, str]:
+        """
+        Normalizes target string into (netloc, norm_path) tuple.
+        Extracts host network location if URL, unquotes percent-encoded separators,
+        converts backslashes, and eliminates dot segments.
+        """
         import os
         from urllib.parse import urlparse, unquote
 
-        def normalize_target_path(raw_target: str) -> tuple[str, str]:
-            if not raw_target:
-                return "", "/"
-            str_target = str(raw_target).strip()
-            if "://" in str_target:
-                parsed = urlparse(str_target)
-                netloc = parsed.netloc.lower().strip() if parsed.netloc else ""
+        if not raw_target:
+            return "", "/"
+        str_target = str(raw_target).strip()
+        if "://" in str_target:
+            parsed = urlparse(str_target)
+            netloc = parsed.netloc.lower().strip() if parsed.netloc else ""
+            raw_path = parsed.path or "/"
+        else:
+            netloc = ""
+            raw_path = str_target if str_target.startswith("/") else "/" + str_target
+            if "?" in raw_path or "#" in raw_path:
+                parsed = urlparse("http://localhost" + raw_path)
                 raw_path = parsed.path or "/"
-            else:
-                netloc = ""
-                raw_path = str_target if str_target.startswith("/") else "/" + str_target
-                if "?" in raw_path or "#" in raw_path:
-                    parsed = urlparse("http://localhost" + raw_path)
-                    raw_path = parsed.path or "/"
 
-            # Unquote percent-encoded separators (%2F, %5C) to resolve encoded traversal paths
-            unquoted_path = unquote(raw_path)
+        # Unquote percent-encoded separators (%2F, %5C) to resolve encoded traversal paths
+        unquoted_path = unquote(raw_path)
 
-            # Collapse backslashes to forward slashes and eliminate dot segments
-            clean_path = unquoted_path.replace("\\", "/")
-            norm_path = os.path.normpath(clean_path)
-            if norm_path in (".", "", "/"):
-                norm_path = "/"
-            else:
-                norm_path = norm_path.rstrip("/")
-            return netloc, norm_path
+        # Collapse backslashes to forward slashes and eliminate dot segments
+        clean_path = unquoted_path.replace("\\", "/")
+        norm_path = os.path.normpath(clean_path)
+        if norm_path in (".", "", "/"):
+            norm_path = "/"
+        else:
+            norm_path = norm_path.rstrip("/")
+        return netloc, norm_path
 
-        target_host, target_norm = normalize_target_path(target)
+    def _find_inherited_denial(
+        self,
+        task_id: str,
+        action_name: str,
+        target: str
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Evaluates downward restriction inheritance across alternative execution paths/endpoints
+        for the same task. Matches by host, subpath inheritance, and action category or wildcard.
+        """
+        from epistemicos.action_policy import ActionRegistry
+
+        registry = getattr(self, "_action_registry", None) or ActionRegistry()
+        req_cat = registry.classify_action(action_name)
+        target_host, target_norm = self._normalize_target_path(target)
 
         for (d_task_id, d_action, d_target), d_rec in self._denied_records.items():
             if d_rec.get("status") != "ACTIVE" or d_task_id != task_id:
                 continue
 
-            d_host, d_target_norm = normalize_target_path(d_target)
+            d_host, d_target_norm = self._normalize_target_path(d_target)
 
             # Strict host matching: exact match or explicit wildcard
             host_matches = (
@@ -1498,7 +1501,35 @@ class CapabilityRegistry:
                     "target": d_target,
                     "reason": d_rec.get("reason")
                 }
-                return True, inherited_rec
+                return inherited_rec
+
+        return None
+
+    def _check_denial_unlocked(
+        self,
+        task_id: str,
+        action_name: str,
+        target: str,
+        contract_version: str = "1.0.0",
+        policy_version: str = "1.0.0"
+    ) -> Tuple[bool, Optional[Dict[str, Any]]]:
+        task_id = str(task_id).strip()
+        action_name = str(action_name).strip()
+        target = str(target).strip()
+
+        # Re-sync from persistent storage to enforce cross-process durability
+        self._load_persistent_denials()
+
+        key = (task_id, action_name, target)
+        rec = self._denied_records.get(key)
+        if rec and rec.get("status") == "ACTIVE":
+            # Denial is active regardless of contract_version changes, unless explicitly cleared
+            return True, rec
+
+        # Restriction Inheritance Check across alternative execution paths/endpoints for same task
+        inherited_rec = self._find_inherited_denial(task_id, action_name, target)
+        if inherited_rec:
+            return True, inherited_rec
 
         return False, None
 
