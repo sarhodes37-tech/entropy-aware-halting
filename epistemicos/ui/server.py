@@ -42,13 +42,17 @@ class ObservatoryRequestHandler(BaseHTTPRequestHandler):
         """Handles HTTP GET requests with strict path validation and security headers."""
         raw_path = self.path.split("?")[0]  # Strip query string
 
-        # Iteratively unquote path to neutralize percent-encoded and double percent-encoded traversal attacks
+        # Iteratively unquote path until stable to neutralize multi-level percent-encoded traversal attacks
         path = raw_path
-        for _ in range(3):
+        for _ in range(10):
             unquoted_path = unquote(path)
             if unquoted_path == path:
                 break
             path = unquoted_path
+        else:
+            # Did not stabilize within maximum allowed decoding rounds (malformed/adversarial encoding)
+            self._send_json_response({"error": "Invalid path"}, status=HTTPStatus.BAD_REQUEST)
+            return
 
         # Prevent directory traversal and null-byte injection
         if ".." in path or "\\" in path or "\x00" in path:
@@ -96,6 +100,9 @@ class ObservatoryRequestHandler(BaseHTTPRequestHandler):
                 corr_id = path[len("/api/trace/"):]
                 if not corr_id:
                     self._send_json_response({"error": "Correlation ID required"}, status=HTTPStatus.BAD_REQUEST)
+                    return
+                if len(corr_id) > 128:
+                    self._send_json_response({"error": "Invalid correlation ID: exceeds maximum length"}, status=HTTPStatus.BAD_REQUEST)
                     return
                 trace = self.current_adapter.get_execution_trace_by_id(corr_id)
                 if trace:
@@ -184,9 +191,13 @@ class ObservatoryRequestHandler(BaseHTTPRequestHandler):
         self.send_header("Referrer-Policy", "no-referrer")
         self.send_header("Cache-Control", "no-store, max-age=0")
         self.send_header("X-Permitted-Cross-Domain-Policies", "none")
+        self.send_header("Cross-Origin-Opener-Policy", "same-origin")
+        self.send_header("Cross-Origin-Resource-Policy", "same-origin")
+        self.send_header("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
         self.send_header(
             "Content-Security-Policy",
-            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:;"
+            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
+            "object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none';"
         )
 
     def log_message(self, format: str, *args: Any) -> None:
