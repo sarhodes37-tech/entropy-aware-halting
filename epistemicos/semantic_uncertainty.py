@@ -414,10 +414,12 @@ class SemanticUncertaintyEstimator:
             normalized_candidate_probs = [1.0 / n_candidates] * n_candidates
 
         # Pre-extract features once per candidate to avoid redundant extraction across O(N^2) pairwise comparisons.
+        # Preserve polymorphism: Only activate fast path if resolve() has not been overridden by a subclass.
         candidate_features = None
         resolve_with_features = getattr(self.resolver, "_resolve_with_features", None)
         get_features = getattr(self.resolver, "_get_features", None)
-        if callable(resolve_with_features) and callable(get_features):
+        has_unmodified_resolve = type(self.resolver).resolve == ExactAndNormalizedResolver.resolve
+        if has_unmodified_resolve and callable(resolve_with_features) and callable(get_features):
             candidate_features = [get_features(c.text) for c in parsed_candidates]
 
         # Perform clustering using the resolver

@@ -372,6 +372,42 @@ def test_semantic_uncertainty_feature_pre_extraction_equivalence():
         assert c_opt.probability == c_unopt.probability
 
 
+def test_resolver_subclass_polymorphism_override():
+    """
+    Verifies that a subclass of ExactAndNormalizedResolver that overrides resolve()
+    has its custom logic invoked and not bypassed by the fast-path feature optimization.
+    """
+    override_invoked_count = 0
+
+    class CustomOverridingResolver(ExactAndNormalizedResolver):
+        def resolve(self, candidate_a: Candidate, candidate_b: Candidate) -> SemanticComparisonResult:
+            nonlocal override_invoked_count
+            override_invoked_count += 1
+            # Force everything to be contradictory and non-equivalent
+            return SemanticComparisonResult(
+                is_equivalent=False,
+                similarity_score=0.1,
+                is_contradiction=True,
+                affects_decision=True,
+                resolver_confidence=0.5
+            )
+
+    custom_resolver = CustomOverridingResolver()
+    estimator = SemanticUncertaintyEstimator(resolver=custom_resolver)
+
+    candidates = [
+        Candidate(text="Sentence A", action="APPROVE"),
+        Candidate(text="Sentence B", action="APPROVE"),
+        Candidate(text="Sentence C", action="APPROVE"),
+    ]
+
+    res = estimator.estimate(candidates)
+    assert override_invoked_count > 0, "Custom resolve() override was bypassed!"
+    # Since all are non-equivalent, there should be 3 clusters
+    assert res.num_clusters == 3
+    assert res.semantic_disagreement == 1.0
+
+
 def test_pairwise_resolver_symmetry_exhaustive():
     """Verifies that resolve(a, b) == resolve(b, a) for diverse linguistic edge cases."""
     resolver = ExactAndNormalizedResolver()
