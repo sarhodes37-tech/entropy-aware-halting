@@ -391,8 +391,27 @@
             </div>
 
             <h3>Baseline Condition Performance</h3>
+
+            <!-- Baseline Performance Comparison Visualization -->
+            <div id="benchmark-baselines-chart-container" class="benchmark-viz-card mb-1">
+              <div class="viz-header">
+                <h4 class="viz-title">Visual Comparison: Precision, Recall, FPR &amp; FNR Across Evaluation Conditions</h4>
+                <p class="viz-takeaway" id="benchmark-baselines-chart-takeaway">Compares diagnostic and security performance across baseline conditions. Visual bars represent recorded percentages (0–100%); refer to the table below for sample counts and exact values.</p>
+              </div>
+              <div class="viz-legend" id="benchmark-baselines-chart-legend" aria-hidden="true">
+                <span class="legend-item"><span class="legend-swatch swatch-precision"></span> Precision</span>
+                <span class="legend-item"><span class="legend-swatch swatch-recall"></span> Recall</span>
+                <span class="legend-item"><span class="legend-swatch swatch-fpr"></span> FPR (Benign Blocked)</span>
+                <span class="legend-item"><span class="legend-swatch swatch-fnr"></span> FNR (Security Missed)</span>
+              </div>
+              <div class="chart-svg-container" id="benchmark-baselines-chart-viewport" aria-hidden="true">
+                <!-- Native SVG rendered via app.js -->
+              </div>
+            </div>
+
             <div class="table-responsive mb-1" tabindex="0" role="region" aria-label="Baseline Condition Performance Metrics table scrollable region">
               <table class="data-table" aria-label="Baseline Condition Performance Metrics">
+                <caption class="sr-only">Baseline Condition Performance Metrics containing sample counts, confusion matrix counts, accuracy with 95% confidence intervals, recall, precision, false positive rates, false negative rates, average latencies, and total tokens.</caption>
                 <thead>
                   <tr>
                     <th scope="col">Baseline Condition</th>
@@ -411,6 +430,20 @@
                   <tr><td colspan="10" class="text-center text-muted">Loading baseline evaluation metrics...</td></tr>
                 </tbody>
               </table>
+            </div>
+
+            <!-- Latency / Token Efficiency Visualization -->
+            <div id="benchmark-efficiency-chart-container" class="benchmark-viz-card mb-1">
+              <div class="viz-header">
+                <h4 class="viz-title">Visual Analysis: Baseline Compute Efficiency (Average Latency vs Total Tokens)</h4>
+                <p class="viz-takeaway" id="benchmark-efficiency-chart-takeaway">Visualizes average latency in milliseconds (ms) against total tokens consumed across evaluated baselines on identical test sets. Refer to the Baseline table for exact numerical values.</p>
+              </div>
+              <div class="viz-legend" id="benchmark-efficiency-chart-legend" aria-hidden="true">
+                <span class="legend-item"><span class="legend-marker marker-baseline">●</span> Evaluated Baseline Condition</span>
+              </div>
+              <div class="chart-svg-container" id="benchmark-efficiency-chart-viewport" aria-hidden="true">
+                <!-- Native SVG rendered via app.js -->
+              </div>
             </div>
 
             <div class="section-grid mb-1">
@@ -437,8 +470,25 @@
 
               <div>
                 <h3 style="font-size: 0.95rem; margin-bottom: 0.5rem;">Entropy Gate Threshold Sensitivity Analysis</h3>
+
+                <!-- Threshold Sensitivity Visualization -->
+                <div id="benchmark-thresholds-chart-container" class="benchmark-viz-card mb-1">
+                  <div class="viz-header">
+                    <h4 class="viz-title" style="font-size: 0.85rem;">Visual Analysis: Precision &amp; Recall Across Z-Thresholds</h4>
+                    <p class="viz-takeaway" id="benchmark-thresholds-chart-takeaway" style="font-size: 0.75rem;">Plots precision and recall curves across recorded Z-threshold values sorted numerically. Refer to the table below for confusion matrix breakdowns.</p>
+                  </div>
+                  <div class="viz-legend" id="benchmark-thresholds-chart-legend" aria-hidden="true" style="font-size: 0.75rem;">
+                    <span class="legend-item"><span class="legend-swatch swatch-precision-line"></span> Precision (Solid, ○)</span>
+                    <span class="legend-item"><span class="legend-swatch swatch-recall-line"></span> Recall (Dashed, □)</span>
+                  </div>
+                  <div class="chart-svg-container" id="benchmark-thresholds-chart-viewport" aria-hidden="true">
+                    <!-- Native SVG rendered via app.js -->
+                  </div>
+                </div>
+
                 <div id="threshold-ablations-container" class="table-responsive" tabindex="0" role="region" aria-label="Entropy Gate Threshold Sensitivity Analysis table scrollable region">
                   <table class="data-table" aria-label="Entropy Gate Threshold Sensitivity Analysis">
+                    <caption class="sr-only">Entropy Gate Threshold Sensitivity Analysis containing Z-thresholds, True Commits, False Commits, True Rollbacks, False Rollbacks, Precision percentages, and Recall percentages.</caption>
                     <thead>
                       <tr>
                         <th scope="col">Z-Threshold</th>

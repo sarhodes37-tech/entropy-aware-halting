@@ -1523,11 +1523,120 @@ button:focus-visible {
   .quick-entry-btn,
   .btn-refresh,
   .status-badge,
-  .badge {
+  .badge,
+  .benchmark-viz-card,
+  .chart-svg-container {
     border: 2px solid ButtonText !important;
   }
   .nav-tab.active {
     background-color: Highlight !important;
     color: HighlightText !important;
   }
+}
+
+/* Benchmark Analytics Visualizations */
+.benchmark-viz-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  padding: 1rem;
+}
+
+.viz-header {
+  margin-bottom: 0.75rem;
+}
+
+.viz-title {
+  margin: 0 0 0.25rem 0;
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: var(--text-main);
+}
+
+.viz-takeaway {
+  margin: 0;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+
+.viz-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  margin-bottom: 0.75rem;
+  font-size: 0.8rem;
+  color: var(--text-main);
+}
+
+.legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.legend-swatch {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border-radius: 2px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+.legend-marker {
+  font-size: 1rem;
+  line-height: 1;
+}
+
+.swatch-precision {
+  background-color: var(--accent-interactive); /* Electric Lavender */
+}
+
+.swatch-recall {
+  background-color: var(--accent-primary); /* Retro Cyan */
+}
+
+.swatch-fpr {
+  background-color: var(--status-halted-border); /* Warning Amber */
+}
+
+.swatch-fnr {
+  background-color: var(--accent-secondary); /* Neon Pink */
+}
+
+.swatch-precision-line {
+  background-color: var(--accent-interactive);
+  height: 3px;
+  width: 14px;
+}
+
+.swatch-recall-line {
+  background: repeating-linear-gradient(90deg, var(--accent-primary), var(--accent-primary) 3px, transparent 3px, transparent 6px);
+  height: 3px;
+  width: 14px;
+}
+
+.marker-baseline {
+  color: var(--accent-primary);
+}
+
+.chart-svg-container {
+  width: 100%;
+  overflow-x: auto;
+  border-radius: var(--radius-sm);
+  background: var(--bg-card);
+  padding: 0.5rem 0;
+}
+
+.chart-svg-container svg {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
+
+.chart-empty-msg {
+  padding: 1.5rem;
+  text-align: center;
+  font-size: 0.85rem;
+  color: var(--text-muted);
 }
