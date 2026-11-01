@@ -31,7 +31,8 @@ from epistemicos.authorization import (
     CapabilityRegistry,
     Policy,
     Capability,
-    HumanApprovalRecord
+    HumanApprovalRecord,
+    get_callable_identity
 )
 from epistemicos.provenance import (
     TrustedExecutionBoundary,
@@ -1380,3 +1381,1036 @@ def test_verify_capability_token_lifecycle_and_field_mismatches():
     )
     assert valid is False
     assert "TASK_ID_MISMATCH" in reason
+
+
+# =====================================================================
+# Phase 1: Human-Approval Replay Protection Regression Tests
+# =====================================================================
+
+def test_phase1_sequential_consumption_two_capabilities_sharing_approval(tmp_path):
+    """
+    Approval Replay Scenario 1:
+    Sequential consumption of two capabilities sharing one human approval ID.
+    First consumption succeeds; second consumption fails due to approval replay.
+    """
+    store = LocalProvenanceStore(log_path=str(tmp_path / "prov_seq.jsonl"))
+    boundary = TrustedExecutionBoundary(provenance_store=store)
+    authority = boundary.authority
+
+    policy = Policy(
+        policy_id="pol-seq",
+        allowed_operations={"CRITICAL_ACTION"},
+        allowed_resources={"server_1"},
+        required_human_approval_operations={"CRITICAL_ACTION"}
+    )
+    authority.default_policy = policy
+
+    payload = {"data": "seq_payload"}
+    digest = boundary.compute_canonical_digest(payload)
+    exec_func = lambda: "SUCCESS"
+    authority.register_executor("exec_seq", exec_func)
+
+    approval = HumanApprovalRecord(
+        approval_id="APP-SEQ-001",
+        approver_id="approver_alice",
+        action_name="CRITICAL_ACTION",
+        target="server_1",
+        action_digest=digest,
+        request_id="req-seq"
+    )
+    approval.sign(authority.approval_signing_secret)
+
+    # Issue first capability with approval
+    cap1, reason1 = authority.evaluate_and_issue_capability(
+        action_name="CRITICAL_ACTION",
+        target="server_1",
+        canonical_request_digest=digest,
+        executor_id="exec_seq",
+        request_id="req-seq",
+        human_approval_input=approval,
+        policy=policy
+    )
+    assert cap1 is not None
+    assert reason1 == "AUTHORIZATION_GRANTED"
+
+    # Pre-issuance or separate issuance with same approval
+    # Create cap2 with same approval record directly registered
+    cap2 = Capability(
+        token_id=f"AUTH-CAP-{uuid.uuid4()}",
+        principal_id="agent_default",
+        correlation_id=str(uuid.uuid4()),
+        request_id="req-seq",
+        action_name="CRITICAL_ACTION",
+        target="server_1",
+        canonical_request_digest=digest,
+        executor_id=get_callable_identity(exec_func),
+        policy_version=policy.version,
+        created_at=time.time(),
+        expires_at=time.time() + 300,
+        human_approval=approval
+    )
+    authority.registry.register_capability(cap2)
+    authority.executor_registry._register_internal(cap2.token_id, exec_func)
+
+    # First capability consumption succeeds
+    ok1 = authority.registry.consume_token(cap1.token_id)
+    assert ok1 is True
+    assert authority.registry.is_consumed(cap1.token_id) is True
+    assert authority.registry.is_approval_consumed(approval.approval_id) is True
+
+    # Second capability consumption sharing the same approval ID fails
+    ok2 = authority.registry.consume_token(cap2.token_id)
+    assert ok2 is False
+    assert authority.registry.is_consumed(cap2.token_id) is False
+
+
+def test_phase1_verification_rejection_after_approval_consumed(tmp_path):
+    """
+    Approval Replay Scenario 2:
+    Verification rejection of the second capability after the first is consumed.
+    Verify that verify_capability() returns False with stable reason code
+    CAPABILITY_VERIFICATION_FAILED_REPLAY_HUMAN_APPROVAL_ALREADY_CONSUMED,
+    while remaining strictly read-only.
+    """
+    policy = Policy(
+        policy_id="pol-verify",
+        allowed_operations={"TRANSFER"},
+        allowed_resources={"account_vault"},
+        required_human_approval_operations={"TRANSFER"}
+    )
+    authority = AuthorizationAuthority(default_policy=policy)
+    digest = "e" * 64
+    exec_func = lambda: "TRANSFERRED"
+    authority.register_executor("exec_verify", exec_func)
+
+    approval = HumanApprovalRecord(
+        approval_id="APP-VERIFY-001",
+        approver_id="approver_bob",
+        action_name="TRANSFER",
+        target="account_vault",
+        action_digest=digest,
+        request_id="req-verify"
+    )
+    approval.sign(authority.approval_signing_secret)
+
+    cap1, _ = authority.evaluate_and_issue_capability(
+        action_name="TRANSFER",
+        target="account_vault",
+        canonical_request_digest=digest,
+        executor_id="exec_verify",
+        request_id="req-verify",
+        human_approval_input=approval,
+        policy=policy
+    )
+    assert cap1 is not None
+
+    cap2 = Capability(
+        token_id=f"AUTH-CAP-{uuid.uuid4()}",
+        principal_id="agent_default",
+        correlation_id=str(uuid.uuid4()),
+        request_id="req-verify",
+        action_name="TRANSFER",
+        target="account_vault",
+        canonical_request_digest=digest,
+        executor_id=get_callable_identity(exec_func),
+        policy_version=policy.version,
+        created_at=time.time(),
+        expires_at=time.time() + 300,
+        human_approval=approval
+    )
+    authority.registry.register_capability(cap2)
+
+    # Before cap1 is consumed, cap2 verifies successfully (read-only verification)
+    valid_before, reason_before, verified_cap = authority.verify_capability(
+        token_id=cap2.token_id,
+        action_name="TRANSFER",
+        target="account_vault",
+        canonical_request_digest=digest,
+        executor_id=get_callable_identity(exec_func),
+        request_id="req-verify"
+    )
+    assert valid_before is True
+    assert reason_before == "CAPABILITY_VERIFIED"
+    assert authority.registry.is_consumed(cap2.token_id) is False
+    assert authority.registry.is_approval_consumed(approval.approval_id) is False
+
+    # Consume cap1
+    assert authority.registry.consume_token(cap1.token_id) is True
+    assert authority.registry.is_approval_consumed(approval.approval_id) is True
+
+    # Now verify cap2: must be rejected due to consumed approval
+    valid_after, reason_after, cap_after = authority.verify_capability(
+        token_id=cap2.token_id,
+        action_name="TRANSFER",
+        target="account_vault",
+        canonical_request_digest=digest,
+        executor_id=get_callable_identity(exec_func),
+        request_id="req-verify"
+    )
+    assert valid_after is False
+    assert reason_after == "CAPABILITY_VERIFICATION_FAILED_REPLAY_HUMAN_APPROVAL_ALREADY_CONSUMED"
+    assert cap_after is None
+    # Verify that verification remained read-only (cap2 itself is not marked consumed)
+    assert authority.registry.is_consumed(cap2.token_id) is False
+
+
+def test_phase1_concurrent_consumption_distinct_capabilities_sharing_approval():
+    """
+    Approval Replay Scenario 3:
+    Concurrent consumption of distinct capabilities sharing one approval ID.
+    Exact thread safety test across 10 threads: exactly 1 succeeds, 9 fail.
+    """
+    authority = AuthorizationAuthority()
+    digest = "f" * 64
+    approval = HumanApprovalRecord(
+        approval_id="APP-CONC-001",
+        approver_id="approver_carol",
+        action_name="MUTATE",
+        target="cluster_1",
+        action_digest=digest,
+        request_id="req-conc"
+    )
+    approval.sign(authority.approval_signing_secret)
+
+    num_threads = 10
+    caps = []
+    for i in range(num_threads):
+        cap = Capability(
+            token_id=f"AUTH-CAP-CONC-{i}-{uuid.uuid4()}",
+            principal_id="agent_default",
+            correlation_id=str(uuid.uuid4()),
+            request_id="req-conc",
+            action_name="MUTATE",
+            target="cluster_1",
+            canonical_request_digest=digest,
+            executor_id="exec_mutate",
+            policy_version="1.0.0",
+            created_at=time.time(),
+            expires_at=time.time() + 300,
+            human_approval=approval
+        )
+        authority.registry.register_capability(cap)
+        caps.append(cap)
+
+    barrier = threading.Barrier(num_threads)
+    successes = []
+    failures = []
+
+    def worker(cap_item):
+        barrier.wait()
+        ok = authority.registry.consume_token(cap_item.token_id)
+        if ok:
+            successes.append(cap_item.token_id)
+        else:
+            failures.append(cap_item.token_id)
+
+    threads = [threading.Thread(target=worker, args=(c,)) for c in caps]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert len(successes) == 1
+    assert len(failures) == num_threads - 1
+    assert authority.registry.is_approval_consumed(approval.approval_id) is True
+
+
+def test_phase1_independent_approval_ids_independently_consumable():
+    """
+    Approval Replay Scenario 4:
+    Independent approval IDs remain independently consumable.
+    """
+    authority = AuthorizationAuthority()
+    digest = "a" * 64
+
+    app1 = HumanApprovalRecord(
+        approval_id="APP-INDEP-1",
+        approver_id="approver_1",
+        action_name="OP1",
+        target="target1",
+        action_digest=digest,
+        request_id="req-1"
+    )
+    app1.sign(authority.approval_signing_secret)
+
+    app2 = HumanApprovalRecord(
+        approval_id="APP-INDEP-2",
+        approver_id="approver_2",
+        action_name="OP2",
+        target="target2",
+        action_digest=digest,
+        request_id="req-2"
+    )
+    app2.sign(authority.approval_signing_secret)
+
+    cap1 = Capability(
+        token_id="AUTH-CAP-IND-1",
+        principal_id="agent_default",
+        correlation_id="corr-1",
+        request_id="req-1",
+        action_name="OP1",
+        target="target1",
+        canonical_request_digest=digest,
+        executor_id="exec_1",
+        policy_version="1.0.0",
+        created_at=time.time(),
+        expires_at=time.time() + 300,
+        human_approval=app1
+    )
+    cap2 = Capability(
+        token_id="AUTH-CAP-IND-2",
+        principal_id="agent_default",
+        correlation_id="corr-2",
+        request_id="req-2",
+        action_name="OP2",
+        target="target2",
+        canonical_request_digest=digest,
+        executor_id="exec_2",
+        policy_version="1.0.0",
+        created_at=time.time(),
+        expires_at=time.time() + 300,
+        human_approval=app2
+    )
+
+    authority.registry.register_capability(cap1)
+    authority.registry.register_capability(cap2)
+
+    assert authority.registry.consume_token(cap1.token_id) is True
+    assert authority.registry.is_approval_consumed(app1.approval_id) is True
+    assert authority.registry.is_approval_consumed(app2.approval_id) is False
+
+    # Second capability with independent approval ID consumes successfully
+    assert authority.registry.consume_token(cap2.token_id) is True
+    assert authority.registry.is_approval_consumed(app2.approval_id) is True
+
+
+def test_phase1_capabilities_without_human_approval_retain_behavior():
+    """
+    Approval Replay Scenario 5:
+    Capabilities without human approval retain their existing behavior.
+    """
+    authority = AuthorizationAuthority()
+    digest = "b" * 64
+
+    cap_no_app = Capability(
+        token_id="AUTH-CAP-NO-APP",
+        principal_id="agent_default",
+        correlation_id="corr-no",
+        request_id="req-no",
+        action_name="READ_OP",
+        target="public_store",
+        canonical_request_digest=digest,
+        executor_id="exec_read",
+        policy_version="1.0.0",
+        created_at=time.time(),
+        expires_at=time.time() + 300,
+        human_approval=None
+    )
+    authority.registry.register_capability(cap_no_app)
+
+    valid, reason, c = authority.verify_capability(
+        token_id=cap_no_app.token_id,
+        action_name="READ_OP",
+        target="public_store",
+        canonical_request_digest=digest,
+        executor_id="exec_read",
+        request_id="req-no"
+    )
+    assert valid is True
+    assert reason == "CAPABILITY_VERIFIED"
+    assert c is not None
+
+    ok = authority.registry.consume_token(cap_no_app.token_id)
+    assert ok is True
+
+    # Replay consumption fails with standard token consumption replay
+    ok_replay = authority.registry.consume_token(cap_no_app.token_id)
+    assert ok_replay is False
+
+    valid_replay, reason_replay, _ = authority.verify_capability(
+        token_id=cap_no_app.token_id,
+        action_name="READ_OP",
+        target="public_store",
+        canonical_request_digest=digest,
+        executor_id="exec_read",
+        request_id="req-no"
+    )
+    assert valid_replay is False
+    assert "CAPABILITY_VERIFICATION_FAILED_REPLAY_TOKEN_ALREADY_CONSUMED" in reason_replay
+
+
+def test_phase1_execution_boundary_integration_executor_invoked_exactly_once(tmp_path):
+    """
+    Approval Replay Scenario 6:
+    Execution boundary integration proving the underlying executor is invoked exactly once.
+    The execution boundary rejects a second capability issued against an already-consumed
+    human approval before invoking the executor.
+    """
+    callback = MagicMock(return_value={"status": "ORDER_PROCESSED"})
+    store = LocalProvenanceStore(log_path=str(tmp_path / "prov_boundary.jsonl"))
+    boundary = TrustedExecutionBoundary(provenance_store=store)
+    authority = boundary.authority
+
+    policy = Policy(
+        policy_id="pol-exec-boundary",
+        allowed_operations={"SUBMIT_PAYMENT"},
+        allowed_resources={"payment_gateway"},
+        required_human_approval_operations={"SUBMIT_PAYMENT"}
+    )
+    authority.default_policy = policy
+
+    payload = {"account": "acc_100", "amount": 500}
+    digest = boundary.compute_canonical_digest(payload)
+
+    approval = HumanApprovalRecord(
+        approval_id="APP-EXEC-BOUNDARY-001",
+        approver_id="finance_lead",
+        action_name="SUBMIT_PAYMENT",
+        target="payment_gateway",
+        action_digest=digest,
+        request_id="req-pay-1"
+    )
+    approval.sign(authority.approval_signing_secret)
+
+    # Issue first capability with approval passing callable callback as executor_id
+    cap1, _ = authority.evaluate_and_issue_capability(
+        action_name="SUBMIT_PAYMENT",
+        target="payment_gateway",
+        canonical_request_digest=digest,
+        executor_id=callback,
+        request_id="req-pay-1",
+        human_approval_input=approval,
+        policy=policy
+    )
+
+    # Issue second capability with the exact same human approval record
+    cap2 = Capability(
+        token_id=f"AUTH-CAP-{uuid.uuid4()}",
+        principal_id="agent_default",
+        correlation_id=str(uuid.uuid4()),
+        request_id="req-pay-1",
+        action_name="SUBMIT_PAYMENT",
+        target="payment_gateway",
+        canonical_request_digest=digest,
+        executor_id=get_callable_identity(callback),
+        policy_version=policy.version,
+        created_at=time.time(),
+        expires_at=time.time() + 300,
+        human_approval=approval
+    )
+    authority.registry.register_capability(cap2)
+    authority.executor_registry._register_internal(cap2.token_id, callback)
+
+    # 1. Execute first capability: MUST SUCCEED
+    res1 = boundary.execute_protected_action(
+        action_name="SUBMIT_PAYMENT",
+        target="payment_gateway",
+        request_payload=payload,
+        authorization_token_id=cap1.token_id,
+        authorized_digest=digest,
+        authorization_granted=True,
+        executor_func=callback,
+        request_id="req-pay-1"
+    )
+    assert res1["status"] == "SUCCESS"
+    assert callback.call_count == 1
+
+    # 2. Attempt to execute second capability: MUST BE REJECTED BEFORE EXECUTOR IS INVOKED
+    with pytest.raises(PermissionError) as exc_info:
+        boundary.execute_protected_action(
+            action_name="SUBMIT_PAYMENT",
+            target="payment_gateway",
+            request_payload=payload,
+            authorization_token_id=cap2.token_id,
+            authorized_digest=digest,
+            authorization_granted=True,
+            executor_func=callback,
+            request_id="req-pay-1"
+        )
+
+    # Check reason code in exception
+    assert "CAPABILITY_VERIFICATION_FAILED_REPLAY_HUMAN_APPROVAL_ALREADY_CONSUMED" in str(exc_info.value)
+
+    # Invariant: Underlying executor was NEVER reached during second execution
+    assert callback.call_count == 1
+
+
+# =====================================================================
+# Phase 1: Authorization Persistence Failure and Poisoning Tests
+# =====================================================================
+
+def test_phase1_persistence_interprocess_lock_acquisition_failure(tmp_path):
+    """
+    Persistence Test: Interprocess lock acquisition failure under fail-closed persistence.
+    Verifies RuntimeError is raised and execution fails closed.
+    """
+    denial_log = tmp_path / "denial_lock_fail.jsonl"
+    registry = CapabilityRegistry(
+        denial_log_path=str(denial_log),
+        fail_closed_persistence=True
+    )
+
+    import fcntl
+    mock_flock = MagicMock(side_effect=OSError("Interprocess lock acquisition failed: resource temporarily unavailable"))
+
+    import unittest.mock as mock
+    with mock.patch("fcntl.flock", mock_flock):
+        with pytest.raises(RuntimeError, match="Lock registry failure: unable to acquire interprocess file lock"):
+            with registry.lock_registry():
+                pass
+
+
+def test_phase1_persistence_corrupted_denial_log_startup(tmp_path):
+    """
+    Persistence Test: Corrupted denial log startup under fail-closed persistence.
+    Verifies RuntimeError is raised on corrupted / non-JSON lines during startup.
+    """
+    denial_log = tmp_path / "corrupted_denial.jsonl"
+    with open(denial_log, "w", encoding="utf-8") as f:
+        f.write('{"task_id": "task1", "action_name": "op1", "target": "res1", "status": "ACTIVE"}\n')
+        f.write("CORRUPTED_NON_JSON_RECORD_DATA_LINE\n")
+
+    with pytest.raises(RuntimeError, match="Failed to parse persistent denial log record"):
+        CapabilityRegistry(
+            denial_log_path=str(denial_log),
+            fail_closed_persistence=True
+        )
+
+
+def test_phase1_clearance_append_failure_and_rollback_failure_poisons_registry(tmp_path):
+    """
+    Persistence Test: Clearance append failure followed by rollback failure.
+    Causes both os.ftruncate() and fallback f.truncate() to fail deterministically
+    via a specialized file wrapper seam.
+    Verifies:
+    1. The original denial remains active in memory.
+    2. The clearance approval is not consumed.
+    3. The registry transitions to _is_poisoned = True.
+    4. Subsequent operations raise RuntimeError and fail closed.
+    5. The original log prefix is preserved on disk.
+    6. Transaction state is verified.
+    """
+    denial_log = tmp_path / "denial_rollback_fail.jsonl"
+    registry = CapabilityRegistry(
+        denial_log_path=str(denial_log),
+        fail_closed_persistence=True
+    )
+
+    # 1. Record an initial active denial
+    registry.record_denial(
+        task_id="task-poison",
+        action_name="DELETE_DB",
+        target="db_1",
+        reason="Security violation"
+    )
+
+    denied, rec = registry.check_denial(task_id="task-poison", action_name="DELETE_DB", target="db_1")
+    assert denied is True
+    assert rec["status"] == "ACTIVE"
+
+    # Read original log contents
+    with open(denial_log, "r", encoding="utf-8") as f:
+        original_log_content = f.read()
+
+    # Create signed clearance approval
+    signing_secret = b"test_secret_for_clearance_poison_32b!"
+    app_clear = HumanApprovalRecord(
+        approval_id="APP-CLEAR-POISON-001",
+        approver_id="sec_admin",
+        action_name="CLEAR_DENIAL:DELETE_DB",
+        target="CLEAR_DENIAL:db_1",
+        action_digest="d" * 64,
+        request_id="req-clear",
+        task_id="task-poison"
+    )
+    app_clear.sign(signing_secret)
+
+    # Specialized file wrapper to fail os.fsync AND fail os.ftruncate AND fail f.truncate
+    orig_open = open
+
+    class RollbackFailingFileWrapper:
+        def __init__(self, real_file):
+            self._real_file = real_file
+
+        def write(self, data):
+            return self._real_file.write(data)
+
+        def flush(self):
+            return self._real_file.flush()
+
+        def tell(self):
+            return self._real_file.tell()
+
+        def seek(self, offset, whence=0):
+            return self._real_file.seek(offset, whence)
+
+        def fileno(self):
+            return self._real_file.fileno()
+
+        def truncate(self, size=None):
+            # Fallback f.truncate fails!
+            raise OSError("Injected I/O error on fallback f.truncate")
+
+        def close(self):
+            return self._real_file.close()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_val, exc_tb):
+            return self._real_file.__exit__(exc_type, exc_val, exc_tb)
+
+    def custom_open(path, mode="r", *args, **kwargs):
+        real_file = orig_open(path, mode, *args, **kwargs)
+        if "denial_rollback_fail.jsonl" in str(path) and "a+" in mode:
+            return RollbackFailingFileWrapper(real_file)
+        return real_file
+
+    import os
+    orig_fsync = os.fsync
+    orig_ftruncate = os.ftruncate
+
+    def failing_fsync(fd):
+        # Cause fsync to fail after partial or full write
+        raise OSError("Injected disk failure on os.fsync")
+
+    def failing_ftruncate(fd, length):
+        # Primary rollback os.ftruncate fails!
+        raise OSError("Injected filesystem error on os.ftruncate")
+
+    import unittest.mock as mock
+    with mock.patch("builtins.open", custom_open), \
+         mock.patch("os.fsync", failing_fsync), \
+         mock.patch("os.ftruncate", failing_ftruncate):
+
+        with pytest.raises(RuntimeError, match="Denial persistence failure and rollback truncation failure: on-disk clearance state uncertain"):
+            registry.clear_denial_with_approval(
+                task_id="task-poison",
+                action_name="DELETE_DB",
+                target="db_1",
+                reauthorization_record=app_clear,
+                signing_secret=signing_secret
+            )
+
+    # Verify:
+    # 1. The original denial remains active in memory dictionary
+    assert ("task-poison", "DELETE_DB", "db_1") in registry._denied_records
+    assert registry._denied_records[("task-poison", "DELETE_DB", "db_1")]["status"] == "ACTIVE"
+
+    # 2. The clearance approval is not consumed
+    assert app_clear.approval_id not in registry._consumed_approvals
+
+    # 3. Registry is poisoned
+    assert registry._is_poisoned is True
+
+    # 4. Registry cannot continue operating as though state were healthy
+    with pytest.raises(RuntimeError, match="poisoned state"):
+        registry.check_denial(task_id="task-poison", action_name="DELETE_DB", target="db_1")
+
+    with pytest.raises(RuntimeError, match="poisoned state"):
+        with registry.lock_registry():
+            pass
+
+    with pytest.raises(RuntimeError, match="poisoned state"):
+        registry.record_denial("task-other", "op", "target", "reason")
+
+    with pytest.raises(RuntimeError, match="poisoned state"):
+        registry.clear_denial_with_approval(
+            task_id="task-poison",
+            action_name="DELETE_DB",
+            target="db_1",
+            reauthorization_record=app_clear,
+            signing_secret=signing_secret
+        )
+
+    # 5. The original log prefix is preserved
+    with open(denial_log, "r", encoding="utf-8") as f:
+        current_content = f.read()
+    assert current_content.startswith(original_log_content)
+
+
+def test_phase1_unresolved_limitation_restart_recovery_after_rollback_failure(tmp_path):
+    """
+    Unresolved Failure-Model Characterization:
+    Durable Restart Recovery After Persistence Rollback Failure.
+
+    IMPORTANT ARCHITECTURAL LIMITATION NOTICE:
+    This test characterizes an unresolved fail-open recovery limitation across OS process restarts.
+    It proves that process-local poisoning (_is_poisoned = True) protects the current process only,
+    and that if a complete clearance JSON line was written before fsync and rollback failure,
+    a newly started CapabilityRegistry instance loading the log file will read the complete line
+    and remove the active denial.
+
+    Scenario:
+    1. Initial active denial is durably recorded.
+    2. A clearance record is completely written to the file buffer.
+    3. fsync fails.
+    4. Rollback fails (both os.ftruncate and f.truncate fail).
+    5. Registry 1 enters _is_poisoned = True in memory.
+    6. Process restarts: new CapabilityRegistry loads the same denial log.
+    7. FINDING: Without a multi-phase commit journal, the uncommitted clearance is replayed on restart.
+    """
+    denial_log = tmp_path / "denial_restart_investigation.jsonl"
+    reg1 = CapabilityRegistry(
+        denial_log_path=str(denial_log),
+        fail_closed_persistence=True
+    )
+
+    reg1.record_denial(
+        task_id="task-investigate",
+        action_name="DROP_DATABASE",
+        target="cluster_prod",
+        reason="Malicious drop attempt"
+    )
+
+    signing_secret = b"investigation_secret_key_32bytes!"
+    app_clear = HumanApprovalRecord(
+        approval_id="APP-INVESTIGATE-001",
+        approver_id="admin_carol",
+        action_name="CLEAR_DENIAL:DROP_DATABASE",
+        target="CLEAR_DENIAL:cluster_prod",
+        action_digest="c" * 64,
+        request_id="req-inv",
+        task_id="task-investigate"
+    )
+    app_clear.sign(signing_secret)
+
+    # Simulate fsync failure and rollback failure during clearance append:
+    # Notice that f.write(json.dumps(rec) + "\n") successfully wrote bytes into the OS buffer / file.
+    orig_open = open
+
+    class RollbackFailingWrapper:
+        def __init__(self, real_file):
+            self._real_file = real_file
+
+        def write(self, data):
+            return self._real_file.write(data)
+
+        def flush(self):
+            return self._real_file.flush()
+
+        def tell(self):
+            return self._real_file.tell()
+
+        def seek(self, offset, whence=0):
+            return self._real_file.seek(offset, whence)
+
+        def fileno(self):
+            return self._real_file.fileno()
+
+        def truncate(self, size=None):
+            raise OSError("Truncate failed")
+
+        def close(self):
+            return self._real_file.close()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_val, exc_tb):
+            return self._real_file.__exit__(exc_type, exc_val, exc_tb)
+
+    def custom_open(path, mode="r", *args, **kwargs):
+        rf = orig_open(path, mode, *args, **kwargs)
+        if "denial_restart_investigation.jsonl" in str(path) and "a+" in mode:
+            return RollbackFailingWrapper(rf)
+        return rf
+
+    import unittest.mock as mock
+    with mock.patch("builtins.open", custom_open), \
+         mock.patch("os.fsync", MagicMock(side_effect=OSError("Disk controller error on fsync"))), \
+         mock.patch("os.ftruncate", MagicMock(side_effect=OSError("ftruncate failed"))):
+
+        with pytest.raises(RuntimeError):
+            reg1.clear_denial_with_approval(
+                task_id="task-investigate",
+                action_name="DROP_DATABASE",
+                target="cluster_prod",
+                reauthorization_record=app_clear,
+                signing_secret=signing_secret
+            )
+
+    assert reg1._is_poisoned is True
+    # In reg1, denial is still present
+    assert ("task-investigate", "DROP_DATABASE", "cluster_prod") in reg1._denied_records
+
+    # NOW RESTART: A new process / CapabilityRegistry instance loads the same denial log
+    reg2 = CapabilityRegistry(
+        denial_log_path=str(denial_log),
+        fail_closed_persistence=True
+    )
+
+    # Check whether reg2 replayed the un-fsynced, un-rolled-back complete clearance line
+    denied_after_restart, rec2 = reg2.check_denial(
+        task_id="task-investigate",
+        action_name="DROP_DATABASE",
+        target="cluster_prod"
+    )
+
+    # CRITICAL INVESTIGATION RESULT:
+    # If the bytes were flushed to disk before fsync failed and rollback failed, the file contains the CLEARED line.
+    # Because _is_poisoned is strictly in-memory and not stored on-disk, reg2 reads the complete valid JSON line
+    # with status == "CLEARED" and pops the denial!
+    # This proves empirically that the in-memory _is_poisoned flag does NOT survive process termination/restart.
+    assert denied_after_restart is False
+    assert rec2 is None
+
+
+def test_phase1_poison_guard_concurrency_race(tmp_path):
+    """
+    Concurrency Race Regression Test (Strictly Deterministic Lock Contention):
+    Proves the exact check-then-lock TOCTOU sequence:
+    1. Thread A acquires registry lock via lock_registry() and holds it.
+    2. Thread B enters lock_registry() and passes the initial pre-lock _check_poisoned() check.
+    3. Thread B reaches the lock boundary and attempts non-blocking acquire(), which returns False,
+       conclusively demonstrating that Thread B is in contention and blocked by Thread A owning the lock.
+    4. While Thread A STILL holds the lock and Thread B is demonstrably blocked, Thread A poisons the registry.
+    5. Thread A releases the lock.
+    6. Thread B completes blocking acquire() on the underlying lock and MUST fail at the in-lock _check_poisoned() check.
+    7. Assert Thread B never enters the protected context and fails specifically with the poisoned RuntimeError.
+    """
+    log_path = tmp_path / "test_concurrency_poison.jsonl"
+    registry = CapabilityRegistry(
+        denial_log_path=str(log_path),
+        fail_closed_persistence=False
+    )
+
+    class ContentionProvingLock:
+        def __init__(self, real_lock):
+            self._real = real_lock
+            self.thread_b = None
+            self.b_contention_proven = threading.Event()
+            self.a_poisoned_signal = threading.Event()
+            self.b_acquired_underlying = threading.Event()
+            self._b_tested = False
+
+        def acquire(self, blocking=True, timeout=-1):
+            if self.thread_b is not None and threading.current_thread() == self.thread_b and not self._b_tested:
+                self._b_tested = True
+                # Thread B is entering lock acquisition for the first time.
+                # Prove actual contention: non-blocking acquire MUST fail because Thread A holds the lock.
+                contention_verified = not self._real.acquire(blocking=False)
+                if contention_verified:
+                    self.b_contention_proven.set()
+                else:
+                    # Contention was not verified (Thread A did not hold lock) -> fail closed
+                    self._real.release()
+                    raise RuntimeError("Contention verification failed: Thread B unexpectedly acquired lock")
+
+                # Block Thread B until Thread A has poisoned the registry while holding the lock
+                if not self.a_poisoned_signal.wait(timeout=5.0):
+                    raise TimeoutError("Deadlock guard: Thread A did not signal poisoning within timeout")
+
+                # Thread B now executes the real blocking acquire
+                res = self._real.acquire(blocking=True)
+                if res:
+                    self.b_acquired_underlying.set()
+                return res
+            return self._real.acquire(blocking, timeout)
+
+        def release(self):
+            return self._real.release()
+
+        def __enter__(self):
+            return self.acquire()
+
+        def __exit__(self, t, v, tb):
+            self.release()
+
+    real_lock = registry._lock
+    contention_lock = ContentionProvingLock(real_lock)
+    registry._lock = contention_lock
+
+    t1_holding = threading.Event()
+    worker_errors = {}
+    thread_b_entered = []
+
+    def thread_a_poisoner():
+        try:
+            with registry.lock_registry():
+                # 1. Thread A holds lock
+                t1_holding.set()
+                # 3. Wait until Thread B has demonstrably proven contention on the underlying lock
+                if not contention_lock.b_contention_proven.wait(timeout=5.0):
+                    raise TimeoutError("Deadlock guard: Thread B never reached contention state")
+                # 4. Set poison state while Thread A STILL holds the lock
+                registry._is_poisoned = True
+                # Signal Thread B that poisoning has occurred
+                contention_lock.a_poisoned_signal.set()
+        except Exception as e:
+            worker_errors["thread_a"] = e
+
+    def thread_b_waiter():
+        try:
+            # Wait until Thread A has acquired the lock
+            if not t1_holding.wait(timeout=5.0):
+                raise TimeoutError("Deadlock guard: Thread A never acquired lock")
+
+            # Thread B enters lock_registry(): passes initial pre-lock check, blocks on lock
+            with registry.lock_registry():
+                # Invariant: Thread B must NEVER enter the protected block
+                thread_b_entered.append(True)
+        except Exception as e:
+            worker_errors["thread_b"] = e
+
+    t1 = threading.Thread(target=thread_a_poisoner)
+    t2 = threading.Thread(target=thread_b_waiter)
+    contention_lock.thread_b = t2
+
+    try:
+        t1.start()
+        t2.start()
+        t1.join(timeout=5.0)
+        t2.join(timeout=5.0)
+    finally:
+        # Signal synchronization events to release any waiting workers on failure/cancellation
+        t1_holding.set()
+        contention_lock.b_contention_proven.set()
+        contention_lock.a_poisoned_signal.set()
+
+        t1.join(timeout=1.0)
+        t2.join(timeout=1.0)
+
+        # Verify termination established before restoring the underlying lock
+        t1_alive = t1.is_alive()
+        t2_alive = t2.is_alive()
+        if not t1_alive and not t2_alive:
+            registry._lock = real_lock
+
+    assert not t1_alive, "Thread A did not terminate; underlying lock not restored"
+    assert not t2_alive, "Thread B did not terminate; underlying lock not restored"
+
+    # Surface any worker errors from Thread A
+    assert "thread_a" not in worker_errors, f"Thread A encountered unexpected error: {worker_errors.get('thread_a')}"
+
+    # Verify Thread B was blocked on the lock and then acquired it
+    assert contention_lock.b_contention_proven.is_set(), "Thread B never proved lock contention"
+    assert contention_lock.b_acquired_underlying.is_set(), "Thread B never acquired underlying lock"
+
+    # Invariant: Thread B was rejected by in-lock _check_poisoned() and never entered the protected context
+    assert len(thread_b_entered) == 0, "Thread B entered protected context despite poisoned state!"
+    assert "thread_b" in worker_errors, "Thread B did not raise an exception"
+    assert isinstance(worker_errors["thread_b"], RuntimeError)
+    assert "CapabilityRegistry is in a poisoned state" in str(worker_errors["thread_b"])
+
+
+def test_phase1_public_issuance_same_approval_cross_target_replay_and_fencing():
+    """
+    Public Issuance & Fencing Analysis Test:
+    Investigates evaluate_and_issue_capability() behavior when two capabilities share one approval ID.
+
+    Scenario A: Same target / same scope
+    - Capability 1 is issued at fencing generation G.
+    - Capability 2 is issued at fencing generation G + 1.
+    - Fencing tokens strictly advance per scope, invalidating Capability 1 for execution (STALE_FENCING_TOKEN).
+    - However, Capability 2 remains executable.
+
+    Scenario B: Different targets / independent scopes
+    - If approvals could be repurposed across targets, both could be issued without mutual fencing invalidation.
+    - However, HumanApprovalRecord binds action_name and target; cross-target issuance is rejected at issuance.
+
+    Scenario C: When two capabilities sharing an approval are both issued, consuming one capability
+    strictly invalidates the other via verification rejection and consumption rejection.
+    """
+    authority = AuthorizationAuthority()
+    policy = Policy(
+        policy_id="pol-pub-fencing",
+        allowed_operations={"API_WRITE"},
+        allowed_resources={"endpoint_a", "endpoint_b"},
+        required_human_approval_operations={"API_WRITE"}
+    )
+    authority.default_policy = policy
+
+    exec_func = lambda: "RUN"
+    authority.register_executor("exec_api", exec_func)
+    digest = "c" * 64
+
+    # 1. Target binding check: an approval bound to endpoint_a CANNOT issue a capability for endpoint_b
+    approval_a = HumanApprovalRecord(
+        approval_id="APP-PUB-001",
+        approver_id="approver_pub",
+        action_name="API_WRITE",
+        target="endpoint_a",
+        action_digest=digest,
+        request_id="req-pub-1"
+    )
+    approval_a.sign(authority.approval_signing_secret)
+
+    cap_wrong_target, reason_wrong_target = authority.evaluate_and_issue_capability(
+        action_name="API_WRITE",
+        target="endpoint_b",
+        canonical_request_digest=digest,
+        executor_id="exec_api",
+        request_id="req-pub-1",
+        human_approval_input=approval_a,
+        policy=policy
+    )
+    assert cap_wrong_target is None
+    assert reason_wrong_target == "AUTHORIZATION_DENIED_HUMAN_APPROVAL_BINDING_MISMATCH"
+
+    # 2. Sequential public issuance for same scope
+    cap1, r1 = authority.evaluate_and_issue_capability(
+        action_name="API_WRITE",
+        target="endpoint_a",
+        canonical_request_digest=digest,
+        executor_id="exec_api",
+        request_id="req-pub-1",
+        human_approval_input=approval_a,
+        policy=policy
+    )
+    assert cap1 is not None
+    assert r1 == "AUTHORIZATION_GRANTED"
+    assert cap1.fencing_token == 1
+
+    cap2, r2 = authority.evaluate_and_issue_capability(
+        action_name="API_WRITE",
+        target="endpoint_a",
+        canonical_request_digest=digest,
+        executor_id="exec_api",
+        request_id="req-pub-1",
+        human_approval_input=approval_a,
+        policy=policy
+    )
+    assert cap2 is not None
+    assert r2 == "AUTHORIZATION_GRANTED"
+    assert cap2.fencing_token == 2
+
+    # Invariant: cap1 fencing generation is now stale because cap2 advanced the scope generation
+    valid_c1, reason_c1, _ = authority.verify_capability(
+        token_id=cap1.token_id,
+        action_name="API_WRITE",
+        target="endpoint_a",
+        canonical_request_digest=digest,
+        executor_id="exec_api",
+        request_id="req-pub-1"
+    )
+    assert valid_c1 is False
+    assert "CAPABILITY_VERIFICATION_FAILED_STALE_FENCING_TOKEN" in reason_c1
+
+    # Invariant: cap2 has generation 2 and verifies successfully before consumption
+    valid_c2, reason_c2, _ = authority.verify_capability(
+        token_id=cap2.token_id,
+        action_name="API_WRITE",
+        target="endpoint_a",
+        canonical_request_digest=digest,
+        executor_id="exec_api",
+        request_id="req-pub-1"
+    )
+    assert valid_c2 is True
+    assert reason_c2 == "CAPABILITY_VERIFIED"
+
+    # Consume cap2
+    assert authority.registry.consume_token(cap2.token_id) is True
+
+    # After consumption of cap2, the approval is consumed; attempting to issue a third capability fails
+    cap3, r3 = authority.evaluate_and_issue_capability(
+        action_name="API_WRITE",
+        target="endpoint_a",
+        canonical_request_digest=digest,
+        executor_id="exec_api",
+        request_id="req-pub-1",
+        human_approval_input=approval_a,
+        policy=policy
+    )
+    assert cap3 is None
+    assert r3 == "AUTHORIZATION_DENIED_HUMAN_APPROVAL_REPLAYED"
