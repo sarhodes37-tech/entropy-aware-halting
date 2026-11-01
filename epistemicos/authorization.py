@@ -1193,6 +1193,12 @@ class PrincipalVerifier:
 
         # Immutable MappingProxyType prevents runtime modification of trusted public keys
         self._trusted_public_keys = types.MappingProxyType(raw_keys)
+        self._initialized = True
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        if getattr(self, "_initialized", False) and name in ("_trusted_public_keys", "trusted_public_keys"):
+            raise PermissionError("Access denied: PrincipalVerifier._trusted_public_keys is immutable and cannot be reassigned")
+        super().__setattr__(name, value)
 
     def has_trusted_issuers(self) -> bool:
         return bool(self._trusted_public_keys)
@@ -2102,14 +2108,16 @@ class AuthorizationAuthority:
             else:
                 self._principal_provider = None
 
+        self._initialized = True
+
     @property
     def principal_provider(self) -> Optional[PrincipalVerifier]:
         """Read-only access to configured PrincipalVerifier. Attribute replacement is prohibited."""
         return self._principal_provider
 
     def __setattr__(self, name: str, value: Any) -> None:
-        if name == "principal_provider":
-            raise PermissionError("Access denied: AuthorizationAuthority.principal_provider is immutable and cannot be reassigned")
+        if getattr(self, "_initialized", False) and name in ("principal_provider", "_principal_provider"):
+            raise PermissionError(f"Access denied: AuthorizationAuthority.{name} is immutable and cannot be reassigned")
         super().__setattr__(name, value)
 
     def clear_denial_with_approval(

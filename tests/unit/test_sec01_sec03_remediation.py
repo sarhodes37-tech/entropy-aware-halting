@@ -197,11 +197,14 @@ def test_sec01_authority_and_verifier_do_not_expose_private_keys_or_minting():
     assert not hasattr(verifier, "register_trusted_issuer_key")
 
 
-def test_sec01_attacker_cannot_register_key_or_replace_verifier_to_bypass_auth(tmp_path):
+def test_sec01_test_a_authority_verifier_replacement_rejected(tmp_path):
     """
-    SEC-01: An attacker with access to AuthorizationAuthority attempts to register its own key
-    or replace the authority's verifier to gain administrative access.
-    Must fail closed with zero executor side effects.
+    SEC-01 Test A — Authority verifier replacement:
+    - Construct an authority with a legitimate trusted verifier.
+    - Attempt to assign an attacker-controlled verifier to auth._principal_provider.
+    - Assert that the assignment is rejected.
+    - Submit an assertion signed by the attacker's key.
+    - Assert that verification fails and the protected executor records zero side effects.
     """
     side_effect_mock = MagicMock()
     def admin_action(target: str):
@@ -209,7 +212,7 @@ def test_sec01_attacker_cannot_register_key_or_replace_verifier_to_bypass_auth(t
         return "admin_pwned"
 
     legit_idp = ExternalTestIdentityAuthority(issuer_id="CorpIdP")
-    verifier = PrincipalVerifier(trusted_public_keys={"CorpIdP": legit_idp.public_key})
+    legit_verifier = PrincipalVerifier(trusted_public_keys={"CorpIdP": legit_idp.public_key})
 
     policy = Policy(
         policy_id="admin_policy",
@@ -219,9 +222,10 @@ def test_sec01_attacker_cannot_register_key_or_replace_verifier_to_bypass_auth(t
     )
     auth = AuthorizationAuthority(
         default_policy=policy,
-        principal_provider=verifier
+        principal_provider=legit_verifier
     )
-    reg = TrustedToolRegistry(authority=auth)
+    boundary = TrustedExecutionBoundary(authority=auth)
+    reg = TrustedToolRegistry(authority=auth, execution_boundary=boundary)
 
     tool = reg.register_tool(
         tool_id="admin_tool",
@@ -230,25 +234,127 @@ def test_sec01_attacker_cannot_register_key_or_replace_verifier_to_bypass_auth(t
         target_param="target"
     )
 
-    # Attacker sets up their own rogue IdP
     attacker_idp = ExternalTestIdentityAuthority(issuer_id="AttackerIdP")
+    attacker_verifier = PrincipalVerifier(trusted_public_keys={"AttackerIdP": attacker_idp.public_key})
     attacker_assertion = attacker_idp.issue_principal("admin")
 
-    # 1. Attacker attempts to replace principal_provider on auth object
-    with pytest.raises(PermissionError) as exc_replace:
-        auth.principal_provider = PrincipalVerifier(trusted_public_keys={"AttackerIdP": attacker_idp.public_key})
-    assert "immutable and cannot be reassigned" in str(exc_replace.value)
+    # 1. Attempt ordinary assignment to backing attribute _principal_provider
+    with pytest.raises(PermissionError) as exc_backing:
+        auth._principal_provider = attacker_verifier
+    assert "immutable and cannot be reassigned" in str(exc_backing.value)
 
-    # 2. Attacker attempts to mutate verifier's internal keys
-    with pytest.raises(TypeError):
-        auth.principal_provider._trusted_public_keys["AttackerIdP"] = attacker_idp.public_key
+    # 2. Also attempt assignment to public property principal_provider
+    with pytest.raises(PermissionError) as exc_prop:
+        auth.principal_provider = attacker_verifier
+    assert "immutable and cannot be reassigned" in str(exc_prop.value)
 
-    # 3. Attacker attempts invocation using the unauthorized assertion
+    # 3. Submit assertion signed by attacker's key
     with pytest.raises(PermissionError) as exc_exec:
         tool(target="/admin/secrets", authenticated_principal=attacker_assertion)
 
     assert "untrusted identity issuer" in str(exc_exec.value).lower() or "authentication failed" in str(exc_exec.value).lower()
     assert side_effect_mock.call_count == 0
+
+
+def test_sec01_test_b_verifier_trust_store_replacement_rejected(tmp_path):
+    """
+    SEC-01 Test B — Verifier trust-store replacement:
+    - Construct a verifier with a legitimate trusted public-key mapping.
+    - Attempt to assign an attacker-controlled mapping to verifier._trusted_public_keys.
+    - Assert that the assignment is rejected.
+    - Submit an assertion signed by the attacker's key.
+    - Assert that verification fails and the protected executor records zero side effects.
+    """
+    side_effect_mock = MagicMock()
+    def admin_action(target: str):
+        side_effect_mock(target)
+        return "admin_pwned"
+
+    legit_idp = ExternalTestIdentityAuthority(issuer_id="CorpIdP")
+    legit_verifier = PrincipalVerifier(trusted_public_keys={"CorpIdP": legit_idp.public_key})
+
+    policy = Policy(
+        policy_id="admin_policy",
+        allowed_operations={"admin_op"},
+        allowed_resources={"/admin/secrets"},
+        allowed_principals={"admin"}
+    )
+    auth = AuthorizationAuthority(
+        default_policy=policy,
+        principal_provider=legit_verifier
+    )
+    boundary = TrustedExecutionBoundary(authority=auth)
+    reg = TrustedToolRegistry(authority=auth, execution_boundary=boundary)
+
+    tool = reg.register_tool(
+        tool_id="admin_tool",
+        action_name="admin_op",
+        executor_func=admin_action,
+        target_param="target"
+    )
+
+    attacker_idp = ExternalTestIdentityAuthority(issuer_id="AttackerIdP")
+    attacker_assertion = attacker_idp.issue_principal("admin")
+
+    # 1. Attempt ordinary assignment to backing attribute _trusted_public_keys
+    with pytest.raises(PermissionError) as exc_keys:
+        auth.principal_provider._trusted_public_keys = {"AttackerIdP": attacker_idp.public_key}
+    assert "immutable and cannot be reassigned" in str(exc_keys.value)
+
+    # 2. Attempt in-place mutation of mapping
+    with pytest.raises(TypeError):
+        auth.principal_provider._trusted_public_keys["AttackerIdP"] = attacker_idp.public_key
+
+    # 3. Submit assertion signed by attacker's key
+    with pytest.raises(PermissionError) as exc_exec:
+        tool(target="/admin/secrets", authenticated_principal=attacker_assertion)
+
+    assert "untrusted identity issuer" in str(exc_exec.value).lower() or "authentication failed" in str(exc_exec.value).lower()
+    assert side_effect_mock.call_count == 0
+
+
+def test_sec01_test_c_legitimate_verification_remains_functional(tmp_path):
+    """
+    SEC-01 Test C — Legitimate verification remains functional:
+    - Confirm that an assertion from a legitimately configured issuer still verifies.
+    - Confirm that the corresponding authorized operation executes exactly once.
+    - Confirm that the new immutability protections do not interfere with normal initialization or verification.
+    """
+    side_effect_mock = MagicMock()
+    def admin_action(target: str):
+        side_effect_mock(target)
+        return {"status": "success", "target": target}
+
+    legit_idp = ExternalTestIdentityAuthority(issuer_id="CorpIdP")
+    legit_verifier = PrincipalVerifier(trusted_public_keys={"CorpIdP": legit_idp.public_key})
+
+    policy = Policy(
+        policy_id="admin_policy",
+        allowed_operations={"admin_op"},
+        allowed_resources={"/admin/secrets"},
+        allowed_principals={"admin"}
+    )
+    auth = AuthorizationAuthority(
+        default_policy=policy,
+        principal_provider=legit_verifier
+    )
+    boundary = TrustedExecutionBoundary(authority=auth)
+    reg = TrustedToolRegistry(authority=auth, execution_boundary=boundary)
+
+    tool = reg.register_tool(
+        tool_id="admin_tool",
+        action_name="admin_op",
+        executor_func=admin_action,
+        target_param="target"
+    )
+
+    valid_assertion = legit_idp.issue_principal("admin")
+    res = tool(target="/admin/secrets", authenticated_principal=valid_assertion)
+
+    assert res["status"] == "SUCCESS"
+    assert res["result"] == {"status": "success", "target": "/admin/secrets"}
+    assert side_effect_mock.call_count == 1
+    side_effect_mock.assert_called_once_with("/admin/secrets")
 
 
 def test_sec01_assertion_signed_by_trusted_external_issuer_accepted(tmp_path):
