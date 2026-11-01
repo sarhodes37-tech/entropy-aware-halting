@@ -91,7 +91,7 @@ class ExactAndNormalizedResolver(SemanticResolver):
 
     @staticmethod
     @functools.lru_cache(maxsize=4096)
-    def _get_features(text: str) -> Tuple[str, Tuple[str, ...], FrozenSet[str], Tuple[str, ...]]:
+    def _get_features(text: str) -> Tuple[str, Tuple[str, ...], FrozenSet[str], Tuple[str, ...], FrozenSet[str], FrozenSet[str], FrozenSet[str], FrozenSet[str]]:
         clean = text.strip().lower()
         # Simplify double negations
         for pattern, replacement in ExactAndNormalizedResolver.DOUBLE_NEGATION_PATTERNS:
@@ -103,19 +103,26 @@ class ExactAndNormalizedResolver(SemanticResolver):
 
         matches = ExactAndNormalizedResolver.QUANTITY_UNIT_PATTERN.findall(text.lower())
         units = tuple(m.strip() for m in matches if m.strip())
-        return norm, tokens, token_set, units
+
+        # Pre-compute keyword intersections once per candidate text to accelerate O(N^2) pairwise comparisons
+        negs = token_set & ExactAndNormalizedResolver.NEGATION_WORDS
+        conds = token_set & ExactAndNormalizedResolver.CONDITIONAL_WORDS
+        temps = token_set & ExactAndNormalizedResolver.TEMPORAL_WORDS
+        dirs = token_set & ExactAndNormalizedResolver.DIRECTIONAL_KEYWORDS
+
+        return norm, tokens, token_set, units, negs, conds, temps, dirs
 
     def _normalize(self, text: str) -> str:
-        norm, _, _, _ = self._get_features(text)
+        norm, _, _, _, _, _, _, _ = self._get_features(text)
         return norm
 
     def _extract_tokens(self, text: str) -> List[str]:
-        _, tokens, _, _ = self._get_features(text)
+        _, tokens, _, _, _, _, _, _ = self._get_features(text)
         return list(tokens)
 
     def _extract_quantities_with_units(self, text: str) -> List[str]:
         """Extract numbers along with adjacent currency symbols or unit tokens."""
-        _, _, _, units = self._get_features(text)
+        _, _, _, units, _, _, _, _ = self._get_features(text)
         return list(units)
 
     def _has_negation_flip(self, tokens_a: List[str], tokens_b: List[str]) -> bool:
@@ -143,9 +150,16 @@ class ExactAndNormalizedResolver(SemanticResolver):
             return True
         return False
 
-    def resolve(self, candidate_a: Candidate, candidate_b: Candidate) -> SemanticComparisonResult:
-        norm_a, tokens_a, set_a, units_a = self._get_features(candidate_a.text)
-        norm_b, tokens_b, set_b, units_b = self._get_features(candidate_b.text)
+    def _resolve_with_features(
+        self,
+        candidate_a: Candidate,
+        candidate_b: Candidate,
+        feat_a: Tuple[Any, ...],
+        feat_b: Tuple[Any, ...]
+    ) -> SemanticComparisonResult:
+        """Internal resolution helper evaluating pre-extracted candidate feature tuples."""
+        norm_a, tokens_a, set_a, units_a, negs_a, cond_a, temp_a, directional_a = feat_a
+        norm_b, tokens_b, set_b, units_b, negs_b, cond_b, temp_b, directional_b = feat_b
 
         # Exact match after normalization and double negation simplification
         if norm_a == norm_b:
@@ -158,26 +172,17 @@ class ExactAndNormalizedResolver(SemanticResolver):
                 resolver_confidence=1.0
             )
 
-        # Check for negation flip
-        negs_a = set_a & self.NEGATION_WORDS
-        negs_b = set_b & self.NEGATION_WORDS
+        # Check for negation flip (using pre-intersected sets)
         neg_flip = len(negs_a) != len(negs_b)
 
         # Check for quantity/unit mismatch
         unit_mismatch = (units_a != units_b) and (len(units_a) > 0 or len(units_b) > 0)
 
-        # Check conditional & temporal discrepancies
-        cond_a = set_a & self.CONDITIONAL_WORDS
-        cond_b = set_b & self.CONDITIONAL_WORDS
+        # Check conditional & temporal discrepancies (using pre-intersected sets)
         conditional_diff = (cond_a != cond_b)
-
-        temp_a = set_a & self.TEMPORAL_WORDS
-        temp_b = set_b & self.TEMPORAL_WORDS
         temporal_diff = (temp_a != temp_b)
 
-        # Check actor/order swap
-        directional_a = set_a & self.DIRECTIONAL_KEYWORDS
-        directional_b = set_b & self.DIRECTIONAL_KEYWORDS
+        # Check actor/order swap (using pre-intersected sets)
         actor_swap = bool(directional_a and directional_b and set_a == set_b and tokens_a != tokens_b)
 
         # Check action difference
@@ -208,6 +213,11 @@ class ExactAndNormalizedResolver(SemanticResolver):
             affects_decision=affects_decision,
             resolver_confidence=resolver_confidence
         )
+
+    def resolve(self, candidate_a: Candidate, candidate_b: Candidate) -> SemanticComparisonResult:
+        feat_a = self._get_features(candidate_a.text)
+        feat_b = self._get_features(candidate_b.text)
+        return self._resolve_with_features(candidate_a, candidate_b, feat_a, feat_b)
 
 
 @dataclass
@@ -403,6 +413,15 @@ class SemanticUncertaintyEstimator:
             # Assign uniform mass across candidates as conventional operational baseline (1/N)
             normalized_candidate_probs = [1.0 / n_candidates] * n_candidates
 
+        # Pre-extract features once per candidate to avoid redundant extraction across O(N^2) pairwise comparisons.
+        # Preserve polymorphism: Only activate fast path if resolve() has not been overridden by a subclass.
+        candidate_features = None
+        resolve_with_features = getattr(self.resolver, "_resolve_with_features", None)
+        get_features = getattr(self.resolver, "_get_features", None)
+        has_unmodified_resolve = type(self.resolver).resolve == ExactAndNormalizedResolver.resolve
+        if has_unmodified_resolve and callable(resolve_with_features) and callable(get_features):
+            candidate_features = [get_features(c.text) for c in parsed_candidates]
+
         # Perform clustering using the resolver
         clusters: List[List[int]] = []  # list of member candidate indices
         pairwise_disagreements = 0
@@ -410,22 +429,20 @@ class SemanticUncertaintyEstimator:
         total_pairs = 0
         ambiguity_scores = []
 
+        # Canonical symmetric cache: since resolve() is strictly symmetric, store under sorted index keys (min, max).
         comparison_cache: Dict[Tuple[int, int], SemanticComparisonResult] = {}
 
         def _get_comparison(idx_a: int, idx_b: int) -> SemanticComparisonResult:
-            key = (idx_a, idx_b)
-            rev_key = (idx_b, idx_a)
-
+            key = (idx_a, idx_b) if idx_a <= idx_b else (idx_b, idx_a)
             res = comparison_cache.get(key)
             if res is not None:
                 return res
 
-            res = comparison_cache.get(rev_key)
-            if res is not None:
-                return res
-
             c_a, c_b = parsed_candidates[idx_a], parsed_candidates[idx_b]
-            res = self.resolver.resolve(c_a, c_b)
+            if candidate_features is not None:
+                res = self.resolver._resolve_with_features(c_a, c_b, candidate_features[idx_a], candidate_features[idx_b])
+            else:
+                res = self.resolver.resolve(c_a, c_b)
             comparison_cache[key] = res
             return res
 
