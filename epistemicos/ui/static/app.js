@@ -2738,6 +2738,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // -------------------------------------------------------------------------
     renderBaselinePerformanceChart(baselines, ablInfo) {
       const container = document.getElementById('benchmark-baselines-chart-viewport');
+      const takeawayElem = document.getElementById('benchmark-baselines-chart-takeaway');
       if (!container) return;
       container.innerHTML = '';
 
@@ -2746,6 +2747,9 @@ document.addEventListener('DOMContentLoaded', () => {
         msg.className = 'chart-empty-msg';
         msg.textContent = (ablInfo && ablInfo.error) ? ablInfo.error : 'Baseline condition metrics unavailable for visualization.';
         container.appendChild(msg);
+        if (takeawayElem) {
+          takeawayElem.textContent = 'Baseline condition metrics unavailable for comparative evaluation.';
+        }
         return;
       }
 
@@ -2755,7 +2759,34 @@ document.addEventListener('DOMContentLoaded', () => {
         msg.className = 'chart-empty-msg';
         msg.textContent = 'No baseline conditions found in artifact.';
         container.appendChild(msg);
+        if (takeawayElem) {
+          takeawayElem.textContent = 'No baseline conditions found in artifact.';
+        }
         return;
+      }
+
+      // Dynamic takeaway text: inspect valid precision measurements
+      if (takeawayElem) {
+        const precisionEntries = [];
+        baselineNames.forEach(bName => {
+          const b = baselines[bName] || {};
+          const val = b.precision_pct;
+          if (typeof val === 'number' && Number.isFinite(val) && val >= 0 && val <= 100) {
+            precisionEntries.push({ name: bName, val });
+          }
+        });
+
+        if (precisionEntries.length > 0) {
+          let maxVal = -1;
+          precisionEntries.forEach(e => {
+            if (e.val > maxVal) maxVal = e.val;
+          });
+          const topConditions = precisionEntries.filter(e => Math.abs(e.val - maxVal) < 1e-6);
+          const topNames = topConditions.map(e => e.name).join(', ');
+          takeawayElem.textContent = `Highest recorded precision in evaluated artifact: ${topNames} (${maxVal}%). Compare false-positive vs false-negative trade-offs in the table below.`;
+        } else {
+          takeawayElem.textContent = 'Compares diagnostic and security performance across baseline conditions. Visual bars represent recorded percentages (0–100%); refer to the table below for sample counts and exact values.';
+        }
       }
 
       // Metric series to compare: Precision, Recall, FPR, FNR
@@ -2838,7 +2869,6 @@ document.addEventListener('DOMContentLoaded', () => {
         nameText.setAttribute('fill', 'var(--text-main, #E2DEED)');
         nameText.setAttribute('font-size', '11');
         nameText.setAttribute('font-weight', '600');
-        // Truncate long baseline name if needed
         nameText.textContent = bName.length > 22 ? bName.slice(0, 20) + '…' : bName;
         svg.appendChild(nameText);
 
@@ -2848,39 +2878,53 @@ document.addEventListener('DOMContentLoaded', () => {
           const rawVal = b[series.key];
 
           const isFiniteNum = typeof rawVal === 'number' && Number.isFinite(rawVal);
+          const isValidPct = isFiniteNum && rawVal >= 0 && rawVal <= 100;
           const isNA = rawVal === 'N/A';
 
-          if (isFiniteNum) {
-            // Clamp strictly between 0 and 100
-            const clampedVal = Math.max(0, Math.min(100, rawVal));
-            const barW = Math.max(2, (clampedVal / 100) * plotWidth);
+          if (isValidPct) {
+            // Legitimate percentage in 0-100 range.
+            // A genuine 0% renders zero width. No artificial 2px minimum width.
+            const barW = (rawVal / 100) * plotWidth;
 
-            const rect = document.createElementNS(svgNS, 'rect');
-            rect.setAttribute('x', String(labelWidth));
-            rect.setAttribute('y', String(barY));
-            rect.setAttribute('width', String(barW));
-            rect.setAttribute('height', String(barHeight));
-            rect.setAttribute('fill', series.color);
-            rect.setAttribute('rx', '2');
-            svg.appendChild(rect);
+            if (barW > 0) {
+              const rect = document.createElementNS(svgNS, 'rect');
+              rect.setAttribute('x', String(labelWidth));
+              rect.setAttribute('y', String(barY));
+              rect.setAttribute('width', String(barW));
+              rect.setAttribute('height', String(barHeight));
+              rect.setAttribute('fill', series.color);
+              rect.setAttribute('rx', '2');
+              rect.setAttribute('data-baseline', bName);
+              rect.setAttribute('data-metric', series.key);
+              rect.setAttribute('data-value', String(rawVal));
+              svg.appendChild(rect);
+            }
 
-            // Numerical label next to bar
+            // Numerical label next to bar (retained even for genuine 0%)
             const valText = document.createElementNS(svgNS, 'text');
             valText.setAttribute('x', String(labelWidth + barW + 5));
             valText.setAttribute('y', String(barY + barHeight - 2));
             valText.setAttribute('fill', 'var(--text-muted, #9889B8)');
             valText.setAttribute('font-size', '9');
-            valText.textContent = `${clampedVal}%`;
+            valText.setAttribute('data-baseline', bName);
+            valText.setAttribute('data-metric', series.key);
+            valText.setAttribute('data-value', String(rawVal));
+            valText.textContent = `${rawVal}%`;
             svg.appendChild(valText);
           } else {
-            // Explicit missing / N/A representation: striped or text indicator, NOT ZERO
+            // Values outside [0, 100], non-finite, null, undefined, or 'N/A':
+            // Render NO bar and display explicit indicator. Do not clamp or fabricate 0.
+            const statusLabel = isNA ? 'N/A' : (isFiniteNum ? 'INVALID' : 'UNAVAILABLE');
             const missingText = document.createElementNS(svgNS, 'text');
             missingText.setAttribute('x', String(labelWidth + 6));
             missingText.setAttribute('y', String(barY + barHeight - 2));
             missingText.setAttribute('fill', 'var(--text-dim, #685A84)');
             missingText.setAttribute('font-size', '9');
             missingText.setAttribute('font-style', 'italic');
-            missingText.textContent = isNA ? 'N/A' : 'UNAVAILABLE';
+            missingText.setAttribute('data-baseline', bName);
+            missingText.setAttribute('data-metric', series.key);
+            missingText.setAttribute('data-value', String(rawVal));
+            missingText.textContent = statusLabel;
             svg.appendChild(missingText);
           }
         });
@@ -2902,6 +2946,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     renderThresholdSensitivityChart(thresholdAblations, ablInfo) {
       const container = document.getElementById('benchmark-thresholds-chart-viewport');
+      const takeawayElem = document.getElementById('benchmark-thresholds-chart-takeaway');
       if (!container) return;
       container.innerHTML = '';
 
@@ -2910,26 +2955,65 @@ document.addEventListener('DOMContentLoaded', () => {
         msg.className = 'chart-empty-msg';
         msg.textContent = (ablInfo && ablInfo.error) ? ablInfo.error : 'Threshold sensitivity data unavailable for visualization.';
         container.appendChild(msg);
+        if (takeawayElem) {
+          takeawayElem.textContent = 'Threshold sensitivity data unavailable for visualization.';
+        }
         return;
       }
 
-      // Extract and sort threshold items strictly numerically
+      // Extract and validate threshold items
       const items = [];
       Object.keys(thresholdAblations).forEach(k => {
         const obj = thresholdAblations[k] || {};
-        let zVal = obj.z_threshold;
-        if (zVal === undefined || zVal === null) {
-          const matched = k.match(/[\d\.]+/);
-          if (matched) zVal = parseFloat(matched[0]);
+        let zVal = null;
+
+        // If explicit 'z_threshold' property exists in the object
+        if (Object.prototype.hasOwnProperty.call(obj, 'z_threshold') && obj.z_threshold !== undefined && obj.z_threshold !== null) {
+          const rawZ = obj.z_threshold;
+          if (typeof rawZ === 'number' && Number.isFinite(rawZ)) {
+            zVal = rawZ;
+          } else if (typeof rawZ === 'string' && rawZ.trim() !== '' && !Number.isNaN(Number(rawZ.trim()))) {
+            zVal = Number(rawZ.trim());
+          } else {
+            // Explicit but invalid z_threshold; do NOT infer from malformed key!
+            return;
+          }
+        } else {
+          // No explicit z_threshold; carefully inspect key for integer, decimal, or negative number
+          const trimmedKey = k.trim();
+          const match = trimmedKey.match(/[-+]?\d+(?:\.\d+)?/);
+          if (match) {
+            const parsed = parseFloat(match[0]);
+            if (Number.isFinite(parsed)) {
+              zVal = parsed;
+            }
+          }
         }
-        if (typeof zVal === 'number' && Number.isFinite(zVal)) {
-          items.push({
-            key: k,
-            z: zVal,
-            precision: (typeof obj.precision === 'number' && Number.isFinite(obj.precision)) ? obj.precision : (obj.precision === 'N/A' ? 'N/A' : null),
-            recall: (typeof obj.recall === 'number' && Number.isFinite(obj.recall)) ? obj.recall : null
-          });
+
+        if (zVal === null || !Number.isFinite(zVal)) {
+          return;
         }
+
+        // Validate precision: must be finite number in [0, 100]
+        let prec = null;
+        if (typeof obj.precision === 'number' && Number.isFinite(obj.precision) && obj.precision >= 0 && obj.precision <= 100) {
+          prec = obj.precision;
+        }
+
+        // Validate recall: must be finite number in [0, 100]
+        let rec = null;
+        if (typeof obj.recall === 'number' && Number.isFinite(obj.recall) && obj.recall >= 0 && obj.recall <= 100) {
+          rec = obj.recall;
+        }
+
+        items.push({
+          key: k,
+          z: zVal,
+          precision: prec,
+          recall: rec,
+          rawPrecision: obj.precision,
+          rawRecall: obj.recall
+        });
       });
 
       // Strict numerical ascending sort
@@ -2940,7 +3024,26 @@ document.addEventListener('DOMContentLoaded', () => {
         msg.className = 'chart-empty-msg';
         msg.textContent = 'No valid numerical threshold observations recorded.';
         container.appendChild(msg);
+        if (takeawayElem) {
+          takeawayElem.textContent = 'No valid numerical threshold observations recorded.';
+        }
         return;
+      }
+
+      // Dynamic takeaway text
+      if (takeawayElem) {
+        const minZ = items[0].z;
+        const maxZ = items[items.length - 1].z;
+        const precCount = items.filter(it => it.precision !== null).length;
+        const recCount = items.filter(it => it.recall !== null).length;
+
+        if (items.length === 1) {
+          takeawayElem.textContent = `Single threshold observation recorded at Z=${minZ}. Multiple threshold observations are required to characterize sensitivity curves.`;
+        } else if (precCount === 0 && recCount === 0) {
+          takeawayElem.textContent = `Recorded thresholds range from Z=${minZ} to Z=${maxZ}; precision and recall metrics are unavailable in the artifact.`;
+        } else {
+          takeawayElem.textContent = `Sensitivity evaluated across Z-thresholds from ${minZ} to ${maxZ} (${items.length} observations). Discontinuous segments reflect missing observations.`;
+        }
       }
 
       const svgNS = 'http://www.w3.org/2000/svg';
@@ -2986,15 +3089,21 @@ document.addEventListener('DOMContentLoaded', () => {
         svg.appendChild(text);
       });
 
-      // X mapping: discrete equidistant spacing across ordered thresholds or continuous if single
-      const getX = (idx) => {
-        if (items.length <= 1) return padLeft + plotWidth / 2;
-        return padLeft + (idx / (items.length - 1)) * plotWidth;
+      // Horizontal coordinate calculation: linearly proportional to actual numerical z_threshold
+      const minZ = items[0].z;
+      const maxZ = items[items.length - 1].z;
+      const zRange = maxZ - minZ;
+
+      const getX = (z) => {
+        if (zRange === 0 || items.length === 1) {
+          return padLeft + plotWidth / 2;
+        }
+        return padLeft + ((z - minZ) / zRange) * plotWidth;
       };
 
-      // X-axis ticks and labels
-      items.forEach((item, idx) => {
-        const x = getX(idx);
+      // X-axis ticks and labels at actual threshold locations
+      items.forEach(item => {
+        const x = getX(item.z);
 
         const tickLine = document.createElementNS(svgNS, 'line');
         tickLine.setAttribute('x1', String(x));
@@ -3024,86 +3133,130 @@ document.addEventListener('DOMContentLoaded', () => {
       xTitle.textContent = 'Ablation Threshold (Z)';
       svg.appendChild(xTitle);
 
-      // Build polyline points without fabricating or interpolating missing points
-      const precPoints = [];
-      const recPoints = [];
+      // Build contiguous segments for Precision: missing observations must break lines!
+      const precSegments = [];
+      let currentPrecSeg = [];
 
-      items.forEach((item, idx) => {
-        const x = getX(idx);
-
-        if (typeof item.precision === 'number') {
-          const y = padTop + plotHeight - (Math.max(0, Math.min(100, item.precision)) / 100) * plotHeight;
-          precPoints.push({ x, y, val: item.precision });
+      items.forEach(item => {
+        if (item.precision !== null) {
+          const x = getX(item.z);
+          const y = padTop + plotHeight - (item.precision / 100) * plotHeight;
+          currentPrecSeg.push({ x, y, val: item.precision, z: item.z });
+        } else {
+          if (currentPrecSeg.length > 0) {
+            precSegments.push(currentPrecSeg);
+            currentPrecSeg = [];
+          }
         }
+      });
+      if (currentPrecSeg.length > 0) {
+        precSegments.push(currentPrecSeg);
+      }
 
-        if (typeof item.recall === 'number') {
-          const y = padTop + plotHeight - (Math.max(0, Math.min(100, item.recall)) / 100) * plotHeight;
-          recPoints.push({ x, y, val: item.recall });
+      // Build contiguous segments for Recall: missing observations must break lines!
+      const recSegments = [];
+      let currentRecSeg = [];
+
+      items.forEach(item => {
+        if (item.recall !== null) {
+          const x = getX(item.z);
+          const y = padTop + plotHeight - (item.recall / 100) * plotHeight;
+          currentRecSeg.push({ x, y, val: item.recall, z: item.z });
+        } else {
+          if (currentRecSeg.length > 0) {
+            recSegments.push(currentRecSeg);
+            currentRecSeg = [];
+          }
+        }
+      });
+      if (currentRecSeg.length > 0) {
+        recSegments.push(currentRecSeg);
+      }
+
+      // Render Precision polylines for each contiguous segment
+      precSegments.forEach(seg => {
+        if (seg.length > 1) {
+          const path = document.createElementNS(svgNS, 'polyline');
+          path.setAttribute('points', seg.map(p => `${p.x},${p.y}`).join(' '));
+          path.setAttribute('fill', 'none');
+          path.setAttribute('stroke', 'var(--accent-interactive, #B69AFF)');
+          path.setAttribute('stroke-width', '2');
+          path.setAttribute('data-series', 'precision');
+          svg.appendChild(path);
         }
       });
 
-      // Precision Path (Solid Line)
-      if (precPoints.length > 1) {
-        const path = document.createElementNS(svgNS, 'polyline');
-        path.setAttribute('points', precPoints.map(p => `${p.x},${p.y}`).join(' '));
-        path.setAttribute('fill', 'none');
-        path.setAttribute('stroke', 'var(--accent-interactive, #B69AFF)');
-        path.setAttribute('stroke-width', '2');
-        svg.appendChild(path);
-      }
-
-      // Recall Path (Dashed Line)
-      if (recPoints.length > 1) {
-        const path = document.createElementNS(svgNS, 'polyline');
-        path.setAttribute('points', recPoints.map(p => `${p.x},${p.y}`).join(' '));
-        path.setAttribute('fill', 'none');
-        path.setAttribute('stroke', 'var(--accent-primary, #64DED9)');
-        path.setAttribute('stroke-width', '2');
-        path.setAttribute('stroke-dasharray', '5,3');
-        svg.appendChild(path);
-      }
-
-      // Precision Markers (Circles)
-      precPoints.forEach(p => {
-        const circle = document.createElementNS(svgNS, 'circle');
-        circle.setAttribute('cx', String(p.x));
-        circle.setAttribute('cy', String(p.y));
-        circle.setAttribute('r', '4');
-        circle.setAttribute('fill', 'var(--accent-interactive, #B69AFF)');
-        circle.setAttribute('stroke', 'var(--bg-card, #1D1833)');
-        circle.setAttribute('stroke-width', '1.5');
-        svg.appendChild(circle);
-
-        const valText = document.createElementNS(svgNS, 'text');
-        valText.setAttribute('x', String(p.x));
-        valText.setAttribute('y', String(p.y - 7));
-        valText.setAttribute('text-anchor', 'middle');
-        valText.setAttribute('fill', 'var(--accent-interactive, #B69AFF)');
-        valText.setAttribute('font-size', '8.5');
-        valText.textContent = `${p.val}%`;
-        svg.appendChild(valText);
+      // Render Recall polylines for each contiguous segment
+      recSegments.forEach(seg => {
+        if (seg.length > 1) {
+          const path = document.createElementNS(svgNS, 'polyline');
+          path.setAttribute('points', seg.map(p => `${p.x},${p.y}`).join(' '));
+          path.setAttribute('fill', 'none');
+          path.setAttribute('stroke', 'var(--accent-primary, #64DED9)');
+          path.setAttribute('stroke-width', '2');
+          path.setAttribute('stroke-dasharray', '5,3');
+          path.setAttribute('data-series', 'recall');
+          svg.appendChild(path);
+        }
       });
 
-      // Recall Markers (Squares)
-      recPoints.forEach(p => {
-        const rect = document.createElementNS(svgNS, 'rect');
-        rect.setAttribute('x', String(p.x - 3.5));
-        rect.setAttribute('y', String(p.y - 3.5));
-        rect.setAttribute('width', '7');
-        rect.setAttribute('height', '7');
-        rect.setAttribute('fill', 'var(--accent-primary, #64DED9)');
-        rect.setAttribute('stroke', 'var(--bg-card, #1D1833)');
-        rect.setAttribute('stroke-width', '1.5');
-        svg.appendChild(rect);
+      // Render Precision Markers (Circles) for all valid precision points
+      precSegments.forEach(seg => {
+        seg.forEach(p => {
+          const circle = document.createElementNS(svgNS, 'circle');
+          circle.setAttribute('cx', String(p.x));
+          circle.setAttribute('cy', String(p.y));
+          circle.setAttribute('r', '4');
+          circle.setAttribute('fill', 'var(--accent-interactive, #B69AFF)');
+          circle.setAttribute('stroke', 'var(--bg-card, #1D1833)');
+          circle.setAttribute('stroke-width', '1.5');
+          circle.setAttribute('data-threshold', String(p.z));
+          circle.setAttribute('data-series', 'precision');
+          circle.setAttribute('data-value', String(p.val));
+          svg.appendChild(circle);
 
-        const valText = document.createElementNS(svgNS, 'text');
-        valText.setAttribute('x', String(p.x));
-        valText.setAttribute('y', String(p.y + 14));
-        valText.setAttribute('text-anchor', 'middle');
-        valText.setAttribute('fill', 'var(--accent-primary, #64DED9)');
-        valText.setAttribute('font-size', '8.5');
-        valText.textContent = `${p.val}%`;
-        svg.appendChild(valText);
+          const valText = document.createElementNS(svgNS, 'text');
+          valText.setAttribute('x', String(p.x));
+          valText.setAttribute('y', String(p.y - 7));
+          valText.setAttribute('text-anchor', 'middle');
+          valText.setAttribute('fill', 'var(--accent-interactive, #B69AFF)');
+          valText.setAttribute('font-size', '8.5');
+          valText.setAttribute('data-threshold', String(p.z));
+          valText.setAttribute('data-series', 'precision');
+          valText.setAttribute('data-value', String(p.val));
+          valText.textContent = `${p.val}%`;
+          svg.appendChild(valText);
+        });
+      });
+
+      // Render Recall Markers (Squares) for all valid recall points
+      recSegments.forEach(seg => {
+        seg.forEach(p => {
+          const rect = document.createElementNS(svgNS, 'rect');
+          rect.setAttribute('x', String(p.x - 3.5));
+          rect.setAttribute('y', String(p.y - 3.5));
+          rect.setAttribute('width', '7');
+          rect.setAttribute('height', '7');
+          rect.setAttribute('fill', 'var(--accent-primary, #64DED9)');
+          rect.setAttribute('stroke', 'var(--bg-card, #1D1833)');
+          rect.setAttribute('stroke-width', '1.5');
+          rect.setAttribute('data-threshold', String(p.z));
+          rect.setAttribute('data-series', 'recall');
+          rect.setAttribute('data-value', String(p.val));
+          svg.appendChild(rect);
+
+          const valText = document.createElementNS(svgNS, 'text');
+          valText.setAttribute('x', String(p.x));
+          valText.setAttribute('y', String(p.y + 14));
+          valText.setAttribute('text-anchor', 'middle');
+          valText.setAttribute('fill', 'var(--accent-primary, #64DED9)');
+          valText.setAttribute('font-size', '8.5');
+          valText.setAttribute('data-threshold', String(p.z));
+          valText.setAttribute('data-series', 'recall');
+          valText.setAttribute('data-value', String(p.val));
+          valText.textContent = `${p.val}%`;
+          svg.appendChild(valText);
+        });
       });
 
       container.appendChild(svg);
@@ -3111,6 +3264,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     renderEfficiencyChart(baselines, ablInfo) {
       const container = document.getElementById('benchmark-efficiency-chart-viewport');
+      const takeawayElem = document.getElementById('benchmark-efficiency-chart-takeaway');
       if (!container) return;
       container.innerHTML = '';
 
@@ -3119,10 +3273,13 @@ document.addEventListener('DOMContentLoaded', () => {
         msg.className = 'chart-empty-msg';
         msg.textContent = (ablInfo && ablInfo.error) ? ablInfo.error : 'Efficiency metrics unavailable for visualization.';
         container.appendChild(msg);
+        if (takeawayElem) {
+          takeawayElem.textContent = 'Efficiency metrics unavailable for visualization.';
+        }
         return;
       }
 
-      // Collect points with valid, finite latency and token counts
+      // Collect points with valid, finite latency and token counts (>= 0)
       const points = [];
       let maxLatency = 0;
       let maxTokens = 0;
@@ -3147,7 +3304,21 @@ document.addEventListener('DOMContentLoaded', () => {
         msg.className = 'chart-empty-msg';
         msg.textContent = 'No baseline condition contains both valid latency and token metrics.';
         container.appendChild(msg);
+        if (takeawayElem) {
+          takeawayElem.textContent = 'No baseline condition contains both valid latency and token metrics.';
+        }
         return;
+      }
+
+      // Dynamic takeaway: identify baseline with lowest measured latency among valid ones
+      if (takeawayElem) {
+        let minLat = Infinity;
+        points.forEach(pt => {
+          if (pt.latency < minLat) minLat = pt.latency;
+        });
+        const fastestBaselines = points.filter(pt => Math.abs(pt.latency - minLat) < 1e-6);
+        const fastestNames = fastestBaselines.map(pt => pt.name).join(', ');
+        takeawayElem.textContent = `Lowest measured latency: ${fastestNames} (${minLat} ms, ${fastestBaselines[0].tokens} tokens). Visualizes latency against token consumption across conditions.`;
       }
 
       // Establish sensible chart domains with padding
@@ -3257,14 +3428,15 @@ document.addEventListener('DOMContentLoaded', () => {
         circle.setAttribute('fill', 'var(--accent-primary, #64DED9)');
         circle.setAttribute('stroke', 'var(--bg-main, #120F24)');
         circle.setAttribute('stroke-width', '1.5');
+        circle.setAttribute('data-baseline', pt.name);
+        circle.setAttribute('data-latency', String(pt.latency));
+        circle.setAttribute('data-tokens', String(pt.tokens));
         svg.appendChild(circle);
 
         // Data point callout text with anti-collision offsets
         const label = document.createElementNS(svgNS, 'text');
-        // Determine placement: alternate left/right and stagger vertical offsets
         const placeLeft = (pIdx % 2 === 1) || (cx > padLeft + plotWidth * 0.75);
         const lx = placeLeft ? cx - 8 : cx + 8;
-        // Spread vertical positions across 4 staggered offsets
         const yOffsets = [-8, 14, -18, 22];
         const ly = cy + yOffsets[pIdx % yOffsets.length];
 
@@ -3274,6 +3446,9 @@ document.addEventListener('DOMContentLoaded', () => {
         label.setAttribute('fill', 'var(--text-main, #E2DEED)');
         label.setAttribute('font-size', '9');
         label.setAttribute('font-weight', '500');
+        label.setAttribute('data-baseline', pt.name);
+        label.setAttribute('data-latency', String(pt.latency));
+        label.setAttribute('data-tokens', String(pt.tokens));
         label.textContent = `${pt.name} (${pt.latency}ms, ${pt.tokens} tok)`;
         svg.appendChild(label);
       });
@@ -3713,5 +3888,6 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   };
 
+  window.ObservatoryApp = ObservatoryApp;
   ObservatoryApp.init();
 });
