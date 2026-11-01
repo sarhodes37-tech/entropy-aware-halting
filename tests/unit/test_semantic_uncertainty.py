@@ -325,3 +325,76 @@ def test_evaluation_harness_report_structure():
     scen1 = report["eval_scenarios"][0]
     assert scen1["signals"]["synthetic_token_entropy_bits"] == 2.0
     assert scen1["signals"]["semantic_entropy_bits"] == 0.0
+
+
+def test_semantic_uncertainty_feature_pre_extraction_equivalence():
+    """
+    Regression test verifying that candidate feature pre-extraction and symmetric comparison caching
+    produce bitwise identical results compared to an unoptimized resolver.
+    """
+    candidates = [
+        Candidate(text="The payment of $100 was sent to Alice.", action="APPROVE", probability=0.2),
+        Candidate(text="Payment of $100 was sent to Alice successfully.", action="APPROVE", probability=0.2),
+        Candidate(text="The payment of $100 was not approved for Alice.", action="DENY", probability=0.2),
+        Candidate(text="Payment of $100 was denied for Alice.", action="DENY", probability=0.2),
+        Candidate(text="Transfer $100 to Alice immediately.", action="APPROVE", probability=0.2),
+    ]
+
+    # Reference unoptimized estimator simulating legacy resolver that resolves without pre-extracted feature passing
+    class LegacyResolver(SemanticResolver):
+        def __init__(self):
+            self.base = ExactAndNormalizedResolver()
+
+        def resolve(self, candidate_a: Candidate, candidate_b: Candidate) -> SemanticComparisonResult:
+            return self.base.resolve(candidate_a, candidate_b)
+
+    unoptimized_resolver = LegacyResolver()
+
+    unopt_estimator = SemanticUncertaintyEstimator(resolver=unoptimized_resolver)
+    opt_estimator = SemanticUncertaintyEstimator(resolver=ExactAndNormalizedResolver())
+
+    res_unopt = unopt_estimator.estimate(candidates)
+    res_opt = opt_estimator.estimate(candidates)
+
+    assert res_opt.candidates_analyzed == res_unopt.candidates_analyzed
+    assert res_opt.num_clusters == res_unopt.num_clusters
+    assert res_opt.status == res_unopt.status
+    assert res_opt.semantic_disagreement == res_unopt.semantic_disagreement
+    assert res_opt.decision_sensitive_disagreement == res_unopt.decision_sensitive_disagreement
+    assert res_opt.semantic_entropy_bits == res_unopt.semantic_entropy_bits
+    assert res_opt.normalized_semantic_entropy == res_unopt.normalized_semantic_entropy
+    assert res_opt.resolver_ambiguity == res_unopt.resolver_ambiguity
+
+    for c_opt, c_unopt in zip(res_opt.cluster_distribution, res_unopt.cluster_distribution):
+        assert c_opt.cluster_id == c_unopt.cluster_id
+        assert c_opt.representative_text == c_unopt.representative_text
+        assert c_opt.member_indices == c_unopt.member_indices
+        assert c_opt.probability == c_unopt.probability
+
+
+def test_pairwise_resolver_symmetry_exhaustive():
+    """Verifies that resolve(a, b) == resolve(b, a) for diverse linguistic edge cases."""
+    resolver = ExactAndNormalizedResolver()
+    cands = [
+        Candidate(text="Alice sent money to Bob.", action="APPROVE"),
+        Candidate(text="Bob sent money to Alice.", action="APPROVE"),
+        Candidate(text="Alice sent money to Bob.", action="DENY"),
+        Candidate(text="The document is not invalid.", action="APPROVE"),
+        Candidate(text="The document is valid.", action="APPROVE"),
+        Candidate(text="Transfer $100 USD.", action="APPROVE"),
+        Candidate(text="Transfer $200 USD.", action="APPROVE"),
+        Candidate(text="Pay before 5pm.", action="A"),
+        Candidate(text="Pay after 5pm.", action="A"),
+        Candidate(text="Approve if conditions met.", action="A"),
+        Candidate(text="Approve unless conditions met.", action="A"),
+    ]
+
+    for i in range(len(cands)):
+        for j in range(len(cands)):
+            r_ij = resolver.resolve(cands[i], cands[j])
+            r_ji = resolver.resolve(cands[j], cands[i])
+            assert r_ij.is_equivalent == r_ji.is_equivalent
+            assert r_ij.similarity_score == r_ji.similarity_score
+            assert r_ij.is_contradiction == r_ji.is_contradiction
+            assert r_ij.affects_decision == r_ji.affects_decision
+            assert r_ij.resolver_confidence == r_ji.resolver_confidence
