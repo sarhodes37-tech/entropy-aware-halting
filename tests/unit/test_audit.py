@@ -855,25 +855,49 @@ def test_github_and_gitlab_token_redaction_comprehensive_cases():
     classic_ghp_36 = "ghp_123456789012345678901234567890123456"
     classic_ghp_40 = "ghp_1234567890123456789012345678901234567890"
     gitlab_pat = "glpat-12345678901234567890"
+    gho_tok = "gho_123456789012345678901234567890123456"
+    ghu_tok = "ghu_123456789012345678901234567890123456"
+    ghs_tok = "ghs_123456789012345678901234567890123456"
+    ghr_tok = "ghr_123456789012345678901234567890123456"
+    hf_tok = "hf_1234567890123456789012345678901234"
 
     # Punctuation boundaries & multiple tokens
-    text = f"Tokens: ({fine_grained_pat}); [{classic_ghp_36}], {classic_ghp_40}, and {gitlab_pat}."
+    ghp_underscore = "ghp_12345678901234567890_abcdef1234567890"
+    ghs_jwt_installation = "ghs_987654_eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJpYXQiOjE2MDAwMDAwMDB9.abcdefghijklmnopqrstuvwxyz_0123456789-ABCDEF"
+    text = f"Tokens: ({fine_grained_pat}); [{classic_ghp_36}], {classic_ghp_40}, {gitlab_pat}, {gho_tok}, {ghu_tok}, {ghs_tok}, {ghr_tok}, {ghp_underscore}, {ghs_jwt_installation}, and {hf_tok}."
     sanitized_text = _sanitize_sensitive_data(text)
     assert fine_grained_pat not in sanitized_text
     assert classic_ghp_36 not in sanitized_text
     assert classic_ghp_40 not in sanitized_text
     assert gitlab_pat not in sanitized_text
-    assert sanitized_text == "Tokens: (sk-[REDACTED]); [sk-[REDACTED]], sk-[REDACTED], and sk-[REDACTED]."
+    assert gho_tok not in sanitized_text
+    assert ghu_tok not in sanitized_text
+    assert ghs_tok not in sanitized_text
+    assert ghr_tok not in sanitized_text
+    assert ghp_underscore not in sanitized_text
+    assert ghs_jwt_installation not in sanitized_text
+    assert hf_tok not in sanitized_text
+    assert sanitized_text == "Tokens: (sk-[REDACTED]); [sk-[REDACTED]], sk-[REDACTED], sk-[REDACTED], sk-[REDACTED], sk-[REDACTED], sk-[REDACTED], sk-[REDACTED], sk-[REDACTED], sk-[REDACTED], and sk-[REDACTED]."
 
     # Near-miss inputs (should NOT be redacted)
     short_pat = "github_pat_short123456"
     short_ghp = "ghp_short123"
     short_glpat = "glpat-short123"
-    near_miss_text = f"Benign strings: {short_pat}, {short_ghp}, and {short_glpat}"
+    short_gho = "gho_short123"
+    short_ghs = "ghs_short123"
+    short_hf = "hf_short12345678"
+    arbitrary_ghs = "ghs_notajwt_singlepart"
+    two_part_ghs = "ghs_notajwt.twoparts"
+    near_miss_text = f"Benign strings: {short_pat}, {short_ghp}, {short_glpat}, {short_gho}, {short_ghs}, {short_hf}, {arbitrary_ghs}, and {two_part_ghs}"
     sanitized_near_miss = _sanitize_sensitive_data(near_miss_text)
     assert short_pat in sanitized_near_miss
     assert short_ghp in sanitized_near_miss
     assert short_glpat in sanitized_near_miss
+    assert short_gho in sanitized_near_miss
+    assert short_ghs in sanitized_near_miss
+    assert short_hf in sanitized_near_miss
+    assert arbitrary_ghs in sanitized_near_miss
+    assert two_part_ghs in sanitized_near_miss
 
 
 def test_record_event_payload_too_large_multibyte(temp_audit_file):
