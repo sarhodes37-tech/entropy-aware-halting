@@ -857,7 +857,7 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             const statusFilter = document.getElementById('trace-status-filter');
             if (statusFilter) statusFilter.value = 'ALL';
-              this.announce('Trace filters cleared. Showing all traces.');
+            this.announce('Trace filters cleared. Showing all traces.');
             this.renderTracesList();
           });
 

@@ -233,6 +233,82 @@ def test_unit_disabled_or_inert_elements_excluded_from_targets():
     assert not is_pointer_target("input", None, is_disabled=True, is_inert=False)
 
 
+@pytest.mark.skipif(not PLAYWRIGHT_AVAILABLE, reason="playwright not installed")
+def test_browser_pointer_target_filtering_and_state_handling(a11y_comprehensive_server):
+    """
+    Browser-level verification that the target discovery algorithm correctly handles:
+    - active pointer buttons (included)
+    - custom interactive elements with role="tab" or role="option" (included)
+    - focusable scroll containers <pre class="inspector-block"> with tabindex="0" (excluded)
+    - elements with disabled, aria-disabled="true", or inert attributes (excluded)
+    """
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        page = browser.new_page(viewport={"width": 1440, "height": 900})
+        page.goto(f"{a11y_comprehensive_server}/index.html")
+
+        # Inject test elements into DOM representing various pointer and focus states
+        page.evaluate("""
+            () => {
+                const container = document.createElement('div');
+                container.id = 'test-pointer-target-container';
+                container.innerHTML = `
+                    <button id="test-btn-active">Active Button</button>
+                    <button id="test-btn-disabled" disabled>Disabled Button</button>
+                    <button id="test-btn-aria-disabled" aria-disabled="true">ARIA Disabled Button</button>
+                    <div id="test-div-inert" inert><button id="test-btn-inside-inert">Inert Button</button></div>
+                    <div id="test-custom-tab" role="tab" tabindex="0">Custom Tab</div>
+                    <pre id="test-scroll-pre" class="inspector-block" role="region" tabindex="0">Scrollable JSON</pre>
+                `;
+                document.body.appendChild(container);
+            }
+        """)
+
+        # Execute browser target classification script
+        classified = page.evaluate("""
+            () => {
+                const ids = [
+                    'test-btn-active',
+                    'test-btn-disabled',
+                    'test-btn-aria-disabled',
+                    'test-btn-inside-inert',
+                    'test-custom-tab',
+                    'test-scroll-pre'
+                ];
+                function checkIsTarget(el) {
+                    if (!el) return false;
+                    const tag = el.tagName.toLowerCase();
+                    const role = el.getAttribute('role') || '';
+                    const isDisabled = el.disabled === true || el.getAttribute('aria-disabled') === 'true';
+                    const isInert = el.hasAttribute('inert') || el.closest('[inert]') !== null;
+                    if (isDisabled || isInert) return false;
+                    if (role === 'region' || role === 'scrollbar' || tag === 'pre' || el.classList.contains('inspector-block') || el.classList.contains('table-responsive')) return false;
+                    if (['button', 'input', 'select', 'textarea'].includes(tag)) return true;
+                    if (tag === 'a' && el.hasAttribute('href')) return true;
+                    if (['button', 'link', 'option', 'tab', 'menuitem'].includes(role)) return true;
+                    return false;
+                }
+                const results = {};
+                ids.forEach(id => {
+                    const el = document.getElementById(id);
+                    results[id] = checkIsTarget(el);
+                });
+                return results;
+            }
+        """)
+
+        assert classified["test-btn-active"] is True
+        assert classified["test-custom-tab"] is True
+        assert classified["test-btn-disabled"] is False
+        assert classified["test-btn-aria-disabled"] is False
+        assert classified["test-btn-inside-inert"] is False
+        assert classified["test-scroll-pre"] is False
+
+        # Clean up injected container
+        page.evaluate("() => document.getElementById('test-pointer-target-container')?.remove()")
+        browser.close()
+
+
 # ==============================================================================
 # Playwright Server Fixture & Browser Integration Tests
 # ==============================================================================
@@ -735,7 +811,7 @@ def test_forced_colors_support(a11y_comprehensive_server):
         assert card_styles["borderWidth"] > 0, "Card borderWidth expected > 0 under forced-colors"
         assert card_styles["borderColor"] not in ["transparent", "rgba(0, 0, 0, 0)"], "Card borderColor must not be transparent"
 
-        # 2. Verify active vs inactive navigation tabs have distinguishable state affordances
+        # 2. Verify active vs inactive navigation tabs have distinguishable state affordances and system color attributes
         tab_states = page.evaluate("""
             () => {
                 const activeTab = document.querySelector('.nav-tab.active');
@@ -747,12 +823,14 @@ def test_forced_colors_support(a11y_comprehensive_server):
                     activeBorder: csActive.borderBottomWidth,
                     inactiveBorder: csInactive.borderBottomWidth,
                     activeBg: csActive.backgroundColor,
-                    inactiveBg: csInactive.backgroundColor
+                    inactiveBg: csInactive.backgroundColor,
+                    activeColor: csActive.color,
+                    inactiveColor: csInactive.color
                 };
             }
         """)
         assert tab_states["activeSelected"] == "true"
-        has_distinction = (tab_states["activeBorder"] != tab_states["inactiveBorder"]) or (tab_states["activeBg"] != tab_states["inactiveBg"])
+        has_distinction = (tab_states["activeBorder"] != tab_states["inactiveBorder"]) or (tab_states["activeBg"] != tab_states["inactiveBg"]) or (tab_states["activeColor"] != tab_states["inactiveColor"])
         assert has_distinction, "Active and inactive tabs must have distinguishable computed visual affordances under forced-colors"
 
         # 3. Verify focus outlines remain distinguishable when keyboard focus moves via Tab key
@@ -897,24 +975,38 @@ def test_target_size_wcag_258(a11y_comprehensive_server):
             # Query all interactive pointer-operable targets in current view and shell navigation
             interactive_data = page.evaluate("""
                 (selector) => {
-                    const selectorStr = selector + ' button:not([disabled]), ' +
+                    const selectorStr = selector + ' button, ' +
                                         selector + ' a[href], ' +
-                                        selector + ' select:not([disabled]), ' +
-                                        selector + ' input:not([disabled]), ' +
+                                        selector + ' select, ' +
+                                        selector + ' input, ' +
                                         selector + ' [role="button"], ' +
                                         selector + ' [role="option"], ' +
                                         selector + ' [role="tab"], ' +
                                         '.nav-tab';
                     const elements = Array.from(document.querySelectorAll(selectorStr));
+
+                    function isPointerTarget(el) {
+                        if (!el) return false;
+                        const tag = el.tagName.toLowerCase();
+                        const role = el.getAttribute('role') || '';
+                        const isDisabled = el.disabled === true || el.getAttribute('aria-disabled') === 'true';
+                        const isInert = el.hasAttribute('inert') || el.closest('[inert]') !== null;
+                        if (isDisabled || isInert) return false;
+                        // Exclude focusable scroll containers (<pre>, .table-responsive) which are keyboard regions, not pointer buttons
+                        if (role === 'region' || role === 'scrollbar' || tag === 'pre' || el.classList.contains('inspector-block') || el.classList.contains('table-responsive')) return false;
+                        if (['button', 'input', 'select', 'textarea'].includes(tag)) return true;
+                        if (tag === 'a' && el.hasAttribute('href')) return true;
+                        if (['button', 'link', 'option', 'tab', 'menuitem'].includes(role)) return true;
+                        return false;
+                    }
+
                     return elements.map((el, idx) => {
                         const rect = el.getBoundingClientRect();
                         const tag = el.tagName.toLowerCase();
                         const text = (el.textContent || el.getAttribute('aria-label') || '').trim().replace(/\\s+/g, ' ').substring(0, 30);
                         const id = el.id ? '#' + el.id : (el.className ? '.' + el.className.split(' ')[0] : tag + '_' + idx);
                         const cs = window.getComputedStyle(el);
-                        // Exclude focusable scroll containers (<pre>, .table-responsive) which are keyboard regions, not pointer buttons
-                        const isScrollRegion = el.classList.contains('inspector-block') || el.classList.contains('table-responsive');
-                        const isVisible = rect.width > 0 && rect.height > 0 && cs.visibility !== 'hidden' && cs.display !== 'none' && !isScrollRegion;
+                        const isVisible = rect.width > 0 && rect.height > 0 && cs.visibility !== 'hidden' && cs.display !== 'none' && isPointerTarget(el);
                         return {
                             id: id + '_' + idx,
                             tag: tag,

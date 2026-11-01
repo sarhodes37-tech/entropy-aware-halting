@@ -1,7 +1,7 @@
 # EpistemicOS Control Plane Observatory & Benchmark Workbench
 ## Dedicated Accessibility Audit & WCAG 2.2 Level AA Remediation Report
 
-**Audit Date:** October 31, 2026 (Sixth-Pass Verification Hardening Revision)
+**Audit Date:** October 31, 2026 (Final Verification Hardening Revision)
 **Target Specification:** Web Content Accessibility Guidelines (WCAG) 2.2 Level AA
 **Repository:** `sarhodes37-tech/entropy-aware-halting` (PR #321)
 **Evaluation Scope:** EpistemicOS Control Plane Observatory SPA & Benchmark Workbench UI (`epistemicos/ui/static/`)
@@ -27,9 +27,9 @@ To ensure complete verification integrity, the audit categorizes findings across
 1. **Automated Scanner Checks (`axe-core` v4.10.2):**
    - Headless automated scans using vendored `axe.min.js` (v4.10.2) evaluating rulesets (`wcag2a`, `wcag2aa`, `wcag21a`, `wcag21aa`, `wcag22aa`) across all 4 primary application views and complex interactive states (selected traces, evidence inspectors, provenance details, benchmark cases, and empty filter states).
 2. **Automated Playwright Browser Interaction & Geometric Tests:**
-   - 24 dedicated tests executed in the UI test suite:
+   - 25 dedicated tests executed in the UI test suite:
      - 6 visual accessibility and layout tests in `tests/ui/test_workbench_visual_a11y.py` (contrast checks across base and surface backgrounds, gradient stops, mobile viewport horizontal overflow bounds, and focus outlines).
-     - 8 browser integration tests in `tests/ui/test_workbench_accessibility.py` (axe-core scans, keyboard navigation and focus management workflows, table scopes, live region announcements, reduced motion emulation, forced-colors emulation with computed style assertions and real element negative control, 320px responsive reflow, and comprehensive pointer target size evaluation under WCAG 2.5.8).
+     - 9 browser integration tests in `tests/ui/test_workbench_accessibility.py` (axe-core scans, keyboard navigation and focus management workflows, table scopes, live region announcements, reduced motion emulation, forced-colors emulation with computed style assertions and real element negative control, 320px responsive reflow, comprehensive pointer target size evaluation under WCAG 2.5.8, and browser-level pointer target filtering across active, disabled, inert, and focusable scroll regions).
      - 10 deterministic geometric and target discovery unit tests in `tests/ui/test_workbench_accessibility.py` validating the normative WCAG 2.5.8 spacing evaluator across:
        - Direct 24x24px sizing compliance.
        - Undersized targets with valid circle-to-circle separation from other undersized targets.
@@ -46,6 +46,7 @@ To ensure complete verification integrity, the audit categorizes findings across
 4. **Assistive Technology Limitations (Screen Readers & Contrast Themes):**
    - **Important:** Physical assistive technology verification with actual screen reader speech synthesis engines (e.g. NVDA, JAWS, VoiceOver, Orca) was **NOT CONDUCTED** in the automated container environment and is explicitly marked **NOT TESTED**. An actionable manual verification protocol is documented in Section 5.
    - Physical Windows High Contrast / Contrast Themes testing on actual Windows OS displays was **NOT CONDUCTED** and is marked **NOT TESTED**.
+   - True 400% browser desktop zoom reflow is marked **PARTIAL** based on automated 320px viewport emulation; full desktop browser zoom requires manual human verification.
 
 ### Evaluation Status Definitions:
 - **PASS**: Directly verified by an automated test or documented code inspection.
@@ -157,5 +158,5 @@ To perform manual assistive technology verification in a production desktop/mobi
 ## 6. Conclusion & Remaining Verification Scope
 
 - **Remediation Completed:** High-impact accessibility barriers (invalid listbox children, keyboard-inaccessible scrollable regions, missing table header scopes, shell redirection syntax errors, and dormant live regions) were successfully remediated without altering benchmark scoring or visual density.
-- **Automated Regression Suite:** 24 tests (6 visual/layout tests, 8 browser accessibility tests including full axe-core scans, and 10 geometric/target unit tests) pass cleanly in CI under Playwright 1.58.0.
+- **Automated Regression Suite:** 25 tests (6 visual/layout tests, 9 browser accessibility tests including full axe-core scans and target discovery filtering, and 10 geometric/target unit tests) pass cleanly in CI under Playwright 1.58.0.
 - **Verification Integrity Disclosure:** The application demonstrates strong automated compliance with WCAG 2.2 Level AA requirements verifiable through headless browser and DOM evaluation. Full Level AA conformance cannot be claimed until manual screen reader speech verification (Section 5), physical Windows Contrast Themes validation, and 400% desktop browser zoom reflow are formally performed by a qualified human tester.
