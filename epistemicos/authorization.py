@@ -1133,12 +1133,17 @@ class AuthenticatedPrincipal:
         return payload.encode("utf-8")
 
 
+import types
+
+
 class PrincipalVerifier:
     """
     Independent identity verifier that validates AuthenticatedPrincipal assertions
     using public-key cryptography (Ed25519).
     Holds ONLY configured public verification keys (by issuer); does NOT hold private signing
     keys or identity-minting APIs.
+    The trust store is strictly immutable after initialization to prevent callers from
+    registering unauthorized issuers or establishing attacker-controlled trust relationships at runtime.
     Enforces issuer validation, asymmetric signature verification, clock skew tolerance, and expiry.
     """
 
@@ -1147,46 +1152,47 @@ class PrincipalVerifier:
         trusted_public_keys: Optional[Dict[str, Union[bytes, str]]] = None,
         clock_skew_seconds: float = 5.0
     ):
-        self._trusted_public_keys: Dict[str, bytes] = {}
+        raw_keys: Dict[str, bytes] = {}
         self.clock_skew_seconds = clock_skew_seconds
 
-        if trusted_public_keys:
-            for issuer, key_val in trusted_public_keys.items():
-                self.register_trusted_issuer_key(issuer, key_val)
-        else:
+        keys_input = trusted_public_keys
+        if keys_input is None:
             # Check environment for configured issuer public keys:
             # e.g., EPISTEMICOS_IDP_ISSUER="CorpIdP", EPISTEMICOS_IDP_PUBLIC_KEY="<base64 or hex>"
             env_issuer = os.getenv("EPISTEMICOS_IDP_ISSUER")
             env_key = os.getenv("EPISTEMICOS_IDP_PUBLIC_KEY")
             if env_issuer and env_key:
-                self.register_trusted_issuer_key(env_issuer, env_key)
+                keys_input = {env_issuer: env_key}
 
-    def register_trusted_issuer_key(self, issuer_id: str, public_key: Union[bytes, str]) -> None:
-        """Registers a public verification key for an authorized external identity issuer."""
-        if not issuer_id or not isinstance(issuer_id, str):
-            raise ValueError("issuer_id must be a non-empty string")
-        iss = issuer_id.strip()
-        if isinstance(public_key, str):
-            clean_k = public_key.strip()
-            # Handle PEM format if provided
-            if "-----BEGIN PUBLIC KEY-----" in clean_k:
-                lines = [l.strip() for l in clean_k.splitlines() if "---" not in l]
-                der = base64.b64decode("".join(lines))
-                # SubjectPublicKeyInfo for ED25519 is 44 bytes, raw key is the last 32 bytes
-                raw_k = der[-32:]
-            else:
-                try:
-                    raw_k = bytes.fromhex(clean_k)
-                except ValueError:
-                    raw_k = base64.b64decode(clean_k)
-        elif isinstance(public_key, (bytes, bytearray)):
-            raw_k = bytes(public_key)
-        else:
-            raise TypeError("public_key must be bytes or str")
+        if keys_input:
+            for issuer, key_val in keys_input.items():
+                if not issuer or not isinstance(issuer, str) or not issuer.strip():
+                    raise ValueError("issuer_id must be a non-empty string")
+                iss = issuer.strip()
+                if isinstance(key_val, str):
+                    clean_k = key_val.strip()
+                    # Handle PEM format if provided
+                    if "-----BEGIN PUBLIC KEY-----" in clean_k:
+                        lines = [l.strip() for l in clean_k.splitlines() if "---" not in l]
+                        der = base64.b64decode("".join(lines))
+                        # SubjectPublicKeyInfo for ED25519 is 44 bytes, raw key is the last 32 bytes
+                        raw_k = der[-32:]
+                    else:
+                        try:
+                            raw_k = bytes.fromhex(clean_k)
+                        except ValueError:
+                            raw_k = base64.b64decode(clean_k)
+                elif isinstance(key_val, (bytes, bytearray)):
+                    raw_k = bytes(key_val)
+                else:
+                    raise TypeError("public_key must be bytes or str")
 
-        if len(raw_k) != 32:
-            raise ValueError(f"Ed25519 public key must be exactly 32 bytes (got {len(raw_k)})")
-        self._trusted_public_keys[iss] = raw_k
+                if len(raw_k) != 32:
+                    raise ValueError(f"Ed25519 public key must be exactly 32 bytes (got {len(raw_k)})")
+                raw_keys[iss] = raw_k
+
+        # Immutable MappingProxyType prevents runtime modification of trusted public keys
+        self._trusted_public_keys = types.MappingProxyType(raw_keys)
 
     def has_trusted_issuers(self) -> bool:
         return bool(self._trusted_public_keys)
@@ -2083,14 +2089,28 @@ class AuthorizationAuthority:
 
         # SEC-01: Independent identity verifier integration.
         # AuthorizationAuthority holds verification keys, NEVER identity-issuing keys or private signing material.
-        self.principal_provider = principal_provider
-        if not self.principal_provider:
+        # The verifier is immutable after initialization and cannot be replaced by callers.
+        if principal_provider:
+            self._principal_provider = principal_provider
+        else:
             env_issuer = os.getenv("EPISTEMICOS_IDP_ISSUER")
             env_key = os.getenv("EPISTEMICOS_IDP_PUBLIC_KEY")
             if env_issuer and env_key:
-                self.principal_provider = PrincipalVerifier(
+                self._principal_provider = PrincipalVerifier(
                     trusted_public_keys={env_issuer: env_key}
                 )
+            else:
+                self._principal_provider = None
+
+    @property
+    def principal_provider(self) -> Optional[PrincipalVerifier]:
+        """Read-only access to configured PrincipalVerifier. Attribute replacement is prohibited."""
+        return self._principal_provider
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        if name == "principal_provider":
+            raise PermissionError("Access denied: AuthorizationAuthority.principal_provider is immutable and cannot be reassigned")
+        super().__setattr__(name, value)
 
     def clear_denial_with_approval(
         self,

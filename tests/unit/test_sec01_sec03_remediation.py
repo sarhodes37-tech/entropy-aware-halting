@@ -177,7 +177,7 @@ class ExternalTestIdentityAuthority:
 def test_sec01_authority_and_verifier_do_not_expose_private_keys_or_minting():
     """
     SEC-01: A caller with access to AuthorizationAuthority and PrincipalVerifier cannot
-    obtain signing material or mint an accepted assertion.
+    obtain signing material, mint an accepted assertion, or register unauthorized keys at runtime.
     """
     trusted_idp = ExternalTestIdentityAuthority(issuer_id="CorpIdP")
     verifier = PrincipalVerifier(trusted_public_keys={"CorpIdP": trusted_idp.public_key})
@@ -192,6 +192,63 @@ def test_sec01_authority_and_verifier_do_not_expose_private_keys_or_minting():
     assert not hasattr(auth, "issue_principal")
     assert not hasattr(auth, "mint_principal")
     assert not hasattr(auth, "identity_signing_secret")
+
+    # Verify no runtime key registration method exists
+    assert not hasattr(verifier, "register_trusted_issuer_key")
+
+
+def test_sec01_attacker_cannot_register_key_or_replace_verifier_to_bypass_auth(tmp_path):
+    """
+    SEC-01: An attacker with access to AuthorizationAuthority attempts to register its own key
+    or replace the authority's verifier to gain administrative access.
+    Must fail closed with zero executor side effects.
+    """
+    side_effect_mock = MagicMock()
+    def admin_action(target: str):
+        side_effect_mock(target)
+        return "admin_pwned"
+
+    legit_idp = ExternalTestIdentityAuthority(issuer_id="CorpIdP")
+    verifier = PrincipalVerifier(trusted_public_keys={"CorpIdP": legit_idp.public_key})
+
+    policy = Policy(
+        policy_id="admin_policy",
+        allowed_operations={"admin_op"},
+        allowed_resources={"/admin/secrets"},
+        allowed_principals={"admin"}
+    )
+    auth = AuthorizationAuthority(
+        default_policy=policy,
+        principal_provider=verifier
+    )
+    reg = TrustedToolRegistry(authority=auth)
+
+    tool = reg.register_tool(
+        tool_id="admin_tool",
+        action_name="admin_op",
+        executor_func=admin_action,
+        target_param="target"
+    )
+
+    # Attacker sets up their own rogue IdP
+    attacker_idp = ExternalTestIdentityAuthority(issuer_id="AttackerIdP")
+    attacker_assertion = attacker_idp.issue_principal("admin")
+
+    # 1. Attacker attempts to replace principal_provider on auth object
+    with pytest.raises(PermissionError) as exc_replace:
+        auth.principal_provider = PrincipalVerifier(trusted_public_keys={"AttackerIdP": attacker_idp.public_key})
+    assert "immutable and cannot be reassigned" in str(exc_replace.value)
+
+    # 2. Attacker attempts to mutate verifier's internal keys
+    with pytest.raises(TypeError):
+        auth.principal_provider._trusted_public_keys["AttackerIdP"] = attacker_idp.public_key
+
+    # 3. Attacker attempts invocation using the unauthorized assertion
+    with pytest.raises(PermissionError) as exc_exec:
+        tool(target="/admin/secrets", authenticated_principal=attacker_assertion)
+
+    assert "untrusted identity issuer" in str(exc_exec.value).lower() or "authentication failed" in str(exc_exec.value).lower()
+    assert side_effect_mock.call_count == 0
 
 
 def test_sec01_assertion_signed_by_trusted_external_issuer_accepted(tmp_path):
@@ -315,14 +372,17 @@ def test_sec01_missing_public_key_configuration_fails_closed(tmp_path):
     # Verifier with no public keys configured
     unconfigured_verifier = PrincipalVerifier(trusted_public_keys={})
 
-    reg = TrustedToolRegistry()
-    reg.authority.principal_provider = unconfigured_verifier
-    reg.authority.default_policy = Policy(
+    policy = Policy(
         policy_id="strict_policy",
         allowed_operations={"transfer"},
         allowed_resources={"/accounts/123"},
         allowed_principals={"alice"}
     )
+    auth = AuthorizationAuthority(
+        default_policy=policy,
+        principal_provider=unconfigured_verifier
+    )
+    reg = TrustedToolRegistry(authority=auth)
 
     tool = reg.register_tool(
         tool_id="transfer_tool",
@@ -420,14 +480,17 @@ def test_sec01_caller_attempts_to_spoof_alice_through_context_dictionary(tmp_pat
     trusted_idp = ExternalTestIdentityAuthority(issuer_id="CorpIdP")
     verifier = PrincipalVerifier(trusted_public_keys={"CorpIdP": trusted_idp.public_key})
 
-    reg = TrustedToolRegistry()
-    reg.authority.principal_provider = verifier
-    reg.authority.default_policy = Policy(
+    policy = Policy(
         policy_id="alice_only_policy",
         allowed_operations={"mutate"},
         allowed_resources={"/accounts/alice"},
         allowed_principals={"principal_alice"}
     )
+    auth = AuthorizationAuthority(
+        default_policy=policy,
+        principal_provider=verifier
+    )
+    reg = TrustedToolRegistry(authority=auth)
 
     tool = reg.register_tool(
         tool_id="account_mutator",
@@ -663,6 +726,39 @@ def test_sec03_positional_and_keyword_invocation_resolve_same_target(tmp_path):
     res2 = tool(filepath="/tmp/test.txt", content="content2")
     assert res2["status"] == "SUCCESS"
     assert side_effect_mock.call_count == 2
+
+
+def test_sec03_noncanonical_whitespace_target_rejected(tmp_path):
+    """
+    SEC-03: A target containing leading or trailing whitespace (e.g. '/allowed ')
+    is rejected before authorization or execution, preventing whitespace normalization
+    from causing authorization/execution divergence with zero executor side effects.
+    """
+    side_effect_mock = MagicMock()
+    def write_file(filepath: str, content: str):
+        side_effect_mock(filepath, content)
+        return {"filepath": filepath}
+
+    reg = TrustedToolRegistry()
+    reg.authority.default_policy = Policy(
+        policy_id="p_whitespace",
+        allowed_operations={"write"},
+        allowed_resources={"/allowed"}
+    )
+
+    tool = reg.register_tool(
+        tool_id="writer_whitespace",
+        action_name="write",
+        executor_func=write_file,
+        target_param="filepath"
+    )
+
+    # Calling with trailing space: "/allowed "
+    with pytest.raises(PermissionError) as exc_info:
+        tool(filepath="/allowed ", content="test")
+
+    assert "Non-canonical target value" in str(exc_info.value) or "whitespace" in str(exc_info.value)
+    assert side_effect_mock.call_count == 0
 
 
 def test_sec03_missing_target_rejected(tmp_path):

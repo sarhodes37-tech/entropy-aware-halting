@@ -137,7 +137,12 @@ class TrustedToolWrapper:
         if "target" in filtered_kwargs and self.target_param and self.target_param != "target":
             kwarg_target = str(filtered_kwargs["target"]).strip() if filtered_kwargs["target"] else ""
             if self.target_param in filtered_kwargs and filtered_kwargs[self.target_param]:
-                tp_val = str(filtered_kwargs[self.target_param]).strip()
+                raw_tp = str(filtered_kwargs[self.target_param])
+                if raw_tp != raw_tp.strip():
+                    raise PermissionError(
+                        f"Tool execution rejected: Non-canonical target value '{raw_tp}' contains leading or trailing whitespace for parameter '{self.target_param}'"
+                    )
+                tp_val = raw_tp.strip()
                 if kwarg_target and tp_val and kwarg_target != tp_val:
                     raise PermissionError(
                         f"Tool execution rejected: Conflicting target values detected: explicit 'target'='{kwarg_target}' differs from '{self.target_param}'='{tp_val}'"
@@ -241,6 +246,13 @@ class TrustedToolWrapper:
         if not isinstance(raw_val, str) or not raw_val.strip():
             raise PermissionError(
                 f"Tool execution rejected: Target parameter '{self.target_param}' must be a non-empty string for operation '{self.action_name}'"
+            )
+
+        # Reject non-canonical target strings with leading or trailing whitespace
+        # This prevents authorization/execution divergence (e.g., "/allowed " vs "/allowed")
+        if raw_val != raw_val.strip():
+            raise PermissionError(
+                f"Tool execution rejected: Non-canonical target value '{raw_val}' contains leading or trailing whitespace for parameter '{self.target_param}'"
             )
 
         resolved_target = raw_val.strip()
@@ -356,6 +368,10 @@ class TrustedToolWrapper:
             if "target" in sig_params and "target" not in call_kwargs and exec_target is not None:
                 call_kwargs["target"] = exec_target
 
+            # For mutating operations with target_param in kwargs, ensure the exact canonical authorized target is bound
+            if not self.is_read_only and self.target_param and self.target_param in call_kwargs:
+                call_kwargs[self.target_param] = exec_target
+
             # SEC-03: Verify that authorized target is exactly the resource targeted by the executor
             bound_for_exec = sig.bind_partial(*args, **call_kwargs)
 
@@ -366,8 +382,8 @@ class TrustedToolWrapper:
                         raise PermissionError(
                             f"Tool execution rejected: Target parameter '{self.target_param}' missing from bound executor arguments"
                         )
-                    bound_val = str(bound_for_exec.arguments[self.target_param]).strip()
-                    if bound_val != exec_target:
+                    bound_val = bound_for_exec.arguments[self.target_param]
+                    if not isinstance(bound_val, str) or bound_val != exec_target:
                         raise PermissionError(
                             f"Tool execution rejected: Authorized target '{exec_target}' differs from executor target parameter '{bound_val}' (via target_param '{self.target_param}')"
                         )
