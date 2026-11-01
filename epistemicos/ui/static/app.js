@@ -640,6 +640,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
       // Render Overview Recent Traces
       this.renderOverviewRecentTraces();
+
+      this.announce('Overview metrics updated.');
     },
 
     renderOverviewRecentTraces() {
@@ -727,6 +729,8 @@ document.addEventListener('DOMContentLoaded', () => {
       if (updatedEl) {
         updatedEl.textContent = 'Update failed';
       }
+
+      this.announce('Failed to update overview metrics.');
     },
 
     // -------------------------------------------------------------------------

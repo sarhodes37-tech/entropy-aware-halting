@@ -476,6 +476,10 @@ def test_search_input_keyboard_shortcut_aria_attributes():
     assert "if (searchInput) {" in js_content
     assert "searchInput.value = '';" in js_content
 
+    # Overview refresh live announcements
+    assert "this.announce('Overview metrics updated.');" in js_content
+    assert "this.announce('Failed to update overview metrics.');" in js_content
+
     css_path = pathlib.Path("epistemicos/ui/static/style.css")
     css_content = css_path.read_text(encoding="utf-8")
     assert ".search-input-wrapper .input-search:not(:placeholder-shown) + .search-shortcut-badge" in css_content
