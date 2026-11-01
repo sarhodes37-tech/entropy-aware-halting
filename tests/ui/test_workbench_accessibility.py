@@ -14,7 +14,7 @@ Authoritative regression suite verifying:
 7. Forced-colors compliance (emulating forced-colors: active and asserting visible solid card boundaries, active tab boundaries, distinguishable focus outlines, and negative control verification).
 8. Polite live region announcements (verifying actual, dynamic non-empty text updates on tab switch, record selection, and filter clear).
 9. Responsive reflow at 320px width (400% zoom equivalent) verifying zero document-level horizontal page overflow across all 4 views while distinguishing intentional scroll containers.
-10. Target size evaluation for interactive elements under WCAG 2.2 2.5.8 across all primary views, implementing normative geometric circle spacing evaluation.
+10. Target size evaluation for pointer-interactive elements under WCAG 2.2 2.5.8 across all primary views, implementing normative geometric circle spacing evaluation while distinguishing keyboard-only focusable scroll regions.
 """
 
 import json
@@ -108,6 +108,29 @@ def evaluate_target_size_wcag_258(target, neighbors):
     return True, "Satisfies WCAG 2.5.8 spacing exception (24px non-intersecting circle)"
 
 
+def is_pointer_target(tag, role, is_disabled, is_inert):
+    """
+    Determine whether an element qualifies as an active pointer target under WCAG 2.5.8.
+    Distinguishes pointer-operable elements (buttons, links, options, inputs) from focusable scroll containers.
+    """
+    if is_disabled or is_inert:
+        return False
+
+    # Focusable scroll containers (regions, code blocks, table wrappers) are NOT pointer targets
+    if role in ["region", "scrollbar"] or tag in ["pre", "section", "article"]:
+        return False
+
+    # Genuine pointer-interactive controls
+    if tag in ["button", "input", "select", "textarea"]:
+        return True
+    if tag == "a" and role != "region":
+        return True
+    if role in ["button", "link", "option", "tab", "menuitem", "checkbox", "radio", "switch"]:
+        return True
+
+    return False
+
+
 # ==============================================================================
 # Deterministic Unit Tests for WCAG 2.5.8 Geometric Evaluator
 # ==============================================================================
@@ -148,18 +171,12 @@ def test_unit_target_size_undersized_intersects_compliant_neighbor_rect():
     assert "intersects compliant neighbor" in reason
 
 
-def test_unit_target_size_undersized_clears_compliant_neighbor_rect_even_if_hypothetical_circle_overlaps():
+def test_unit_target_size_undersized_clears_compliant_neighbor_rect():
     """
-    5. An undersized target whose 24px circle does NOT intersect compliant neighbor's rectangle,
-    even though a hypothetical 24px circle centered on that neighbor would overlap.
+    5. An undersized target whose 24px circle does NOT intersect compliant neighbor's rectangle passes.
     """
     target = {"id": "t1", "x": 0.0, "y": 0.0, "width": 10.0, "height": 10.0}  # center (5, 5)
-    # Compliant neighbor [20, 0, 40, 40]: center at (40, 20).
-    # Distance from target center (5, 5) to neighbor rectangle: closest point is (20, 5) -> dist = 15.0px >= 12.0px (clears rectangle!)
-    # But center-to-center distance is sqrt((40-5)^2 + (20-5)^2) = sqrt(1225 + 225) = 38.07px
-    # Let's adjust so center-to-center is closer: neighbor at x=18, y=0, w=30, h=30 (center 33, 15).
-    # Closest point to (5, 5) on rect [18..48, 0..30] is (18, 5) -> dist = 13.0px >= 12.0px (CLEARS RECTANGLE).
-    # Hypothetical 24px circle centered on neighbor center would not matter, but rule tests actual rectangle.
+    # Closest point on rect [18..48, 0..30] to (5, 5) is (18, 5) -> dist = 13.0px >= 12.0px (clears actual rectangle).
     neighbor = {"id": "n_comp", "x": 18.0, "y": 0.0, "width": 30.0, "height": 30.0}
     passed, reason = evaluate_target_size_wcag_258(target, [neighbor])
     assert passed
@@ -195,6 +212,25 @@ def test_unit_target_size_diagonal_euclidean_geometry():
     passed, reason = evaluate_target_size_wcag_258(target, [neighbor])
     assert passed
     assert "Satisfies WCAG 2.5.8 spacing exception" in reason
+
+
+def test_unit_distinguish_pointer_target_from_focusable_scroll_region():
+    """9. Confirm that focusable scroll regions are identified as non-pointer targets while buttons are pointer targets."""
+    # Focusable pre block with role="region"
+    assert not is_pointer_target("pre", "region", is_disabled=False, is_inert=False)
+    # Focusable table wrapper with role="region"
+    assert not is_pointer_target("div", "region", is_disabled=False, is_inert=False)
+    # Pointer buttons and options inside or outside
+    assert is_pointer_target("button", None, is_disabled=False, is_inert=False)
+    assert is_pointer_target("li", "option", is_disabled=False, is_inert=False)
+    assert is_pointer_target("button", "tab", is_disabled=False, is_inert=False)
+
+
+def test_unit_disabled_or_inert_elements_excluded_from_targets():
+    """10. Confirm that disabled or inert controls are not evaluated as active pointer targets."""
+    assert not is_pointer_target("button", None, is_disabled=True, is_inert=False)
+    assert not is_pointer_target("button", None, is_disabled=False, is_inert=True)
+    assert not is_pointer_target("input", None, is_disabled=True, is_inert=False)
 
 
 # ==============================================================================
@@ -836,8 +872,9 @@ def test_responsive_reflow_narrow_viewport_320px(a11y_comprehensive_server):
 @pytest.mark.skipif(not PLAYWRIGHT_AVAILABLE, reason="playwright not installed")
 def test_target_size_wcag_258(a11y_comprehensive_server):
     """
-    Evaluate interactive targets against WCAG 2.2 2.5.8 minimum target size (>= 24x24 CSS pixels).
+    Evaluate interactive pointer targets against WCAG 2.2 2.5.8 minimum target size (>= 24x24 CSS pixels).
     Applies normative 24px diameter circle spacing exception without class-based exemptions.
+    Distinguishes pointer-operable elements from keyboard-only focusable scroll regions.
     """
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
@@ -860,13 +897,13 @@ def test_target_size_wcag_258(a11y_comprehensive_server):
             # Query all interactive pointer-operable targets in current view and shell navigation
             interactive_data = page.evaluate("""
                 (selector) => {
-                    const selectorStr = selector + ' button, ' +
+                    const selectorStr = selector + ' button:not([disabled]), ' +
                                         selector + ' a[href], ' +
-                                        selector + ' select, ' +
-                                        selector + ' input, ' +
+                                        selector + ' select:not([disabled]), ' +
+                                        selector + ' input:not([disabled]), ' +
                                         selector + ' [role="button"], ' +
                                         selector + ' [role="option"], ' +
-                                        selector + ' [tabindex="0"], ' +
+                                        selector + ' [role="tab"], ' +
                                         '.nav-tab';
                     const elements = Array.from(document.querySelectorAll(selectorStr));
                     return elements.map((el, idx) => {
@@ -875,7 +912,9 @@ def test_target_size_wcag_258(a11y_comprehensive_server):
                         const text = (el.textContent || el.getAttribute('aria-label') || '').trim().replace(/\\s+/g, ' ').substring(0, 30);
                         const id = el.id ? '#' + el.id : (el.className ? '.' + el.className.split(' ')[0] : tag + '_' + idx);
                         const cs = window.getComputedStyle(el);
-                        const isVisible = rect.width > 0 && rect.height > 0 && cs.visibility !== 'hidden' && cs.display !== 'none';
+                        // Exclude focusable scroll containers (<pre>, .table-responsive) which are keyboard regions, not pointer buttons
+                        const isScrollRegion = el.classList.contains('inspector-block') || el.classList.contains('table-responsive');
+                        const isVisible = rect.width > 0 && rect.height > 0 && cs.visibility !== 'hidden' && cs.display !== 'none' && !isScrollRegion;
                         return {
                             id: id + '_' + idx,
                             tag: tag,
