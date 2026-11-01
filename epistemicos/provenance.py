@@ -55,7 +55,13 @@ class FencedResource(metaclass=ABCMeta):
 
 
 from epistemicos.audit import _sanitize_sensitive_data, ReceiptGenerator
-from epistemicos.authorization import AuthorizationAuthority, CapabilityRegistry, Capability, get_callable_identity
+from epistemicos.authorization import (
+    AuthorizationAuthority,
+    CapabilityRegistry,
+    Capability,
+    AuthenticatedPrincipal,
+    get_callable_identity,
+)
 
 try:
     import fcntl
@@ -411,9 +417,12 @@ class TrustedExecutionBoundary:
         if not valid:
             raise PermissionError(f"Execution rejected: {cap_reason}")
 
-        # SEC-01: Reject missing authenticated principal if capability is bound to a specific principal
-        if cap and cap.principal_id != "agent_default" and auth_principal is None:
-            raise PermissionError(f"Execution rejected: Capability bound to principal '{cap.principal_id}' requires authenticated principal in ExecutionContext")
+        # SEC-01: Reject unauthenticated or missing principal if capability is bound to a specific principal
+        if cap and cap.principal_id != "agent_default":
+            if auth_principal is None:
+                raise PermissionError(f"Execution rejected: Capability bound to principal '{cap.principal_id}' requires authenticated principal in ExecutionContext")
+            if not isinstance(auth_principal, AuthenticatedPrincipal):
+                raise PermissionError(f"Execution rejected: Plain string or unverified context cannot satisfy principal authentication for capability bound to '{cap.principal_id}'")
 
         # Option A Strict Trusted Executor Binding Check:
         # A valid capability alone NEVER authorizes an unverified or unregistered callable object.

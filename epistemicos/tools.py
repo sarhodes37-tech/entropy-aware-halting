@@ -256,19 +256,23 @@ class TrustedToolWrapper:
             if "target" in sig_params and "target" not in call_kwargs and exec_target is not None:
                 call_kwargs["target"] = exec_target
 
-            # SEC-03: Verify that authorized target is exactly the resource targeted by the executor
+            # SEC-03: Verify that authorized target is exactly the resource targeted by the executor across all recognized target parameter sources
+            all_target_param_names = [self.target_param, "target", "path", "file", "filepath", "node", "endpoint", "url", "resource", "filename", "destination"]
             bound_for_exec = sig.bind_partial(*args, **call_kwargs)
-            for param_name in (self.target_param, "target", "path", "file", "endpoint", "resource"):
+            for param_name in all_target_param_names:
                 if param_name and param_name in bound_for_exec.arguments:
                     bound_val = str(bound_for_exec.arguments[param_name]).strip()
                     if bound_val and bound_val != exec_target:
                         raise PermissionError(
-                            f"Tool execution rejected: Authorized target '{exec_target}' differs from executor target parameter '{bound_val}'"
+                            f"Tool execution rejected: Authorized target '{exec_target}' differs from executor target parameter '{bound_val}' (via parameter '{param_name}')"
                         )
         except PermissionError:
             raise
-        except (ValueError, TypeError):
-            pass
+        except (ValueError, TypeError) as bind_err:
+            if not self.is_read_only:
+                raise PermissionError(
+                    f"Tool execution rejected: Signature binding failure for mutating operation '{self.action_name}': {str(bind_err)}"
+                ) from bind_err
 
         # Construct bound 0-arg closure for TrustedExecutionBoundary
         def _exec_closure():

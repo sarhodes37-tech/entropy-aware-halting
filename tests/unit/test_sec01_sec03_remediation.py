@@ -9,6 +9,10 @@ SEC-01 (Principal Binding at Execution Boundary):
 - Forged AuthenticatedPrincipal object (Denied, 0 side effects).
 - Valid authenticated Alice context (Allowed, 1 side effect).
 - Principal identity altered between issuance and execution (Denied, 0 side effects).
+- Ordinary caller cannot mint an assertion for another principal (Denied, 0 side effects).
+- Caller-provided string cannot satisfy principal authentication at execution boundary (Denied, 0 side effects).
+- Assertion from an untrusted issuer is rejected (Denied, 0 side effects).
+- Future-dated assertions are rejected (Denied, 0 side effects).
 
 SEC-03 (Explicit Resource Target Binding):
 - Benign first positional argument with a sensitive second target (Denied, 0 side effects).
@@ -19,7 +23,8 @@ SEC-03 (Explicit Resource Target Binding):
 - Existing legitimate registered tools (Allowed, 1 side effect).
 - Mutating tool without explicit target (Registration or execution rejected, 0 side effects).
 - Unknown action classification (Denied, 0 side effects).
-- Authorized target differs from executor target (Denied, 0 side effects).
+- Authorized target differs from executor target across filepath, filename, url, and destination (Denied, 0 side effects).
+- Signature binding failure on mutating operation fails closed (Denied, 0 side effects).
 """
 
 import time
@@ -58,18 +63,20 @@ def test_sec01_alice_capability_presented_by_bob_rejected(tmp_path):
         return {"status": "executed"}
 
     store = LocalProvenanceStore(log_path=str(tmp_path / "prov.jsonl"))
+    trusted_provider = PrincipalProvider(signing_secret=b"independent_identity_secret_key_123")
     auth = AuthorizationAuthority(
         default_policy=Policy(
             policy_id="alice_bob_policy",
             allowed_operations={"transfer"},
             allowed_resources={"/accounts/alice"},
             allowed_principals={"principal_alice", "principal_bob"}
-        )
+        ),
+        principal_provider=trusted_provider
     )
     boundary = TrustedExecutionBoundary(provenance_store=store, authority=auth)
 
-    alice_principal = auth.principal_provider.issue_principal("principal_alice")
-    bob_principal = auth.principal_provider.issue_principal("principal_bob")
+    alice_principal = trusted_provider.issue_principal("principal_alice")
+    bob_principal = trusted_provider.issue_principal("principal_bob")
 
     raw_payload = {"op": "transfer", "amount": 1000}
     payload_digest = boundary.compute_canonical_digest(raw_payload)
@@ -88,8 +95,8 @@ def test_sec01_alice_capability_presented_by_bob_rejected(tmp_path):
 
     # Bob attempts to present Alice's capability in Bob's execution context
     bob_ctx = ExecutionContext(
-        correlation_id=str(uuid.uuid4()),
-        request_id=str(uuid.uuid4()),
+        correlation_id=cap.correlation_id,
+        request_id=cap.request_id,
         authorization_token_id=cap.token_id,
         authorized_digest=payload_digest,
         authorization_granted=True,
@@ -106,7 +113,6 @@ def test_sec01_alice_capability_presented_by_bob_rejected(tmp_path):
         )
 
     assert "PRINCIPAL_MISMATCH" in str(exc_info.value)
-    # Zero side effects!
     assert side_effect_mock.call_count == 0
 
 
@@ -120,7 +126,9 @@ def test_sec01_caller_attempts_to_spoof_alice_through_context_dictionary(tmp_pat
         side_effect_mock(account_id, amount)
         return {"account_id": account_id, "amount": amount}
 
+    trusted_provider = PrincipalProvider(signing_secret=b"sec01_key_456")
     reg = TrustedToolRegistry()
+    reg.authority.principal_provider = trusted_provider
     reg.authority.default_policy = Policy(
         policy_id="alice_only_policy",
         allowed_operations={"mutate"},
@@ -157,17 +165,19 @@ def test_sec01_missing_authenticated_principal_rejected(tmp_path):
         side_effect_mock()
         return "done"
 
+    trusted_provider = PrincipalProvider(signing_secret=b"sec01_provider_key_789")
     auth = AuthorizationAuthority(
         default_policy=Policy(
             policy_id="p1",
             allowed_operations={"task"},
             allowed_resources={"/res1"},
             allowed_principals={"alice"}
-        )
+        ),
+        principal_provider=trusted_provider
     )
     boundary = TrustedExecutionBoundary(authority=auth)
 
-    alice_princ = auth.principal_provider.issue_principal("alice")
+    alice_princ = trusted_provider.issue_principal("alice")
     payload = {"task": "run"}
     digest = boundary.compute_canonical_digest(payload)
 
@@ -213,20 +223,22 @@ def test_sec01_forged_authenticated_principal_object_rejected(tmp_path):
         side_effect_mock()
         return "admin_ok"
 
+    trusted_provider = PrincipalProvider(signing_secret=b"sec01_admin_key_abc")
     auth = AuthorizationAuthority(
         default_policy=Policy(
             policy_id="admin_policy",
             allowed_operations={"admin"},
             allowed_resources={"/admin/panel"},
             allowed_principals={"admin_user"}
-        )
+        ),
+        principal_provider=trusted_provider
     )
     boundary = TrustedExecutionBoundary(authority=auth)
 
     # Attacker crafts an AuthenticatedPrincipal object manually
     forged_principal = AuthenticatedPrincipal(
         principal_id="admin_user",
-        issuer_id="TrustedPrincipalAuthority",
+        issuer_id="TrustedIdentityAuthority",
         timestamp=time.time(),
         signature="forged_invalid_hmac_signature"
     )
@@ -246,8 +258,7 @@ def test_sec01_forged_authenticated_principal_object_rejected(tmp_path):
     assert "PRINCIPAL_AUTHENTICATION_FAILED" in reason
 
     # 2. Execution boundary presentation rejection
-    # Even if an existing token existed:
-    valid_admin_princ = auth.principal_provider.issue_principal("admin_user")
+    valid_admin_princ = trusted_provider.issue_principal("admin_user")
     valid_cap, _ = auth.evaluate_and_issue_capability(
         action_name="admin",
         target="/admin/panel",
@@ -257,8 +268,8 @@ def test_sec01_forged_authenticated_principal_object_rejected(tmp_path):
     )
 
     ctx_forged = ExecutionContext(
-        correlation_id=str(uuid.uuid4()),
-        request_id=str(uuid.uuid4()),
+        correlation_id=valid_cap.correlation_id,
+        request_id=valid_cap.request_id,
         authorization_token_id=valid_cap.token_id,
         authorized_digest=digest,
         authorization_granted=True,
@@ -288,7 +299,9 @@ def test_sec01_valid_authenticated_alice_context_allowed(tmp_path):
         side_effect_mock(target, amount)
         return {"target": target, "amount": amount}
 
+    trusted_provider = PrincipalProvider(signing_secret=b"sec01_valid_key_def")
     reg = TrustedToolRegistry()
+    reg.authority.principal_provider = trusted_provider
     reg.authority.default_policy = Policy(
         policy_id="p_valid",
         allowed_operations={"transfer"},
@@ -303,7 +316,7 @@ def test_sec01_valid_authenticated_alice_context_allowed(tmp_path):
         target_param="target"
     )
 
-    alice_princ = reg.authority.principal_provider.issue_principal("alice")
+    alice_princ = trusted_provider.issue_principal("alice")
 
     res = tool(
         target="/vault/alice",
@@ -327,18 +340,20 @@ def test_sec01_principal_identity_altered_between_issuance_and_execution(tmp_pat
         side_effect_mock()
         return "privileged_action"
 
+    trusted_provider = PrincipalProvider(signing_secret=b"sec01_altered_key_ghi")
     auth = AuthorizationAuthority(
         default_policy=Policy(
             policy_id="p_mutate",
             allowed_operations={"mutate"},
             allowed_resources={"/secure/record"},
             allowed_principals={"alice", "bob"}
-        )
+        ),
+        principal_provider=trusted_provider
     )
     boundary = TrustedExecutionBoundary(authority=auth)
 
-    alice_princ = auth.principal_provider.issue_principal("alice")
-    bob_princ = auth.principal_provider.issue_principal("bob")
+    alice_princ = trusted_provider.issue_principal("alice")
+    bob_princ = trusted_provider.issue_principal("bob")
 
     payload = {"mutate": True}
     digest = boundary.compute_canonical_digest(payload)
@@ -355,8 +370,8 @@ def test_sec01_principal_identity_altered_between_issuance_and_execution(tmp_pat
 
     # Context replaced with Bob
     tampered_ctx = ExecutionContext(
-        correlation_id=str(uuid.uuid4()),
-        request_id=str(uuid.uuid4()),
+        correlation_id=cap.correlation_id,
+        request_id=cap.request_id,
         authorization_token_id=cap.token_id,
         authorized_digest=digest,
         authorization_granted=True,
@@ -376,6 +391,121 @@ def test_sec01_principal_identity_altered_between_issuance_and_execution(tmp_pat
     assert side_effect_mock.call_count == 0
 
 
+def test_sec01_ordinary_caller_cannot_mint_assertions():
+    """
+    SEC-01: AuthorizationAuthority does not expose an identity-minting method
+    that lets callers manufacture identities.
+    """
+    auth = AuthorizationAuthority()
+    assert not hasattr(auth, "issue_principal")
+    assert not hasattr(auth, "mint_principal")
+
+
+def test_sec01_caller_provided_string_cannot_satisfy_boundary_authentication(tmp_path):
+    """
+    SEC-01: A caller-provided string cannot satisfy principal authentication at the execution boundary.
+    """
+    side_effect_mock = MagicMock()
+    def write_task():
+        side_effect_mock()
+        return "written"
+
+    trusted_provider = PrincipalProvider(signing_secret=b"sec01_str_key_jkl")
+    auth = AuthorizationAuthority(
+        default_policy=Policy(
+            policy_id="p_str",
+            allowed_operations={"write"},
+            allowed_resources={"/res"},
+            allowed_principals={"alice"}
+        ),
+        principal_provider=trusted_provider
+    )
+    boundary = TrustedExecutionBoundary(authority=auth)
+
+    alice_princ = trusted_provider.issue_principal("alice")
+    payload = {"k": "v"}
+    digest = boundary.compute_canonical_digest(payload)
+
+    cap, _ = auth.evaluate_and_issue_capability(
+        action_name="write",
+        target="/res",
+        canonical_request_digest=digest,
+        principal_id=alice_princ,
+        executor_id=write_task
+    )
+
+    # Caller presents plain string "alice" in ExecutionContext
+    ctx_string = ExecutionContext(
+        correlation_id=cap.correlation_id,
+        request_id=cap.request_id,
+        authorization_token_id=cap.token_id,
+        authorized_digest=digest,
+        authorization_granted=True,
+        authenticated_principal="alice"  # Plain string!
+    )
+
+    with pytest.raises(PermissionError) as exc_info:
+        boundary.execute_protected_action(
+            action_name="write",
+            target="/res",
+            request_payload=payload,
+            executor_func=write_task,
+            context=ctx_string
+        )
+
+    assert "Plain string or unverified context cannot satisfy principal authentication" in str(exc_info.value)
+    assert side_effect_mock.call_count == 0
+
+
+def test_sec01_assertion_from_untrusted_issuer_rejected(tmp_path):
+    """
+    SEC-01: Assertion created by an untrusted identity issuer is rejected.
+    """
+    trusted_provider = PrincipalProvider(signing_secret=b"trusted_secret", provider_id="TrustedCorpIdP")
+    rogue_provider = PrincipalProvider(signing_secret=b"trusted_secret", provider_id="RogueCorpIdP")
+
+    auth = AuthorizationAuthority(
+        default_policy=Policy(policy_id="p", allowed_operations={"op"}, allowed_resources={"/res"}, allowed_principals={"alice"}),
+        principal_provider=trusted_provider
+    )
+
+    # Rogue provider signs for alice
+    rogue_alice = rogue_provider.issue_principal("alice")
+
+    cap, reason = auth.evaluate_and_issue_capability(
+        action_name="op",
+        target="/res",
+        canonical_request_digest="d" * 64,
+        principal_id=rogue_alice
+    )
+    assert cap is None
+    assert "Untrusted identity issuer" in reason
+
+
+def test_sec01_future_dated_assertion_rejected(tmp_path):
+    """
+    SEC-01: An assertion timestamped in the future is rejected.
+    """
+    provider = PrincipalProvider(signing_secret=b"sec01_future_key")
+    auth = AuthorizationAuthority(
+        default_policy=Policy(policy_id="p", allowed_operations={"op"}, allowed_resources={"/res"}, allowed_principals={"alice"}),
+        principal_provider=provider
+    )
+
+    # Issue assertion timestamped 1 hour in the future
+    future_time = time.time() + 3600.0
+    future_alice = provider.issue_principal("alice", current_time=future_time)
+
+    cap, reason = auth.evaluate_and_issue_capability(
+        action_name="op",
+        target="/res",
+        canonical_request_digest="d" * 64,
+        principal_id=future_alice
+    )
+    assert cap is None
+    assert "Future-dated principal assertion rejected" in reason
+
+
 # =============================================================================
 # SEC-03: Explicit Resource Target Binding Tests
 # =============================================================================
@@ -391,7 +521,6 @@ def test_sec03_benign_first_positional_argument_with_sensitive_target_rejected(t
         return "mutated"
 
     reg = TrustedToolRegistry()
-    # Unconstrained policy on operations, but target only allows audit_note_harmless
     reg.authority.default_policy = Policy(
         policy_id="test_policy",
         allowed_operations={"*"},
@@ -405,7 +534,6 @@ def test_sec03_benign_first_positional_argument_with_sensitive_target_rejected(t
         executor_func=write_db
     )
 
-    # Attacker supplies "audit_note_harmless" as first positional arg, but writes to "critical_db"
     with pytest.raises(PermissionError) as exc_info:
         tool("audit_note_harmless", "critical_db", {"drop": True})
 
@@ -496,7 +624,6 @@ def test_sec03_conflicting_target_parameters_rejected(tmp_path):
         target_param="path"
     )
 
-    # path is /etc/passwd, target is /tmp/safe. Conflicting!
     with pytest.raises(PermissionError) as exc_info:
         tool(path="/etc/passwd", target="/tmp/safe")
 
@@ -520,7 +647,6 @@ def test_sec03_custom_extractor_returning_invalid_target_rejected(tmp_path):
         allowed_resources={"*"}
     )
 
-    # Extractor returns None or empty string
     tool = reg.register_tool(
         tool_id="shell_tool",
         action_name="destructive_shell",
@@ -587,7 +713,6 @@ def test_sec03_mutating_tool_with_default_target_and_dynamic_args_rejected(tmp_p
         default_target="/default/target"
     )
 
-    # Dynamic argument supplied to mutating tool without target_param or extractor
     with pytest.raises(PermissionError) as exc_info:
         tool("unexpected_dynamic_arg")
 
@@ -618,7 +743,6 @@ def test_sec03_unknown_action_classification_denied(tmp_path):
         executor_func=unknown_func
     )
 
-    # Must fail closed because unclassified action is treated as state-mutating
     with pytest.raises(PermissionError) as exc_info:
         tool("audit_comment", "/critical/data")
 
@@ -626,36 +750,78 @@ def test_sec03_unknown_action_classification_denied(tmp_path):
     assert side_effect_mock.call_count == 0
 
 
-def test_sec03_authorized_target_differs_from_executor_target_rejected(tmp_path):
+def test_sec03_target_mismatch_across_recognized_parameters_rejected(tmp_path):
     """
-    SEC-03: If the authorized target differs from the target argument bound for the executor,
-    execution must be rejected with zero side effects.
+    SEC-03: Tests target mismatch attacks across filepath, filename, url, and destination.
+    A custom extractor or parameter must not authorize one target while the executor targets another.
+    """
+    test_cases = [
+        ("filepath", lambda filepath, data: "modified"),
+        ("filename", lambda filename, data: "modified"),
+        ("url", lambda url, data: "modified"),
+        ("destination", lambda destination, data: "modified"),
+    ]
+
+    for param_name, func in test_cases:
+        side_effect_mock = MagicMock()
+        def executor_wrapper(*args, **kwargs):
+            side_effect_mock()
+            return func(*args, **kwargs)
+
+        reg = TrustedToolRegistry()
+        reg.authority.default_policy = Policy(
+            policy_id="mismatch_policy",
+            allowed_operations={"modify"},
+            allowed_resources={"/authorized/resource"}
+        )
+
+        tool = reg.register_tool(
+            tool_id=f"tool_{param_name}",
+            action_name="modify",
+            executor_func=executor_wrapper,
+            target_extractor=lambda *args, **kwargs: "/authorized/resource"
+        )
+
+        # Attacker supplies sensitive resource via parameter
+        call_kwargs = {param_name: "/unauthorized/sensitive_resource", "data": {}}
+        with pytest.raises(PermissionError) as exc_info:
+            tool(**call_kwargs)
+
+        assert ("Authorized target '/authorized/resource' differs from executor target parameter" in str(exc_info.value) or
+                "Conflicting target values detected" in str(exc_info.value))
+        assert side_effect_mock.call_count == 0
+
+
+def test_sec03_signature_binding_failure_on_mutating_tool_fails_closed(tmp_path):
+    """
+    SEC-03: Do not silently skip target validation when signature binding or argument inspection fails.
+    Fails closed for mutating operations.
     """
     side_effect_mock = MagicMock()
-    def modify_resource(target: str, data: dict):
-        side_effect_mock(target, data)
-        return "modified"
+    # A callable that cannot be inspected cleanly or takes conflicting arguments
+    def strict_mutating(req_arg1, req_arg2):
+        side_effect_mock()
+        return "ok"
 
     reg = TrustedToolRegistry()
     reg.authority.default_policy = Policy(
-        policy_id="diff_policy",
-        allowed_operations={"modify"},
-        allowed_resources={"authorized_target"}
+        policy_id="p_strict",
+        allowed_operations={"*"},
+        allowed_resources={"*"}
     )
 
-    # Extractor extracts "authorized_target", but kwargs passes target="unauthorized_target"
-    # Even if extractor overrides, the executor binding check detects that target != authorized_target!
     tool = reg.register_tool(
-        tool_id="diff_tool",
-        action_name="modify",
-        executor_func=modify_resource,
-        target_extractor=lambda *args, **kwargs: "authorized_target"
+        tool_id="strict_tool",
+        action_name="financial_state_mutation",
+        executor_func=strict_mutating,
+        target_param="req_arg1"
     )
 
+    # Calling with invalid arguments causes failure and must fail closed with zero side effects
     with pytest.raises(PermissionError) as exc_info:
-        tool(target="unauthorized_target", data={})
+        tool("arg1", "arg2", "unexpected_third_arg", target_param="req_arg1")
 
-    # Either conflicting targets or authorized target differs
-    assert ("Conflicting target values detected" in str(exc_info.value) or
-            "Authorized target" in str(exc_info.value))
+    assert ("Signature binding failure" in str(exc_info.value) or
+            "Conflicting target values" in str(exc_info.value) or
+            "requires explicit target parameter" in str(exc_info.value))
     assert side_effect_mock.call_count == 0

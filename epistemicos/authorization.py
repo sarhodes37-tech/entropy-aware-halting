@@ -969,14 +969,12 @@ class AuthenticatedPrincipal:
     Cryptographically and authoritatively verified identity assertion representing
     an authenticated principal.
     A caller-supplied string, dictionary, or manually constructed object without
-    a valid cryptographic signature from a trusted PrincipalProvider is strictly rejected.
+    a valid cryptographic signature from an independently trusted PrincipalProvider is strictly rejected.
     """
     principal_id: str
     issuer_id: str
     timestamp: float
     signature: str
-    claims: Dict[str, Any] = field(default_factory=dict)
-    is_authenticated: bool = True
 
     def __post_init__(self):
         if not self.principal_id or not isinstance(self.principal_id, str) or not self.principal_id.strip():
@@ -989,17 +987,26 @@ class AuthenticatedPrincipal:
 
 class PrincipalProvider:
     """
-    Authoritative provider and verifier of authenticated principal assertions.
-    Signs and verifies AuthenticatedPrincipal identity assertions using HMAC-SHA256.
+    Independent identity authority for issuing and verifying AuthenticatedPrincipal assertions.
+    Enforces secret isolation, timestamp validity, clock skew boundaries, and future-dated assertion rejection.
     """
 
     def __init__(
         self,
         signing_secret: Optional[bytes] = None,
-        provider_id: str = "TrustedPrincipalAuthority"
+        provider_id: str = "TrustedIdentityAuthority",
+        clock_skew_seconds: float = 5.0
     ):
-        self.signing_secret = signing_secret or hashlib.sha256(f"EPISTEMICOS_PRINCIPAL_KEY_{uuid.uuid4()}".encode("utf-8")).digest()
-        self.provider_id = provider_id
+        if signing_secret:
+            self.signing_secret = signing_secret
+        else:
+            env_sec = os.getenv("EPISTEMICOS_IDENTITY_SECRET")
+            if env_sec:
+                self.signing_secret = env_sec.encode("utf-8")
+            else:
+                self.signing_secret = hashlib.sha256(f"EPISTEMICOS_ID_SECRET_{uuid.uuid4()}".encode("utf-8")).digest()
+        self.provider_id = provider_id.strip() if provider_id and isinstance(provider_id, str) else "TrustedIdentityAuthority"
+        self.clock_skew_seconds = clock_skew_seconds
 
     def _compute_signature(self, principal_id: str, issuer_id: str, timestamp: float) -> str:
         payload = f"{principal_id}:{issuer_id}:{timestamp}"
@@ -1008,16 +1015,16 @@ class PrincipalProvider:
     def issue_principal(
         self,
         principal_id: str,
-        claims: Optional[Dict[str, Any]] = None
+        current_time: Optional[float] = None
     ) -> AuthenticatedPrincipal:
-        ts = time.time()
-        sig = self._compute_signature(principal_id, self.provider_id, ts)
+        ts = current_time if current_time is not None else time.time()
+        clean_id = str(principal_id).strip()
+        sig = self._compute_signature(clean_id, self.provider_id, ts)
         return AuthenticatedPrincipal(
-            principal_id=str(principal_id).strip(),
+            principal_id=clean_id,
             issuer_id=self.provider_id,
             timestamp=ts,
-            signature=sig,
-            claims=dict(claims or {})
+            signature=sig
         )
 
     def verify_principal(
@@ -1027,21 +1034,27 @@ class PrincipalProvider:
         current_time: Optional[float] = None
     ) -> Tuple[bool, str, Optional[str]]:
         if not isinstance(principal, AuthenticatedPrincipal):
-            return False, "Object is not an AuthenticatedPrincipal assertion", None
+            return False, "Object is not a valid AuthenticatedPrincipal assertion", None
 
         if not principal.signature or not isinstance(principal.signature, str):
             return False, "Missing or invalid signature on principal assertion", None
 
         if principal.issuer_id != self.provider_id:
-            return False, f"Untrusted issuer: expected '{self.provider_id}', got '{principal.issuer_id}'", None
+            return False, f"Untrusted identity issuer: expected '{self.provider_id}', got '{principal.issuer_id}'", None
+
+        now = current_time if current_time is not None else time.time()
+
+        # Reject future-dated assertions (beyond permitted clock skew)
+        if principal.timestamp > (now + self.clock_skew_seconds):
+            return False, f"Future-dated principal assertion rejected (timestamp {principal.timestamp} > current time {now})", None
+
+        # Reject expired assertions
+        if (now - principal.timestamp) > max_age_seconds:
+            return False, f"Principal assertion expired (age {now - principal.timestamp:.1f}s > max {max_age_seconds}s)", None
 
         expected_sig = self._compute_signature(principal.principal_id, principal.issuer_id, principal.timestamp)
         if not hmac.compare_digest(principal.signature, expected_sig):
-            return False, "Signature verification failed on principal assertion", None
-
-        now = current_time if current_time is not None else time.time()
-        if now - principal.timestamp > max_age_seconds:
-            return False, "Principal assertion expired", None
+            return False, "Cryptographic signature verification failed on principal assertion", None
 
         return True, "Principal verified", principal.principal_id
 
@@ -1833,7 +1846,8 @@ class AuthorizationAuthority:
         approval_signing_secret: Optional[bytes] = None,
         contract_signing_secret: Optional[bytes] = None,
         executor_registry: Optional[Dict[str, Any]] = None,
-        require_task_contract: Optional[bool] = None
+        require_task_contract: Optional[bool] = None,
+        principal_provider: Optional[PrincipalProvider] = None
     ):
         import os
         self.default_policy = default_policy
@@ -1879,10 +1893,16 @@ class AuthorizationAuthority:
         else:
             self.executor_registry = ExecutorRegistry(executor_registry)
 
-        self.principal_provider = PrincipalProvider(
-            signing_secret=self.contract_signing_secret,
-            provider_id="TrustedPrincipalAuthority"
-        )
+        # SEC-01: Independent identity provider integration.
+        # Do not manufacture credentials or reuse contract signing secret.
+        self.principal_provider = principal_provider
+        if not self.principal_provider:
+            env_id_sec = os.getenv("EPISTEMICOS_IDENTITY_SECRET")
+            if env_id_sec:
+                self.principal_provider = PrincipalProvider(
+                    signing_secret=env_id_sec.encode("utf-8"),
+                    provider_id=os.getenv("EPISTEMICOS_IDENTITY_ISSUER", "TrustedIdentityAuthority")
+                )
 
     def clear_denial_with_approval(
         self,
@@ -1940,15 +1960,18 @@ class AuthorizationAuthority:
 
         # SEC-01: Authenticate principal assertion
         if isinstance(principal_id, AuthenticatedPrincipal):
+            if not self.principal_provider:
+                return None, "AUTHORIZATION_DENIED_NO_IDENTITY_PROVIDER_CONFIGURED: AuthenticatedPrincipal presented but authority has no trusted PrincipalProvider"
             valid, p_reason, pid = self.principal_provider.verify_principal(principal_id, current_time=current_time)
             if not valid:
                 return None, f"AUTHORIZATION_DENIED_PRINCIPAL_AUTHENTICATION_FAILED: {p_reason}"
             effective_principal = pid
         elif isinstance(principal_id, str):
+            clean_str = principal_id.strip()
             # If policy restricts principals, an unauthenticated raw string CANNOT assert identity
             if active_policy.allowed_principals != {"*"}:
                 return None, f"AUTHORIZATION_DENIED_AUTHENTICATED_PRINCIPAL_REQUIRED: Claiming privileged principal '{principal_id}' requires AuthenticatedPrincipal"
-            effective_principal = principal_id.strip() if principal_id else "agent_default"
+            effective_principal = clean_str if clean_str else "agent_default"
         else:
             return None, "AUTHORIZATION_DENIED_INVALID_PRINCIPAL_TYPE"
 
@@ -2208,6 +2231,8 @@ class AuthorizationAuthority:
 
         # SEC-01: Principal verification
         if isinstance(principal_id, AuthenticatedPrincipal):
+            if not self.principal_provider:
+                return False, "CAPABILITY_VERIFICATION_FAILED_NO_IDENTITY_PROVIDER: Authority has no configured PrincipalProvider to verify assertion", cap
             valid, p_reason, pid = self.principal_provider.verify_principal(principal_id, current_time=current_time)
             if not valid:
                 return False, f"CAPABILITY_VERIFICATION_FAILED_PRINCIPAL_AUTHENTICATION_FAILED: {p_reason}", cap
