@@ -111,7 +111,7 @@ _IBAN_REGEX = re.compile(
     r"\b[A-Z]{2}\d{2}[A-Z0-9]{11,30}\b"
 )
 _API_KEY_REGEX = re.compile(
-    r"\b(sk-[a-zA-Z0-9_\-]{20,}|glpat-[a-zA-Z0-9_\-]{20,}|AKIA[0-9A-Z]{16}|gh[pousr]_[a-zA-Z0-9]{36,}|github_pat_[a-zA-Z0-9_\-]{80,}|hf_[a-zA-Z0-9]{34,}|xox[baprs]-[a-zA-Z0-9_\-]{10,})\b"
+    r"\b(sk-[a-zA-Z0-9_\-]{20,}|glpat-[a-zA-Z0-9_\-]{20,}|AKIA[0-9A-Z]{16}|ghs_[a-zA-Z0-9]+_[a-zA-Z0-9_\-]+\.[a-zA-Z0-9_\-]+\.[a-zA-Z0-9_\-]+|gh[pousr]_[a-zA-Z0-9_]{36,}|github_pat_[a-zA-Z0-9_\-]{80,}|hf_[a-zA-Z0-9]{34,}|xox[baprs]-[a-zA-Z0-9_\-]{10,})\b"
 )
 _BEARER_REGEX = re.compile(
     r"Bearer\s+([a-zA-Z0-9\._\-]{20,})", re.IGNORECASE
