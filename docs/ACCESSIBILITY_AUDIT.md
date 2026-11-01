@@ -1,7 +1,7 @@
 # EpistemicOS Control Plane Observatory & Benchmark Workbench
 ## Dedicated Accessibility Audit & WCAG 2.2 Level AA Remediation Report
 
-**Audit Date:** October 31, 2026 (Final Verification Hardening Revision)
+**Audit Date:** November 1, 2026 (Authoritative Final Revision)
 **Target Specification:** Web Content Accessibility Guidelines (WCAG) 2.2 Level AA
 **Repository:** `sarhodes37-tech/entropy-aware-halting` (PR #321)
 **Evaluation Scope:** EpistemicOS Control Plane Observatory SPA & Benchmark Workbench UI (`epistemicos/ui/static/`)
@@ -27,10 +27,10 @@ To ensure complete verification integrity, the audit categorizes findings across
 1. **Automated Scanner Checks (`axe-core` v4.10.2):**
    - Headless automated scans using vendored `axe.min.js` (v4.10.2) evaluating rulesets (`wcag2a`, `wcag2aa`, `wcag21a`, `wcag21aa`, `wcag22aa`) across all 4 primary application views and complex interactive states (selected traces, evidence inspectors, provenance details, benchmark cases, and empty filter states).
 2. **Automated Playwright Browser Interaction & Geometric Tests:**
-   - 25 dedicated tests executed in the UI test suite:
+   - 23 dedicated tests executed in the UI test suite:
      - 6 visual accessibility and layout tests in `tests/ui/test_workbench_visual_a11y.py` (contrast checks across base and surface backgrounds, gradient stops, mobile viewport horizontal overflow bounds, and focus outlines).
      - 9 browser integration tests in `tests/ui/test_workbench_accessibility.py` (axe-core scans, keyboard navigation and focus management workflows, table scopes, live region announcements, reduced motion emulation, forced-colors emulation with computed style assertions and real element negative control, 320px responsive reflow, comprehensive pointer target size evaluation under WCAG 2.5.8, and browser-level pointer target filtering across active, disabled, inert, and focusable scroll regions).
-     - 10 deterministic geometric and target discovery unit tests in `tests/ui/test_workbench_accessibility.py` validating the normative WCAG 2.5.8 spacing evaluator across:
+     - 8 deterministic geometric unit tests in `tests/ui/test_workbench_accessibility.py` validating the normative WCAG 2.5.8 spacing evaluator across:
        - Direct 24x24px sizing compliance.
        - Undersized targets with valid circle-to-circle separation from other undersized targets.
        - Intersecting undersized target circles.
@@ -39,8 +39,6 @@ To ensure complete verification integrity, the audit categorizes findings across
        - Exact boundary contact at 24.0px separation.
        - Fractional-pixel collision at 23.9px separation.
        - Diagonal Euclidean geometry placement.
-       - Target distinction: classifying buttons/options as pointer targets while excluding keyboard-only focusable scroll regions (`role="region"` / `<pre>`).
-       - Excluding disabled or inert controls from active pointer collision evaluation.
 3. **Manual Code & Layout Inspection:**
    - Review of HTML landmark hierarchy, element attributes, DOM reading sequence, and CSS styles.
 4. **Assistive Technology Limitations (Screen Readers & Contrast Themes):**
@@ -111,7 +109,7 @@ To ensure complete verification integrity, the audit categorizes findings across
 | **2.5.3 Label in Name** | A | Buttons, tabs | **PASS** | axe scan, DOM inspection | Accessible names match or contain visible text strings. |
 | **2.5.4 Motion Actuation** | A | N/A | **NOT APPLICABLE** | Codebase inspection | No device shaking or motion actuation. |
 | **2.5.7 Dragging Movements** | AA | N/A | **NOT APPLICABLE** | Codebase inspection | No drag-and-drop operations exist. |
-| **2.5.8 Target Size (Minimum)** | AA | Pointer-operable controls | **PARTIAL** | `test_target_size_wcag_258` and 10 unit tests | Pointer controls tested across all 4 views against the normative 24px diameter circle spacing exception (circle-to-circle for undersized neighbors, circle-to-rectangle for compliant neighbors) without class exemptions. Focusable scroll regions are appropriately distinguished from pointer targets. Physical touchscreen ergonomic validation remains recommended. |
+| **2.5.8 Target Size (Minimum)** | AA | Pointer-operable controls | **PARTIAL** | `test_target_size_wcag_258`, `test_browser_pointer_target_filtering_and_state_handling`, and 8 unit tests | Evaluated across all 4 views via single authoritative `isPointerTarget` classification and geometric circle exception evaluator. Active controls meet >= 24x24px directly or satisfy non-intersecting circle spacing without class exemptions. Focusable scroll regions, disabled elements, and inert subtrees are semantically excluded. Physical touchscreen ergonomic validation remains recommended. |
 | **3.1.1 Language of Page** | A | Document root | **PASS** | HTML inspection | `<html lang="en">` is declared at the document root. |
 | **3.1.2 Language of Parts** | AA | Technical content | **NOT APPLICABLE** | Codebase inspection | Content is entirely English. |
 | **3.2.1 On Focus** | A | Search inputs, tabs | **PASS** | Playwright interaction tests | Focusing an element does not automatically trigger context changes or form submissions. |
@@ -158,5 +156,5 @@ To perform manual assistive technology verification in a production desktop/mobi
 ## 6. Conclusion & Remaining Verification Scope
 
 - **Remediation Completed:** High-impact accessibility barriers (invalid listbox children, keyboard-inaccessible scrollable regions, missing table header scopes, shell redirection syntax errors, and dormant live regions) were successfully remediated without altering benchmark scoring or visual density.
-- **Automated Regression Suite:** 25 tests (6 visual/layout tests, 9 browser accessibility tests including full axe-core scans and target discovery filtering, and 10 geometric/target unit tests) pass cleanly in CI under Playwright 1.58.0.
+- **Automated Regression Suite:** 23 tests (6 visual/layout tests, 9 browser accessibility tests including full axe-core scans and target discovery filtering, and 8 geometric unit tests) pass cleanly in CI under Playwright 1.58.0.
 - **Verification Integrity Disclosure:** The application demonstrates strong automated compliance with WCAG 2.2 Level AA requirements verifiable through headless browser and DOM evaluation. Full Level AA conformance cannot be claimed until manual screen reader speech verification (Section 5), physical Windows Contrast Themes validation, and 400% desktop browser zoom reflow are formally performed by a qualified human tester.

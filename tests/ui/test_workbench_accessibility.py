@@ -36,6 +36,24 @@ except ImportError:
 
 AXE_SCRIPT_PATH = Path(__file__).parent / "vendor" / "axe.min.js"
 
+# Authoritative JS function for discovering and classifying pointer targets in the browser DOM
+POINTER_TARGET_CLASSIFICATION_JS = """
+function isPointerTarget(el) {
+    if (!el) return false;
+    const tag = el.tagName.toLowerCase();
+    const role = el.getAttribute('role') || '';
+    const isDisabled = el.disabled === true || el.getAttribute('aria-disabled') === 'true';
+    const isInert = el.hasAttribute('inert') || el.closest('[inert]') !== null;
+    if (isDisabled || isInert) return false;
+    // Semantically exclude keyboard-only scroll regions (<pre>, .table-responsive) which are not discrete pointer targets
+    if (role === 'region' || role === 'scrollbar' || tag === 'pre' || el.classList.contains('inspector-block') || el.classList.contains('table-responsive')) return false;
+    if (['button', 'input', 'select', 'textarea'].includes(tag)) return true;
+    if (tag === 'a' && el.hasAttribute('href')) return true;
+    if (['button', 'link', 'option', 'tab', 'menuitem'].includes(role)) return true;
+    return false;
+}
+"""
+
 
 def evaluate_target_size_wcag_258(target, neighbors):
     """
@@ -106,29 +124,6 @@ def evaluate_target_size_wcag_258(target, neighbors):
                 return False, f"24px circle intersects circle of undersized neighbor '{n.get('id', 'unknown')}' (center distance {center_dist:.2f}px < 24.0px)"
 
     return True, "Satisfies WCAG 2.5.8 spacing exception (24px non-intersecting circle)"
-
-
-def is_pointer_target(tag, role, is_disabled, is_inert):
-    """
-    Determine whether an element qualifies as an active pointer target under WCAG 2.5.8.
-    Distinguishes pointer-operable elements (buttons, links, options, inputs) from focusable scroll containers.
-    """
-    if is_disabled or is_inert:
-        return False
-
-    # Focusable scroll containers (regions, code blocks, table wrappers) are NOT pointer targets
-    if role in ["region", "scrollbar"] or tag in ["pre", "section", "article"]:
-        return False
-
-    # Genuine pointer-interactive controls
-    if tag in ["button", "input", "select", "textarea"]:
-        return True
-    if tag == "a" and role != "region":
-        return True
-    if role in ["button", "link", "option", "tab", "menuitem", "checkbox", "radio", "switch"]:
-        return True
-
-    return False
 
 
 # ==============================================================================
@@ -214,29 +209,10 @@ def test_unit_target_size_diagonal_euclidean_geometry():
     assert "Satisfies WCAG 2.5.8 spacing exception" in reason
 
 
-def test_unit_distinguish_pointer_target_from_focusable_scroll_region():
-    """9. Confirm that focusable scroll regions are identified as non-pointer targets while buttons are pointer targets."""
-    # Focusable pre block with role="region"
-    assert not is_pointer_target("pre", "region", is_disabled=False, is_inert=False)
-    # Focusable table wrapper with role="region"
-    assert not is_pointer_target("div", "region", is_disabled=False, is_inert=False)
-    # Pointer buttons and options inside or outside
-    assert is_pointer_target("button", None, is_disabled=False, is_inert=False)
-    assert is_pointer_target("li", "option", is_disabled=False, is_inert=False)
-    assert is_pointer_target("button", "tab", is_disabled=False, is_inert=False)
-
-
-def test_unit_disabled_or_inert_elements_excluded_from_targets():
-    """10. Confirm that disabled or inert controls are not evaluated as active pointer targets."""
-    assert not is_pointer_target("button", None, is_disabled=True, is_inert=False)
-    assert not is_pointer_target("button", None, is_disabled=False, is_inert=True)
-    assert not is_pointer_target("input", None, is_disabled=True, is_inert=False)
-
-
 @pytest.mark.skipif(not PLAYWRIGHT_AVAILABLE, reason="playwright not installed")
 def test_browser_pointer_target_filtering_and_state_handling(a11y_comprehensive_server):
     """
-    Browser-level verification that the target discovery algorithm correctly handles:
+    Browser-level verification using authoritative isPointerTarget() DOM classification:
     - active pointer buttons (included)
     - custom interactive elements with role="tab" or role="option" (included)
     - focusable scroll containers <pre class="inspector-block"> with tabindex="0" (excluded)
@@ -264,38 +240,23 @@ def test_browser_pointer_target_filtering_and_state_handling(a11y_comprehensive_
             }
         """)
 
-        # Execute browser target classification script
-        classified = page.evaluate("""
-            () => {
-                const ids = [
-                    'test-btn-active',
-                    'test-btn-disabled',
-                    'test-btn-aria-disabled',
-                    'test-btn-inside-inert',
-                    'test-custom-tab',
-                    'test-scroll-pre'
-                ];
-                function checkIsTarget(el) {
-                    if (!el) return false;
-                    const tag = el.tagName.toLowerCase();
-                    const role = el.getAttribute('role') || '';
-                    const isDisabled = el.disabled === true || el.getAttribute('aria-disabled') === 'true';
-                    const isInert = el.hasAttribute('inert') || el.closest('[inert]') !== null;
-                    if (isDisabled || isInert) return false;
-                    if (role === 'region' || role === 'scrollbar' || tag === 'pre' || el.classList.contains('inspector-block') || el.classList.contains('table-responsive')) return false;
-                    if (['button', 'input', 'select', 'textarea'].includes(tag)) return true;
-                    if (tag === 'a' && el.hasAttribute('href')) return true;
-                    if (['button', 'link', 'option', 'tab', 'menuitem'].includes(role)) return true;
-                    return false;
-                }
-                const results = {};
-                ids.forEach(id => {
-                    const el = document.getElementById(id);
-                    results[id] = checkIsTarget(el);
-                });
-                return results;
-            }
-        """)
+        # Execute authoritative classification script
+        classified = page.evaluate("""() => { """ + POINTER_TARGET_CLASSIFICATION_JS + """
+            const ids = [
+                'test-btn-active',
+                'test-btn-disabled',
+                'test-btn-aria-disabled',
+                'test-btn-inside-inert',
+                'test-custom-tab',
+                'test-scroll-pre'
+            ];
+            const results = {};
+            ids.forEach(id => {
+                const el = document.getElementById(id);
+                results[id] = isPointerTarget(el);
+            });
+            return results;
+        }""")
 
         assert classified["test-btn-active"] is True
         assert classified["test-custom-tab"] is True
@@ -951,8 +912,8 @@ def test_responsive_reflow_narrow_viewport_320px(a11y_comprehensive_server):
 def test_target_size_wcag_258(a11y_comprehensive_server):
     """
     Evaluate interactive pointer targets against WCAG 2.2 2.5.8 minimum target size (>= 24x24 CSS pixels).
-    Applies normative 24px diameter circle spacing exception without class-based exemptions.
-    Distinguishes pointer-operable elements from keyboard-only focusable scroll regions.
+    Applies normative 24px diameter circle spacing exception without arbitrary exemptions.
+    Uses the authoritative isPointerTarget DOM classifier to identify active pointer targets.
     """
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
@@ -973,53 +934,36 @@ def test_target_size_wcag_258(a11y_comprehensive_server):
             page.wait_for_timeout(100)
 
             # Query all interactive pointer-operable targets in current view and shell navigation
-            interactive_data = page.evaluate("""
-                (selector) => {
-                    const selectorStr = selector + ' button, ' +
-                                        selector + ' a[href], ' +
-                                        selector + ' select, ' +
-                                        selector + ' input, ' +
-                                        selector + ' [role="button"], ' +
-                                        selector + ' [role="option"], ' +
-                                        selector + ' [role="tab"], ' +
-                                        '.nav-tab';
-                    const elements = Array.from(document.querySelectorAll(selectorStr));
-
-                    function isPointerTarget(el) {
-                        if (!el) return false;
-                        const tag = el.tagName.toLowerCase();
-                        const role = el.getAttribute('role') || '';
-                        const isDisabled = el.disabled === true || el.getAttribute('aria-disabled') === 'true';
-                        const isInert = el.hasAttribute('inert') || el.closest('[inert]') !== null;
-                        if (isDisabled || isInert) return false;
-                        // Exclude focusable scroll containers (<pre>, .table-responsive) which are keyboard regions, not pointer buttons
-                        if (role === 'region' || role === 'scrollbar' || tag === 'pre' || el.classList.contains('inspector-block') || el.classList.contains('table-responsive')) return false;
-                        if (['button', 'input', 'select', 'textarea'].includes(tag)) return true;
-                        if (tag === 'a' && el.hasAttribute('href')) return true;
-                        if (['button', 'link', 'option', 'tab', 'menuitem'].includes(role)) return true;
-                        return false;
-                    }
-
-                    return elements.map((el, idx) => {
-                        const rect = el.getBoundingClientRect();
-                        const tag = el.tagName.toLowerCase();
-                        const text = (el.textContent || el.getAttribute('aria-label') || '').trim().replace(/\\s+/g, ' ').substring(0, 30);
-                        const id = el.id ? '#' + el.id : (el.className ? '.' + el.className.split(' ')[0] : tag + '_' + idx);
-                        const cs = window.getComputedStyle(el);
-                        const isVisible = rect.width > 0 && rect.height > 0 && cs.visibility !== 'hidden' && cs.display !== 'none' && isPointerTarget(el);
-                        return {
-                            id: id + '_' + idx,
-                            tag: tag,
-                            text: text,
-                            x: rect.x,
-                            y: rect.y,
-                            width: rect.width,
-                            height: rect.height,
-                            visible: isVisible
-                        };
-                    }).filter(e => e.visible);
-                }
-            """, view_selector)
+            interactive_data = page.evaluate("""() => { """ + POINTER_TARGET_CLASSIFICATION_JS + """
+                const selector = '""" + view_selector + """';
+                const selectorStr = selector + ' button, ' +
+                                    selector + ' a[href], ' +
+                                    selector + ' select, ' +
+                                    selector + ' input, ' +
+                                    selector + ' [role="button"], ' +
+                                    selector + ' [role="option"], ' +
+                                    selector + ' [role="tab"], ' +
+                                    '.nav-tab';
+                const elements = Array.from(document.querySelectorAll(selectorStr));
+                return elements.map((el, idx) => {
+                    const rect = el.getBoundingClientRect();
+                    const tag = el.tagName.toLowerCase();
+                    const text = (el.textContent || el.getAttribute('aria-label') || '').trim().replace(/\\s+/g, ' ').substring(0, 30);
+                    const id = el.id ? '#' + el.id : (el.className ? '.' + el.className.split(' ')[0] : tag + '_' + idx);
+                    const cs = window.getComputedStyle(el);
+                    const isVisible = rect.width > 0 && rect.height > 0 && cs.visibility !== 'hidden' && cs.display !== 'none' && isPointerTarget(el);
+                    return {
+                        id: id + '_' + idx,
+                        tag: tag,
+                        text: text,
+                        x: rect.x,
+                        y: rect.y,
+                        width: rect.width,
+                        height: rect.height,
+                        visible: isVisible
+                    };
+                }).filter(e => e.visible);
+            }""")
 
             for target in interactive_data:
                 # Geometric circle evaluation without class-based exemptions
