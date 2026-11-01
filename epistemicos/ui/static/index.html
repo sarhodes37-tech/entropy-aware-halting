@@ -8,6 +8,7 @@
 </head>
 <body>
   <a href="#main-content" class="skip-link">Skip to main content</a>
+  <div id="a11y-status-announcer" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
   <div class="app-shell">
     <aside class="app-sidebar" aria-label="Sidebar Navigation">
       <div class="sidebar-brand">
@@ -129,15 +130,15 @@
               <span>Recent Execution Traces</span>
               <span class="subtitle font-mono">Source: LocalProvenanceStore &amp; Audit Trail</span>
             </div>
-            <div id="overview-recent-traces-container" class="table-responsive">
+            <div id="overview-recent-traces-container" class="table-responsive" tabindex="0" role="region" aria-label="Recent Execution Traces table scrollable region">
               <table class="data-table" aria-label="Recent Execution Traces">
                 <thead>
                   <tr>
-                    <th>Correlation ID</th>
-                    <th>Action</th>
-                    <th>Target</th>
-                    <th>Status</th>
-                    <th>Start Time</th>
+                    <th scope="col">Correlation ID</th>
+                    <th scope="col">Action</th>
+                    <th scope="col">Target</th>
+                    <th scope="col">Status</th>
+                    <th scope="col">Start Time</th>
                   </tr>
                 </thead>
                 <tbody id="overview-recent-traces">
@@ -318,7 +319,7 @@
                 <span id="provenance-count" class="trace-count-badge" aria-live="polite" aria-atomic="true">--</span>
               </div>
               <ul id="provenance-record-list" class="trace-list" role="listbox" aria-label="Select a provenance record to inspect">
-                <li class="text-muted text-center" style="padding: 1.5rem;">Loading provenance records...</li>
+                <li class="text-muted text-center" role="option" aria-selected="false" style="padding: 1.5rem;">Loading provenance records...</li>
               </ul>
             </aside>
 
@@ -390,20 +391,20 @@
             </div>
 
             <h3>Baseline Condition Performance</h3>
-            <div class="table-responsive mb-1">
+            <div class="table-responsive mb-1" tabindex="0" role="region" aria-label="Baseline Condition Performance Metrics table scrollable region">
               <table class="data-table" aria-label="Baseline Condition Performance Metrics">
                 <thead>
                   <tr>
-                    <th>Baseline Condition</th>
-                    <th>Samples</th>
-                    <th>Confusion Matrix (TC/FC/TR/FR)</th>
-                    <th>Accuracy (95% CI)</th>
-                    <th>Recall %</th>
-                    <th>Precision %</th>
-                    <th>FPR %</th>
-                    <th>FNR %</th>
-                    <th>Avg Latency</th>
-                    <th>Total Tokens</th>
+                    <th scope="col">Baseline Condition</th>
+                    <th scope="col">Samples</th>
+                    <th scope="col">Confusion Matrix (TC/FC/TR/FR)</th>
+                    <th scope="col">Accuracy (95% CI)</th>
+                    <th scope="col">Recall %</th>
+                    <th scope="col">Precision %</th>
+                    <th scope="col">FPR %</th>
+                    <th scope="col">FNR %</th>
+                    <th scope="col">Avg Latency</th>
+                    <th scope="col">Total Tokens</th>
                   </tr>
                 </thead>
                 <tbody id="benchmark-baselines-tbody">
@@ -415,16 +416,16 @@
             <div class="section-grid mb-1">
               <div>
                 <h3 style="font-size: 0.95rem; margin-bottom: 0.5rem;">Paired McNemar Inferential Comparisons</h3>
-                <div id="benchmark-mcnemar-container" class="table-responsive">
+                <div id="benchmark-mcnemar-container" class="table-responsive" tabindex="0" role="region" aria-label="Paired McNemar Inferential Comparisons table scrollable region">
                   <table class="data-table" aria-label="Paired McNemar Inferential Comparisons">
                     <thead>
                       <tr>
-                        <th>Comparison</th>
-                        <th>Disc. A+/B-</th>
-                        <th>Disc. A-/B+</th>
-                        <th>Chi² Stat</th>
-                        <th>p-value</th>
-                        <th>Significant (α=0.05)</th>
+                        <th scope="col">Comparison</th>
+                        <th scope="col">Disc. A+/B-</th>
+                        <th scope="col">Disc. A-/B+</th>
+                        <th scope="col">Chi² Stat</th>
+                        <th scope="col">p-value</th>
+                        <th scope="col">Significant (α=0.05)</th>
                       </tr>
                     </thead>
                     <tbody id="benchmark-mcnemar-tbody">
@@ -436,17 +437,17 @@
 
               <div>
                 <h3 style="font-size: 0.95rem; margin-bottom: 0.5rem;">Entropy Gate Threshold Sensitivity Analysis</h3>
-                <div id="threshold-ablations-container" class="table-responsive">
+                <div id="threshold-ablations-container" class="table-responsive" tabindex="0" role="region" aria-label="Entropy Gate Threshold Sensitivity Analysis table scrollable region">
                   <table class="data-table" aria-label="Entropy Gate Threshold Sensitivity Analysis">
                     <thead>
                       <tr>
-                        <th>Z-Threshold</th>
-                        <th>TC</th>
-                        <th>FC</th>
-                        <th>TR</th>
-                        <th>FR</th>
-                        <th>Precision %</th>
-                        <th>Recall %</th>
+                        <th scope="col">Z-Threshold</th>
+                        <th scope="col">TC</th>
+                        <th scope="col">FC</th>
+                        <th scope="col">TR</th>
+                        <th scope="col">FR</th>
+                        <th scope="col">Precision %</th>
+                        <th scope="col">Recall %</th>
                       </tr>
                     </thead>
                     <tbody id="benchmark-thresholds-tbody">
@@ -494,7 +495,7 @@
                   <span id="benchmark-case-count" class="trace-count-badge" aria-live="polite" aria-atomic="true">--</span>
                 </div>
                 <ul id="benchmark-case-list" class="trace-list" role="listbox" aria-label="Select a benchmark case to inspect">
-                  <li class="text-muted text-center" style="padding: 1.5rem;">Loading benchmark cases...</li>
+                  <li class="text-muted text-center" role="option" aria-selected="false" style="padding: 1.5rem;">Loading benchmark cases...</li>
                 </ul>
               </aside>
 

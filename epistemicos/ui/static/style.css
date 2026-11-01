@@ -114,6 +114,19 @@ body {
   outline-offset: 2px;
 }
 
+/* Visually Hidden Screen Reader Only Utility */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 /* Typography Utilities */
 .font-mono {
   font-family: var(--font-mono);
@@ -652,6 +665,13 @@ h2 {
   padding: 1rem;
   max-height: 750px;
   overflow-y: auto;
+}
+
+.inspector-block:focus-visible,
+.table-responsive:focus-visible {
+  outline: 2px solid var(--accent-interactive);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 3px rgba(100, 222, 217, 0.35);
 }
 
 .trace-list {
