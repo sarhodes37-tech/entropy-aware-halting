@@ -963,18 +963,160 @@ class FileAuthorizationStore(AuthorizationStore):
                 self._release_flock()
 
 
+import base64
+
+# RFC 8032 pure-python Ed25519 verification with optional libcrypto acceleration
+_ED25519_B = 256
+_ED25519_Q = 2**255 - 19
+_ED25519_L = 2**252 + 27742317777372353535851937790883648493
+
+
+def _ed_H(m: bytes) -> bytes:
+    return hashlib.sha512(m).digest()
+
+
+def _ed_expmod(b: int, e: int, m: int) -> int:
+    return pow(b, e, m)
+
+
+def _ed_inv(x: int) -> int:
+    return _ed_expmod(x, _ED25519_Q - 2, _ED25519_Q)
+
+
+_ed_d = -121665 * _ed_inv(121666)
+_ed_I = _ed_expmod(2, (_ED25519_Q - 1) // 4, _ED25519_Q)
+
+
+def _ed_xrecover(y: int) -> int:
+    xx = (y * y - 1) * _ed_inv(_ed_d * y * y + 1)
+    x = _ed_expmod(xx, (_ED25519_Q + 3) // 8, _ED25519_Q)
+    if (x * x - xx) % _ED25519_Q != 0:
+        x = (x * _ed_I) % _ED25519_Q
+    if x % 2 != 0:
+        x = _ED25519_Q - x
+    return x
+
+
+_ed_By = 4 * _ed_inv(5)
+_ed_Bx = _ed_xrecover(_ed_By)
+_ed_B = [_ed_Bx % _ED25519_Q, _ed_By % _ED25519_Q]
+
+
+def _ed_edwards(P: List[int], Q: List[int]) -> List[int]:
+    x1, y1 = P[0], P[1]
+    x2, y2 = Q[0], Q[1]
+    x3 = (x1 * y2 + x2 * y1) * _ed_inv(1 + _ed_d * x1 * x2 * y1 * y2)
+    y3 = (y1 * y2 + x1 * x2) * _ed_inv(1 - _ed_d * x1 * x2 * y1 * y2)
+    return [x3 % _ED25519_Q, y3 % _ED25519_Q]
+
+
+def _ed_scalarmult(P: List[int], e: int) -> List[int]:
+    if e == 0:
+        return [0, 1]
+    Q = _ed_scalarmult(P, e // 2)
+    Q = _ed_edwards(Q, Q)
+    if e & 1:
+        Q = _ed_edwards(Q, P)
+    return Q
+
+
+def _ed_decodeint(s: bytes) -> int:
+    return int.from_bytes(s, "little")
+
+
+def _ed_decodepoint(s: bytes) -> List[int]:
+    y = int.from_bytes(s, "little") & ((1 << 255) - 1)
+    x = _ed_xrecover(y)
+    if bool(x & 1) != bool(s[31] & 0x80):
+        x = _ED25519_Q - x
+    P = [x, y]
+    if not ((-x * x + y * y - 1 - _ed_d * x * x * y * y) % _ED25519_Q == 0):
+        raise ValueError("decoding point that is not on curve")
+    return P
+
+
+def _ed25519_verify_pure(sig_bytes: bytes, msg_bytes: bytes, pubkey_bytes: bytes) -> bool:
+    try:
+        if len(sig_bytes) != 64 or len(pubkey_bytes) != 32:
+            return False
+        R = _ed_decodepoint(sig_bytes[:32])
+        A = _ed_decodepoint(pubkey_bytes)
+        S = _ed_decodeint(sig_bytes[32:])
+        if S >= _ED25519_L:
+            return False
+        h = _ed_decodeint(_ed_H(sig_bytes[:32] + pubkey_bytes + msg_bytes))
+        v1 = _ed_scalarmult(_ed_B, S)
+        v2 = _ed_edwards(R, _ed_scalarmult(A, h))
+        return v1 == v2
+    except Exception:
+        return False
+
+
+try:
+    import ctypes
+    import ctypes.util
+    _libcrypto_path = ctypes.util.find_library("crypto")
+    if _libcrypto_path:
+        _libcrypto = ctypes.CDLL(_libcrypto_path)
+        _EVP_PKEY_ED25519 = 1087
+        _libcrypto.EVP_MD_CTX_new.restype = ctypes.c_void_p
+        _libcrypto.EVP_MD_CTX_free.argtypes = [ctypes.c_void_p]
+        _libcrypto.EVP_PKEY_new_raw_public_key.restype = ctypes.c_void_p
+        _libcrypto.EVP_PKEY_new_raw_public_key.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_char_p, ctypes.c_size_t]
+        _libcrypto.EVP_PKEY_free.argtypes = [ctypes.c_void_p]
+        _libcrypto.EVP_DigestVerifyInit.restype = ctypes.c_int
+        _libcrypto.EVP_DigestVerifyInit.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p), ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
+        _libcrypto.EVP_DigestVerify.restype = ctypes.c_int
+        _libcrypto.EVP_DigestVerify.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_size_t, ctypes.c_char_p, ctypes.c_size_t]
+        _HAS_LIBCRYPTO = True
+    else:
+        _HAS_LIBCRYPTO = False
+except Exception:
+    _HAS_LIBCRYPTO = False
+
+
+def verify_ed25519_signature(sig_bytes: bytes, msg_bytes: bytes, pubkey_bytes: bytes) -> bool:
+    """Verifies an Ed25519 signature (RFC 8032) using libcrypto when available or pure Python."""
+    if len(sig_bytes) != 64 or len(pubkey_bytes) != 32:
+        return False
+    if _HAS_LIBCRYPTO:
+        try:
+            pkey = _libcrypto.EVP_PKEY_new_raw_public_key(_EVP_PKEY_ED25519, None, pubkey_bytes, len(pubkey_bytes))
+            if not pkey:
+                return _ed25519_verify_pure(sig_bytes, msg_bytes, pubkey_bytes)
+            ctx = _libcrypto.EVP_MD_CTX_new()
+            if not ctx:
+                _libcrypto.EVP_PKEY_free(pkey)
+                return _ed25519_verify_pure(sig_bytes, msg_bytes, pubkey_bytes)
+            try:
+                init_res = _libcrypto.EVP_DigestVerifyInit(ctx, None, None, None, pkey)
+                if init_res != 1:
+                    return False
+                res = _libcrypto.EVP_DigestVerify(ctx, sig_bytes, len(sig_bytes), msg_bytes, len(msg_bytes))
+                return res == 1
+            finally:
+                _libcrypto.EVP_MD_CTX_free(ctx)
+                _libcrypto.EVP_PKEY_free(pkey)
+        except Exception:
+            return _ed25519_verify_pure(sig_bytes, msg_bytes, pubkey_bytes)
+    return _ed25519_verify_pure(sig_bytes, msg_bytes, pubkey_bytes)
+
+
 @dataclass(frozen=True)
 class AuthenticatedPrincipal:
     """
     Cryptographically and authoritatively verified identity assertion representing
     an authenticated principal.
     A caller-supplied string, dictionary, or manually constructed object without
-    a valid cryptographic signature from an independently trusted PrincipalProvider is strictly rejected.
+    a valid asymmetric cryptographic signature from an independently trusted external Identity Provider
+    is strictly rejected.
     """
     principal_id: str
     issuer_id: str
     timestamp: float
     signature: str
+    expires_at: Optional[float] = None
+    key_id: Optional[str] = None
 
     def __post_init__(self):
         if not self.principal_id or not isinstance(self.principal_id, str) or not self.principal_id.strip():
@@ -984,36 +1126,70 @@ class AuthenticatedPrincipal:
         if not self.signature or not isinstance(self.signature, str) or not self.signature.strip():
             raise ValueError("AuthenticatedPrincipal: signature must be a non-empty string")
 
+    def compute_signature_payload(self) -> bytes:
+        exp_str = f"{self.expires_at:.6f}" if self.expires_at is not None else ""
+        kid_str = self.key_id or ""
+        payload = f"{self.principal_id}:{self.issuer_id}:{self.timestamp:.6f}:{exp_str}:{kid_str}"
+        return payload.encode("utf-8")
+
 
 class PrincipalVerifier:
     """
-    Independent identity verifier that validates AuthenticatedPrincipal assertions.
-    Holds ONLY verification keys/secrets; does NOT hold private signing keys or identity-minting APIs.
-    Enforces issuer validation, signature verification, clock skew tolerance, and expiry.
+    Independent identity verifier that validates AuthenticatedPrincipal assertions
+    using public-key cryptography (Ed25519).
+    Holds ONLY configured public verification keys (by issuer); does NOT hold private signing
+    keys or identity-minting APIs.
+    Enforces issuer validation, asymmetric signature verification, clock skew tolerance, and expiry.
     """
 
     def __init__(
         self,
-        verification_secret: Optional[bytes] = None,
-        trusted_issuer_id: str = "TrustedIdentityAuthority",
+        trusted_public_keys: Optional[Dict[str, Union[bytes, str]]] = None,
         clock_skew_seconds: float = 5.0
     ):
-        if verification_secret:
-            self.verification_secret = verification_secret
-        else:
-            env_sec = os.getenv("EPISTEMICOS_IDENTITY_VERIFICATION_SECRET", os.getenv("EPISTEMICOS_IDENTITY_SECRET"))
-            if env_sec:
-                self.verification_secret = env_sec.encode("utf-8")
-            else:
-                self.verification_secret = None
-        self.trusted_issuer_id = trusted_issuer_id.strip() if trusted_issuer_id and isinstance(trusted_issuer_id, str) else "TrustedIdentityAuthority"
+        self._trusted_public_keys: Dict[str, bytes] = {}
         self.clock_skew_seconds = clock_skew_seconds
 
-    def _compute_signature(self, principal_id: str, issuer_id: str, timestamp: float) -> Optional[str]:
-        if not self.verification_secret:
-            return None
-        payload = f"{principal_id}:{issuer_id}:{timestamp}"
-        return hmac.new(self.verification_secret, payload.encode("utf-8"), hashlib.sha256).hexdigest()
+        if trusted_public_keys:
+            for issuer, key_val in trusted_public_keys.items():
+                self.register_trusted_issuer_key(issuer, key_val)
+        else:
+            # Check environment for configured issuer public keys:
+            # e.g., EPISTEMICOS_IDP_ISSUER="CorpIdP", EPISTEMICOS_IDP_PUBLIC_KEY="<base64 or hex>"
+            env_issuer = os.getenv("EPISTEMICOS_IDP_ISSUER")
+            env_key = os.getenv("EPISTEMICOS_IDP_PUBLIC_KEY")
+            if env_issuer and env_key:
+                self.register_trusted_issuer_key(env_issuer, env_key)
+
+    def register_trusted_issuer_key(self, issuer_id: str, public_key: Union[bytes, str]) -> None:
+        """Registers a public verification key for an authorized external identity issuer."""
+        if not issuer_id or not isinstance(issuer_id, str):
+            raise ValueError("issuer_id must be a non-empty string")
+        iss = issuer_id.strip()
+        if isinstance(public_key, str):
+            clean_k = public_key.strip()
+            # Handle PEM format if provided
+            if "-----BEGIN PUBLIC KEY-----" in clean_k:
+                lines = [l.strip() for l in clean_k.splitlines() if "---" not in l]
+                der = base64.b64decode("".join(lines))
+                # SubjectPublicKeyInfo for ED25519 is 44 bytes, raw key is the last 32 bytes
+                raw_k = der[-32:]
+            else:
+                try:
+                    raw_k = bytes.fromhex(clean_k)
+                except ValueError:
+                    raw_k = base64.b64decode(clean_k)
+        elif isinstance(public_key, (bytes, bytearray)):
+            raw_k = bytes(public_key)
+        else:
+            raise TypeError("public_key must be bytes or str")
+
+        if len(raw_k) != 32:
+            raise ValueError(f"Ed25519 public key must be exactly 32 bytes (got {len(raw_k)})")
+        self._trusted_public_keys[iss] = raw_k
+
+    def has_trusted_issuers(self) -> bool:
+        return bool(self._trusted_public_keys)
 
     def verify_principal(
         self,
@@ -1021,8 +1197,8 @@ class PrincipalVerifier:
         max_age_seconds: float = 3600.0,
         current_time: Optional[float] = None
     ) -> Tuple[bool, str, Optional[str]]:
-        if not self.verification_secret:
-            return False, "PrincipalVerifier is not configured with a trusted verification secret", None
+        if not self._trusted_public_keys:
+            return False, "PrincipalVerifier is not configured with any trusted public verification keys", None
 
         if not isinstance(principal, AuthenticatedPrincipal):
             return False, "Object is not a valid AuthenticatedPrincipal assertion", None
@@ -1030,8 +1206,9 @@ class PrincipalVerifier:
         if not principal.signature or not isinstance(principal.signature, str):
             return False, "Missing or invalid signature on principal assertion", None
 
-        if principal.issuer_id != self.trusted_issuer_id:
-            return False, f"Untrusted identity issuer: expected '{self.trusted_issuer_id}', got '{principal.issuer_id}'", None
+        trusted_pubkey = self._trusted_public_keys.get(principal.issuer_id)
+        if not trusted_pubkey:
+            return False, f"Untrusted identity issuer: '{principal.issuer_id}' is not in configured trusted issuers", None
 
         now = current_time if current_time is not None else time.time()
 
@@ -1039,19 +1216,35 @@ class PrincipalVerifier:
         if principal.timestamp > (now + self.clock_skew_seconds):
             return False, f"Future-dated principal assertion rejected (timestamp {principal.timestamp} > current time {now})", None
 
-        # Reject expired assertions
+        # Reject expired assertions by timestamp + max_age_seconds
         if (now - principal.timestamp) > max_age_seconds:
             return False, f"Principal assertion expired (age {now - principal.timestamp:.1f}s > max {max_age_seconds}s)", None
 
-        expected_sig = self._compute_signature(principal.principal_id, principal.issuer_id, principal.timestamp)
-        if not expected_sig or not hmac.compare_digest(principal.signature, expected_sig):
-            return False, "Cryptographic signature verification failed on principal assertion", None
+        # Reject expired assertions by explicit expires_at field if present
+        if principal.expires_at is not None:
+            if now >= principal.expires_at:
+                return False, f"Principal assertion expired (current time {now} >= expires_at {principal.expires_at})", None
+
+        # Decode signature
+        try:
+            sig_bytes = bytes.fromhex(principal.signature)
+            if len(sig_bytes) != 64:
+                sig_bytes = base64.b64decode(principal.signature)
+        except Exception:
+            try:
+                sig_bytes = base64.b64decode(principal.signature)
+            except Exception:
+                return False, "Invalid signature encoding on principal assertion", None
+
+        if len(sig_bytes) != 64:
+            return False, f"Invalid signature length on principal assertion (expected 64 bytes, got {len(sig_bytes)})", None
+
+        # Verify asymmetric Ed25519 signature
+        msg_bytes = principal.compute_signature_payload()
+        if not verify_ed25519_signature(sig_bytes, msg_bytes, trusted_pubkey):
+            return False, "Cryptographic asymmetric signature verification failed on principal assertion", None
 
         return True, "Principal verified", principal.principal_id
-
-
-# Alias for backward compatibility if imported by test harnesses
-PrincipalProvider = PrincipalVerifier
 
 
 @dataclass
@@ -1889,14 +2082,14 @@ class AuthorizationAuthority:
             self.executor_registry = ExecutorRegistry(executor_registry)
 
         # SEC-01: Independent identity verifier integration.
-        # AuthorizationAuthority holds verification keys, NEVER identity-issuing keys.
+        # AuthorizationAuthority holds verification keys, NEVER identity-issuing keys or private signing material.
         self.principal_provider = principal_provider
         if not self.principal_provider:
-            env_id_sec = os.getenv("EPISTEMICOS_IDENTITY_VERIFICATION_SECRET", os.getenv("EPISTEMICOS_IDENTITY_SECRET"))
-            if env_id_sec:
+            env_issuer = os.getenv("EPISTEMICOS_IDP_ISSUER")
+            env_key = os.getenv("EPISTEMICOS_IDP_PUBLIC_KEY")
+            if env_issuer and env_key:
                 self.principal_provider = PrincipalVerifier(
-                    verification_secret=env_id_sec.encode("utf-8"),
-                    trusted_issuer_id=os.getenv("EPISTEMICOS_IDENTITY_ISSUER", "TrustedIdentityAuthority")
+                    trusted_public_keys={env_issuer: env_key}
                 )
 
     def clear_denial_with_approval(

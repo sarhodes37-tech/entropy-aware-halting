@@ -83,8 +83,31 @@ class TrustedToolWrapper:
                 raise ValueError(f"TrustedToolWrapper initialization failed: Executor signature must be inspectable for mutating operation '{self.action_name}' ({str(e)})") from e
             self._executor_sig = None
 
+        # Validate that mutating operations explicitly specify target_param (or default_target if parameterless)
+        if not self.is_read_only:
+            if not self.target_param and not self.default_target:
+                # If target_param is not explicitly given, check if 'target' or standard resource params are in signature parameters
+                if self._executor_sig:
+                    if "target" in self._executor_sig.parameters:
+                        self.target_param = "target"
+                    elif len(self._executor_sig.parameters) == 0:
+                        # 0-arg function (e.g. parameterless task): assign default target name
+                        self.default_target = self.default_target or f"resource:{self.action_name}"
+                    else:
+                        raise ValueError(
+                            f"TrustedToolWrapper initialization failed: State-mutating operation '{self.action_name}' requires explicit 'target_param' bound to executor signature"
+                        )
+                else:
+                    raise ValueError(
+                        f"TrustedToolWrapper initialization failed: State-mutating operation '{self.action_name}' requires explicit 'target_param' bound to executor signature"
+                    )
+
         # Validate that target_param exists in executor's inspectable signature
-        if self.target_param and self._executor_sig:
+        if self.target_param:
+            if not self._executor_sig:
+                raise ValueError(
+                    f"TrustedToolWrapper initialization failed: Executor signature must be inspectable to bind target_param '{self.target_param}'"
+                )
             if self.target_param not in self._executor_sig.parameters:
                 raise ValueError(
                     f"TrustedToolWrapper initialization failed: target_param '{self.target_param}' does not exist in executor signature parameters: {list(self._executor_sig.parameters.keys())}"
@@ -98,96 +121,156 @@ class TrustedToolWrapper:
         """
         Determines the actual resource target accessed by this tool invocation deterministically.
         SEC-03: For state-mutating operations:
-        - Requires explicit target_extractor or explicit target_param (or keyword 'target').
-        - Strictly rejects ambiguous positional string fallback.
-        - Strictly rejects conflicting target values across parameter sources.
-        - Fails closed on unknown or unclassified actions.
+        - Binds actual arguments to executor signature using the exact target_param.
+        - Resolves target value strictly from target_param.
+        - Strictly rejects positional argument heuristics or parameter-name keyword heuristics.
+        - If custom target_extractor is configured, verifies it against the bound target_param value.
+        - Strictly rejects missing, empty, or conflicting target values.
         """
-        targets_found = {}
+        # Strip control-plane wrapper kwargs before argument binding
+        filtered_kwargs = {
+            k: v for k, v in kwargs.items()
+            if k not in ("authenticated_principal", "principal_id", "policy", "task_contract", "human_approval", "context")
+        }
 
-        # 1. Custom extractor
-        if self.target_extractor:
-            try:
-                extracted = self.target_extractor(*args, **kwargs)
-                if not extracted or not isinstance(extracted, str) or not extracted.strip():
-                    raise PermissionError(f"Tool target extraction failed closed: Custom extractor returned invalid target '{extracted}'")
-                targets_found["target_extractor"] = extracted.strip()
-            except Exception as e:
-                if isinstance(e, PermissionError):
-                    raise
-                raise PermissionError(f"Tool target extraction failed closed: {str(e)}") from e
+        # Check for conflicting target parameter in explicit kwargs before binding
+        if "target" in filtered_kwargs and self.target_param and self.target_param != "target":
+            kwarg_target = str(filtered_kwargs["target"]).strip() if filtered_kwargs["target"] else ""
+            if self.target_param in filtered_kwargs and filtered_kwargs[self.target_param]:
+                tp_val = str(filtered_kwargs[self.target_param]).strip()
+                if kwarg_target and tp_val and kwarg_target != tp_val:
+                    raise PermissionError(
+                        f"Tool execution rejected: Conflicting target values detected: explicit 'target'='{kwarg_target}' differs from '{self.target_param}'='{tp_val}'"
+                    )
 
-        # 2. Explicit target_param declared at registration
-        if self.target_param:
-            if self.target_param in kwargs and kwargs[self.target_param]:
-                val = str(kwargs[self.target_param]).strip()
-                if val:
-                    targets_found["target_param_kwarg"] = val
-            try:
-                sig = inspect.signature(self._executor_func)
-                bound_args = sig.bind_partial(*args, **kwargs)
-                if self.target_param in bound_args.arguments and bound_args.arguments[self.target_param]:
-                    val = str(bound_args.arguments[self.target_param]).strip()
-                    if val:
-                        targets_found["target_param_bound"] = val
-            except (ValueError, TypeError):
-                pass
-
-        # 3. Explicit 'target' parameter in kwargs
-        if "target" in kwargs and kwargs["target"]:
-            val = str(kwargs["target"]).strip()
-            if val:
-                targets_found["explicit_target_kwarg"] = val
-
-        # 4. Resource argument inference in kwargs / signature-bound args
-        resource_keys = ("path", "file", "filepath", "node", "endpoint", "url", "resource", "filename", "destination")
-        for r_key in resource_keys:
-            if r_key in kwargs and kwargs[r_key]:
-                val = str(kwargs[r_key]).strip()
-                if val:
-                    targets_found[f"resource_kwarg_{r_key}"] = val
-
-        try:
-            sig = inspect.signature(self._executor_func)
-            bound_args = sig.bind_partial(*args, **kwargs)
-            for r_key in resource_keys:
-                if r_key in bound_args.arguments and bound_args.arguments[r_key]:
-                    val = str(bound_args.arguments[r_key]).strip()
-                    if val:
-                        targets_found[f"resource_bound_{r_key}"] = val
-        except (ValueError, TypeError):
-            pass
-
-        # Check for conflicting targets among explicit sources
-        distinct_targets = set(targets_found.values())
-        if len(distinct_targets) > 1:
-            raise PermissionError(
-                f"Tool execution rejected: Conflicting target values detected across parameters for tool '{self.tool_id}': {distinct_targets}"
-            )
-
-        if distinct_targets:
-            return distinct_targets.pop()
-
-        # SEC-03: Positional argument fallback is permitted ONLY for demonstrably read-only actions
+        # Read-only operation path: allow explicit target_param, keyword 'target', resource params, positional fallback, or default_target
         if self.is_read_only:
+            if self.target_param:
+                if self._executor_sig:
+                    try:
+                        bound = self._executor_sig.bind_partial(*args, **filtered_kwargs)
+                        if self.target_param in bound.arguments and bound.arguments[self.target_param]:
+                            val = str(bound.arguments[self.target_param]).strip()
+                            if val:
+                                return val
+                    except Exception:
+                        pass
+                if self.target_param in filtered_kwargs and filtered_kwargs[self.target_param]:
+                    val = str(filtered_kwargs[self.target_param]).strip()
+                    if val:
+                        return val
+
+            if "target" in filtered_kwargs and filtered_kwargs["target"]:
+                val = str(filtered_kwargs["target"]).strip()
+                if val:
+                    return val
+
+            # Check standard resource argument names in kwargs or signature
+            resource_keys = ("path", "file", "filepath", "node", "endpoint", "url", "resource", "filename", "destination")
+            for r_key in resource_keys:
+                if r_key in filtered_kwargs and filtered_kwargs[r_key]:
+                    val = str(filtered_kwargs[r_key]).strip()
+                    if val:
+                        return val
+
+            if self._executor_sig:
+                try:
+                    bound = self._executor_sig.bind_partial(*args, **filtered_kwargs)
+                    for r_key in resource_keys:
+                        if r_key in bound.arguments and bound.arguments[r_key]:
+                            val = str(bound.arguments[r_key]).strip()
+                            if val:
+                                return val
+                except Exception:
+                    pass
+
             if args and isinstance(args[0], str) and args[0].strip():
                 return args[0].strip()
 
-        # Default target fallback (safe only if configured and no conflicting args)
-        if self.default_target:
-            # For mutating actions without explicit target_param or extractor, reject execution if dynamic args were supplied
-            if not self.is_read_only and not self.target_param and not self.target_extractor and (args or kwargs):
+            if self.default_target:
+                return self.default_target
+
+            raise PermissionError(f"Tool execution rejected: Unable to determine resource target for read-only tool '{self.tool_id}'")
+
+        # Mutating operations: FAIL CLOSED if executor signature is not inspectable
+        if not self._executor_sig:
+            raise PermissionError(f"Tool execution rejected: Mutating operation '{self.action_name}' requires an inspectable executor signature")
+
+        # Parameterless mutating tool with explicit default_target and no args/kwargs
+        if self.default_target and not self.target_param:
+            if args or filtered_kwargs:
                 raise PermissionError(
-                    f"Tool execution rejected: State-mutating tool '{self.tool_id}' requires explicit target_param or target_extractor and cannot rely on default_target when arguments are supplied"
+                    f"Tool execution rejected: Parameterless mutating tool '{self.tool_id}' cannot accept dynamic arguments"
                 )
             return self.default_target
 
-        if not self.is_read_only:
+        if not self.target_param:
             raise PermissionError(
-                f"Tool execution rejected: State-mutating operation '{self.action_name}' requires explicit target parameter ('target_param' or 'target_extractor') and rejects ambiguous positional fallback"
+                f"Tool execution rejected: State-mutating operation '{self.action_name}' requires explicit 'target_param'"
             )
 
-        raise PermissionError(f"Tool execution rejected: Unable to determine actual resource target for tool '{self.tool_id}'")
+        # Check for conflicting target in kwargs if 'target' is passed and not in executor signature
+        if "target" in filtered_kwargs and self.target_param != "target":
+            kwarg_target = str(filtered_kwargs["target"]).strip() if filtered_kwargs["target"] else ""
+            # If target_param is provided positionally or in kwargs, check for mismatch
+            try:
+                bound_trial = self._executor_sig.bind_partial(*args, **{k: v for k, v in filtered_kwargs.items() if k in self._executor_sig.parameters})
+                if self.target_param in bound_trial.arguments:
+                    trial_val = str(bound_trial.arguments[self.target_param]).strip()
+                    if kwarg_target and trial_val and kwarg_target != trial_val:
+                        raise PermissionError(
+                            f"Tool execution rejected: Conflicting target values detected: explicit 'target'='{kwarg_target}' differs from '{self.target_param}'='{trial_val}'"
+                        )
+            except (ValueError, TypeError):
+                pass
+
+        # Bind executor arguments using signature
+        try:
+            bound_args = self._executor_sig.bind_partial(*args, **filtered_kwargs)
+        except (ValueError, TypeError) as bind_err:
+            raise PermissionError(
+                f"Tool execution rejected: Signature binding error for mutating operation '{self.action_name}': {str(bind_err)}"
+            ) from bind_err
+
+        if self.target_param not in bound_args.arguments or bound_args.arguments[self.target_param] is None:
+            raise PermissionError(
+                f"Tool execution rejected: Missing required target parameter '{self.target_param}' for mutating operation '{self.action_name}'"
+            )
+
+        raw_val = bound_args.arguments[self.target_param]
+        if not isinstance(raw_val, str) or not raw_val.strip():
+            raise PermissionError(
+                f"Tool execution rejected: Target parameter '{self.target_param}' must be a non-empty string for operation '{self.action_name}'"
+            )
+
+        resolved_target = raw_val.strip()
+
+        # Check for conflicting target in explicit kwargs if 'target' or another standard target kwarg is also provided
+        if "target" in filtered_kwargs and filtered_kwargs["target"]:
+            kwarg_target = str(filtered_kwargs["target"]).strip()
+            if kwarg_target and kwarg_target != resolved_target:
+                raise PermissionError(
+                    f"Tool execution rejected: Conflicting target values detected: explicit 'target'='{kwarg_target}' differs from '{self.target_param}'='{resolved_target}'"
+                )
+
+        # Verifiable binding contract for custom target_extractor:
+        # If custom extractor is present, its result must strictly match the resolved executor target_param argument
+        if self.target_extractor:
+            try:
+                extracted = self.target_extractor(*args, **kwargs)
+            except Exception as e:
+                raise PermissionError(f"Tool execution rejected: Custom target extractor failed ({str(e)})") from e
+
+            if not extracted or not isinstance(extracted, str) or not extracted.strip():
+                raise PermissionError("Tool execution rejected: Custom target extractor returned empty or invalid target")
+
+            extracted_target = extracted.strip()
+            if extracted_target != resolved_target:
+                raise PermissionError(
+                    f"Tool execution rejected: Custom extractor target '{extracted_target}' does not match executor parameter '{self.target_param}'='{resolved_target}'"
+                )
+
+        return resolved_target
 
     def __call__(
         self,
@@ -237,6 +320,8 @@ class TrustedToolWrapper:
         if auth_principal_input is not None:
             if not isinstance(auth_principal_input, AuthenticatedPrincipal):
                 raise PermissionError("Tool execution rejected: authenticated_principal must be an instance of AuthenticatedPrincipal")
+            if not getattr(authority, "principal_provider", None):
+                raise PermissionError("Tool execution rejected: Authority has no configured PrincipalProvider to verify authenticated_principal")
             valid, p_reason, pid = authority.principal_provider.verify_principal(auth_principal_input)
             if not valid:
                 raise PermissionError(f"Tool execution rejected: Principal authentication failed ({p_reason})")
@@ -274,44 +359,26 @@ class TrustedToolWrapper:
             # SEC-03: Verify that authorized target is exactly the resource targeted by the executor
             bound_for_exec = sig.bind_partial(*args, **call_kwargs)
 
-            # 1. Verify standard target_param if registered
-            if self.target_param and self.target_param in bound_for_exec.arguments:
-                bound_val = str(bound_for_exec.arguments[self.target_param]).strip()
-                if bound_val != exec_target:
-                    raise PermissionError(
-                        f"Tool execution rejected: Authorized target '{exec_target}' differs from executor target parameter '{bound_val}' (via target_param '{self.target_param}')"
-                    )
-
-            # 2. Check all recognized target parameter names
-            recognized_target_names = ("target", "path", "file", "filepath", "node", "endpoint", "url", "resource", "filename", "destination")
-            for param_name in recognized_target_names:
-                if param_name in bound_for_exec.arguments:
-                    bound_val = str(bound_for_exec.arguments[param_name]).strip()
+            # For mutating operations, verify that the exact target_param received the authorized target
+            if not self.is_read_only:
+                if self.target_param:
+                    if self.target_param not in bound_for_exec.arguments:
+                        raise PermissionError(
+                            f"Tool execution rejected: Target parameter '{self.target_param}' missing from bound executor arguments"
+                        )
+                    bound_val = str(bound_for_exec.arguments[self.target_param]).strip()
+                    if bound_val != exec_target:
+                        raise PermissionError(
+                            f"Tool execution rejected: Authorized target '{exec_target}' differs from executor target parameter '{bound_val}' (via target_param '{self.target_param}')"
+                        )
+            else:
+                # Read-only operations: check target_param if present
+                if self.target_param and self.target_param in bound_for_exec.arguments:
+                    bound_val = str(bound_for_exec.arguments[self.target_param]).strip()
                     if bound_val and bound_val != exec_target:
                         raise PermissionError(
-                            f"Tool execution rejected: Authorized target '{exec_target}' differs from executor target parameter '{bound_val}' (via parameter '{param_name}')"
+                            f"Tool execution rejected: Authorized target '{exec_target}' differs from executor target parameter '{bound_val}' (via target_param '{self.target_param}')"
                         )
-
-            # 3. Verifiable binding contract for mutating operations:
-            # Check any string argument whose parameter name implies resource/identity targeting
-            if not self.is_read_only:
-                target_like_keywords = ("key", "id", "account", "table", "db", "entity", "dest", "item", "record")
-                found_bound_target = False
-                for p_name, p_val in bound_for_exec.arguments.items():
-                    if isinstance(p_val, str) and str(p_val).strip() == exec_target:
-                        found_bound_target = True
-                    elif isinstance(p_val, str) and any(k in p_name.lower() for k in target_like_keywords):
-                        bound_str = str(p_val).strip()
-                        if bound_str and bound_str != exec_target:
-                            raise PermissionError(
-                                f"Tool execution rejected: Authorized target '{exec_target}' differs from executor argument '{bound_str}' (via parameter '{p_name}')"
-                            )
-
-                # If dynamic args were supplied to mutating action, at least one argument must bind to the authorized target
-                if (args or call_kwargs) and not found_bound_target and not self.default_target:
-                    raise PermissionError(
-                        f"Tool execution rejected: Verifiable target binding contract failed; no executor argument bound to authorized target '{exec_target}'"
-                    )
 
         except PermissionError:
             raise

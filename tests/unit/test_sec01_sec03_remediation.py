@@ -3,94 +3,357 @@ Adversarial Regression Test Suite for SEC-01 and SEC-03.
 
 Verifies:
 SEC-01 (Principal Binding at Execution Boundary):
-- Capability issued to Alice, presented by Bob (Denied, 0 side effects).
-- Caller attempts to spoof Alice through a context dictionary (Denied, 0 side effects).
-- Missing authenticated principal (Denied, 0 side effects).
-- Forged AuthenticatedPrincipal object (Denied, 0 side effects).
-- Valid authenticated Alice context (Allowed, 1 side effect).
-- Principal identity altered between issuance and execution (Denied, 0 side effects).
-- A caller with access to AuthorizationAuthority cannot mint an assertion for another principal.
-- An assertion signed by an untrusted key is rejected.
+- Caller with access to AuthorizationAuthority cannot obtain signing material or mint an accepted assertion.
+- An assertion signed with an untrusted private key is rejected.
 - An assertion signed by a trusted external test issuer is accepted.
-- Missing identity-provider configuration denies principal-bound execution.
-- Every rejected attempt produces zero executor side effects.
+- An assertion with a modified principal ID, issuer, or timestamp is rejected.
+- Expired and future-dated assertions are rejected.
+- Missing public-key configuration denies principal-restricted operations.
+- Cross-principal capability presentation remains rejected (Alice capability presented by Bob).
+- Plain strings and caller-controlled context dictionaries cannot assert principal identity.
+- Every rejected execution produces zero executor side effects.
 
-SEC-03 (Explicit Resource Target Binding):
-- Benign first positional argument with a sensitive second target (Denied, 0 side effects).
-- Target supplied through keyword arguments (Allowed, 1 side effect).
-- Missing target (Denied, 0 side effects).
-- Conflicting target parameters (Denied, 0 side effects).
-- Custom extractor returning an invalid or ambiguous target (Denied, 0 side effects).
-- Existing legitimate registered tools (Allowed, 1 side effect).
-- Mutating tool without explicit target (Registration or execution rejected, 0 side effects).
-- Unknown action classification (Denied, 0 side effects).
-- Authorized target differs from executor target across filepath, filename, url, destination, and custom account_key (Denied, 0 side effects).
-- Signature binding failure on mutating operation fails closed (Denied, 0 side effects).
+SEC-03 (Bind authorization to the exact executor resource argument):
+- Mutating executor with explicit target_param receives exactly the target authorized by policy.
+- A custom extractor returning an authorized resource while the executor receives a different resource is rejected.
+- Target mismatch tests with arbitrary parameter names: tenant_ref, object_handle, account_key.
+- Positional and keyword invocation paths resolve the same target.
+- Missing target, conflicting target, and signature-binding failure are rejected.
+- Existing legitimate explicitly bound mutating tools continue to work.
+- Demonstrably read-only local/network tools continue to support safe positional target extraction.
+- Every rejected case produces zero executor invocations.
 """
 
 import time
-import uuid
-import hmac
+import os
 import hashlib
-import pytest
+from typing import Optional, Dict, Any
 from unittest.mock import MagicMock
+import pytest
 
 from epistemicos.authorization import (
     AuthorizationAuthority,
     Policy,
-    Capability,
     PrincipalVerifier,
     AuthenticatedPrincipal,
-    get_callable_identity
 )
 from epistemicos.provenance import (
     TrustedExecutionBoundary,
     ExecutionContext,
-    LocalProvenanceStore
+    LocalProvenanceStore,
 )
-from epistemicos.tools import TrustedToolRegistry, TrustedToolWrapper
+from epistemicos.tools import TrustedToolRegistry
+
+
+# =============================================================================
+# RFC 8032 Ed25519 External Test Issuer (Self-contained test identity provider)
+# Holds the private signing key completely isolated from EpistemicOS components.
+# =============================================================================
+
+_ED_B = 256
+_ED_Q = 2**255 - 19
+_ED_L = 2**252 + 27742317777372353535851937790883648493
+
+
+def _ed_H(m: bytes) -> bytes:
+    return hashlib.sha512(m).digest()
+
+
+def _ed_expmod(b: int, e: int, m: int) -> int:
+    return pow(b, e, m)
+
+
+def _ed_inv(x: int) -> int:
+    return _ed_expmod(x, _ED_Q - 2, _ED_Q)
+
+
+_ed_d = -121665 * _ed_inv(121666)
+_ed_I = _ed_expmod(2, (_ED_Q - 1) // 4, _ED_Q)
+
+
+def _ed_xrecover(y: int) -> int:
+    xx = (y * y - 1) * _ed_inv(_ed_d * y * y + 1)
+    x = _ed_expmod(xx, (_ED_Q + 3) // 8, _ED_Q)
+    if (x * x - xx) % _ED_Q != 0:
+        x = (x * _ed_I) % _ED_Q
+    if x % 2 != 0:
+        x = _ED_Q - x
+    return x
+
+
+_ed_By = 4 * _ed_inv(5)
+_ed_Bx = _ed_xrecover(_ed_By)
+_ed_B = [_ed_Bx % _ED_Q, _ed_By % _ED_Q]
+
+
+def _ed_edwards(P, Q):
+    x1, y1 = P[0], P[1]
+    x2, y2 = Q[0], Q[1]
+    x3 = (x1 * y2 + x2 * y1) * _ed_inv(1 + _ed_d * x1 * x2 * y1 * y2)
+    y3 = (y1 * y2 + x1 * x2) * _ed_inv(1 - _ed_d * x1 * x2 * y1 * y2)
+    return [x3 % _ED_Q, y3 % _ED_Q]
+
+
+def _ed_scalarmult(P, e: int):
+    if e == 0:
+        return [0, 1]
+    Q = _ed_scalarmult(P, e // 2)
+    Q = _ed_edwards(Q, Q)
+    if e & 1:
+        Q = _ed_edwards(Q, P)
+    return Q
+
+
+def _ed_encodeint(y: int) -> bytes:
+    return y.to_bytes(32, "little")
+
+
+def _ed_encodepoint(P) -> bytes:
+    x = P[0]
+    y = P[1]
+    bits = [(y >> i) & 1 for i in range(_ED_B - 1)] + [x & 1]
+    return bytes(sum([bits[i * 8 + j] << j for j in range(8)]) for i in range(_ED_B // 8))
+
+
+def _ed_decodeint(s: bytes) -> int:
+    return int.from_bytes(s, "little")
+
+
+def _ed25519_publickey(sk: bytes) -> bytes:
+    h = _ed_H(sk)
+    a = 2**(_ED_B - 2) + sum(2**i * ((h[i // 8] >> (i % 8)) & 1) for i in range(3, _ED_B - 2))
+    A = _ed_scalarmult(_ed_B, a)
+    return _ed_encodepoint(A)
+
+
+def _ed25519_sign(m: bytes, sk: bytes, pk: bytes) -> bytes:
+    h = _ed_H(sk)
+    a = 2**(_ED_B - 2) + sum(2**i * ((h[i // 8] >> (i % 8)) & 1) for i in range(3, _ED_B - 2))
+    r = _ed_decodeint(_ed_H(h[32:] + m))
+    R = _ed_scalarmult(_ed_B, r)
+    k = _ed_decodeint(_ed_H(_ed_encodepoint(R) + pk + m))
+    S = (r + k * a) % _ED_L
+    return _ed_encodepoint(R) + _ed_encodeint(S)
 
 
 class ExternalTestIdentityAuthority:
     """
-    Simulated external identity provider holding the private signing key for test assertions.
-    AuthorizationAuthority holds ONLY the verification secret / verifier, NEVER this issuer.
+    Test-only external Identity Provider that holds its own Ed25519 private signing key.
+    The production verifier receives ONLY the public key.
+    The private key is never passed to AuthorizationAuthority or PrincipalVerifier.
     """
 
-    def __init__(self, signing_secret: bytes, issuer_id: str = "ExternalTrustedIdP"):
-        self.signing_secret = signing_secret
+    def __init__(self, seed: Optional[bytes] = None, issuer_id: str = "ExternalTrustedIdP"):
+        self.private_seed = seed if seed and len(seed) == 32 else os.urandom(32)
+        self.public_key = _ed25519_publickey(self.private_seed)
         self.issuer_id = issuer_id
 
-    def issue_principal(self, principal_id: str, current_time: float = None) -> AuthenticatedPrincipal:
+    def issue_principal(
+        self,
+        principal_id: str,
+        current_time: Optional[float] = None,
+        expires_at: Optional[float] = None,
+        key_id: Optional[str] = None
+    ) -> AuthenticatedPrincipal:
         ts = current_time if current_time is not None else time.time()
-        payload = f"{principal_id}:{self.issuer_id}:{ts}"
-        sig = hmac.new(self.signing_secret, payload.encode("utf-8"), hashlib.sha256).hexdigest()
+        exp_str = f"{expires_at:.6f}" if expires_at is not None else ""
+        kid_str = key_id or ""
+        payload = f"{principal_id}:{self.issuer_id}:{ts:.6f}:{exp_str}:{kid_str}".encode("utf-8")
+        sig_bytes = _ed25519_sign(payload, self.private_seed, self.public_key)
         return AuthenticatedPrincipal(
             principal_id=principal_id,
             issuer_id=self.issuer_id,
             timestamp=ts,
-            signature=sig
+            signature=sig_bytes.hex(),
+            expires_at=expires_at,
+            key_id=key_id
         )
 
 
 # =============================================================================
-# SEC-01: Principal Binding at Execution Boundary Tests
+# SEC-01: Principal Identity Binding & Independent Trust Boundary Tests
 # =============================================================================
 
-def test_sec01_alice_capability_presented_by_bob_rejected(tmp_path):
+def test_sec01_authority_and_verifier_do_not_expose_private_keys_or_minting():
     """
-    SEC-01: Capability issued to Alice, presented by Bob.
+    SEC-01: A caller with access to AuthorizationAuthority and PrincipalVerifier cannot
+    obtain signing material or mint an accepted assertion.
+    """
+    trusted_idp = ExternalTestIdentityAuthority(issuer_id="CorpIdP")
+    verifier = PrincipalVerifier(trusted_public_keys={"CorpIdP": trusted_idp.public_key})
+    auth = AuthorizationAuthority(principal_provider=verifier)
+
+    # Verify no private key or signing secret is accessible
+    assert not hasattr(verifier, "signing_secret")
+    assert not hasattr(verifier, "private_key")
+    assert not hasattr(verifier, "issue_principal")
+    assert not hasattr(verifier, "mint_principal")
+
+    assert not hasattr(auth, "issue_principal")
+    assert not hasattr(auth, "mint_principal")
+    assert not hasattr(auth, "identity_signing_secret")
+
+
+def test_sec01_assertion_signed_by_trusted_external_issuer_accepted(tmp_path):
+    """
+    SEC-01: An assertion signed by a trusted external test issuer is accepted.
+    """
+    trusted_idp = ExternalTestIdentityAuthority(issuer_id="TrustedCorpIdP")
+    verifier = PrincipalVerifier(trusted_public_keys={"TrustedCorpIdP": trusted_idp.public_key})
+
+    alice_principal = trusted_idp.issue_principal("alice")
+    valid, reason, pid = verifier.verify_principal(alice_principal)
+    assert valid is True
+    assert reason == "Principal verified"
+    assert pid == "alice"
+
+
+def test_sec01_assertion_signed_with_untrusted_key_rejected():
+    """
+    SEC-01: An assertion signed with an untrusted private key is rejected.
+    """
+    trusted_idp = ExternalTestIdentityAuthority(issuer_id="TrustedCorpIdP")
+    rogue_idp = ExternalTestIdentityAuthority(issuer_id="TrustedCorpIdP")  # Claims same issuer, different key
+
+    verifier = PrincipalVerifier(trusted_public_keys={"TrustedCorpIdP": trusted_idp.public_key})
+
+    # Rogue IdP signs assertion for alice
+    rogue_principal = rogue_idp.issue_principal("alice")
+    valid, reason, pid = verifier.verify_principal(rogue_principal)
+    assert valid is False
+    assert "signature verification failed" in reason.lower()
+    assert pid is None
+
+
+def test_sec01_assertion_with_modified_fields_rejected():
+    """
+    SEC-01: An assertion with a modified principal ID, issuer, or timestamp is rejected.
+    """
+    trusted_idp = ExternalTestIdentityAuthority(issuer_id="CorpIdP")
+    verifier = PrincipalVerifier(trusted_public_keys={"CorpIdP": trusted_idp.public_key})
+
+    valid_assertion = trusted_idp.issue_principal("alice")
+
+    # 1. Tampered principal_id
+    tampered_pid = AuthenticatedPrincipal(
+        principal_id="bob",
+        issuer_id=valid_assertion.issuer_id,
+        timestamp=valid_assertion.timestamp,
+        signature=valid_assertion.signature,
+        expires_at=valid_assertion.expires_at,
+        key_id=valid_assertion.key_id
+    )
+    v1, r1, _ = verifier.verify_principal(tampered_pid)
+    assert v1 is False
+    assert "signature verification failed" in r1.lower()
+
+    # 2. Tampered issuer
+    tampered_issuer = AuthenticatedPrincipal(
+        principal_id=valid_assertion.principal_id,
+        issuer_id="OtherIdP",
+        timestamp=valid_assertion.timestamp,
+        signature=valid_assertion.signature,
+        expires_at=valid_assertion.expires_at,
+        key_id=valid_assertion.key_id
+    )
+    v2, r2, _ = verifier.verify_principal(tampered_issuer)
+    assert v2 is False
+    assert "untrusted identity issuer" in r2.lower()
+
+    # 3. Tampered timestamp
+    tampered_ts = AuthenticatedPrincipal(
+        principal_id=valid_assertion.principal_id,
+        issuer_id=valid_assertion.issuer_id,
+        timestamp=valid_assertion.timestamp - 100.0,
+        signature=valid_assertion.signature,
+        expires_at=valid_assertion.expires_at,
+        key_id=valid_assertion.key_id
+    )
+    v3, r3, _ = verifier.verify_principal(tampered_ts)
+    assert v3 is False
+    assert "signature verification failed" in r3.lower()
+
+
+def test_sec01_expired_and_future_dated_assertions_rejected():
+    """
+    SEC-01: Expired and future-dated assertions are rejected.
+    """
+    trusted_idp = ExternalTestIdentityAuthority(issuer_id="CorpIdP")
+    verifier = PrincipalVerifier(trusted_public_keys={"CorpIdP": trusted_idp.public_key}, clock_skew_seconds=5.0)
+
+    now = time.time()
+
+    # Future-dated beyond clock skew
+    future_principal = trusted_idp.issue_principal("alice", current_time=now + 10.0)
+    v_fut, r_fut, _ = verifier.verify_principal(future_principal, current_time=now)
+    assert v_fut is False
+    assert "future-dated" in r_fut.lower()
+
+    # Expired by max_age_seconds
+    old_principal = trusted_idp.issue_principal("alice", current_time=now - 4000.0)
+    v_exp, r_exp, _ = verifier.verify_principal(old_principal, max_age_seconds=3600.0, current_time=now)
+    assert v_exp is False
+    assert "expired" in r_exp.lower()
+
+    # Expired by explicit expires_at
+    explicit_exp_principal = trusted_idp.issue_principal("alice", current_time=now - 50.0, expires_at=now - 10.0)
+    v_exp2, r_exp2, _ = verifier.verify_principal(explicit_exp_principal, current_time=now)
+    assert v_exp2 is False
+    assert "expired" in r_exp2.lower()
+
+
+def test_sec01_missing_public_key_configuration_fails_closed(tmp_path):
+    """
+    SEC-01: Missing public-key configuration denies principal-restricted operations
+    with zero executor side effects.
+    """
+    side_effect_mock = MagicMock()
+    def sensitive_action(target: str):
+        side_effect_mock(target)
+        return "done"
+
+    # Verifier with no public keys configured
+    unconfigured_verifier = PrincipalVerifier(trusted_public_keys={})
+
+    reg = TrustedToolRegistry()
+    reg.authority.principal_provider = unconfigured_verifier
+    reg.authority.default_policy = Policy(
+        policy_id="strict_policy",
+        allowed_operations={"transfer"},
+        allowed_resources={"/accounts/123"},
+        allowed_principals={"alice"}
+    )
+
+    tool = reg.register_tool(
+        tool_id="transfer_tool",
+        action_name="transfer",
+        executor_func=sensitive_action,
+        target_param="target"
+    )
+
+    idp = ExternalTestIdentityAuthority(issuer_id="CorpIdP")
+    alice_princ = idp.issue_principal("alice")
+
+    with pytest.raises(PermissionError) as exc_info:
+        tool(target="/accounts/123", authenticated_principal=alice_princ)
+
+    assert "not configured with any trusted public verification keys" in str(exc_info.value)
+    assert side_effect_mock.call_count == 0
+
+
+def test_sec01_cross_principal_capability_presentation_rejected(tmp_path):
+    """
+    SEC-01: Capability issued to Alice, presented by Bob at execution boundary.
     Must be rejected with zero executor side effects.
     """
     side_effect_mock = MagicMock()
-    def sensitive_executor():
-        side_effect_mock()
+    def sensitive_executor(account: str):
+        side_effect_mock(account)
         return {"status": "executed"}
 
     store = LocalProvenanceStore(log_path=str(tmp_path / "prov.jsonl"))
-    idp_secret = b"external_idp_private_key_123"
-    external_idp = ExternalTestIdentityAuthority(signing_secret=idp_secret, issuer_id="CorpIdP")
-    verifier = PrincipalVerifier(verification_secret=idp_secret, trusted_issuer_id="CorpIdP")
+    trusted_idp = ExternalTestIdentityAuthority(issuer_id="CorpIdP")
+    verifier = PrincipalVerifier(trusted_public_keys={"CorpIdP": trusted_idp.public_key})
 
     auth = AuthorizationAuthority(
         default_policy=Policy(
@@ -103,10 +366,10 @@ def test_sec01_alice_capability_presented_by_bob_rejected(tmp_path):
     )
     boundary = TrustedExecutionBoundary(provenance_store=store, authority=auth)
 
-    alice_principal = external_idp.issue_principal("principal_alice")
-    bob_principal = external_idp.issue_principal("principal_bob")
+    alice_principal = trusted_idp.issue_principal("principal_alice")
+    bob_principal = trusted_idp.issue_principal("principal_bob")
 
-    raw_payload = {"op": "transfer", "amount": 1000}
+    raw_payload = {"op": "transfer", "account": "/accounts/alice"}
     payload_digest = boundary.compute_canonical_digest(raw_payload)
 
     # Issue capability to Alice
@@ -147,15 +410,15 @@ def test_sec01_alice_capability_presented_by_bob_rejected(tmp_path):
 def test_sec01_caller_attempts_to_spoof_alice_through_context_dictionary(tmp_path):
     """
     SEC-01: Caller attempts to spoof Alice through a context dictionary in TrustedToolWrapper.
-    Must be rejected before capability issuance or execution with zero side effects.
+    Must be rejected with zero side effects.
     """
     side_effect_mock = MagicMock()
     def mutate_account(account_id: str, amount: float):
         side_effect_mock(account_id, amount)
         return {"account_id": account_id, "amount": amount}
 
-    idp_secret = b"external_idp_secret_456"
-    verifier = PrincipalVerifier(verification_secret=idp_secret, trusted_issuer_id="CorpIdP")
+    trusted_idp = ExternalTestIdentityAuthority(issuer_id="CorpIdP")
+    verifier = PrincipalVerifier(trusted_public_keys={"CorpIdP": trusted_idp.public_key})
 
     reg = TrustedToolRegistry()
     reg.authority.principal_provider = verifier
@@ -173,7 +436,6 @@ def test_sec01_caller_attempts_to_spoof_alice_through_context_dictionary(tmp_pat
         target_param="account_id"
     )
 
-    # Untrusted caller supplies a plain dictionary claiming principal_id="principal_alice"
     with pytest.raises(PermissionError) as exc_info:
         tool(
             account_id="/accounts/alice",
@@ -185,279 +447,17 @@ def test_sec01_caller_attempts_to_spoof_alice_through_context_dictionary(tmp_pat
     assert side_effect_mock.call_count == 0
 
 
-def test_sec01_missing_authenticated_principal_rejected(tmp_path):
-    """
-    SEC-01: Capability bound to a specific principal is presented with missing authenticated principal.
-    Must be rejected with zero side effects.
-    """
-    side_effect_mock = MagicMock()
-    def sensitive_task():
-        side_effect_mock()
-        return "done"
-
-    idp_secret = b"external_idp_secret_789"
-    external_idp = ExternalTestIdentityAuthority(signing_secret=idp_secret, issuer_id="CorpIdP")
-    verifier = PrincipalVerifier(verification_secret=idp_secret, trusted_issuer_id="CorpIdP")
-
-    auth = AuthorizationAuthority(
-        default_policy=Policy(
-            policy_id="p1",
-            allowed_operations={"task"},
-            allowed_resources={"/res1"},
-            allowed_principals={"alice"}
-        ),
-        principal_provider=verifier
-    )
-    boundary = TrustedExecutionBoundary(authority=auth)
-
-    alice_princ = external_idp.issue_principal("alice")
-    payload = {"task": "run"}
-    digest = boundary.compute_canonical_digest(payload)
-
-    cap, _ = auth.evaluate_and_issue_capability(
-        action_name="task",
-        target="/res1",
-        canonical_request_digest=digest,
-        principal_id=alice_princ,
-        executor_id=sensitive_task
-    )
-    assert cap is not None
-
-    # Context without authenticated principal (None)
-    ctx_no_principal = ExecutionContext(
-        correlation_id=cap.correlation_id,
-        request_id=cap.request_id,
-        authorization_token_id=cap.token_id,
-        authorized_digest=digest,
-        authorization_granted=True,
-        authenticated_principal=None
-    )
-
-    with pytest.raises(PermissionError) as exc_info:
-        boundary.execute_protected_action(
-            action_name="task",
-            target="/res1",
-            request_payload=payload,
-            executor_func=sensitive_task,
-            context=ctx_no_principal
-        )
-
-    assert "requires authenticated principal in ExecutionContext" in str(exc_info.value)
-    assert side_effect_mock.call_count == 0
-
-
-def test_sec01_forged_authenticated_principal_object_rejected(tmp_path):
-    """
-    SEC-01: Forged AuthenticatedPrincipal object (created without valid signature from trusted provider).
-    Must be rejected with zero side effects.
-    """
-    side_effect_mock = MagicMock()
-    def admin_op():
-        side_effect_mock()
-        return "admin_ok"
-
-    idp_secret = b"external_idp_secret_abc"
-    external_idp = ExternalTestIdentityAuthority(signing_secret=idp_secret, issuer_id="CorpIdP")
-    verifier = PrincipalVerifier(verification_secret=idp_secret, trusted_issuer_id="CorpIdP")
-
-    auth = AuthorizationAuthority(
-        default_policy=Policy(
-            policy_id="admin_policy",
-            allowed_operations={"admin"},
-            allowed_resources={"/admin/panel"},
-            allowed_principals={"admin_user"}
-        ),
-        principal_provider=verifier
-    )
-    boundary = TrustedExecutionBoundary(authority=auth)
-
-    # Attacker crafts an AuthenticatedPrincipal object manually
-    forged_principal = AuthenticatedPrincipal(
-        principal_id="admin_user",
-        issuer_id="CorpIdP",
-        timestamp=time.time(),
-        signature="forged_invalid_hmac_signature"
-    )
-
-    payload = {"op": "admin"}
-    digest = boundary.compute_canonical_digest(payload)
-
-    # 1. Issuance rejection
-    cap, reason = auth.evaluate_and_issue_capability(
-        action_name="admin",
-        target="/admin/panel",
-        canonical_request_digest=digest,
-        principal_id=forged_principal,
-        executor_id=admin_op
-    )
-    assert cap is None
-    assert "PRINCIPAL_AUTHENTICATION_FAILED" in reason
-
-    # 2. Execution boundary presentation rejection
-    valid_admin_princ = external_idp.issue_principal("admin_user")
-    valid_cap, _ = auth.evaluate_and_issue_capability(
-        action_name="admin",
-        target="/admin/panel",
-        canonical_request_digest=digest,
-        principal_id=valid_admin_princ,
-        executor_id=admin_op
-    )
-
-    ctx_forged = ExecutionContext(
-        correlation_id=valid_cap.correlation_id,
-        request_id=valid_cap.request_id,
-        authorization_token_id=valid_cap.token_id,
-        authorized_digest=digest,
-        authorization_granted=True,
-        authenticated_principal=forged_principal
-    )
-
-    with pytest.raises(PermissionError) as exc_exec:
-        boundary.execute_protected_action(
-            action_name="admin",
-            target="/admin/panel",
-            request_payload=payload,
-            executor_func=admin_op,
-            context=ctx_forged
-        )
-
-    assert "PRINCIPAL_AUTHENTICATION_FAILED" in str(exc_exec.value)
-    assert side_effect_mock.call_count == 0
-
-
-def test_sec01_valid_authenticated_alice_context_allowed(tmp_path):
-    """
-    SEC-01: Valid authenticated Alice context is allowed through TrustedToolWrapper and execution boundary.
-    Produces exactly 1 side effect.
-    """
-    side_effect_mock = MagicMock()
-    def transfer_executor(target: str, amount: float):
-        side_effect_mock(target, amount)
-        return {"target": target, "amount": amount}
-
-    idp_secret = b"external_idp_secret_def"
-    external_idp = ExternalTestIdentityAuthority(signing_secret=idp_secret, issuer_id="CorpIdP")
-    verifier = PrincipalVerifier(verification_secret=idp_secret, trusted_issuer_id="CorpIdP")
-
-    reg = TrustedToolRegistry()
-    reg.authority.principal_provider = verifier
-    reg.authority.default_policy = Policy(
-        policy_id="p_valid",
-        allowed_operations={"transfer"},
-        allowed_resources={"/vault/alice"},
-        allowed_principals={"alice"}
-    )
-
-    tool = reg.register_tool(
-        tool_id="vault_transfer",
-        action_name="transfer",
-        executor_func=transfer_executor,
-        target_param="target"
-    )
-
-    alice_princ = external_idp.issue_principal("alice")
-
-    res = tool(
-        target="/vault/alice",
-        amount=250.0,
-        authenticated_principal=alice_princ
-    )
-
-    assert res["status"] == "SUCCESS"
-    assert res["result"] == {"target": "/vault/alice", "amount": 250.0}
-    assert side_effect_mock.call_count == 1
-
-
-def test_sec01_principal_identity_altered_between_issuance_and_execution(tmp_path):
-    """
-    SEC-01: Alice authenticates, capability is issued, and then execution context
-    is replaced with Bob's identity before calling execute_protected_action.
-    Must be rejected with zero side effects.
-    """
-    side_effect_mock = MagicMock()
-    def privileged_closure():
-        side_effect_mock()
-        return "privileged_action"
-
-    idp_secret = b"external_idp_secret_ghi"
-    external_idp = ExternalTestIdentityAuthority(signing_secret=idp_secret, issuer_id="CorpIdP")
-    verifier = PrincipalVerifier(verification_secret=idp_secret, trusted_issuer_id="CorpIdP")
-
-    auth = AuthorizationAuthority(
-        default_policy=Policy(
-            policy_id="p_mutate",
-            allowed_operations={"mutate"},
-            allowed_resources={"/secure/record"},
-            allowed_principals={"alice", "bob"}
-        ),
-        principal_provider=verifier
-    )
-    boundary = TrustedExecutionBoundary(authority=auth)
-
-    alice_princ = external_idp.issue_principal("alice")
-    bob_princ = external_idp.issue_principal("bob")
-
-    payload = {"mutate": True}
-    digest = boundary.compute_canonical_digest(payload)
-
-    cap, _ = auth.evaluate_and_issue_capability(
-        action_name="mutate",
-        target="/secure/record",
-        canonical_request_digest=digest,
-        principal_id=alice_princ,
-        executor_id=privileged_closure
-    )
-    assert cap is not None
-    assert cap.principal_id == "alice"
-
-    # Context replaced with Bob
-    tampered_ctx = ExecutionContext(
-        correlation_id=cap.correlation_id,
-        request_id=cap.request_id,
-        authorization_token_id=cap.token_id,
-        authorized_digest=digest,
-        authorization_granted=True,
-        authenticated_principal=bob_princ
-    )
-
-    with pytest.raises(PermissionError) as exc_info:
-        boundary.execute_protected_action(
-            action_name="mutate",
-            target="/secure/record",
-            request_payload=payload,
-            executor_func=privileged_closure,
-            context=tampered_ctx
-        )
-
-    assert "PRINCIPAL_MISMATCH" in str(exc_info.value)
-    assert side_effect_mock.call_count == 0
-
-
-def test_sec01_authority_cannot_mint_assertions():
-    """
-    SEC-01: AuthorizationAuthority and PrincipalVerifier do not expose identity minting methods.
-    """
-    auth = AuthorizationAuthority()
-    assert not hasattr(auth, "issue_principal")
-    assert not hasattr(auth, "mint_principal")
-
-    verifier = PrincipalVerifier(verification_secret=b"dummy_secret")
-    assert not hasattr(verifier, "issue_principal")
-    assert not hasattr(verifier, "mint_principal")
-
-
-def test_sec01_caller_provided_string_cannot_satisfy_boundary_authentication(tmp_path):
+def test_sec01_caller_provided_string_rejected_at_execution_boundary(tmp_path):
     """
     SEC-01: A caller-provided string cannot satisfy principal authentication at the execution boundary.
     """
     side_effect_mock = MagicMock()
-    def write_task():
-        side_effect_mock()
+    def write_task(target: str):
+        side_effect_mock(target)
         return "written"
 
-    idp_secret = b"external_idp_secret_jkl"
-    external_idp = ExternalTestIdentityAuthority(signing_secret=idp_secret, issuer_id="CorpIdP")
-    verifier = PrincipalVerifier(verification_secret=idp_secret, trusted_issuer_id="CorpIdP")
+    trusted_idp = ExternalTestIdentityAuthority(issuer_id="CorpIdP")
+    verifier = PrincipalVerifier(trusted_public_keys={"CorpIdP": trusted_idp.public_key})
 
     auth = AuthorizationAuthority(
         default_policy=Policy(
@@ -470,8 +470,8 @@ def test_sec01_caller_provided_string_cannot_satisfy_boundary_authentication(tmp
     )
     boundary = TrustedExecutionBoundary(authority=auth)
 
-    alice_princ = external_idp.issue_principal("alice")
-    payload = {"k": "v"}
+    alice_princ = trusted_idp.issue_principal("alice")
+    payload = {"k": "v", "target": "/res"}
     digest = boundary.compute_canonical_digest(payload)
 
     cap, _ = auth.evaluate_and_issue_capability(
@@ -489,7 +489,7 @@ def test_sec01_caller_provided_string_cannot_satisfy_boundary_authentication(tmp
         authorization_token_id=cap.token_id,
         authorized_digest=digest,
         authorization_granted=True,
-        authenticated_principal="alice"  # Plain string!
+        authenticated_principal="alice"
     )
 
     with pytest.raises(PermissionError) as exc_info:
@@ -505,158 +505,14 @@ def test_sec01_caller_provided_string_cannot_satisfy_boundary_authentication(tmp
     assert side_effect_mock.call_count == 0
 
 
-def test_sec01_assertion_from_untrusted_issuer_rejected(tmp_path):
-    """
-    SEC-01: Assertion created by an untrusted identity issuer is rejected.
-    """
-    trusted_idp = ExternalTestIdentityAuthority(signing_secret=b"key_a", issuer_id="TrustedCorpIdP")
-    rogue_idp = ExternalTestIdentityAuthority(signing_secret=b"key_a", issuer_id="RogueCorpIdP")
-
-    verifier = PrincipalVerifier(verification_secret=b"key_a", trusted_issuer_id="TrustedCorpIdP")
-
-    auth = AuthorizationAuthority(
-        default_policy=Policy(policy_id="p", allowed_operations={"op"}, allowed_resources={"/res"}, allowed_principals={"alice"}),
-        principal_provider=verifier
-    )
-
-    # Rogue provider signs for alice
-    rogue_alice = rogue_idp.issue_principal("alice")
-
-    cap, reason = auth.evaluate_and_issue_capability(
-        action_name="op",
-        target="/res",
-        canonical_request_digest="d" * 64,
-        principal_id=rogue_alice
-    )
-    assert cap is None
-    assert "Untrusted identity issuer" in reason
-
-
-def test_sec01_assertion_signed_by_untrusted_key_rejected(tmp_path):
-    """
-    SEC-01: Assertion signed by an untrusted key is rejected.
-    """
-    external_idp = ExternalTestIdentityAuthority(signing_secret=b"attacker_secret_key", issuer_id="TrustedCorpIdP")
-    verifier = PrincipalVerifier(verification_secret=b"legit_secret_key", trusted_issuer_id="TrustedCorpIdP")
-
-    auth = AuthorizationAuthority(
-        default_policy=Policy(policy_id="p", allowed_operations={"op"}, allowed_resources={"/res"}, allowed_principals={"alice"}),
-        principal_provider=verifier
-    )
-
-    signed_with_wrong_key = external_idp.issue_principal("alice")
-
-    cap, reason = auth.evaluate_and_issue_capability(
-        action_name="op",
-        target="/res",
-        canonical_request_digest="d" * 64,
-        principal_id=signed_with_wrong_key
-    )
-    assert cap is None
-    assert "signature verification failed" in reason.lower()
-
-
-def test_sec01_future_dated_assertion_rejected(tmp_path):
-    """
-    SEC-01: An assertion timestamped in the future is rejected.
-    """
-    idp_secret = b"future_secret_key"
-    external_idp = ExternalTestIdentityAuthority(signing_secret=idp_secret, issuer_id="CorpIdP")
-    verifier = PrincipalVerifier(verification_secret=idp_secret, trusted_issuer_id="CorpIdP")
-
-    auth = AuthorizationAuthority(
-        default_policy=Policy(policy_id="p", allowed_operations={"op"}, allowed_resources={"/res"}, allowed_principals={"alice"}),
-        principal_provider=verifier
-    )
-
-    # Issue assertion timestamped 1 hour in the future
-    future_time = time.time() + 3600.0
-    future_alice = external_idp.issue_principal("alice", current_time=future_time)
-
-    cap, reason = auth.evaluate_and_issue_capability(
-        action_name="op",
-        target="/res",
-        canonical_request_digest="d" * 64,
-        principal_id=future_alice
-    )
-    assert cap is None
-    assert "Future-dated principal assertion rejected" in reason
-
-
-def test_sec01_missing_identity_provider_configuration_denies_execution(tmp_path):
-    """
-    SEC-01: When no identity provider/verifier is configured on AuthorizationAuthority,
-    principal-bound execution fails closed with zero side effects.
-    """
-    side_effect_mock = MagicMock()
-    def sensitive_action():
-        side_effect_mock()
-        return "ok"
-
-    # Authority with NO principal_provider
-    auth = AuthorizationAuthority(
-        default_policy=Policy(
-            policy_id="p_strict",
-            allowed_operations={"op"},
-            allowed_resources={"/res"},
-            allowed_principals={"privileged_principal"}
-        ),
-        principal_provider=None
-    )
-    boundary = TrustedExecutionBoundary(authority=auth)
-
-    # Attacker tries to present an assertion or string
-    cap, reason = auth.evaluate_and_issue_capability(
-        action_name="op",
-        target="/res",
-        canonical_request_digest="d" * 64,
-        principal_id="privileged_principal",
-        executor_id=sensitive_action
-    )
-    # Denied at issuance
-    assert cap is None
-    assert "AUTHORIZATION_DENIED_AUTHENTICATED_PRINCIPAL_REQUIRED" in reason
-    assert side_effect_mock.call_count == 0
-
-
 # =============================================================================
 # SEC-03: Explicit Resource Target Binding Tests
 # =============================================================================
 
-def test_sec03_benign_first_positional_argument_with_sensitive_target_rejected(tmp_path):
+def test_sec03_mutating_executor_with_explicit_target_param_receives_authorized_target(tmp_path):
     """
-    SEC-03: Benign first positional argument with sensitive second target on mutating operation.
-    Must be rejected; ambiguous positional extraction is disallowed for mutating operations.
-    """
-    side_effect_mock = MagicMock()
-    def write_db(audit_note: str, destination_table: str, data: dict):
-        side_effect_mock(destination_table)
-        return "mutated"
-
-    reg = TrustedToolRegistry()
-    reg.authority.default_policy = Policy(
-        policy_id="test_policy",
-        allowed_operations={"*"},
-        allowed_resources={"audit_note_harmless"}
-    )
-
-    # Mutating tool registered without target_param
-    tool = reg.register_tool(
-        tool_id="db_writer",
-        action_name="delete_db",  # DESTRUCTIVE_COMMAND (mutating)
-        executor_func=write_db
-    )
-
-    with pytest.raises(PermissionError) as exc_info:
-        tool("audit_note_harmless", "critical_db", {"drop": True})
-
-    assert "requires explicit target parameter ('target_param' or 'target_extractor')" in str(exc_info.value)
-    assert side_effect_mock.call_count == 0
-
-
-def test_sec03_target_supplied_through_keyword_argument_allowed(tmp_path):
-    """
-    SEC-03: Target supplied through explicit keyword arguments is correctly extracted and allowed.
+    SEC-03: Mutating executor with explicit target_param receives exactly the target
+    authorized by policy.
     """
     side_effect_mock = MagicMock()
     def update_table(table_name: str, row_id: int):
@@ -679,17 +535,143 @@ def test_sec03_target_supplied_through_keyword_argument_allowed(tmp_path):
 
     res = tool(table_name="users_table", row_id=42)
     assert res["status"] == "SUCCESS"
+    assert res["result"] == {"updated": "users_table", "row": 42}
     assert side_effect_mock.call_count == 1
+    side_effect_mock.assert_called_once_with("users_table", 42)
+
+
+def test_sec03_custom_extractor_target_mismatch_rejected(tmp_path):
+    """
+    SEC-03: A custom extractor returning an authorized resource while the executor
+    receives a different resource is rejected with zero side effects.
+    """
+    side_effect_mock = MagicMock()
+    def mutate_account(target_account: str, amount: float):
+        side_effect_mock(target_account, amount)
+        return "mutated"
+
+    reg = TrustedToolRegistry()
+    reg.authority.default_policy = Policy(
+        policy_id="p_ext_mismatch",
+        allowed_operations={"mutate"},
+        allowed_resources={"/accounts/authorized_public"}
+    )
+
+    # Tool registered with target_param and an extractor that returns the authorized target
+    tool = reg.register_tool(
+        tool_id="acc_mutator",
+        action_name="mutate",
+        executor_func=mutate_account,
+        target_param="target_account",
+        target_extractor=lambda *args, **kwargs: "/accounts/authorized_public"
+    )
+
+    # Invocation specifies sensitive account for executor
+    with pytest.raises(PermissionError) as exc_info:
+        tool(target_account="/accounts/sensitive_private", amount=100.0)
+
+    assert "Custom extractor target '/accounts/authorized_public' does not match executor parameter 'target_account'='/accounts/sensitive_private'" in str(exc_info.value)
+    assert side_effect_mock.call_count == 0
+
+
+def test_sec03_arbitrary_parameter_names_tenant_ref_and_object_handle_mismatch(tmp_path):
+    """
+    SEC-03: Target mismatch tests with arbitrary parameter names including 'tenant_ref'
+    and 'object_handle'. Verifies that explicit target_param binds the exact parameter.
+    """
+    for param_name in ("tenant_ref", "object_handle", "account_key"):
+        side_effect_mock = MagicMock()
+
+        # Dynamic function definition with custom parameter name
+        def make_func(p_name):
+            if p_name == "tenant_ref":
+                def func(tenant_ref: str, payload: dict):
+                    side_effect_mock(tenant_ref, payload)
+                    return "ok"
+                return func
+            elif p_name == "object_handle":
+                def func(object_handle: str, payload: dict):
+                    side_effect_mock(object_handle, payload)
+                    return "ok"
+                return func
+            else:
+                def func(account_key: str, payload: dict):
+                    side_effect_mock(account_key, payload)
+                    return "ok"
+                return func
+
+        executor = make_func(param_name)
+
+        reg = TrustedToolRegistry()
+        reg.authority.default_policy = Policy(
+            policy_id=f"p_{param_name}",
+            allowed_operations={"modify"},
+            allowed_resources={"public_resource"}
+        )
+
+        tool = reg.register_tool(
+            tool_id=f"tool_{param_name}",
+            action_name="modify",
+            executor_func=executor,
+            target_param=param_name
+        )
+
+        # 1. Calling with unauthorized target in custom parameter fails authorization
+        with pytest.raises(PermissionError) as exc_info:
+            tool(**{param_name: "unauthorized_resource", "payload": {}})
+
+        assert "AUTHORIZATION_DENIED_TARGET_NOT_ALLOWED" in str(exc_info.value)
+        assert side_effect_mock.call_count == 0
+
+        # 2. Calling with conflicting explicit target fails before authorization
+        with pytest.raises(PermissionError) as exc_conflict:
+            tool(**{param_name: "public_resource", "target": "different_target", "payload": {}})
+
+        assert "Conflicting target values detected" in str(exc_conflict.value)
+        assert side_effect_mock.call_count == 0
+
+
+def test_sec03_positional_and_keyword_invocation_resolve_same_target(tmp_path):
+    """
+    SEC-03: Positional and keyword invocation paths resolve the same target for mutating operations.
+    """
+    side_effect_mock = MagicMock()
+    def mutate_file(filepath: str, content: str):
+        side_effect_mock(filepath, content)
+        return {"filepath": filepath}
+
+    reg = TrustedToolRegistry()
+    reg.authority.default_policy = Policy(
+        policy_id="p_pos_kw",
+        allowed_operations={"write"},
+        allowed_resources={"/tmp/test.txt"}
+    )
+
+    tool = reg.register_tool(
+        tool_id="writer",
+        action_name="write",
+        executor_func=mutate_file,
+        target_param="filepath"
+    )
+
+    # 1. Positional invocation
+    res1 = tool("/tmp/test.txt", "content1")
+    assert res1["status"] == "SUCCESS"
+    assert side_effect_mock.call_count == 1
+
+    # 2. Keyword invocation
+    res2 = tool(filepath="/tmp/test.txt", content="content2")
+    assert res2["status"] == "SUCCESS"
+    assert side_effect_mock.call_count == 2
 
 
 def test_sec03_missing_target_rejected(tmp_path):
     """
-    SEC-03: Mutating tool invoked with missing target.
-    Must fail closed before executor invocation.
+    SEC-03: Mutating tool invoked with missing target is rejected with zero side effects.
     """
     side_effect_mock = MagicMock()
-    def mutate_op():
-        side_effect_mock()
+    def mutate_op(target: str):
+        side_effect_mock(target)
         return "ok"
 
     reg = TrustedToolRegistry()
@@ -700,27 +682,27 @@ def test_sec03_missing_target_rejected(tmp_path):
     )
 
     tool = reg.register_tool(
-        tool_id="empty_mutator",
-        action_name="financial_state_mutation",
-        executor_func=mutate_op
+        tool_id="mutator",
+        action_name="delete_db",
+        executor_func=mutate_op,
+        target_param="target"
     )
 
     with pytest.raises(PermissionError) as exc_info:
         tool()
 
-    assert ("Unable to determine actual resource target" in str(exc_info.value) or
-            "requires explicit target parameter" in str(exc_info.value))
+    assert "Missing required target parameter 'target'" in str(exc_info.value)
     assert side_effect_mock.call_count == 0
 
 
 def test_sec03_conflicting_target_parameters_rejected(tmp_path):
     """
-    SEC-03: Invocation providing conflicting target values across parameter sources.
-    Must be rejected with zero side effects.
+    SEC-03: Invocation providing conflicting target values across parameter sources
+    is rejected with zero side effects.
     """
     side_effect_mock = MagicMock()
-    def file_op(path: str, target: str):
-        side_effect_mock(path, target)
+    def file_op(path: str, data: str):
+        side_effect_mock(path, data)
         return "ok"
 
     reg = TrustedToolRegistry()
@@ -738,45 +720,84 @@ def test_sec03_conflicting_target_parameters_rejected(tmp_path):
     )
 
     with pytest.raises(PermissionError) as exc_info:
-        tool(path="/etc/passwd", target="/tmp/safe")
+        tool(path="/etc/passwd", target="/tmp/safe", data="none")
 
     assert "Conflicting target values detected" in str(exc_info.value)
     assert side_effect_mock.call_count == 0
 
 
-def test_sec03_custom_extractor_returning_invalid_target_rejected(tmp_path):
+def test_sec03_signature_binding_failure_rejected(tmp_path):
     """
-    SEC-03: Custom target_extractor returning an empty or invalid target fails closed.
+    SEC-03: Invocation with invalid signature arguments fails closed for mutating operations.
     """
     side_effect_mock = MagicMock()
-    def sensitive_shell(cmd: str):
-        side_effect_mock(cmd)
+    def strict_mutating(req_arg1: str, req_arg2: int):
+        side_effect_mock(req_arg1, req_arg2)
         return "ok"
 
     reg = TrustedToolRegistry()
     reg.authority.default_policy = Policy(
-        policy_id="p_ext",
+        policy_id="p_strict",
         allowed_operations={"*"},
         allowed_resources={"*"}
     )
 
     tool = reg.register_tool(
-        tool_id="shell_tool",
-        action_name="destructive_shell",
-        executor_func=sensitive_shell,
-        target_extractor=lambda *args, **kwargs: ""
+        tool_id="strict_tool",
+        action_name="financial_state_mutation",
+        executor_func=strict_mutating,
+        target_param="req_arg1"
     )
 
+    # Calling with too many positional arguments causes signature binding error
     with pytest.raises(PermissionError) as exc_info:
-        tool(cmd="rm -rf /")
+        tool("arg1", 42, "unexpected_third_arg")
 
-    assert "Custom extractor returned invalid target" in str(exc_info.value)
+    assert "Signature binding error" in str(exc_info.value)
     assert side_effect_mock.call_count == 0
 
 
-def test_sec03_existing_legitimate_registered_tools_allowed(tmp_path):
+def test_sec03_mutating_tool_without_explicit_target_param_fails_at_registration():
     """
-    SEC-03: Legitimate registered tools (read_only or explicit target_param) succeed without regression.
+    SEC-03: Mutating tool without explicit target_param fails closed at registration.
+    """
+    def delete_records(table: str):
+        return "deleted"
+
+    reg = TrustedToolRegistry()
+    with pytest.raises(ValueError) as exc_info:
+        reg.register_tool(
+            tool_id="bad_delete_tool",
+            action_name="delete_db",
+            executor_func=delete_records
+            # target_param omitted!
+        )
+
+    assert "requires explicit 'target_param' bound to executor signature" in str(exc_info.value)
+
+
+def test_sec03_target_param_not_in_signature_fails_at_registration():
+    """
+    SEC-03: Validates that target_param exists in executor's inspectable signature during registration.
+    """
+    def sample_func(arg1: str):
+        return arg1
+
+    reg = TrustedToolRegistry()
+    with pytest.raises(ValueError) as exc_info:
+        reg.register_tool(
+            tool_id="bad_tool",
+            action_name="modify",
+            executor_func=sample_func,
+            target_param="non_existent_param"
+        )
+
+    assert "does not exist in executor signature parameters" in str(exc_info.value)
+
+
+def test_sec03_read_only_tools_support_positional_extraction():
+    """
+    SEC-03: Demonstrably read-only tools continue to support safe positional target extraction.
     """
     read_mock = MagicMock()
     def read_func(file_path: str):
@@ -800,194 +821,4 @@ def test_sec03_existing_legitimate_registered_tools_allowed(tmp_path):
     res = tool("/app/data/file.txt")
     assert res["status"] == "SUCCESS"
     assert read_mock.call_count == 1
-
-
-def test_sec03_mutating_tool_with_default_target_and_dynamic_args_rejected(tmp_path):
-    """
-    SEC-03: A mutating tool configured only with default_target cannot rely on default_target
-    when dynamic arguments are supplied without target_param or extractor.
-    """
-    side_effect_mock = MagicMock()
-    def mutate_func(arg1: str):
-        side_effect_mock(arg1)
-        return "mutated"
-
-    reg = TrustedToolRegistry()
-    reg.authority.default_policy = Policy(
-        policy_id="p_default_mut",
-        allowed_operations={"*"},
-        allowed_resources={"/default/target"}
-    )
-
-    tool = reg.register_tool(
-        tool_id="mut_tool",
-        action_name="state_mutation",
-        executor_func=mutate_func,
-        default_target="/default/target"
-    )
-
-    with pytest.raises(PermissionError) as exc_info:
-        tool("unexpected_dynamic_arg")
-
-    assert "cannot rely on default_target when arguments are supplied" in str(exc_info.value)
-    assert side_effect_mock.call_count == 0
-
-
-def test_sec03_unknown_action_classification_denied(tmp_path):
-    """
-    SEC-03: Unknown action classification fails closed as state mutation,
-    rejecting ambiguous positional extraction.
-    """
-    side_effect_mock = MagicMock()
-    def unknown_func(note: str, real_target: str):
-        side_effect_mock(note, real_target)
-        return "executed"
-
-    reg = TrustedToolRegistry()
-    reg.authority.default_policy = Policy(
-        policy_id="p_unk",
-        allowed_operations={"*"},
-        allowed_resources={"*"}
-    )
-
-    tool = reg.register_tool(
-        tool_id="unknown_tool",
-        action_name="some_completely_unrecognized_custom_operation",
-        executor_func=unknown_func
-    )
-
-    with pytest.raises(PermissionError) as exc_info:
-        tool("audit_comment", "/critical/data")
-
-    assert "State-mutating operation" in str(exc_info.value)
-    assert side_effect_mock.call_count == 0
-
-
-def test_sec03_target_mismatch_across_recognized_parameters_rejected(tmp_path):
-    """
-    SEC-03: Tests target mismatch attacks across filepath, filename, url, and destination.
-    A custom extractor or parameter must not authorize one target while the executor targets another.
-    """
-    test_cases = [
-        ("filepath", lambda filepath, data: "modified"),
-        ("filename", lambda filename, data: "modified"),
-        ("url", lambda url, data: "modified"),
-        ("destination", lambda destination, data: "modified"),
-    ]
-
-    for param_name, func in test_cases:
-        side_effect_mock = MagicMock()
-        def executor_wrapper(*args, **kwargs):
-            side_effect_mock()
-            return func(*args, **kwargs)
-
-        reg = TrustedToolRegistry()
-        reg.authority.default_policy = Policy(
-            policy_id="mismatch_policy",
-            allowed_operations={"modify"},
-            allowed_resources={"/authorized/resource"}
-        )
-
-        tool = reg.register_tool(
-            tool_id=f"tool_{param_name}",
-            action_name="modify",
-            executor_func=executor_wrapper,
-            target_extractor=lambda *args, **kwargs: "/authorized/resource"
-        )
-
-        # Attacker supplies sensitive resource via parameter
-        call_kwargs = {param_name: "/unauthorized/sensitive_resource", "data": {}}
-        with pytest.raises(PermissionError) as exc_info:
-            tool(**call_kwargs)
-
-        assert ("Authorized target '/authorized/resource' differs from executor target parameter" in str(exc_info.value) or
-                "Conflicting target values detected" in str(exc_info.value))
-        assert side_effect_mock.call_count == 0
-
-
-def test_sec03_custom_parameter_account_key_mismatch_rejected(tmp_path):
-    """
-    SEC-03: Adversarial test using custom parameter name 'account_key', where the extractor
-    returns an authorized resource, but the executor receives a different sensitive resource.
-    Must be denied with zero executor side effects.
-    """
-    side_effect_mock = MagicMock()
-    def update_account(account_key: str, payload: dict):
-        side_effect_mock(account_key, payload)
-        return {"updated": account_key}
-
-    reg = TrustedToolRegistry()
-    reg.authority.default_policy = Policy(
-        policy_id="p_acc",
-        allowed_operations={"update_account"},
-        allowed_resources={"authorized_public_account"}
-    )
-
-    # Tool registered with custom extractor returning authorized_public_account
-    tool = reg.register_tool(
-        tool_id="acc_updater",
-        action_name="update_account",
-        executor_func=update_account,
-        target_extractor=lambda *args, **kwargs: "authorized_public_account"
-    )
-
-    # Attacker calls tool supplying sensitive private account in account_key
-    with pytest.raises(PermissionError) as exc_info:
-        tool(account_key="sensitive_private_account_999", payload={"credit": 10000})
-
-    assert ("Authorized target 'authorized_public_account' differs from executor argument 'sensitive_private_account_999'" in str(exc_info.value) or
-            "differ" in str(exc_info.value).lower())
-    assert side_effect_mock.call_count == 0
-
-
-def test_sec03_target_param_signature_validation_fails_at_registration():
-    """
-    SEC-03: Validates that target_param exists in executor's inspectable signature during registration.
-    """
-    def sample_func(arg1: str):
-        return arg1
-
-    reg = TrustedToolRegistry()
-    with pytest.raises(ValueError) as exc_info:
-        reg.register_tool(
-            tool_id="bad_tool",
-            action_name="modify",
-            executor_func=sample_func,
-            target_param="non_existent_param"
-        )
-
-    assert "does not exist in executor signature parameters" in str(exc_info.value)
-
-
-def test_sec03_signature_binding_failure_on_mutating_tool_fails_closed(tmp_path):
-    """
-    SEC-03: Do not silently skip target validation when signature binding or argument inspection fails.
-    Fails closed for mutating operations.
-    """
-    side_effect_mock = MagicMock()
-    def strict_mutating(req_arg1, req_arg2):
-        side_effect_mock()
-        return "ok"
-
-    reg = TrustedToolRegistry()
-    reg.authority.default_policy = Policy(
-        policy_id="p_strict",
-        allowed_operations={"*"},
-        allowed_resources={"*"}
-    )
-
-    tool = reg.register_tool(
-        tool_id="strict_tool",
-        action_name="financial_state_mutation",
-        executor_func=strict_mutating,
-        target_param="req_arg1"
-    )
-
-    # Calling with invalid arguments causes failure and must fail closed with zero side effects
-    with pytest.raises(PermissionError) as exc_info:
-        tool("arg1", "arg2", "unexpected_third_arg", target_param="req_arg1")
-
-    assert ("Signature binding failure" in str(exc_info.value) or
-            "Conflicting target values" in str(exc_info.value) or
-            "requires explicit target parameter" in str(exc_info.value))
-    assert side_effect_mock.call_count == 0
+    read_mock.assert_called_once_with("/app/data/file.txt")
