@@ -66,45 +66,55 @@ class TrustedToolWrapper:
         self.description = description
         self.executor_id = get_callable_identity(executor_func)
 
+        # SEC-03: Determine action mutability
+        from epistemicos.action_policy import ActionRegistry, ActionCategory
+        self.action_registry = getattr(registry, "action_registry", None) or ActionRegistry()
+        self.action_category = self.action_registry.classify_action(self.action_name)
+        self.is_read_only = self.action_category in (
+            ActionCategory.READ_ONLY_LOCAL,
+            ActionCategory.NETWORK_READ
+        )
+
         # Register executor with the underlying authority
         if self.registry and self.registry.authority:
             self.registry.authority.register_executor(self.executor_id, self._executor_func)
 
     def _extract_actual_target(self, args: Tuple[Any, ...], kwargs: Dict[str, Any]) -> str:
         """
-        Determines the actual resource target accessed by this tool invocation.
-        Precedence order:
-        1. Explicit target_extractor function declared at registration.
-        2. Explicit target_param declared at registration (searched in kwargs or positional args).
-        3. Explicit 'target' parameter passed in kwargs.
-        4. Resource argument inference in kwargs/args (checking 'path', 'file', 'filepath', 'node', 'endpoint', 'url', 'resource').
-        5. First positional string argument.
-        6. Default target configured at tool registration.
-        Fails closed if no target can be established.
+        Determines the actual resource target accessed by this tool invocation deterministically.
+        SEC-03: For state-mutating operations:
+        - Requires explicit target_extractor or explicit target_param (or keyword 'target').
+        - Strictly rejects ambiguous positional string fallback.
+        - Strictly rejects conflicting target values across parameter sources.
+        - Fails closed on unknown or unclassified actions.
         """
+        targets_found = {}
+
         # 1. Custom extractor
         if self.target_extractor:
             try:
                 extracted = self.target_extractor(*args, **kwargs)
-                if extracted and isinstance(extracted, str) and extracted.strip():
-                    return extracted.strip()
+                if not extracted or not isinstance(extracted, str) or not extracted.strip():
+                    raise PermissionError(f"Tool target extraction failed closed: Custom extractor returned invalid target '{extracted}'")
+                targets_found["target_extractor"] = extracted.strip()
             except Exception as e:
-                raise PermissionError(f"Tool target extraction failed closed: {str(e)}")
+                if isinstance(e, PermissionError):
+                    raise
+                raise PermissionError(f"Tool target extraction failed closed: {str(e)}") from e
 
         # 2. Explicit target_param declared at registration
         if self.target_param:
             if self.target_param in kwargs and kwargs[self.target_param]:
                 val = str(kwargs[self.target_param]).strip()
                 if val:
-                    return val
-            # Try binding positional args to signature
+                    targets_found["target_param_kwarg"] = val
             try:
                 sig = inspect.signature(self._executor_func)
                 bound_args = sig.bind_partial(*args, **kwargs)
                 if self.target_param in bound_args.arguments and bound_args.arguments[self.target_param]:
                     val = str(bound_args.arguments[self.target_param]).strip()
                     if val:
-                        return val
+                        targets_found["target_param_bound"] = val
             except (ValueError, TypeError):
                 pass
 
@@ -112,15 +122,15 @@ class TrustedToolWrapper:
         if "target" in kwargs and kwargs["target"]:
             val = str(kwargs["target"]).strip()
             if val:
-                return val
+                targets_found["explicit_target_kwarg"] = val
 
-        # 4. Infer resource target parameter names in kwargs / bound args
+        # 4. Resource argument inference in kwargs / signature-bound args
         resource_keys = ("path", "file", "filepath", "node", "endpoint", "url", "resource", "filename", "destination")
         for r_key in resource_keys:
             if r_key in kwargs and kwargs[r_key]:
                 val = str(kwargs[r_key]).strip()
                 if val:
-                    return val
+                    targets_found[f"resource_kwarg_{r_key}"] = val
 
         try:
             sig = inspect.signature(self._executor_func)
@@ -129,17 +139,38 @@ class TrustedToolWrapper:
                 if r_key in bound_args.arguments and bound_args.arguments[r_key]:
                     val = str(bound_args.arguments[r_key]).strip()
                     if val:
-                        return val
+                        targets_found[f"resource_bound_{r_key}"] = val
         except (ValueError, TypeError):
             pass
 
-        # 5. First positional string argument if positional args provided
-        if args and isinstance(args[0], str) and args[0].strip():
-            return args[0].strip()
+        # Check for conflicting targets among explicit sources
+        distinct_targets = set(targets_found.values())
+        if len(distinct_targets) > 1:
+            raise PermissionError(
+                f"Tool execution rejected: Conflicting target values detected across parameters for tool '{self.tool_id}': {distinct_targets}"
+            )
 
-        # 6. Default target configured at tool registration
+        if distinct_targets:
+            return distinct_targets.pop()
+
+        # SEC-03: Positional argument fallback is permitted ONLY for demonstrably read-only actions
+        if self.is_read_only:
+            if args and isinstance(args[0], str) and args[0].strip():
+                return args[0].strip()
+
+        # Default target fallback (safe only if configured and no conflicting args)
         if self.default_target:
+            # For mutating actions without explicit target_param or extractor, reject execution if dynamic args were supplied
+            if not self.is_read_only and not self.target_param and not self.target_extractor and (args or kwargs):
+                raise PermissionError(
+                    f"Tool execution rejected: State-mutating tool '{self.tool_id}' requires explicit target_param or target_extractor and cannot rely on default_target when arguments are supplied"
+                )
             return self.default_target
+
+        if not self.is_read_only:
+            raise PermissionError(
+                f"Tool execution rejected: State-mutating operation '{self.action_name}' requires explicit target parameter ('target_param' or 'target_extractor') and rejects ambiguous positional fallback"
+            )
 
         raise PermissionError(f"Tool execution rejected: Unable to determine actual resource target for tool '{self.tool_id}'")
 
@@ -175,11 +206,36 @@ class TrustedToolWrapper:
         task_id_val = exec_context.get("task_id")
         corr_id = exec_context.get("correlation_id") or str(uuid.uuid4())
         req_id = exec_context.get("request_id") or str(uuid.uuid4())
-        # Principal ID must strictly originate from verified context or default
-        principal_id = exec_context.get("principal_id", "agent_default")
 
         boundary = self.registry.execution_boundary
         authority = self.registry.authority
+
+        # SEC-01: Establish authenticated principal assertion
+        from epistemicos.authorization import AuthenticatedPrincipal
+        auth_principal_input = (
+            exec_context.get("authenticated_principal")
+            or kwargs.get("authenticated_principal")
+        )
+
+        active_policy = self.tool_policy or authority.default_policy
+
+        if auth_principal_input is not None:
+            if not isinstance(auth_principal_input, AuthenticatedPrincipal):
+                raise PermissionError("Tool execution rejected: authenticated_principal must be an instance of AuthenticatedPrincipal")
+            valid, p_reason, pid = authority.principal_provider.verify_principal(auth_principal_input)
+            if not valid:
+                raise PermissionError(f"Tool execution rejected: Principal authentication failed ({p_reason})")
+            effective_principal = auth_principal_input
+        else:
+            # Check for unauthenticated caller-controlled principal spoofing
+            claimed_pid = exec_context.get("principal_id") or kwargs.get("principal_id")
+            if claimed_pid and claimed_pid != "agent_default":
+                raise PermissionError(f"Tool execution rejected: Caller-controlled context dictionary cannot assert principal identity '{claimed_pid}' without AuthenticatedPrincipal")
+
+            # Check if active policy requires privileged principal
+            if active_policy and active_policy.allowed_principals != {"*"}:
+                raise PermissionError("Tool execution rejected: Policy requires authenticated principal but none provided")
+            effective_principal = "agent_default"
 
         payload_digest = boundary.compute_canonical_digest(raw_payload)
 
@@ -189,10 +245,28 @@ class TrustedToolWrapper:
 
         # Reconstruct call_kwargs for underlying executor if target parameter was bound by wrapper signature
         call_kwargs = dict(kwargs)
+        # Strip control-plane wrapper parameters from call_kwargs if not accepted by executor signature
         try:
-            sig_params = inspect.signature(self._executor_func).parameters
+            sig = inspect.signature(self._executor_func)
+            sig_params = sig.parameters
+            for control_key in ("authenticated_principal", "principal_id", "policy", "task_contract", "human_approval"):
+                if control_key in call_kwargs and control_key not in sig_params:
+                    call_kwargs.pop(control_key, None)
+
             if "target" in sig_params and "target" not in call_kwargs and exec_target is not None:
                 call_kwargs["target"] = exec_target
+
+            # SEC-03: Verify that authorized target is exactly the resource targeted by the executor
+            bound_for_exec = sig.bind_partial(*args, **call_kwargs)
+            for param_name in (self.target_param, "target", "path", "file", "endpoint", "resource"):
+                if param_name and param_name in bound_for_exec.arguments:
+                    bound_val = str(bound_for_exec.arguments[param_name]).strip()
+                    if bound_val and bound_val != exec_target:
+                        raise PermissionError(
+                            f"Tool execution rejected: Authorized target '{exec_target}' differs from executor target parameter '{bound_val}'"
+                        )
+        except PermissionError:
+            raise
         except (ValueError, TypeError):
             pass
 
@@ -205,7 +279,7 @@ class TrustedToolWrapper:
             action_name=self.action_name,
             target=exec_target,
             canonical_request_digest=payload_digest,
-            principal_id=principal_id,
+            principal_id=effective_principal,
             correlation_id=corr_id,
             request_id=req_id,
             executor_id=_exec_closure,
@@ -229,7 +303,8 @@ class TrustedToolWrapper:
             contract_version=cap.contract_version,
             required_success_evidence=set(cap.required_success_evidence) if cap.required_success_evidence else set(),
             fencing_token=cap.fencing_token,
-            scope_key=cap.scope_key
+            scope_key=cap.scope_key,
+            authenticated_principal=effective_principal
         )
 
         # Record AUTHORIZATION_GRANTED event in provenance store

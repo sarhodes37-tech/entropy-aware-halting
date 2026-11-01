@@ -87,8 +87,8 @@ class ProvenanceSource(Enum):
 @dataclass
 class ExecutionContext:
     """
-    Execution context grouping correlation, request, and authorization parameters
-    for protected action execution.
+    Execution context grouping correlation, request, authorization parameters,
+    and authenticated principal identity for protected action execution.
     """
     correlation_id: str
     request_id: str
@@ -102,6 +102,7 @@ class ExecutionContext:
     required_success_evidence: Set[str] = field(default_factory=set)
     fencing_token: Optional[int] = None
     scope_key: Optional[str] = None
+    authenticated_principal: Optional[Any] = None
 
     def to_dict(self) -> Dict[str, Any]:
         data = asdict(self)
@@ -341,6 +342,7 @@ class TrustedExecutionBoundary:
         executor_func: Optional[Any] = None,
         execution_attempt_id: Optional[str] = None,
         policy_version: str = "1.0.0",
+        authenticated_principal: Optional[Any] = None,
         *,
         context: Optional[ExecutionContext] = None
     ) -> Dict[str, Any]:
@@ -362,6 +364,7 @@ class TrustedExecutionBoundary:
             auth_granted = context.authorization_granted
             attempt_id = execution_attempt_id or context.execution_attempt_id or str(uuid.uuid4())
             pol_version = policy_version if policy_version != "1.0.0" else context.policy_version
+            auth_principal = getattr(context, "authenticated_principal", None) or authenticated_principal
         else:
             corr_id = correlation_id
             req_id = request_id
@@ -370,6 +373,7 @@ class TrustedExecutionBoundary:
             auth_granted = authorization_granted
             attempt_id = execution_attempt_id or str(uuid.uuid4())
             pol_version = policy_version
+            auth_principal = authenticated_principal
 
         # Enforce strict validation of authorization evidence, token ID, digest, and executor
         if auth_granted is not True:
@@ -399,12 +403,17 @@ class TrustedExecutionBoundary:
             target=target,
             canonical_request_digest=current_digest,
             executor_id=executor_id,
+            principal_id=auth_principal,
             correlation_id=corr_id,
             request_id=req_id,
             policy_version=pol_version
         )
         if not valid:
             raise PermissionError(f"Execution rejected: {cap_reason}")
+
+        # SEC-01: Reject missing authenticated principal if capability is bound to a specific principal
+        if cap and cap.principal_id != "agent_default" and auth_principal is None:
+            raise PermissionError(f"Execution rejected: Capability bound to principal '{cap.principal_id}' requires authenticated principal in ExecutionContext")
 
         # Option A Strict Trusted Executor Binding Check:
         # A valid capability alone NEVER authorizes an unverified or unregistered callable object.

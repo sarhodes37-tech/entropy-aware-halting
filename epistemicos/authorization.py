@@ -963,6 +963,89 @@ class FileAuthorizationStore(AuthorizationStore):
                 self._release_flock()
 
 
+@dataclass(frozen=True)
+class AuthenticatedPrincipal:
+    """
+    Cryptographically and authoritatively verified identity assertion representing
+    an authenticated principal.
+    A caller-supplied string, dictionary, or manually constructed object without
+    a valid cryptographic signature from a trusted PrincipalProvider is strictly rejected.
+    """
+    principal_id: str
+    issuer_id: str
+    timestamp: float
+    signature: str
+    claims: Dict[str, Any] = field(default_factory=dict)
+    is_authenticated: bool = True
+
+    def __post_init__(self):
+        if not self.principal_id or not isinstance(self.principal_id, str) or not self.principal_id.strip():
+            raise ValueError("AuthenticatedPrincipal: principal_id must be a non-empty string")
+        if not self.issuer_id or not isinstance(self.issuer_id, str) or not self.issuer_id.strip():
+            raise ValueError("AuthenticatedPrincipal: issuer_id must be a non-empty string")
+        if not self.signature or not isinstance(self.signature, str) or not self.signature.strip():
+            raise ValueError("AuthenticatedPrincipal: signature must be a non-empty string")
+
+
+class PrincipalProvider:
+    """
+    Authoritative provider and verifier of authenticated principal assertions.
+    Signs and verifies AuthenticatedPrincipal identity assertions using HMAC-SHA256.
+    """
+
+    def __init__(
+        self,
+        signing_secret: Optional[bytes] = None,
+        provider_id: str = "TrustedPrincipalAuthority"
+    ):
+        self.signing_secret = signing_secret or hashlib.sha256(f"EPISTEMICOS_PRINCIPAL_KEY_{uuid.uuid4()}".encode("utf-8")).digest()
+        self.provider_id = provider_id
+
+    def _compute_signature(self, principal_id: str, issuer_id: str, timestamp: float) -> str:
+        payload = f"{principal_id}:{issuer_id}:{timestamp}"
+        return hmac.new(self.signing_secret, payload.encode("utf-8"), hashlib.sha256).hexdigest()
+
+    def issue_principal(
+        self,
+        principal_id: str,
+        claims: Optional[Dict[str, Any]] = None
+    ) -> AuthenticatedPrincipal:
+        ts = time.time()
+        sig = self._compute_signature(principal_id, self.provider_id, ts)
+        return AuthenticatedPrincipal(
+            principal_id=str(principal_id).strip(),
+            issuer_id=self.provider_id,
+            timestamp=ts,
+            signature=sig,
+            claims=dict(claims or {})
+        )
+
+    def verify_principal(
+        self,
+        principal: Any,
+        max_age_seconds: float = 3600.0,
+        current_time: Optional[float] = None
+    ) -> Tuple[bool, str, Optional[str]]:
+        if not isinstance(principal, AuthenticatedPrincipal):
+            return False, "Object is not an AuthenticatedPrincipal assertion", None
+
+        if not principal.signature or not isinstance(principal.signature, str):
+            return False, "Missing or invalid signature on principal assertion", None
+
+        if principal.issuer_id != self.provider_id:
+            return False, f"Untrusted issuer: expected '{self.provider_id}', got '{principal.issuer_id}'", None
+
+        expected_sig = self._compute_signature(principal.principal_id, principal.issuer_id, principal.timestamp)
+        if not hmac.compare_digest(principal.signature, expected_sig):
+            return False, "Signature verification failed on principal assertion", None
+
+        now = current_time if current_time is not None else time.time()
+        if now - principal.timestamp > max_age_seconds:
+            return False, "Principal assertion expired", None
+
+        return True, "Principal verified", principal.principal_id
+
+
 @dataclass
 class Capability:
     """
@@ -1796,6 +1879,11 @@ class AuthorizationAuthority:
         else:
             self.executor_registry = ExecutorRegistry(executor_registry)
 
+        self.principal_provider = PrincipalProvider(
+            signing_secret=self.contract_signing_secret,
+            provider_id="TrustedPrincipalAuthority"
+        )
+
     def clear_denial_with_approval(
         self,
         task_id: str,
@@ -1831,7 +1919,7 @@ class AuthorizationAuthority:
         action_name: str,
         target: str,
         canonical_request_digest: str,
-        principal_id: str = "agent_default",
+        principal_id: Union[str, AuthenticatedPrincipal] = "agent_default",
         correlation_id: Optional[str] = None,
         request_id: Optional[str] = None,
         executor_id: str = "default_executor",
@@ -1849,6 +1937,20 @@ class AuthorizationAuthority:
         active_policy = policy or self.default_policy
         if not active_policy:
             return None, "AUTHORIZATION_DENIED_NO_TRUSTED_POLICY"
+
+        # SEC-01: Authenticate principal assertion
+        if isinstance(principal_id, AuthenticatedPrincipal):
+            valid, p_reason, pid = self.principal_provider.verify_principal(principal_id, current_time=current_time)
+            if not valid:
+                return None, f"AUTHORIZATION_DENIED_PRINCIPAL_AUTHENTICATION_FAILED: {p_reason}"
+            effective_principal = pid
+        elif isinstance(principal_id, str):
+            # If policy restricts principals, an unauthenticated raw string CANNOT assert identity
+            if active_policy.allowed_principals != {"*"}:
+                return None, f"AUTHORIZATION_DENIED_AUTHENTICATED_PRINCIPAL_REQUIRED: Claiming privileged principal '{principal_id}' requires AuthenticatedPrincipal"
+            effective_principal = principal_id.strip() if principal_id else "agent_default"
+        else:
+            return None, "AUTHORIZATION_DENIED_INVALID_PRINCIPAL_TYPE"
 
         # If authority requires a task contract and none is provided, fail closed
         if self.require_task_contract and task_contract is None:
@@ -1954,8 +2056,8 @@ class AuthorizationAuthority:
                     self.registry._record_denial_unlocked(effective_task_id, action_name, target, reason, c_ver, active_policy.version)
                 return None, reason
 
-            if not active_policy.is_principal_allowed(principal_id):
-                return None, f"AUTHORIZATION_DENIED_PRINCIPAL_NOT_ALLOWED:{principal_id}"
+            if not active_policy.is_principal_allowed(effective_principal):
+                return None, f"AUTHORIZATION_DENIED_PRINCIPAL_NOT_ALLOWED:{effective_principal}"
 
             if not active_policy.is_executor_allowed(executor_id):
                 return None, f"AUTHORIZATION_DENIED_EXECUTOR_NOT_ALLOWED:{executor_id}"
@@ -2019,7 +2121,7 @@ class AuthorizationAuthority:
             canonical_scope = canonicalize_fencing_scope(effective_task_id, target)
             cap = Capability(
                 token_id=token_id,
-                principal_id=principal_id,
+                principal_id=effective_principal,
                 correlation_id=corr_id,
                 request_id=req_id,
                 action_name=action_name,
@@ -2048,7 +2150,7 @@ class AuthorizationAuthority:
         target: str,
         canonical_request_digest: str,
         executor_id: str,
-        principal_id: Optional[str] = None,
+        principal_id: Optional[Union[str, AuthenticatedPrincipal]] = None,
         correlation_id: Optional[str] = None,
         request_id: Optional[str] = None,
         policy_version: Optional[str] = None,
@@ -2104,8 +2206,19 @@ class AuthorizationAuthority:
         if cap.executor_id != executor_id:
             return False, f"CAPABILITY_VERIFICATION_FAILED_EXECUTOR_MISMATCH: granted '{cap.executor_id}', requested '{executor_id}'", cap
 
-        if principal_id is not None and cap.principal_id != principal_id:
-            return False, f"CAPABILITY_VERIFICATION_FAILED_PRINCIPAL_MISMATCH: granted '{cap.principal_id}', requested '{principal_id}'", cap
+        # SEC-01: Principal verification
+        if isinstance(principal_id, AuthenticatedPrincipal):
+            valid, p_reason, pid = self.principal_provider.verify_principal(principal_id, current_time=current_time)
+            if not valid:
+                return False, f"CAPABILITY_VERIFICATION_FAILED_PRINCIPAL_AUTHENTICATION_FAILED: {p_reason}", cap
+            req_principal = pid
+        elif isinstance(principal_id, str):
+            req_principal = principal_id.strip() if principal_id.strip() else None
+        else:
+            req_principal = None
+
+        if req_principal is not None and cap.principal_id != req_principal:
+            return False, f"CAPABILITY_VERIFICATION_FAILED_PRINCIPAL_MISMATCH: granted '{cap.principal_id}', requested '{req_principal}'", cap
 
         if correlation_id is not None and cap.correlation_id != correlation_id:
             return False, f"CAPABILITY_VERIFICATION_FAILED_CORRELATION_ID_MISMATCH: granted '{cap.correlation_id}', requested '{correlation_id}'", cap

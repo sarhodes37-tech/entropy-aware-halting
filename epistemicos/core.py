@@ -568,11 +568,23 @@ class EpistemicOrchestrator:
                 task_contract_val = context.get("task_contract") or raw_payload.get("task_contract")
                 task_id_val = context.get("task_id") or raw_payload.get("task_id")
 
+                # SEC-01: Principal authentication at orchestrator boundary
+                auth_principal = context.get("authenticated_principal") or raw_payload.get("authenticated_principal")
+                if auth_principal is None:
+                    claimed_req_id = context.get("requestor_id") or raw_payload.get("requestor_id")
+                    if claimed_req_id and claimed_req_id != "agent_default":
+                        if active_policy and active_policy.allowed_principals != {"*"}:
+                            auth_principal = None
+                        else:
+                            auth_principal = claimed_req_id
+                    else:
+                        auth_principal = "agent_default"
+
                 cap, cap_reason = self.authority.evaluate_and_issue_capability(
                     action_name=action_name,
                     target=target,
                     canonical_request_digest=payload_digest,
-                    principal_id=context.get("requestor_id", "agent_default"),
+                    principal_id=auth_principal or "agent_default",
                     correlation_id=corr_id,
                     request_id=req_id,
                     executor_id=executor_id,
@@ -731,7 +743,8 @@ class EpistemicOrchestrator:
                         contract_version=cap.contract_version,
                         required_success_evidence=set(cap.required_success_evidence) if cap and cap.required_success_evidence else set(),
                         fencing_token=getattr(cap, "fencing_token", None) if cap else None,
-                        scope_key=getattr(cap, "scope_key", None) if cap else None
+                        scope_key=getattr(cap, "scope_key", None) if cap else None,
+                        authenticated_principal=auth_principal
                     )
 
                     try:
