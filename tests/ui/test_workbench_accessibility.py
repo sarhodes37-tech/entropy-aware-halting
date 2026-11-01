@@ -45,8 +45,8 @@ function isPointerTarget(el) {
     const isDisabled = el.disabled === true || el.getAttribute('aria-disabled') === 'true';
     const isInert = el.hasAttribute('inert') || el.closest('[inert]') !== null;
     if (isDisabled || isInert) return false;
-    // Semantically exclude keyboard-only scroll regions (<pre>, .table-responsive) which are not discrete pointer targets
-    if (role === 'region' || role === 'scrollbar' || tag === 'pre' || el.classList.contains('inspector-block') || el.classList.contains('table-responsive')) return false;
+    // Semantically exclude keyboard-only scroll regions (role="region", role="scrollbar", tag="pre") which are not discrete pointer targets
+    if (role === 'region' || role === 'scrollbar' || tag === 'pre') return false;
     if (['button', 'input', 'select', 'textarea'].includes(tag)) return true;
     if (tag === 'a' && el.hasAttribute('href')) return true;
     if (['button', 'link', 'option', 'tab', 'menuitem'].includes(role)) return true;
