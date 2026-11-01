@@ -37,7 +37,7 @@ SENSITIVE_KEY_PATTERNS = ("api_key", "token", "password", "secret", "ssn", "bank
 SAFE_KEY_SUFFIXES = ("_id", "_hash", "_digest", "_uuid", "_count", "_type", "_ms", "_version", "_algorithm", "_action", "_reason", "_source", "_name", "_status", "_level")
 
 REGEX_BEARER = re.compile(r"Bearer\s+[a-zA-Z0-9\._\-]+", re.IGNORECASE)
-REGEX_SK = re.compile(r"\b(sk-[a-zA-Z0-9_\-]{20,}|glpat-[a-zA-Z0-9_\-]{20,}|AKIA[0-9A-Z]{16}|ghp_[a-zA-Z0-9]{36,}|github_pat_[a-zA-Z0-9_\-]{80,}|xox[baprs]-[a-zA-Z0-9_\-]{10,})\b")
+REGEX_SK = re.compile(r"\b(sk-[a-zA-Z0-9_\-]{20,}|glpat-[a-zA-Z0-9_\-]{20,}|AKIA[0-9A-Z]{16}|gh[pousr]_[a-zA-Z0-9]{36,}|github_pat_[a-zA-Z0-9_\-]{80,}|hf_[a-zA-Z0-9]{34,}|xox[baprs]-[a-zA-Z0-9_\-]{10,})\b")
 REGEX_CRED_ASSIGN = re.compile(r"(password|api_key|secret|token)\s*=\s*[^\s;&]+", re.IGNORECASE)
 REGEX_EMAIL = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
 REGEX_PHONE = re.compile(r"\b(?:\+\d{1,3}[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b")
