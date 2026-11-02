@@ -1134,3 +1134,124 @@ def test_evidence_invalidation_and_change_impact_classification():
     assert len(report.invalidated_evidence) == 2
     assert report.can_authorize_without_rerun is False
     assert any("touches changed component(s)" in r for r in report.invalidation_reasons)
+
+
+def test_revocation_registry_input_validation_fail_closed():
+    reg = ReleaseApprovalRevocationRegistry()
+
+    # Query methods fail closed: raise ValueError on invalid, None, or non-string inputs
+    for invalid_id in [None, "", "   ", 12345, object(), [], {}]:
+        with pytest.raises(ValueError, match="approval_id must be a non-empty string"):
+            reg.is_revoked(invalid_id)
+        with pytest.raises(ValueError, match="approval_id must be a non-empty string"):
+            reg.get_revocation_record(invalid_id)
+
+    # Valid unknown IDs return False / None as expected
+    assert reg.is_revoked("valid-unrevoked-id") is False
+    assert reg.get_revocation_record("valid-unrevoked-id") is None
+
+    # Invalid arguments to revoke_approval raise clear ValueError and do not mutate state
+    for bad_id in [None, "", "   ", 12345, object()]:
+        with pytest.raises(ValueError, match="approval_id must be a non-empty string"):
+            reg.revoke_approval(bad_id, "admin_bob", reason="Compromised key")
+
+    for bad_principal in [None, "", "   ", 12345, object()]:
+        with pytest.raises(ValueError, match="revoked_by_principal must be a non-empty string"):
+            reg.revoke_approval("appr-valid", bad_principal, reason="Compromised key")
+
+    for bad_reason in [None, "", "   ", 12345, object()]:
+        with pytest.raises(ValueError, match="(reason must be a non-empty string|RevocationRecord: reason must be a non-empty string)"):
+            reg.revoke_approval("appr-valid", "admin_bob", reason=bad_reason)
+
+    # Confirm registry state was not mutated by any failed attempt
+    assert reg.is_revoked("appr-valid") is False
+    assert reg.get_revocation_record("appr-valid") is None
+
+    # Normal revocation works
+    rec = reg.revoke_approval("appr-100", "admin_bob", reason="Compromised key")
+    assert rec.approval_id == "appr-100"
+    assert rec.revoked_by_principal == "admin_bob"
+    assert rec.reason == "Compromised key"
+    assert reg.is_revoked("appr-100") is True
+    assert reg.is_revoked("  appr-100  ") is True
+    assert reg.get_revocation_record("appr-100") is not None
+
+
+def test_caller_verify_release_approval_fails_closed_on_invalid_approval_id():
+    auth = MockReleaseAuthority(issuer_id="TrustedCorpIdP")
+    verifier = PrincipalVerifier(trusted_public_keys={"TrustedCorpIdP": auth.public_key})
+    engine = ReleaseGovernanceEngine(
+        principal_verifier=verifier,
+        allowed_approver_principals=["reviewer_alice"],
+        require_artifact_bytes_verification=False,
+        require_evaluator_signatures=False,
+        fail_closed_audit=False
+    )
+
+    manifest = create_sample_manifest()
+    m_digest = manifest.compute_manifest_digest()
+
+    ev1 = VerificationEvidenceRecord(
+        evidence_id="ev-layer4",
+        manifest_digest=m_digest,
+        evidence_type="layer4_security_audit",
+        status=EvidenceVerificationStatus.PASS,
+        artifact_digest="1111111111111111111111111111111111111111111111111111111111111111"
+    )
+
+    approval = ReleaseApprovalRecord(
+        approval_id="appr-001",
+        manifest_digest=m_digest,
+        approver_id="reviewer_alice",
+        approver_issuer="TrustedCorpIdP",
+        policy_version="1.0.0",
+        required_evidence_digests=[ev1.compute_evidence_digest()]
+    )
+    auth.sign_approval(approval)
+
+    # Tamper with approval object in memory so approval_id is empty/whitespace
+    object.__setattr__(approval, "approval_id", "   ")
+    with pytest.raises(ValueError, match="approval_id must be a non-empty string"):
+        engine.verify_release_approval(manifest, approval, evidence_records=[ev1])
+
+
+def test_wrapper_revoke_release_approval_validation_and_audit():
+    audit_trail = TamperEvidentAuditTrail(log_file_path="logs/test_wrapper_revoke_audit.jsonl")
+    rev_registry = ReleaseApprovalRevocationRegistry()
+    engine = ReleaseGovernanceEngine(
+        audit_trail=audit_trail,
+        revocation_registry=rev_registry,
+        fail_closed_audit=False
+    )
+
+    # 1. Calling without explicit reason raises TypeError due to mandatory signature
+    with pytest.raises(TypeError):
+        engine.revoke_release_approval("appr-wrapped", "security_lead")  # type: ignore
+
+    # 2. Invalid or non-string inputs raise ValueError and do not mutate registry or emit audit events
+    for bad_id in [None, "", "   ", 12345, object()]:
+        with pytest.raises(ValueError, match="approval_id must be a non-empty string"):
+            engine.revoke_release_approval(bad_id, "security_lead", reason="Revocation reason")
+
+    for bad_principal in [None, "", "   ", 12345, object()]:
+        with pytest.raises(ValueError, match="revoked_by_principal must be a non-empty string"):
+            engine.revoke_release_approval("appr-wrapped", bad_principal, reason="Revocation reason")
+
+    for bad_reason in [None, "", "   ", 12345, object()]:
+        with pytest.raises(ValueError, match="reason must be a non-empty string"):
+            engine.revoke_release_approval("appr-wrapped", "security_lead", reason=bad_reason)
+
+    assert rev_registry.is_revoked("appr-wrapped") is False
+    assert rev_registry.get_revocation_record("appr-wrapped") is None
+
+    # 3. Valid revocation through wrapper succeeds, mutates registry, and is recorded
+    rec = engine.revoke_release_approval(
+        approval_id="appr-wrapped",
+        revoked_by_principal="security_lead",
+        reason="Discovered critical CVE in dependencies"
+    )
+    assert rec.approval_id == "appr-wrapped"
+    assert rec.revoked_by_principal == "security_lead"
+    assert rec.reason == "Discovered critical CVE in dependencies"
+    assert rev_registry.is_revoked("appr-wrapped") is True
+    assert rev_registry.get_revocation_record("appr-wrapped") == rec
