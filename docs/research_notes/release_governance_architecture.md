@@ -1,6 +1,6 @@
 # EpistemicOS Change & Release Governance Architecture Specification
 
-**Status:** Phase 0 Proof of Concept (Evidence & Evaluator Hardened)
+**Status:** Phase 0 Proof of Concept (Final Assurance Level Hardened)
 **Subsystem:** `epistemicos/release/`
 **Date:** May 2026
 **Audience:** EpistemicOS Core Architecture & Safety Engineering
@@ -22,10 +22,11 @@ This implementation establishes an isolated subsystem under `epistemicos/release
 4. Mandatory evidence verification at the approval verification boundary: every referenced digest must correspond to an available verified record.
 5. Required evidence completeness at the approval verification boundary: approvals must reference verified evidence satisfying every category in `manifest.required_evidence_types`; unreferenced records or partial category coverage strictly fail closed.
 6. Evaluator signature verification is mandatory under the default policy; unsigned evidence is rejected unless explicit reduced-assurance mode is configured.
-7. Asymmetric Ed25519-signed release approvals bound to immutable manifest digests and verified via `PrincipalVerifier` (RFC 8032).
-8. Monotonic, authoritative approval revocation via `ReleaseApprovalRevocationRegistry`, preventing resurrection attacks via in-memory or serialized object mutation.
-9. Deterministic change detection and fail-closed evidence invalidation.
-10. Fail-closed audit logging semantics for release authorization decisions, requiring a configured audit trail.
+7. Explicit propagation of `AssuranceLevel` (`FULL_AUTHENTICATED` vs `REDUCED_ASSURANCE`) across both `evaluate_release_readiness()` (returning `ReleaseReadinessEvaluation`) and `verify_release_approval()` (returning `ReleaseApprovalVerificationResult`), ensuring reduced-assurance decisions are never represented as unqualified full authorizations.
+8. Asymmetric Ed25519-signed release approvals bound to immutable manifest digests and verified via `PrincipalVerifier` (RFC 8032).
+9. Monotonic, authoritative approval revocation via `ReleaseApprovalRevocationRegistry`, preventing resurrection attacks via in-memory or serialized object mutation.
+10. Deterministic change detection and fail-closed evidence invalidation.
+11. Fail-closed audit logging semantics for release authorization decisions, requiring a configured audit trail.
 
 ---
 
@@ -39,6 +40,7 @@ This implementation establishes an isolated subsystem under `epistemicos/release
 | **Evidence Record Integrity** | Manifest digest in `VerificationEvidenceRecord` | The test or benchmark record was generated for this specific manifest configuration | Does NOT guarantee the test suite is bug-free or covers all threat vectors |
 | **Evidence Artifact Authenticity** | SHA-256 digest validation against actual artifact bytes & evaluator Ed25519 signature | Artifact byte content matches declared digest, originates from an authorized evaluator, and attests to exact component scope | Does NOT prove the test harness host OS was uncompromised |
 | **Approval Signing** | Asymmetric RFC 8032 Ed25519 signature | An authorized human or cryptographic reviewer explicitly authorized this exact manifest digest | Does NOT prove the live deployment matches the signed artifact |
+| **Effective Assurance Level** | `AssuranceLevel.FULL_AUTHENTICATED` vs `REDUCED_ASSURANCE` | Indicates whether all artifact bytes and evaluator signatures were verified or accepted under reduced policy | Does NOT eliminate the need to verify downstream deployment identity |
 | **Authoritative Revocation** | `ReleaseApprovalRevocationRegistry` | Monotonically marks an approval ID as revoked, preventing resurrection by object mutation | Relies on registry persistence across restart boundaries (currently in-memory) |
 | **Deployment Attestation** *(Deferred)* | Hardware TPM / enclave measurement | The running process memory matches the authorized binary | *Explicitly deferred to Phase 1 (not implemented in Phase 0)* |
 
@@ -86,6 +88,7 @@ This implementation establishes an isolated subsystem under `epistemicos/release
 |   |    - Ed25519 signature verified via PrincipalVerifier (RFC 8032)                |   |
 |   |    - Mandatory evidence records verified at approval boundary                   |   |
 |   |    - Required evidence completeness enforced (no omitted categories)            |   |
+|   |    - Effective AssuranceLevel communicated in ReleaseApprovalVerificationResult |   |
 |   |    - Authoritative Revocation Registry check (anti-resurrection)                |   |
 |   |    - Expiration & Policy Version consistency checks                             |   |
 |   |    - Mandatory fail-closed audit logging (audit trail required)                 |   |
@@ -103,31 +106,31 @@ This implementation establishes an isolated subsystem under `epistemicos/release
 
 ---
 
-## 3. Evidence Trust Boundary Hardening & Audit Semantics
+## 3. Public API Assurance Level Contracts
 
-### 3.1 Explicit Artifact Byte Verification & Mandatory Evaluator Signatures (P0)
-- `verify_single_evidence()` provides shared, deterministic verification for both `evaluate_release_readiness()` and `verify_release_approval()`.
-- Under the default policy (`require_evaluator_signatures=True`), an evidence record must provide both `signature` and `evaluator_issuer`, verified via `PrincipalVerifier`. Missing signatures or untrusted issuers strictly fail closed. Unsigned evidence is only permitted if `require_evaluator_signatures=False` is explicitly configured, returning `AssuranceLevel.REDUCED_ASSURANCE`.
-- When `require_artifact_bytes_verification=True` (default), artifact bytes must be retrievable via `artifact_bytes_provider(evidence_id)` and their SHA-256 digest must strictly match `artifact_digest`. If the provider is missing or returns `None`, verification returns `EvidenceValidationResultStatus.UNAVAILABLE`, preventing silent pass-through of uninspected artifacts.
+### 3.1 Structured Return Types & Assurance Visibility
+Both public entry points in `ReleaseGovernanceEngine` return structured result objects exposing the effective `AssuranceLevel`:
+- `evaluate_release_readiness(manifest, evidence_records, artifact_bytes_provider) -> ReleaseReadinessEvaluation`:
+  - `is_ready: bool`
+  - `reason: str`
+  - `verified_evidence_records: List[VerificationEvidenceRecord]`
+  - `accepted_evidence_digests: List[str]`
+  - `validation_results: List[EvidenceValidationResult]`
+  - `effective_assurance_level: Optional[AssuranceLevel]` (`FULL_AUTHENTICATED`, `REDUCED_ASSURANCE`, or `None` on failure)
 
-### 3.2 Required Evidence Completeness at Approval Boundary (P0)
-- `verify_release_approval()` enforces that every category in `manifest.required_evidence_types` is satisfied by a verified evidence record whose digest is explicitly included in `approval.required_evidence_digests`.
-- If an approval omits any required evidence category (even if all referenced records are valid and the approval signature is cryptographically authentic), release authorization is strictly rejected with `APPROVAL_REQUIRED_EVIDENCE_INCOMPLETE`.
-- Unreferenced evidence records supplied to the engine do NOT count toward satisfying required evidence categories.
+- `verify_release_approval(manifest, approval, evidence_records, artifact_bytes_provider, current_time) -> ReleaseApprovalVerificationResult`:
+  - `is_verified: bool`
+  - `reason: str`
+  - `effective_assurance_level: Optional[AssuranceLevel]` (`FULL_AUTHENTICATED` or `REDUCED_ASSURANCE`)
+  - `verified_evidence_count: int`
+  - `validation_results: List[EvidenceValidationResult]`
 
-### 3.3 Evaluator Signature Scope Binding (P0)
-- `compute_signature_payload()` on `VerificationEvidenceRecord` binds all security-relevant fields into a domain-separated canonical structured JSON payload (`EpistemicOS:VerificationEvidenceRecord:v1`):
-  - `evidence_id`, `manifest_digest`, `evidence_type`, `status`, `artifact_digest`, `evaluator_id`, `evaluator_issuer`, `evaluated_at_utc`, sorted `evaluated_component_ids`, and `metadata`.
-- Any mutation of component scope (e.g. attempting to claim a test evaluated `diagnostic_model` when it only evaluated `core_runtime`) or metadata invalidates the evaluator signature.
-
-### 3.4 Fail-Closed Audit Semantics
-- In safety-critical release governance, audit recording cannot be silent or best-effort.
-- When `fail_closed_audit=True` (default), `ReleaseGovernanceEngine` mandates that `audit_trail` is configured and operable. If `audit_trail` is `None` or raises an exception during write, the engine raises `RuntimeError` and refuses to declare the release authorized.
-
-### 3.5 Authoritative Revocation & Anti-Resurrection
-- Revocation state is tracked authoritatively in `ReleaseApprovalRevocationRegistry`.
-- Monotonic revocation records cannot be undone by mutating in-memory `approval.revoked` attributes or replaying previously signed approvals.
-- *Limitation:* The revocation registry is currently in-memory and process-local. Durable disk journaling is deferred to Phase 1.
+### 3.2 Assurance Calculation Rules
+1. `FULL_AUTHENTICATED` requires that EVERY evidence record referenced by the approval:
+   - Had its raw artifact bytes retrieved and validated against `artifact_digest`.
+   - Had its evaluator Ed25519 signature verified against a trusted `PrincipalVerifier` public key.
+2. If any evidence record was verified without artifact bytes or without an evaluator signature (under an explicitly configured `require_artifact_bytes_verification=False` or `require_evaluator_signatures=False` engine mode), the overall effective assurance level is strictly set to `REDUCED_ASSURANCE`.
+3. An approval verification can NEVER return `FULL_AUTHENTICATED` if any referenced evidence relied on reduced assurance.
 
 ---
 
@@ -163,3 +166,6 @@ This implementation establishes an isolated subsystem under `epistemicos/release
 
 3. **Generalized Dependency Graph & Dynamic Impact Scoring:**
    - *Limitation:* Impact analysis uses set-based component intersection. It does not compute transitive graph reachability.
+
+4. **Revocation Persistence:**
+   - *Limitation:* The revocation registry is currently in-memory and process-local. Monotonic disk journaling is deferred to Phase 1.

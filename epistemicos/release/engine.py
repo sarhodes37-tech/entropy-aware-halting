@@ -60,7 +60,17 @@ class ReleaseReadinessEvaluation:
     verified_evidence_records: List[VerificationEvidenceRecord] = field(default_factory=list)
     accepted_evidence_digests: List[str] = field(default_factory=list)
     validation_results: List[EvidenceValidationResult] = field(default_factory=list)
-    effective_assurance_level: AssuranceLevel = AssuranceLevel.FULL_AUTHENTICATED
+    effective_assurance_level: Optional[AssuranceLevel] = None
+
+
+@dataclass
+class ReleaseApprovalVerificationResult:
+    """Explicit typed outcome of verifying a ReleaseApprovalRecord."""
+    is_verified: bool
+    reason: str
+    effective_assurance_level: Optional[AssuranceLevel] = None
+    verified_evidence_count: int = 0
+    validation_results: List[EvidenceValidationResult] = field(default_factory=list)
 
 
 class ReleaseGovernanceEngine:
@@ -71,6 +81,7 @@ class ReleaseGovernanceEngine:
     - Verifies evaluator signatures against trusted identity providers (mandatory by default).
     - Evaluates Release Candidates against required evidence with explicit typed outcomes.
     - Verifies Release Approvals against exact manifest digests using Ed25519 asymmetric verification.
+    - Propagates effective AssuranceLevel (FULL_AUTHENTICATED vs REDUCED_ASSURANCE) through public APIs.
     - Enforces required evidence completeness at both readiness and approval verification boundaries.
     - Checks authoritative revocation registry (fail-closed against object mutation/resurrection).
     - Enforces policy version consistency between manifest and approval.
@@ -189,7 +200,6 @@ class ReleaseGovernanceEngine:
         # 4. Evaluator signature verification
         eval_sig_verified = False
         if self.require_evaluator_signatures:
-            # Under default policy: evaluator signature and issuer are MANDATORY
             if not evidence.signature and not evidence.evaluator_issuer:
                 return EvidenceValidationResult(
                     evidence_id=ev_id,
@@ -242,7 +252,6 @@ class ReleaseGovernanceEngine:
                 )
             eval_sig_verified = True
         else:
-            # Explicit reduced-assurance mode: if signature/issuer provided, must still verify
             if evidence.signature or evidence.evaluator_issuer:
                 if not evidence.signature:
                     return EvidenceValidationResult(
@@ -311,10 +320,10 @@ class ReleaseGovernanceEngine:
         manifest: ReleaseManifest,
         evidence_records: List[VerificationEvidenceRecord],
         artifact_bytes_provider: Optional[Callable[[str], Optional[bytes]]] = None
-    ) -> Tuple[bool, str, List[str]]:
+    ) -> ReleaseReadinessEvaluation:
         """
         Evaluates whether a release manifest has all required verification evidence satisfied.
-        Returns: (is_ready, reason, list_of_accepted_evidence_digests)
+        Returns a structured ReleaseReadinessEvaluation exposing effective assurance level.
         """
         manifest_digest = manifest.compute_manifest_digest()
         required_types = set(manifest.required_evidence_types)
@@ -322,6 +331,10 @@ class ReleaseGovernanceEngine:
         accepted_digests: List[str] = []
         satisfied_types = set()
         rejected_reasons = []
+        validation_results: List[EvidenceValidationResult] = []
+        verified_records: List[VerificationEvidenceRecord] = []
+
+        all_full_authenticated = True
 
         for ev in evidence_records:
             res = self.verify_single_evidence(
@@ -329,21 +342,46 @@ class ReleaseGovernanceEngine:
                 evidence=ev,
                 artifact_bytes_provider=artifact_bytes_provider
             )
+            validation_results.append(res)
             if res.status != EvidenceValidationResultStatus.VERIFIED:
                 rejected_reasons.append(res.reason)
                 continue
 
             satisfied_types.add(ev.evidence_type)
             accepted_digests.append(res.evidence_digest)
+            verified_records.append(ev)
+
+            if res.assurance_level != AssuranceLevel.FULL_AUTHENTICATED:
+                all_full_authenticated = False
 
         missing = required_types - satisfied_types
         if missing:
             msg = f"Release candidate missing required verification evidence: {sorted(list(missing))}"
             if rejected_reasons:
                 msg += f" (Rejected records: {'; '.join(rejected_reasons)})"
-            return False, msg, []
+            return ReleaseReadinessEvaluation(
+                is_ready=False,
+                reason=msg,
+                verified_evidence_records=verified_records,
+                accepted_evidence_digests=accepted_digests,
+                validation_results=validation_results,
+                effective_assurance_level=None
+            )
 
-        return True, "All required verification evidence satisfied and bound to manifest", accepted_digests
+        overall_assurance = (
+            AssuranceLevel.FULL_AUTHENTICATED
+            if all_full_authenticated and len(verified_records) > 0
+            else AssuranceLevel.REDUCED_ASSURANCE
+        )
+
+        return ReleaseReadinessEvaluation(
+            is_ready=True,
+            reason="All required verification evidence satisfied and bound to manifest",
+            verified_evidence_records=verified_records,
+            accepted_evidence_digests=accepted_digests,
+            validation_results=validation_results,
+            effective_assurance_level=overall_assurance
+        )
 
     def verify_release_approval(
         self,
@@ -352,22 +390,10 @@ class ReleaseGovernanceEngine:
         evidence_records: List[VerificationEvidenceRecord],
         artifact_bytes_provider: Optional[Callable[[str], Optional[bytes]]] = None,
         current_time: Optional[float] = None
-    ) -> Tuple[bool, str]:
+    ) -> ReleaseApprovalVerificationResult:
         """
         Verifies that a ReleaseApprovalRecord authoritatively authorizes the given ReleaseManifest.
-
-        Strictly enforces:
-        1. Exact manifest digest matching.
-        2. Authoritative revocation check in ReleaseApprovalRevocationRegistry.
-        3. Expiration state.
-        4. Approver principal authorization.
-        5. Policy version binding between approval and manifest.
-        6. Mandatory evidence verification: every referenced evidence digest must correspond to an
-           available record that passes verify_single_evidence (including artifact bytes & evaluator sigs).
-        7. Required evidence completeness: approval must reference verified evidence satisfying EVERY
-           evidence type required by manifest.required_evidence_types. Unreferenced records do NOT count.
-        8. Asymmetric Ed25519 signature verification via PrincipalVerifier.
-        9. Mandatory fail-closed audit event recording.
+        Returns a structured ReleaseApprovalVerificationResult communicating effective assurance level.
         """
         manifest_digest = manifest.compute_manifest_digest()
 
@@ -383,7 +409,7 @@ class ReleaseGovernanceEngine:
                 "manifest_digest": manifest_digest,
                 "approval_id": approval.approval_id
             })
-            return False, reason
+            return ReleaseApprovalVerificationResult(is_verified=False, reason=reason)
 
         # Check 2: Authoritative Revocation Registry check
         if self.revocation_registry.is_revoked(approval.approval_id):
@@ -393,7 +419,7 @@ class ReleaseGovernanceEngine:
                 "reason": reason,
                 "approval_id": approval.approval_id
             })
-            return False, reason
+            return ReleaseApprovalVerificationResult(is_verified=False, reason=reason)
 
         # Check 3: Expiration
         if approval.is_expired(current_time=current_time):
@@ -402,7 +428,7 @@ class ReleaseGovernanceEngine:
                 "reason": reason,
                 "approval_id": approval.approval_id
             })
-            return False, reason
+            return ReleaseApprovalVerificationResult(is_verified=False, reason=reason)
 
         # Check 4: Policy version consistency between approval and manifest
         if approval.policy_version.strip() != manifest.policy_version.strip():
@@ -415,7 +441,7 @@ class ReleaseGovernanceEngine:
                 "approval_policy_version": approval.policy_version,
                 "manifest_policy_version": manifest.policy_version
             })
-            return False, reason
+            return ReleaseApprovalVerificationResult(is_verified=False, reason=reason)
 
         # Check 5: Authorized approver principal allowlist
         if self.allowed_approver_principals is not None:
@@ -425,7 +451,7 @@ class ReleaseGovernanceEngine:
                     "reason": reason,
                     "approver_id": approval.approver_id
                 })
-                return False, reason
+                return ReleaseApprovalVerificationResult(is_verified=False, reason=reason)
 
         # Check 6: Mandatory evidence record verification at approval boundary
         if not evidence_records or len(evidence_records) == 0:
@@ -434,23 +460,31 @@ class ReleaseGovernanceEngine:
                 "reason": reason,
                 "approval_id": approval.approval_id
             })
-            return False, reason
+            return ReleaseApprovalVerificationResult(is_verified=False, reason=reason)
 
-        verified_digests_map: Dict[str, VerificationEvidenceRecord] = {}
+        verified_digests_map: Dict[str, Tuple[VerificationEvidenceRecord, EvidenceValidationResult]] = {}
+        all_validation_results: List[EvidenceValidationResult] = []
+        all_full_authenticated = True
+
         for ev in evidence_records:
             val_res = self.verify_single_evidence(
                 manifest_digest=manifest_digest,
                 evidence=ev,
                 artifact_bytes_provider=artifact_bytes_provider
             )
+            all_validation_results.append(val_res)
             if val_res.status != EvidenceValidationResultStatus.VERIFIED:
                 reason = f"Release approval rejected: Evidence record '{ev.evidence_id}' failed verification: {val_res.reason}"
                 self._log_event(AuditLogLevel.HALT, "APPROVAL_EVIDENCE_FAILED", {
                     "reason": reason,
                     "evidence_id": ev.evidence_id
                 })
-                return False, reason
-            verified_digests_map[val_res.evidence_digest.lower()] = ev
+                return ReleaseApprovalVerificationResult(
+                    is_verified=False,
+                    reason=reason,
+                    validation_results=all_validation_results
+                )
+            verified_digests_map[val_res.evidence_digest.lower()] = (ev, val_res)
 
         # Ensure all digests in approval.required_evidence_digests correspond to verified records
         approval_digests = {d.lower() for d in approval.required_evidence_digests}
@@ -461,14 +495,17 @@ class ReleaseGovernanceEngine:
                 "reason": reason,
                 "missing_evidence_digests": sorted(list(unresolved_digests))
             })
-            return False, reason
+            return ReleaseApprovalVerificationResult(
+                is_verified=False,
+                reason=reason,
+                validation_results=all_validation_results
+            )
 
         # Check 7: Required evidence completeness at approval boundary
-        # The signed approval MUST reference verified evidence satisfying every type in manifest.required_evidence_types
-        referenced_verified_records = [
+        referenced_verified_pairs = [
             verified_digests_map[d] for d in approval_digests if d in verified_digests_map
         ]
-        referenced_types = {rec.evidence_type for rec in referenced_verified_records}
+        referenced_types = {pair[0].evidence_type for pair in referenced_verified_pairs}
         missing_required_types = set(manifest.required_evidence_types) - referenced_types
         if missing_required_types:
             reason = f"Release approval rejected: Approval omits required evidence category(ies): {sorted(list(missing_required_types))}"
@@ -476,7 +513,22 @@ class ReleaseGovernanceEngine:
                 "reason": reason,
                 "missing_required_evidence_types": sorted(list(missing_required_types))
             })
-            return False, reason
+            return ReleaseApprovalVerificationResult(
+                is_verified=False,
+                reason=reason,
+                validation_results=all_validation_results
+            )
+
+        # Calculate effective assurance level from all referenced verified evidence records
+        for _, val_res in referenced_verified_pairs:
+            if val_res.assurance_level != AssuranceLevel.FULL_AUTHENTICATED:
+                all_full_authenticated = False
+
+        effective_approval_assurance = (
+            AssuranceLevel.FULL_AUTHENTICATED
+            if all_full_authenticated and len(referenced_verified_pairs) > 0
+            else AssuranceLevel.REDUCED_ASSURANCE
+        )
 
         # Check 8: Asymmetric Ed25519 cryptographic signature verification
         if not approval.signature or not isinstance(approval.signature, str):
@@ -485,7 +537,7 @@ class ReleaseGovernanceEngine:
                 "reason": reason,
                 "approval_id": approval.approval_id
             })
-            return False, reason
+            return ReleaseApprovalVerificationResult(is_verified=False, reason=reason)
 
         if not self.principal_verifier:
             reason = "Release approval rejected: ReleaseGovernanceEngine has no configured PrincipalVerifier to verify signature"
@@ -493,7 +545,7 @@ class ReleaseGovernanceEngine:
                 "reason": reason,
                 "approval_id": approval.approval_id
             })
-            return False, reason
+            return ReleaseApprovalVerificationResult(is_verified=False, reason=reason)
 
         trusted_pubkeys = getattr(self.principal_verifier, "_trusted_public_keys", {})
         trusted_pubkey = trusted_pubkeys.get(approval.approver_issuer)
@@ -503,7 +555,7 @@ class ReleaseGovernanceEngine:
                 "reason": reason,
                 "approval_id": approval.approval_id
             })
-            return False, reason
+            return ReleaseApprovalVerificationResult(is_verified=False, reason=reason)
 
         try:
             sig_bytes = bytes.fromhex(approval.signature) if len(approval.signature) == 128 else base64.b64decode(approval.signature)
@@ -513,7 +565,7 @@ class ReleaseGovernanceEngine:
                 "reason": reason,
                 "approval_id": approval.approval_id
             })
-            return False, reason
+            return ReleaseApprovalVerificationResult(is_verified=False, reason=reason)
 
         if len(sig_bytes) != 64:
             reason = f"Release approval rejected: Signature length invalid ({len(sig_bytes)} bytes, expected 64)"
@@ -521,7 +573,7 @@ class ReleaseGovernanceEngine:
                 "reason": reason,
                 "approval_id": approval.approval_id
             })
-            return False, reason
+            return ReleaseApprovalVerificationResult(is_verified=False, reason=reason)
 
         payload_bytes = approval.compute_signature_payload()
         if not verify_ed25519_signature(sig_bytes, payload_bytes, trusted_pubkey):
@@ -530,14 +582,21 @@ class ReleaseGovernanceEngine:
                 "reason": reason,
                 "approval_id": approval.approval_id
             })
-            return False, reason
+            return ReleaseApprovalVerificationResult(is_verified=False, reason=reason)
 
         self._log_event(AuditLogLevel.INFO, "RELEASE_APPROVAL_VERIFIED", {
             "reason": f"Approval '{approval.approval_id}' verified for release manifest '{manifest.release_id}'",
             "manifest_digest": manifest_digest,
-            "approver_id": approval.approver_id
+            "approver_id": approval.approver_id,
+            "assurance_level": effective_approval_assurance.value
         })
-        return True, "Release approval successfully verified for candidate manifest"
+        return ReleaseApprovalVerificationResult(
+            is_verified=True,
+            reason="Release approval successfully verified for candidate manifest",
+            effective_assurance_level=effective_approval_assurance,
+            verified_evidence_count=len(referenced_verified_pairs),
+            validation_results=all_validation_results
+        )
 
     def revoke_release_approval(
         self,

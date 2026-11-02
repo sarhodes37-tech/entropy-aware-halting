@@ -3,7 +3,7 @@ EpistemicOS Change & Release Governance Subsystem.
 
 Provides deterministic release manifest generation, evidence binding,
 change-impact analysis, evidence invalidation, authoritative revocation,
-and Ed25519 asymmetric release approval verification.
+assurance level propagation, and Ed25519 asymmetric release approval verification.
 """
 
 from epistemicos.release.models import (
@@ -26,8 +26,10 @@ from epistemicos.release.revocation import (
     RevocationRecord,
 )
 from epistemicos.release.engine import (
+    AssuranceLevel,
     EvidenceValidationResult,
     EvidenceValidationResultStatus,
+    ReleaseApprovalVerificationResult,
     ReleaseGovernanceEngine,
     ReleaseReadinessEvaluation,
 )
@@ -46,8 +48,10 @@ __all__ = [
     "EvidenceInvalidator",
     "ReleaseApprovalRevocationRegistry",
     "RevocationRecord",
+    "AssuranceLevel",
     "EvidenceValidationResult",
     "EvidenceValidationResultStatus",
+    "ReleaseApprovalVerificationResult",
     "ReleaseGovernanceEngine",
     "ReleaseReadinessEvaluation",
 ]
