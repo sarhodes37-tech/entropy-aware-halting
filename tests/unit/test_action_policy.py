@@ -282,7 +282,8 @@ class TestSideEffectPolicyEngineInvariants:
             f"Expected signature verification failure for tampered field '{field_name}', got '{msg_tampered}'"
         )
 
-    def test_timestamp_is_not_signed_and_modification_preserves_signature(self):
+    @pytest.mark.parametrize("is_expiring", [False, True])
+    def test_timestamp_is_not_signed_and_modification_preserves_signature(self, is_expiring):
         """
         Explicitly documents and tests the current behavioral invariant that `timestamp` is NOT
         included in the HMAC signature tuple (both for expiring and non-expiring records).
@@ -292,6 +293,7 @@ class TestSideEffectPolicyEngineInvariants:
         engine = SideEffectPolicyEngine(signing_secret=secret)
         payload = {"op": "test"}
         digest = engine.compute_canonical_digest(payload)
+        expires_at = 1700000000.0 if is_expiring else None
 
         base_fields = {
             "approval_id": "APP-TIME-1",
@@ -302,17 +304,32 @@ class TestSideEffectPolicyEngineInvariants:
             "policy_version": "1.0.0",
             "approved_by_principal": "auditor",
             "timestamp": "2026-01-01T00:00:00Z",
+            "expires_at": expires_at,
         }
 
-        valid_sig = engine.compute_approval_signature((
-            base_fields["approval_id"],
-            base_fields["operation_id"],
-            base_fields["target_resource"],
-            base_fields["canonical_args_digest"],
-            base_fields["task_id"],
-            base_fields["policy_version"],
-            base_fields["approved_by_principal"],
-        ))
+        if is_expiring:
+            sig_tuple = (
+                base_fields["approval_id"],
+                base_fields["operation_id"],
+                base_fields["target_resource"],
+                base_fields["canonical_args_digest"],
+                base_fields["task_id"],
+                base_fields["policy_version"],
+                base_fields["approved_by_principal"],
+                str(expires_at),
+            )
+        else:
+            sig_tuple = (
+                base_fields["approval_id"],
+                base_fields["operation_id"],
+                base_fields["target_resource"],
+                base_fields["canonical_args_digest"],
+                base_fields["task_id"],
+                base_fields["policy_version"],
+                base_fields["approved_by_principal"],
+            )
+
+        valid_sig = engine.compute_approval_signature(sig_tuple)
 
         # Modifying timestamp to a completely different timestamp
         modified_rec = TypedHumanApprovalRecord(
@@ -325,6 +342,7 @@ class TestSideEffectPolicyEngineInvariants:
             task_id=base_fields["task_id"],
             policy_version=base_fields["policy_version"],
             approved_by_principal=base_fields["approved_by_principal"],
+            expires_at=expires_at,
         )
 
         ok, msg = engine.verify_approval_record(
@@ -334,6 +352,7 @@ class TestSideEffectPolicyEngineInvariants:
             expected_payload=payload,
             expected_task_id=base_fields["task_id"],
             expected_policy_version=base_fields["policy_version"],
+            current_time=1699999000.0 if is_expiring else None,
         )
         # Demonstrates that timestamp is currently unsigned and does not invalidate verification
         assert ok is True
