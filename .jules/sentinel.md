@@ -7,3 +7,8 @@
 **Vulnerability:** Checking raw URL paths for directory traversal sequences (like `..`) before URL unquoting allows attackers to bypass traversal filters using single (`%2e%2e`) or double (`%252e%252e`) percent-encoding.
 **Learning:** HTTP servers must decode/unquote URL-encoded path components iteratively until stable prior to evaluating path traversal rules or joining paths.
 **Prevention:** Always iteratively `unquote()` HTTP request paths before checking for `..`, `\`, or `\x00`, and enforce `Path.relative_to` checks against the static root directory.
+
+## 2026-10-20 - Synchronize Multi-Provider Credential Patterns Across Detection & Audit Layers
+**Vulnerability:** Audit log redaction (`REGEX_SK`) and outbound privacy sanitization (`_API_KEY_REGEX`) supported OpenAI, GitHub, GitLab, AWS, Hugging Face, and Slack tokens, but lacked pattern matching for Anthropic API keys (`ant-api03-...`), allowing them to escape privacy detection or leak in plaintext into persistent audit trail logs.
+**Learning:** When multi-provider LLM adapters (e.g. OpenAI and Anthropic) are supported across the architecture, credential pattern sets must be maintained in synchronized parity across both prompt boundary inspection (`SensitiveDataDetector`) and audit trail sanitization (`TamperEvidentAuditTrail`).
+**Prevention:** Always verify that API key regexes include prefixes for all integrated and supported AI providers (`ant-api`, `sk-`, `hf_`, etc.) and enforce pattern parity across modules with automated regression tests.

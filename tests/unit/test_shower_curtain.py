@@ -115,7 +115,8 @@ def test_scenario_4_cross_session_isolation(engine):
 def test_scenario_5_api_key_redacted_never_restored(engine):
     ghs_jwt = "ghs_987654_eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJpYXQiOjE2MDAwMDAwMDB9.abcdefghijklmnopqrstuvwxyz_0123456789-ABCDEF"
     ghp_underscore = "ghp_12345678901234567890_abcdef1234567890"
-    payload = {"prompt": f"My API key is sk-proj1234567890abcdef1234567890. Fine-grained pat: github_pat_11AAAAAAA0123456789abcdef_ghijklmnopqrstuvwxyz0123456789abcdef0123456789abcdef012. GitLab PAT: glpat-12345678901234567890. GitHub OAuth: gho_123456789012345678901234567890123456. GitHub Installation JWT: {ghs_jwt}. GitHub Underscore: {ghp_underscore}. Hugging Face: hf_1234567890123456789012345678901234"}
+    anthropic_key = "ant-api03-abcdef1234567890abcdef1234567890abcdef1234567890-abcdef1234567890"
+    payload = {"prompt": f"My API key is sk-proj1234567890abcdef1234567890. Fine-grained pat: github_pat_11AAAAAAA0123456789abcdef_ghijklmnopqrstuvwxyz0123456789abcdef0123456789abcdef012. GitLab PAT: glpat-12345678901234567890. GitHub OAuth: gho_123456789012345678901234567890123456. GitHub Installation JWT: {ghs_jwt}. GitHub Underscore: {ghp_underscore}. Anthropic: {anthropic_key}. Hugging Face: hf_1234567890123456789012345678901234"}
     res = engine.transform_request(payload, session_id="sess_5")
 
     sanitized = res.sanitized_payload["prompt"]
@@ -125,6 +126,7 @@ def test_scenario_5_api_key_redacted_never_restored(engine):
     assert "gho_12345678901234567890" not in sanitized
     assert ghs_jwt not in sanitized
     assert ghp_underscore not in sanitized
+    assert anthropic_key not in sanitized
     assert "hf_12345678901234567890" not in sanitized
     assert "[REDACTED_CREDENTIAL]" in sanitized
 
@@ -137,6 +139,7 @@ def test_scenario_5_api_key_redacted_never_restored(engine):
     assert "gho_12345678901234567890" not in rehydrated
     assert ghs_jwt not in rehydrated
     assert ghp_underscore not in rehydrated
+    assert anthropic_key not in rehydrated
     assert "hf_12345678901234567890" not in rehydrated
     assert "[REDACTED_CREDENTIAL]" in rehydrated
 
