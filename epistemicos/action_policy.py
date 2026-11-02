@@ -67,6 +67,14 @@ class ActionRegistry:
             allowed_resources={"*"},
             is_externally_consequential=False
         ),
+        "read_file": RegisteredActionDefinition(
+            operation_id="read_file",
+            category=ActionCategory.READ_ONLY_LOCAL,
+            description="Read local file contents",
+            requires_human_approval=False,
+            allowed_resources={"*"},
+            is_externally_consequential=False
+        ),
         "read_table": RegisteredActionDefinition(
             operation_id="read_table",
             category=ActionCategory.READ_ONLY_LOCAL,

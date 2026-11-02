@@ -963,6 +963,306 @@ class FileAuthorizationStore(AuthorizationStore):
                 self._release_flock()
 
 
+import base64
+
+# RFC 8032 pure-python Ed25519 verification with optional libcrypto acceleration
+_ED25519_B = 256
+_ED25519_Q = 2**255 - 19
+_ED25519_L = 2**252 + 27742317777372353535851937790883648493
+
+
+def _ed_H(m: bytes) -> bytes:
+    return hashlib.sha512(m).digest()
+
+
+def _ed_expmod(b: int, e: int, m: int) -> int:
+    return pow(b, e, m)
+
+
+def _ed_inv(x: int) -> int:
+    return _ed_expmod(x, _ED25519_Q - 2, _ED25519_Q)
+
+
+_ed_d = -121665 * _ed_inv(121666)
+_ed_I = _ed_expmod(2, (_ED25519_Q - 1) // 4, _ED25519_Q)
+
+
+def _ed_xrecover(y: int) -> int:
+    xx = (y * y - 1) * _ed_inv(_ed_d * y * y + 1)
+    x = _ed_expmod(xx, (_ED25519_Q + 3) // 8, _ED25519_Q)
+    if (x * x - xx) % _ED25519_Q != 0:
+        x = (x * _ed_I) % _ED25519_Q
+    if x % 2 != 0:
+        x = _ED25519_Q - x
+    return x
+
+
+_ed_By = 4 * _ed_inv(5)
+_ed_Bx = _ed_xrecover(_ed_By)
+_ed_B = [_ed_Bx % _ED25519_Q, _ed_By % _ED25519_Q]
+
+
+def _ed_edwards(P: List[int], Q: List[int]) -> List[int]:
+    x1, y1 = P[0], P[1]
+    x2, y2 = Q[0], Q[1]
+    x3 = (x1 * y2 + x2 * y1) * _ed_inv(1 + _ed_d * x1 * x2 * y1 * y2)
+    y3 = (y1 * y2 + x1 * x2) * _ed_inv(1 - _ed_d * x1 * x2 * y1 * y2)
+    return [x3 % _ED25519_Q, y3 % _ED25519_Q]
+
+
+def _ed_scalarmult(P: List[int], e: int) -> List[int]:
+    if e == 0:
+        return [0, 1]
+    Q = _ed_scalarmult(P, e // 2)
+    Q = _ed_edwards(Q, Q)
+    if e & 1:
+        Q = _ed_edwards(Q, P)
+    return Q
+
+
+def _ed_decodeint(s: bytes) -> int:
+    return int.from_bytes(s, "little")
+
+
+def _ed_decodepoint(s: bytes) -> List[int]:
+    y = int.from_bytes(s, "little") & ((1 << 255) - 1)
+    x = _ed_xrecover(y)
+    if bool(x & 1) != bool(s[31] & 0x80):
+        x = _ED25519_Q - x
+    P = [x, y]
+    if not ((-x * x + y * y - 1 - _ed_d * x * x * y * y) % _ED25519_Q == 0):
+        raise ValueError("decoding point that is not on curve")
+    return P
+
+
+def _ed25519_verify_pure(sig_bytes: bytes, msg_bytes: bytes, pubkey_bytes: bytes) -> bool:
+    try:
+        if len(sig_bytes) != 64 or len(pubkey_bytes) != 32:
+            return False
+        R = _ed_decodepoint(sig_bytes[:32])
+        A = _ed_decodepoint(pubkey_bytes)
+        S = _ed_decodeint(sig_bytes[32:])
+        if S >= _ED25519_L:
+            return False
+        h = _ed_decodeint(_ed_H(sig_bytes[:32] + pubkey_bytes + msg_bytes))
+        v1 = _ed_scalarmult(_ed_B, S)
+        v2 = _ed_edwards(R, _ed_scalarmult(A, h))
+        return v1 == v2
+    except Exception:
+        return False
+
+
+try:
+    import ctypes
+    import ctypes.util
+    _libcrypto_path = ctypes.util.find_library("crypto")
+    if _libcrypto_path:
+        _libcrypto = ctypes.CDLL(_libcrypto_path)
+        _EVP_PKEY_ED25519 = 1087
+        _libcrypto.EVP_MD_CTX_new.restype = ctypes.c_void_p
+        _libcrypto.EVP_MD_CTX_free.argtypes = [ctypes.c_void_p]
+        _libcrypto.EVP_PKEY_new_raw_public_key.restype = ctypes.c_void_p
+        _libcrypto.EVP_PKEY_new_raw_public_key.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_char_p, ctypes.c_size_t]
+        _libcrypto.EVP_PKEY_free.argtypes = [ctypes.c_void_p]
+        _libcrypto.EVP_DigestVerifyInit.restype = ctypes.c_int
+        _libcrypto.EVP_DigestVerifyInit.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p), ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
+        _libcrypto.EVP_DigestVerify.restype = ctypes.c_int
+        _libcrypto.EVP_DigestVerify.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_size_t, ctypes.c_char_p, ctypes.c_size_t]
+        _HAS_LIBCRYPTO = True
+    else:
+        _HAS_LIBCRYPTO = False
+except Exception:
+    _HAS_LIBCRYPTO = False
+
+
+def verify_ed25519_signature(sig_bytes: bytes, msg_bytes: bytes, pubkey_bytes: bytes) -> bool:
+    """Verifies an Ed25519 signature (RFC 8032) using libcrypto when available or pure Python."""
+    if len(sig_bytes) != 64 or len(pubkey_bytes) != 32:
+        return False
+    if _HAS_LIBCRYPTO:
+        try:
+            pkey = _libcrypto.EVP_PKEY_new_raw_public_key(_EVP_PKEY_ED25519, None, pubkey_bytes, len(pubkey_bytes))
+            if not pkey:
+                return _ed25519_verify_pure(sig_bytes, msg_bytes, pubkey_bytes)
+            ctx = _libcrypto.EVP_MD_CTX_new()
+            if not ctx:
+                _libcrypto.EVP_PKEY_free(pkey)
+                return _ed25519_verify_pure(sig_bytes, msg_bytes, pubkey_bytes)
+            try:
+                init_res = _libcrypto.EVP_DigestVerifyInit(ctx, None, None, None, pkey)
+                if init_res != 1:
+                    return False
+                res = _libcrypto.EVP_DigestVerify(ctx, sig_bytes, len(sig_bytes), msg_bytes, len(msg_bytes))
+                return res == 1
+            finally:
+                _libcrypto.EVP_MD_CTX_free(ctx)
+                _libcrypto.EVP_PKEY_free(pkey)
+        except Exception:
+            return _ed25519_verify_pure(sig_bytes, msg_bytes, pubkey_bytes)
+    return _ed25519_verify_pure(sig_bytes, msg_bytes, pubkey_bytes)
+
+
+@dataclass(frozen=True)
+class AuthenticatedPrincipal:
+    """
+    Cryptographically and authoritatively verified identity assertion representing
+    an authenticated principal.
+    A caller-supplied string, dictionary, or manually constructed object without
+    a valid asymmetric cryptographic signature from an independently trusted external Identity Provider
+    is strictly rejected.
+    """
+    principal_id: str
+    issuer_id: str
+    timestamp: float
+    signature: str
+    expires_at: Optional[float] = None
+    key_id: Optional[str] = None
+
+    def __post_init__(self):
+        if not self.principal_id or not isinstance(self.principal_id, str) or not self.principal_id.strip():
+            raise ValueError("AuthenticatedPrincipal: principal_id must be a non-empty string")
+        if not self.issuer_id or not isinstance(self.issuer_id, str) or not self.issuer_id.strip():
+            raise ValueError("AuthenticatedPrincipal: issuer_id must be a non-empty string")
+        if not self.signature or not isinstance(self.signature, str) or not self.signature.strip():
+            raise ValueError("AuthenticatedPrincipal: signature must be a non-empty string")
+
+    def compute_signature_payload(self) -> bytes:
+        exp_str = f"{self.expires_at:.6f}" if self.expires_at is not None else ""
+        kid_str = self.key_id or ""
+        payload = f"{self.principal_id}:{self.issuer_id}:{self.timestamp:.6f}:{exp_str}:{kid_str}"
+        return payload.encode("utf-8")
+
+
+import types
+
+
+class PrincipalVerifier:
+    """
+    Independent identity verifier that validates AuthenticatedPrincipal assertions
+    using public-key cryptography (Ed25519).
+    Holds ONLY configured public verification keys (by issuer); does NOT hold private signing
+    keys or identity-minting APIs.
+    The trust store is strictly immutable after initialization to prevent callers from
+    registering unauthorized issuers or establishing attacker-controlled trust relationships at runtime.
+    Enforces issuer validation, asymmetric signature verification, clock skew tolerance, and expiry.
+    """
+
+    def __init__(
+        self,
+        trusted_public_keys: Optional[Dict[str, Union[bytes, str]]] = None,
+        clock_skew_seconds: float = 5.0
+    ):
+        raw_keys: Dict[str, bytes] = {}
+        self.clock_skew_seconds = clock_skew_seconds
+
+        keys_input = trusted_public_keys
+        if keys_input is None:
+            # Check environment for configured issuer public keys:
+            # e.g., EPISTEMICOS_IDP_ISSUER="CorpIdP", EPISTEMICOS_IDP_PUBLIC_KEY="<base64 or hex>"
+            env_issuer = os.getenv("EPISTEMICOS_IDP_ISSUER")
+            env_key = os.getenv("EPISTEMICOS_IDP_PUBLIC_KEY")
+            if env_issuer and env_key:
+                keys_input = {env_issuer: env_key}
+
+        if keys_input:
+            for issuer, key_val in keys_input.items():
+                if not issuer or not isinstance(issuer, str) or not issuer.strip():
+                    raise ValueError("issuer_id must be a non-empty string")
+                iss = issuer.strip()
+                if isinstance(key_val, str):
+                    clean_k = key_val.strip()
+                    # Handle PEM format if provided
+                    if "-----BEGIN PUBLIC KEY-----" in clean_k:
+                        lines = [l.strip() for l in clean_k.splitlines() if "---" not in l]
+                        der = base64.b64decode("".join(lines))
+                        # SubjectPublicKeyInfo for ED25519 is 44 bytes, raw key is the last 32 bytes
+                        raw_k = der[-32:]
+                    else:
+                        try:
+                            raw_k = bytes.fromhex(clean_k)
+                        except ValueError:
+                            raw_k = base64.b64decode(clean_k)
+                elif isinstance(key_val, (bytes, bytearray)):
+                    raw_k = bytes(key_val)
+                else:
+                    raise TypeError("public_key must be bytes or str")
+
+                if len(raw_k) != 32:
+                    raise ValueError(f"Ed25519 public key must be exactly 32 bytes (got {len(raw_k)})")
+                raw_keys[iss] = raw_k
+
+        # Immutable MappingProxyType prevents runtime modification of trusted public keys
+        super().__setattr__("_trusted_public_keys", types.MappingProxyType(raw_keys))
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        if "_trusted_public_keys" in self.__dict__ and name in ("_trusted_public_keys", "trusted_public_keys"):
+            raise PermissionError("Access denied: PrincipalVerifier._trusted_public_keys is immutable and cannot be reassigned")
+        super().__setattr__(name, value)
+
+    def __delattr__(self, name: str) -> None:
+        if name in ("_trusted_public_keys", "trusted_public_keys"):
+            raise PermissionError("Access denied: PrincipalVerifier._trusted_public_keys cannot be deleted")
+        super().__delattr__(name)
+
+    def has_trusted_issuers(self) -> bool:
+        return bool(self._trusted_public_keys)
+
+    def verify_principal(
+        self,
+        principal: Any,
+        max_age_seconds: float = 3600.0,
+        current_time: Optional[float] = None
+    ) -> Tuple[bool, str, Optional[str]]:
+        if not self._trusted_public_keys:
+            return False, "PrincipalVerifier is not configured with any trusted public verification keys", None
+
+        if not isinstance(principal, AuthenticatedPrincipal):
+            return False, "Object is not a valid AuthenticatedPrincipal assertion", None
+
+        if not principal.signature or not isinstance(principal.signature, str):
+            return False, "Missing or invalid signature on principal assertion", None
+
+        trusted_pubkey = self._trusted_public_keys.get(principal.issuer_id)
+        if not trusted_pubkey:
+            return False, f"Untrusted identity issuer: '{principal.issuer_id}' is not in configured trusted issuers", None
+
+        now = current_time if current_time is not None else time.time()
+
+        # Reject future-dated assertions (beyond permitted clock skew)
+        if principal.timestamp > (now + self.clock_skew_seconds):
+            return False, f"Future-dated principal assertion rejected (timestamp {principal.timestamp} > current time {now})", None
+
+        # Reject expired assertions by timestamp + max_age_seconds
+        if (now - principal.timestamp) > max_age_seconds:
+            return False, f"Principal assertion expired (age {now - principal.timestamp:.1f}s > max {max_age_seconds}s)", None
+
+        # Reject expired assertions by explicit expires_at field if present
+        if principal.expires_at is not None:
+            if now >= principal.expires_at:
+                return False, f"Principal assertion expired (current time {now} >= expires_at {principal.expires_at})", None
+
+        # Decode signature
+        try:
+            sig_bytes = bytes.fromhex(principal.signature)
+            if len(sig_bytes) != 64:
+                sig_bytes = base64.b64decode(principal.signature)
+        except Exception:
+            try:
+                sig_bytes = base64.b64decode(principal.signature)
+            except Exception:
+                return False, "Invalid signature encoding on principal assertion", None
+
+        if len(sig_bytes) != 64:
+            return False, f"Invalid signature length on principal assertion (expected 64 bytes, got {len(sig_bytes)})", None
+
+        # Verify asymmetric Ed25519 signature
+        msg_bytes = principal.compute_signature_payload()
+        if not verify_ed25519_signature(sig_bytes, msg_bytes, trusted_pubkey):
+            return False, "Cryptographic asymmetric signature verification failed on principal assertion", None
+
+        return True, "Principal verified", principal.principal_id
+
+
 @dataclass
 class Capability:
     """
@@ -1750,7 +2050,8 @@ class AuthorizationAuthority:
         approval_signing_secret: Optional[bytes] = None,
         contract_signing_secret: Optional[bytes] = None,
         executor_registry: Optional[Dict[str, Any]] = None,
-        require_task_contract: Optional[bool] = None
+        require_task_contract: Optional[bool] = None,
+        principal_provider: Optional[PrincipalVerifier] = None
     ):
         import os
         self.default_policy = default_policy
@@ -1796,6 +2097,38 @@ class AuthorizationAuthority:
         else:
             self.executor_registry = ExecutorRegistry(executor_registry)
 
+        # SEC-01: Independent identity verifier integration.
+        # AuthorizationAuthority holds verification keys, NEVER identity-issuing keys or private signing material.
+        # The verifier is immutable after initialization and cannot be replaced by callers.
+        if principal_provider:
+            resolved_provider = principal_provider
+        else:
+            env_issuer = os.getenv("EPISTEMICOS_IDP_ISSUER")
+            env_key = os.getenv("EPISTEMICOS_IDP_PUBLIC_KEY")
+            if env_issuer and env_key:
+                resolved_provider = PrincipalVerifier(
+                    trusted_public_keys={env_issuer: env_key}
+                )
+            else:
+                resolved_provider = None
+
+        super().__setattr__("_principal_provider", resolved_provider)
+
+    @property
+    def principal_provider(self) -> Optional[PrincipalVerifier]:
+        """Read-only access to configured PrincipalVerifier. Attribute replacement is prohibited."""
+        return self._principal_provider
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        if "_principal_provider" in self.__dict__ and name in ("principal_provider", "_principal_provider"):
+            raise PermissionError(f"Access denied: AuthorizationAuthority.{name} is immutable and cannot be reassigned")
+        super().__setattr__(name, value)
+
+    def __delattr__(self, name: str) -> None:
+        if name in ("principal_provider", "_principal_provider"):
+            raise PermissionError(f"Access denied: AuthorizationAuthority.{name} cannot be deleted")
+        super().__delattr__(name)
+
     def clear_denial_with_approval(
         self,
         task_id: str,
@@ -1831,7 +2164,7 @@ class AuthorizationAuthority:
         action_name: str,
         target: str,
         canonical_request_digest: str,
-        principal_id: str = "agent_default",
+        principal_id: Union[str, AuthenticatedPrincipal] = "agent_default",
         correlation_id: Optional[str] = None,
         request_id: Optional[str] = None,
         executor_id: str = "default_executor",
@@ -1849,6 +2182,23 @@ class AuthorizationAuthority:
         active_policy = policy or self.default_policy
         if not active_policy:
             return None, "AUTHORIZATION_DENIED_NO_TRUSTED_POLICY"
+
+        # SEC-01: Authenticate principal assertion
+        if isinstance(principal_id, AuthenticatedPrincipal):
+            if not self.principal_provider:
+                return None, "AUTHORIZATION_DENIED_NO_IDENTITY_PROVIDER_CONFIGURED: AuthenticatedPrincipal presented but authority has no trusted PrincipalProvider"
+            valid, p_reason, pid = self.principal_provider.verify_principal(principal_id, current_time=current_time)
+            if not valid:
+                return None, f"AUTHORIZATION_DENIED_PRINCIPAL_AUTHENTICATION_FAILED: {p_reason}"
+            effective_principal = pid
+        elif isinstance(principal_id, str):
+            clean_str = principal_id.strip()
+            # If policy restricts principals, an unauthenticated raw string CANNOT assert identity
+            if active_policy.allowed_principals != {"*"}:
+                return None, f"AUTHORIZATION_DENIED_AUTHENTICATED_PRINCIPAL_REQUIRED: Claiming privileged principal '{principal_id}' requires AuthenticatedPrincipal"
+            effective_principal = clean_str if clean_str else "agent_default"
+        else:
+            return None, "AUTHORIZATION_DENIED_INVALID_PRINCIPAL_TYPE"
 
         # If authority requires a task contract and none is provided, fail closed
         if self.require_task_contract and task_contract is None:
@@ -1954,8 +2304,8 @@ class AuthorizationAuthority:
                     self.registry._record_denial_unlocked(effective_task_id, action_name, target, reason, c_ver, active_policy.version)
                 return None, reason
 
-            if not active_policy.is_principal_allowed(principal_id):
-                return None, f"AUTHORIZATION_DENIED_PRINCIPAL_NOT_ALLOWED:{principal_id}"
+            if not active_policy.is_principal_allowed(effective_principal):
+                return None, f"AUTHORIZATION_DENIED_PRINCIPAL_NOT_ALLOWED:{effective_principal}"
 
             if not active_policy.is_executor_allowed(executor_id):
                 return None, f"AUTHORIZATION_DENIED_EXECUTOR_NOT_ALLOWED:{executor_id}"
@@ -2019,7 +2369,7 @@ class AuthorizationAuthority:
             canonical_scope = canonicalize_fencing_scope(effective_task_id, target)
             cap = Capability(
                 token_id=token_id,
-                principal_id=principal_id,
+                principal_id=effective_principal,
                 correlation_id=corr_id,
                 request_id=req_id,
                 action_name=action_name,
@@ -2048,7 +2398,7 @@ class AuthorizationAuthority:
         target: str,
         canonical_request_digest: str,
         executor_id: str,
-        principal_id: Optional[str] = None,
+        principal_id: Optional[Union[str, AuthenticatedPrincipal]] = None,
         correlation_id: Optional[str] = None,
         request_id: Optional[str] = None,
         policy_version: Optional[str] = None,
@@ -2104,8 +2454,21 @@ class AuthorizationAuthority:
         if cap.executor_id != executor_id:
             return False, f"CAPABILITY_VERIFICATION_FAILED_EXECUTOR_MISMATCH: granted '{cap.executor_id}', requested '{executor_id}'", cap
 
-        if principal_id is not None and cap.principal_id != principal_id:
-            return False, f"CAPABILITY_VERIFICATION_FAILED_PRINCIPAL_MISMATCH: granted '{cap.principal_id}', requested '{principal_id}'", cap
+        # SEC-01: Principal verification
+        if isinstance(principal_id, AuthenticatedPrincipal):
+            if not self.principal_provider:
+                return False, "CAPABILITY_VERIFICATION_FAILED_NO_IDENTITY_PROVIDER: Authority has no configured PrincipalProvider to verify assertion", cap
+            valid, p_reason, pid = self.principal_provider.verify_principal(principal_id, current_time=current_time)
+            if not valid:
+                return False, f"CAPABILITY_VERIFICATION_FAILED_PRINCIPAL_AUTHENTICATION_FAILED: {p_reason}", cap
+            req_principal = pid
+        elif isinstance(principal_id, str):
+            req_principal = principal_id.strip() if principal_id.strip() else None
+        else:
+            req_principal = None
+
+        if req_principal is not None and cap.principal_id != req_principal:
+            return False, f"CAPABILITY_VERIFICATION_FAILED_PRINCIPAL_MISMATCH: granted '{cap.principal_id}', requested '{req_principal}'", cap
 
         if correlation_id is not None and cap.correlation_id != correlation_id:
             return False, f"CAPABILITY_VERIFICATION_FAILED_CORRELATION_ID_MISMATCH: granted '{cap.correlation_id}', requested '{correlation_id}'", cap

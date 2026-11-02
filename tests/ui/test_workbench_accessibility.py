@@ -670,10 +670,11 @@ def test_live_region_announcements(a11y_comprehensive_server):
         assert announcer.get_attribute("role") == "status"
         assert announcer.get_attribute("aria-live") == "polite"
 
-        # 1. Tab Navigation announcement: clear first, then switch and assert real dynamic update
+        # 1. Tab Navigation announcement: wait for initial overview load to settle, clear, switch, and assert
+        page.wait_for_function("() => document.getElementById('a11y-status-announcer').textContent === 'Overview metrics updated.'")
         page.evaluate("() => { document.getElementById('a11y-status-announcer').textContent = ''; }")
         page.click("#tab-traces")
-        page.wait_for_function("() => document.getElementById('a11y-status-announcer').textContent.length > 0")
+        page.wait_for_function("() => document.getElementById('a11y-status-announcer').textContent.includes('Execution Trace Explorer')")
         assert "Execution Trace Explorer" in announcer.text_content()
 
         # 2. Trace selection announcement: clear first, click trace, assert update
