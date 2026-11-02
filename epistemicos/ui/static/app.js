@@ -1041,6 +1041,31 @@ document.addEventListener('DOMContentLoaded', () => {
 
       titleGroup.appendChild(title);
 
+      const actionBtnGroup = document.createElement('div');
+      actionBtnGroup.style.display = 'flex';
+      actionBtnGroup.style.gap = '0.5rem';
+
+      if (trace.correlation_id) {
+        const provBtn = document.createElement('button');
+        provBtn.type = 'button';
+        provBtn.className = 'quick-entry-btn';
+        provBtn.style.padding = '0.25rem 0.6rem';
+        provBtn.style.fontSize = '0.75rem';
+        provBtn.setAttribute('aria-label', `View provenance records for correlation ${trace.correlation_id}`);
+        provBtn.setAttribute('title', `View provenance records for correlation ${trace.correlation_id}`);
+        provBtn.innerHTML = `<span>View in Provenance</span> <span class="arrow" aria-hidden="true">➔</span>`;
+        provBtn.addEventListener('click', () => {
+          this.state.provenanceSearchQuery = trace.correlation_id.toLowerCase().trim();
+          const provSearchInput = document.getElementById('provenance-search');
+          if (provSearchInput) {
+            provSearchInput.value = trace.correlation_id;
+          }
+          this.switchTab('provenance');
+          this.renderProvenanceRecordList();
+        });
+        actionBtnGroup.appendChild(provBtn);
+      }
+
       const copyCorrBtn = document.createElement('button');
       copyCorrBtn.type = 'button';
       copyCorrBtn.className = 'copy-btn';
@@ -1048,9 +1073,10 @@ document.addEventListener('DOMContentLoaded', () => {
       copyCorrBtn.setAttribute('aria-label', 'Copy Correlation ID');
       copyCorrBtn.setAttribute('title', 'Copy Correlation ID to clipboard');
       copyCorrBtn.addEventListener('click', () => this.copyToClipboard(trace.correlation_id, copyCorrBtn));
+      actionBtnGroup.appendChild(copyCorrBtn);
 
       headerBar.appendChild(titleGroup);
-      headerBar.appendChild(copyCorrBtn);
+      headerBar.appendChild(actionBtnGroup);
       container.appendChild(headerBar);
 
       // Section B1: Derived Interpretation Summary
