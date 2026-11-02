@@ -1213,3 +1213,45 @@ def test_caller_verify_release_approval_fails_closed_on_invalid_approval_id():
     object.__setattr__(approval, "approval_id", "   ")
     with pytest.raises(ValueError, match="approval_id must be a non-empty string"):
         engine.verify_release_approval(manifest, approval, evidence_records=[ev1])
+
+
+def test_wrapper_revoke_release_approval_validation_and_audit():
+    audit_trail = TamperEvidentAuditTrail(log_file_path="logs/test_wrapper_revoke_audit.jsonl")
+    rev_registry = ReleaseApprovalRevocationRegistry()
+    engine = ReleaseGovernanceEngine(
+        audit_trail=audit_trail,
+        revocation_registry=rev_registry,
+        fail_closed_audit=False
+    )
+
+    # 1. Calling without explicit reason raises TypeError due to mandatory signature
+    with pytest.raises(TypeError):
+        engine.revoke_release_approval("appr-wrapped", "security_lead")  # type: ignore
+
+    # 2. Invalid or non-string inputs raise ValueError and do not mutate registry or emit audit events
+    for bad_id in [None, "", "   ", 12345, object()]:
+        with pytest.raises(ValueError, match="approval_id must be a non-empty string"):
+            engine.revoke_release_approval(bad_id, "security_lead", reason="Revocation reason")
+
+    for bad_principal in [None, "", "   ", 12345, object()]:
+        with pytest.raises(ValueError, match="revoked_by_principal must be a non-empty string"):
+            engine.revoke_release_approval("appr-wrapped", bad_principal, reason="Revocation reason")
+
+    for bad_reason in [None, "", "   ", 12345, object()]:
+        with pytest.raises(ValueError, match="reason must be a non-empty string"):
+            engine.revoke_release_approval("appr-wrapped", "security_lead", reason=bad_reason)
+
+    assert rev_registry.is_revoked("appr-wrapped") is False
+    assert rev_registry.get_revocation_record("appr-wrapped") is None
+
+    # 3. Valid revocation through wrapper succeeds, mutates registry, and is recorded
+    rec = engine.revoke_release_approval(
+        approval_id="appr-wrapped",
+        revoked_by_principal="security_lead",
+        reason="Discovered critical CVE in dependencies"
+    )
+    assert rec.approval_id == "appr-wrapped"
+    assert rec.revoked_by_principal == "security_lead"
+    assert rec.reason == "Discovered critical CVE in dependencies"
+    assert rev_registry.is_revoked("appr-wrapped") is True
+    assert rev_registry.get_revocation_record("appr-wrapped") == rec

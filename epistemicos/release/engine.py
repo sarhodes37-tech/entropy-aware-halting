@@ -602,18 +602,29 @@ class ReleaseGovernanceEngine:
         self,
         approval_id: str,
         revoked_by_principal: str,
-        reason: str = ""
+        reason: str
     ):
         """Authoritatively revokes an approval ID in the revocation registry."""
+        if not approval_id or not isinstance(approval_id, str) or not approval_id.strip():
+            raise ValueError("approval_id must be a non-empty string")
+        if not revoked_by_principal or not isinstance(revoked_by_principal, str) or not revoked_by_principal.strip():
+            raise ValueError("revoked_by_principal must be a non-empty string")
+        if not reason or not isinstance(reason, str) or not reason.strip():
+            raise ValueError("reason must be a non-empty string")
+
+        clean_id = approval_id.strip()
+        clean_principal = revoked_by_principal.strip()
+        clean_reason = reason.strip()
+
         rec = self.revocation_registry.revoke_approval(
-            approval_id=approval_id,
-            revoked_by_principal=revoked_by_principal,
-            reason=reason
+            approval_id=clean_id,
+            revoked_by_principal=clean_principal,
+            reason=clean_reason
         )
         self._log_event(AuditLogLevel.HALT, "RELEASE_APPROVAL_REVOKED", {
-            "reason": reason,
-            "approval_id": approval_id,
-            "revoked_by": revoked_by_principal
+            "reason": clean_reason,
+            "approval_id": clean_id,
+            "revoked_by": clean_principal
         })
         return rec
 

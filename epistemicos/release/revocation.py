@@ -15,8 +15,8 @@ from typing import Dict, Optional, Set
 class RevocationRecord:
     approval_id: str
     revoked_by_principal: str
+    reason: str
     revocation_timestamp: float = field(default_factory=time.time)
-    reason: str = ""
 
     def __post_init__(self):
         if not self.approval_id or not isinstance(self.approval_id, str) or not self.approval_id.strip():
