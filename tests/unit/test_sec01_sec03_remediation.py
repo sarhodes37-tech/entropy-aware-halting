@@ -248,6 +248,15 @@ def test_sec01_test_a_authority_verifier_replacement_rejected(tmp_path):
         auth.principal_provider = attacker_verifier
     assert "immutable and cannot be reassigned" in str(exc_prop.value)
 
+    # 2b. Attempt deletion of backing attribute or property
+    with pytest.raises(PermissionError) as exc_del:
+        del auth._principal_provider
+    assert "cannot be deleted" in str(exc_del.value)
+
+    with pytest.raises(PermissionError) as exc_del_prop:
+        del auth.principal_provider
+    assert "cannot be deleted" in str(exc_del_prop.value)
+
     # 3. Submit assertion signed by attacker's key
     with pytest.raises(PermissionError) as exc_exec:
         tool(target="/admin/secrets", authenticated_principal=attacker_assertion)
@@ -304,6 +313,11 @@ def test_sec01_test_b_verifier_trust_store_replacement_rejected(tmp_path):
     # 2. Attempt in-place mutation of mapping
     with pytest.raises(TypeError):
         auth.principal_provider._trusted_public_keys["AttackerIdP"] = attacker_idp.public_key
+
+    # 2b. Attempt deletion of backing attribute
+    with pytest.raises(PermissionError) as exc_del:
+        del auth.principal_provider._trusted_public_keys
+    assert "cannot be deleted" in str(exc_del.value)
 
     # 3. Submit assertion signed by attacker's key
     with pytest.raises(PermissionError) as exc_exec:

@@ -1192,13 +1192,17 @@ class PrincipalVerifier:
                 raw_keys[iss] = raw_k
 
         # Immutable MappingProxyType prevents runtime modification of trusted public keys
-        self._trusted_public_keys = types.MappingProxyType(raw_keys)
-        self._initialized = True
+        super().__setattr__("_trusted_public_keys", types.MappingProxyType(raw_keys))
 
     def __setattr__(self, name: str, value: Any) -> None:
-        if getattr(self, "_initialized", False) and name in ("_trusted_public_keys", "trusted_public_keys"):
+        if "_trusted_public_keys" in self.__dict__ and name in ("_trusted_public_keys", "trusted_public_keys"):
             raise PermissionError("Access denied: PrincipalVerifier._trusted_public_keys is immutable and cannot be reassigned")
         super().__setattr__(name, value)
+
+    def __delattr__(self, name: str) -> None:
+        if name in ("_trusted_public_keys", "trusted_public_keys"):
+            raise PermissionError("Access denied: PrincipalVerifier._trusted_public_keys cannot be deleted")
+        super().__delattr__(name)
 
     def has_trusted_issuers(self) -> bool:
         return bool(self._trusted_public_keys)
@@ -2097,18 +2101,18 @@ class AuthorizationAuthority:
         # AuthorizationAuthority holds verification keys, NEVER identity-issuing keys or private signing material.
         # The verifier is immutable after initialization and cannot be replaced by callers.
         if principal_provider:
-            self._principal_provider = principal_provider
+            resolved_provider = principal_provider
         else:
             env_issuer = os.getenv("EPISTEMICOS_IDP_ISSUER")
             env_key = os.getenv("EPISTEMICOS_IDP_PUBLIC_KEY")
             if env_issuer and env_key:
-                self._principal_provider = PrincipalVerifier(
+                resolved_provider = PrincipalVerifier(
                     trusted_public_keys={env_issuer: env_key}
                 )
             else:
-                self._principal_provider = None
+                resolved_provider = None
 
-        self._initialized = True
+        super().__setattr__("_principal_provider", resolved_provider)
 
     @property
     def principal_provider(self) -> Optional[PrincipalVerifier]:
@@ -2116,9 +2120,14 @@ class AuthorizationAuthority:
         return self._principal_provider
 
     def __setattr__(self, name: str, value: Any) -> None:
-        if getattr(self, "_initialized", False) and name in ("principal_provider", "_principal_provider"):
+        if "_principal_provider" in self.__dict__ and name in ("principal_provider", "_principal_provider"):
             raise PermissionError(f"Access denied: AuthorizationAuthority.{name} is immutable and cannot be reassigned")
         super().__setattr__(name, value)
+
+    def __delattr__(self, name: str) -> None:
+        if name in ("principal_provider", "_principal_provider"):
+            raise PermissionError(f"Access denied: AuthorizationAuthority.{name} cannot be deleted")
+        super().__delattr__(name)
 
     def clear_denial_with_approval(
         self,
