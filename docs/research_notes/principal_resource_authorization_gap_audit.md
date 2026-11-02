@@ -5,8 +5,8 @@
 **Audited Repository Commit:** `98578cc00c87112ea4bb3f83e559f87760428970` (Merge PR #325)
 **Auditor:** Jules Security Subsystem
 **Scope:** Existing authorization, trusted tool execution, resource targeting, and Observatory HTTP exposure.
-**Threat Model Reference:** CVE-2026-118539 (Published March 2026: Drupal Commerce Core access-control bypass via decoupled principal, missing object ownership, and unverified execution context).
-**Provenance Note:** CVE-2026-118539 serves strictly as the conceptual threat-model reference for evaluating authorization decoupling; it does not indicate that this audit was performed in March 2026. This report documents an evidence-based retrospective audit conducted on November 2, 2026 against commit `98578cc00c87112ea4bb3f83e559f87760428970`.
+**Threat Model Reference:** CVE-2026-118539 (Drupal Commerce Core access-control bypass advisory published October 28, 2026; CVE published October 30, 2026: access-control bypass via decoupled principal, missing object ownership, and unverified execution context).
+**Provenance Note:** CVE-2026-118539 serves strictly as the conceptual threat-model reference for evaluating authorization decoupling. This report documents an evidence-based retrospective audit conducted on November 2, 2026 against baseline commit `98578cc00c87112ea4bb3f83e559f87760428970`.
 **Remediation Status:** Baseline audit findings reflect historical vulnerabilities in the audited commit. Remediations for SEC-01 and SEC-03 are implemented and tracked under PR #327.
 
 ---
