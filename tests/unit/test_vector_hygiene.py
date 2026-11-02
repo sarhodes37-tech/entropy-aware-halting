@@ -203,3 +203,242 @@ def test_revoke_trajectory_backend_failure_quarantines_unpurged_vectors():
     success_revoked = manager.revoke_trajectory(traj_id, namespace="production")
     assert success_revoked == ["vec_fail_1", "vec_fail_2"]
     assert manager.get_unpurged_vectors(traj_id) == []
+
+
+# =====================================================================
+# DETERMINISTIC CONCURRENCY & ADAPTER FAILURE REGRESSION TESTS
+# =====================================================================
+
+def test_concurrent_staging_during_successful_purge():
+    """
+    Validates that vectors staged concurrently while a purge is in flight
+    are NOT discarded when the in-flight purge succeeds.
+    Uses threading.Event for deterministic synchronization without sleeps.
+    """
+    import threading
+
+    in_purge_event = threading.Event()
+    continue_purge_event = threading.Event()
+
+    def mock_delete(ids, **kwargs):
+        in_purge_event.set()
+        continue_purge_event.wait(timeout=5)
+        return True
+
+    mock_db = MagicMock()
+    mock_db.delete = MagicMock(side_effect=mock_delete)
+
+    manager = VectorHygieneManager(db_client=mock_db)
+    traj_id = "traj_conc_success"
+
+    # Initial staging
+    manager.stage_vectors(traj_id, ["vec_batch1_a", "vec_batch1_b"])
+    assert manager.get_staged_count(traj_id) == 2
+
+    revocation_thread_result = []
+
+    def revoker():
+        res = manager.revoke_trajectory(traj_id)
+        revocation_thread_result.append(res)
+
+    t = threading.Thread(target=revoker)
+    t.start()
+
+    # Wait until revoker captures batch and enters adapter.purge_vectors
+    assert in_purge_event.wait(timeout=5) is True
+
+    # Concurrently stage new vectors into the same trajectory
+    manager.stage_vectors(traj_id, ["vec_batch2_c", "vec_batch2_d"])
+
+    # Release backend purge to complete
+    continue_purge_event.set()
+    t.join(timeout=5)
+
+    # Invariants:
+    # 1. Batch 1 was confirmed revoked
+    assert len(revocation_thread_result) == 1
+    assert revocation_thread_result[0] == ["vec_batch1_a", "vec_batch1_b"]
+
+    # 2. Concurrently staged vectors in Batch 2 are preserved in active tracking
+    assert manager.get_staged_count(traj_id) == 2
+    assert manager._active_trajectories[traj_id] == ["vec_batch2_c", "vec_batch2_d"]
+    assert manager.get_unpurged_vectors(traj_id) == []
+
+
+def test_concurrent_staging_during_failed_purge():
+    """
+    Validates that vectors staged concurrently while a purge is in flight
+    are NOT discarded when the in-flight purge fails.
+    The failed batch moves to unpurged quarantine, while the concurrent batch remains active.
+    Uses threading.Event for deterministic synchronization.
+    """
+    import threading
+
+    in_purge_event = threading.Event()
+    continue_purge_event = threading.Event()
+
+    def mock_delete(ids, **kwargs):
+        in_purge_event.set()
+        continue_purge_event.wait(timeout=5)
+        return False
+
+    mock_db = MagicMock()
+    mock_db.delete = MagicMock(side_effect=mock_delete)
+
+    manager = VectorHygieneManager(db_client=mock_db)
+    traj_id = "traj_conc_fail"
+
+    manager.stage_vectors(traj_id, ["vec_fail1_a", "vec_fail1_b"])
+
+    revocation_thread_result = []
+
+    def revoker():
+        res = manager.revoke_trajectory(traj_id)
+        revocation_thread_result.append(res)
+
+    t = threading.Thread(target=revoker)
+    t.start()
+
+    assert in_purge_event.wait(timeout=5) is True
+
+    # Concurrent stage
+    manager.stage_vectors(traj_id, ["vec_active2_c"])
+
+    continue_purge_event.set()
+    t.join(timeout=5)
+
+    # Invariants:
+    # 1. Batch 1 failed, so revocation returned []
+    assert revocation_thread_result[0] == []
+
+    # 2. Batch 1 preserved in quarantine
+    assert manager.get_unpurged_vectors(traj_id) == ["vec_fail1_a", "vec_fail1_b"]
+
+    # 3. Concurrent Batch 2 preserved in active tracking
+    assert manager.get_staged_count(traj_id) == 1
+    assert manager._active_trajectories[traj_id] == ["vec_active2_c"]
+
+
+def test_adapter_explicit_false_return_across_interfaces():
+    """
+    Validates that an explicit backend False is never treated as confirmed deletion across:
+    1. Pinecone 'delete'
+    2. ChromaDB/Qdrant 'delete_vectors'
+    3. Generic 'delete_by_ids'
+    """
+    # 1. delete returning False
+    mock_pinecone = MagicMock()
+    mock_pinecone.delete.return_value = False
+    manager1 = VectorHygieneManager(db_client=mock_pinecone)
+    assert manager1.adapter.purge_vectors(["v1"]) is False
+
+    # 2. delete_vectors returning False
+    mock_chroma = MagicMock()
+    del mock_chroma.delete
+    mock_chroma.delete_vectors.return_value = False
+    manager2 = VectorHygieneManager(db_client=mock_chroma)
+    assert manager2.adapter.purge_vectors(["v2"]) is False
+
+    # 3. delete_by_ids returning False
+    mock_generic = MagicMock()
+    del mock_generic.delete
+    del mock_generic.delete_vectors
+    mock_generic.delete_by_ids.return_value = False
+    manager3 = VectorHygieneManager(db_client=mock_generic)
+    assert manager3.adapter.purge_vectors(["v3"]) is False
+
+
+def test_adapter_none_return_success_compatibility():
+    """
+    Validates backwards-compatibility with backends whose synchronous deletion methods return None
+    (e.g., Pinecone delete() returning None on clean execution).
+    """
+    mock_pinecone = MagicMock()
+    mock_pinecone.delete.return_value = None
+    manager = VectorHygieneManager(db_client=mock_pinecone)
+    assert manager.adapter.purge_vectors(["v1"]) is True
+
+
+def test_retry_quarantined_vectors_without_restaging():
+    """
+    Validates retry_quarantined_vectors:
+    1. Purge initially fails -> vectors quarantined.
+    2. Backend recovers -> retry_quarantined_vectors() purges them without restaging.
+    3. Quarantine is cleared.
+    """
+    mock_db = MagicMock()
+    mock_db.delete.return_value = False
+
+    manager = VectorHygieneManager(db_client=mock_db)
+    traj_id = "traj_retry_001"
+
+    manager.stage_vectors(traj_id, ["vec_retry_1", "vec_retry_2"])
+    revoked = manager.revoke_trajectory(traj_id)
+    assert revoked == []
+    assert manager.get_unpurged_vectors(traj_id) == ["vec_retry_1", "vec_retry_2"]
+    assert manager.get_staged_count(traj_id) == 0
+
+    # Backend recovers
+    mock_db.delete.return_value = True
+
+    # Retry without restaging
+    retry_results = manager.retry_quarantined_vectors(trajectory_id=traj_id)
+    assert traj_id in retry_results
+    assert retry_results[traj_id] == ["vec_retry_1", "vec_retry_2"]
+
+    # Quarantine is now clean
+    assert manager.get_unpurged_vectors(traj_id) == []
+
+
+def test_repeated_failed_retry_preserves_quarantined_vectors():
+    """
+    Validates that repeated failed retries safely preserve quarantined IDs without losing them.
+    """
+    mock_db = MagicMock()
+    mock_db.delete.return_value = False
+
+    manager = VectorHygieneManager(db_client=mock_db)
+    traj_id = "traj_repeat_fail"
+
+    manager.stage_vectors(traj_id, ["vec_persist_1"])
+    manager.revoke_trajectory(traj_id)
+
+    # First retry fails
+    r1 = manager.retry_quarantined_vectors(trajectory_id=traj_id)
+    assert r1[traj_id] == []
+    assert manager.get_unpurged_vectors(traj_id) == ["vec_persist_1"]
+
+    # Second retry fails
+    r2 = manager.retry_quarantined_vectors(trajectory_id=traj_id)
+    assert r2[traj_id] == []
+    assert manager.get_unpurged_vectors(traj_id) == ["vec_persist_1"]
+
+
+def test_revoke_trajectory_include_quarantined():
+    """
+    Validates revoke_trajectory(include_quarantined=True) purges both active staged vectors
+    and previously quarantined vectors in a single operation.
+    """
+    mock_db = MagicMock()
+    mock_db.delete.return_value = False
+
+    manager = VectorHygieneManager(db_client=mock_db)
+    traj_id = "traj_combo"
+
+    # Batch 1 fails -> quarantined
+    manager.stage_vectors(traj_id, ["vec_old_fail"])
+    manager.revoke_trajectory(traj_id)
+    assert manager.get_unpurged_vectors(traj_id) == ["vec_old_fail"]
+
+    # Batch 2 staged into active
+    manager.stage_vectors(traj_id, ["vec_new_active"])
+    assert manager.get_staged_count(traj_id) == 1
+
+    # Backend recovers
+    mock_db.delete.return_value = True
+
+    # Revoke both
+    purged = manager.revoke_trajectory(traj_id, include_quarantined=True)
+    assert set(purged) == {"vec_old_fail", "vec_new_active"}
+    assert manager.get_staged_count(traj_id) == 0
+    assert manager.get_unpurged_vectors(traj_id) == []

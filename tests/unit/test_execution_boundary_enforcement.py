@@ -1140,6 +1140,12 @@ def test_execution_outcome_unknown_fails_closed_with_reconciliation_required():
     assert res["execution_outcome"]["audit_recording_failed"] is True
     assert res["execution_outcome"]["recovery_required"] is True
 
+    # Vector cleanup reporting:
+    assert "vector_cleanup" in res
+    assert res["vector_cleanup"]["status"] == "CONFIRMED"
+    assert res["vector_cleanup"]["vectors_purged"] == 2
+    assert res["vector_cleanup"]["vectors_pending"] == 0
+
     # The executor did run:
     assert execution_callback.call_count == 1
 
@@ -1211,9 +1217,56 @@ def test_interaction_execution_outcome_unknown_with_vector_purge_failure():
     # vectors_revoked accurately reflects 0 successful purges
     assert res["vectors_revoked"] == 0
 
+    # Vector cleanup reporting indicates PENDING_RECONCILIATION
+    assert "vector_cleanup" in res
+    assert res["vector_cleanup"]["status"] == "PENDING_RECONCILIATION"
+    assert res["vector_cleanup"]["vectors_purged"] == 0
+    assert res["vector_cleanup"]["vectors_pending"] == 2
+
     # Staged count cleared from active tracking
     assert orchestrator.vector_manager.get_staged_count(traj_id) == 0
 
     # Dead-letter quarantine preserves unpurged vectors
     unpurged = orchestrator.vector_manager.get_unpurged_vectors(traj_id)
     assert unpurged == ["vec_quarantine_a", "vec_quarantine_b"]
+
+
+def test_execution_outcome_unknown_with_no_staged_vectors():
+    """
+    Validates vector cleanup reporting when no staged vectors existed:
+    vector_cleanup["status"] == "NOT_REQUIRED", vectors_purged == 0, vectors_pending == 0.
+    """
+    execution_callback = MagicMock(return_value={"status": "NO_VECTORS"})
+    orchestrator = EpistemicOrchestrator()
+    perm_gate = PermissionGate(
+        trusted_scope={
+            "allowed_operations": ["execute_transfer"],
+            "allowed_resources": ["/accounts/primary"],
+        }
+    )
+    orchestrator.gates = [perm_gate]
+
+    raw_payload = {"policy_id": "POL-2026-NO-VEC", "primary_metric": 100.0}
+    corr_id = f"NO-VEC-CORR-{uuid.uuid4()}"
+    traj_id = f"traj-no-vec-{uuid.uuid4()}"
+
+    original_record = orchestrator.execution_boundary.store.record_event
+
+    def mock_record_event(event):
+        if getattr(event, "event_type", None) == ProvenanceEventType.EXECUTION_SUCCEEDED.value:
+            raise RuntimeError("Provenance log full")
+        return original_record(event)
+
+    orchestrator.execution_boundary.store.record_event = MagicMock(side_effect=mock_record_event)
+
+    context = {
+        "correlation_id": corr_id,
+        "proposed_actions": [{"action": {"op": "execute_transfer", "endpoint": "/accounts/primary"}}],
+        "actual_executable": execution_callback,
+    }
+
+    res = orchestrator.process_submission(raw_payload, context, trajectory_id=traj_id)
+    assert res["status"] == "RECONCILIATION_REQUIRED"
+    assert res["vector_cleanup"]["status"] == "NOT_REQUIRED"
+    assert res["vector_cleanup"]["vectors_purged"] == 0
+    assert res["vector_cleanup"]["vectors_pending"] == 0

@@ -27,19 +27,28 @@ class VectorStoreAdapter:
             # 1. Pinecone Client Interface
             if hasattr(self.db_client, "delete") and callable(getattr(self.db_client, "delete")):
                 if namespace:
-                    self.db_client.delete(ids=vector_ids, namespace=namespace)
+                    res = self.db_client.delete(ids=vector_ids, namespace=namespace)
                 else:
-                    self.db_client.delete(ids=vector_ids)
+                    res = self.db_client.delete(ids=vector_ids)
+                if res is False:
+                    logger.warning("Pinecone backend returned explicit False on delete.")
+                    return False
                 return True
 
             # 2. ChromaDB / Qdrant Interface
             if hasattr(self.db_client, "delete_vectors") and callable(getattr(self.db_client, "delete_vectors")):
-                self.db_client.delete_vectors(vector_ids=vector_ids)
+                res = self.db_client.delete_vectors(vector_ids=vector_ids)
+                if res is False:
+                    logger.warning("ChromaDB/Qdrant backend returned explicit False on delete_vectors.")
+                    return False
                 return True
 
             # 3. Generic ID-based Deletion Interface
             if hasattr(self.db_client, "delete_by_ids") and callable(getattr(self.db_client, "delete_by_ids")):
-                self.db_client.delete_by_ids(vector_ids)
+                res = self.db_client.delete_by_ids(vector_ids)
+                if res is False:
+                    logger.warning("Generic vector backend returned explicit False on delete_by_ids.")
+                    return False
                 return True
 
             logger.warning("db_client provided but no supported purge method found on backend adapter.")
@@ -96,35 +105,122 @@ class VectorHygieneManager:
         logger.info(f"Trajectory [{trajectory_id}] committed successfully. {len(committed_ids)} vector(s) finalized.")
         return committed_ids
 
-    def revoke_trajectory(self, trajectory_id: str, namespace: Optional[str] = None) -> List[Union[str, int]]:
+    def revoke_trajectory(
+        self,
+        trajectory_id: str,
+        namespace: Optional[str] = None,
+        include_quarantined: bool = False
+    ) -> List[Union[str, int]]:
         """
         Purges staged vectors from storage backend upon trajectory failure/veto.
         Returns list of successfully purged vector IDs, or an empty list if purge failed.
         Failed vector IDs are preserved in `_unpurged_vectors` dead-letter quarantine for manual or deferred maintenance.
+
+        Concurrency Invariant:
+        Captures the exact batch to revoke under lock. Removes only the captured batch IDs from active
+        tracking upon completion, so vectors staged concurrently after batch capture are never lost or cleared.
         """
         with self._lock:
-            target_ids = list(self._active_trajectories.get(trajectory_id, []))
+            active_list = self._active_trajectories.get(trajectory_id, [])
+            quarantined = self._unpurged_vectors.get(trajectory_id, [])
+            batch_to_purge = list(active_list)
+            # If active list has items that were also in quarantine, ensure they are tracked for quarantine clearing on success
+            if include_quarantined:
+                for q_id in quarantined:
+                    if q_id not in batch_to_purge:
+                        batch_to_purge.append(q_id)
 
-        if not target_ids:
+        if not batch_to_purge:
             logger.info(f"No staged vectors found to revoke for trajectory [{trajectory_id}].")
             return []
 
-        logger.warning(f"NEGATIVE_YIELD / VETO triggered. Revoking {len(target_ids)} vector(s) for trajectory [{trajectory_id}].")
-        success = self.adapter.purge_vectors(target_ids, namespace=namespace)
+        logger.warning(f"NEGATIVE_YIELD / VETO triggered. Revoking {len(batch_to_purge)} vector(s) for trajectory [{trajectory_id}].")
+        success = self.adapter.purge_vectors(batch_to_purge, namespace=namespace)
 
         with self._lock:
             if success:
-                self._active_trajectories.pop(trajectory_id, None)
-                self._unpurged_vectors.pop(trajectory_id, None)
+                # Remove only the purged batch items from active tracking
+                if trajectory_id in self._active_trajectories:
+                    purged_set = set(batch_to_purge)
+                    self._active_trajectories[trajectory_id] = [
+                        vid for vid in self._active_trajectories[trajectory_id]
+                        if vid not in purged_set
+                    ]
+                    if not self._active_trajectories[trajectory_id]:
+                        del self._active_trajectories[trajectory_id]
+
+                # Remove confirmed deleted IDs from quarantine as well if present
+                if trajectory_id in self._unpurged_vectors:
+                    purged_set = set(batch_to_purge)
+                    self._unpurged_vectors[trajectory_id] = [
+                        vid for vid in self._unpurged_vectors[trajectory_id]
+                        if vid not in purged_set
+                    ]
+                    if not self._unpurged_vectors[trajectory_id]:
+                        del self._unpurged_vectors[trajectory_id]
+
                 logger.info(f"State contagion prevented. Trajectory [{trajectory_id}] purged successfully.")
-                return target_ids
+                return batch_to_purge
             else:
-                self._active_trajectories.pop(trajectory_id, None)
+                # Failed purge: remove the batch from active tracking and preserve in quarantine
+                purged_set = set(batch_to_purge)
+                if trajectory_id in self._active_trajectories:
+                    self._active_trajectories[trajectory_id] = [
+                        vid for vid in self._active_trajectories[trajectory_id]
+                        if vid not in purged_set
+                    ]
+                    if not self._active_trajectories[trajectory_id]:
+                        del self._active_trajectories[trajectory_id]
+
                 if trajectory_id not in self._unpurged_vectors:
                     self._unpurged_vectors[trajectory_id] = []
-                self._unpurged_vectors[trajectory_id].extend(target_ids)
-                logger.error(f"Vector purge failed for trajectory [{trajectory_id}]. Preserved {len(target_ids)} vector ID(s) in unpurged quarantine for reconciliation.")
+                existing_quarantine = set(self._unpurged_vectors[trajectory_id])
+                for vid in batch_to_purge:
+                    if vid not in existing_quarantine:
+                        self._unpurged_vectors[trajectory_id].append(vid)
+
+                logger.error(f"Vector purge failed for trajectory [{trajectory_id}]. Preserved {len(batch_to_purge)} vector ID(s) in unpurged quarantine for reconciliation.")
                 return []
+
+    def retry_quarantined_vectors(
+        self,
+        trajectory_id: Optional[str] = None,
+        namespace: Optional[str] = None
+    ) -> Dict[str, List[Union[str, int]]]:
+        """
+        Retries backend purge for quarantined vector IDs without requiring them to be re-staged.
+        If trajectory_id is specified, only that trajectory's quarantined vectors are retried.
+        Returns a dict mapping trajectory IDs to the list of vector IDs successfully purged.
+        Failed vector IDs remain in quarantine.
+        """
+        results: Dict[str, List[Union[str, int]]] = {}
+        with self._lock:
+            if trajectory_id is not None:
+                traj_map = {trajectory_id: list(self._unpurged_vectors.get(trajectory_id, []))} if trajectory_id in self._unpurged_vectors else {}
+            else:
+                traj_map = {t: list(v) for t, v in self._unpurged_vectors.items()}
+
+        for t_id, vids in traj_map.items():
+            if not vids:
+                continue
+            success = self.adapter.purge_vectors(vids, namespace=namespace)
+            with self._lock:
+                if success:
+                    purged_set = set(vids)
+                    if t_id in self._unpurged_vectors:
+                        self._unpurged_vectors[t_id] = [
+                            v for v in self._unpurged_vectors[t_id]
+                            if v not in purged_set
+                        ]
+                        if not self._unpurged_vectors[t_id]:
+                            del self._unpurged_vectors[t_id]
+                    results[t_id] = vids
+                    logger.info(f"Quarantine retry succeeded for trajectory [{t_id}]: {len(vids)} vector(s) purged.")
+                else:
+                    results[t_id] = []
+                    logger.error(f"Quarantine retry failed for trajectory [{t_id}]: {len(vids)} vector(s) remain quarantined.")
+
+        return results
 
     def get_staged_count(self, trajectory_id: str) -> int:
         """Returns the current count of quarantined vectors for a given trajectory."""
