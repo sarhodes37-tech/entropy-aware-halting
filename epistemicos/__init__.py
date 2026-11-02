@@ -85,7 +85,10 @@ from epistemicos.action_policy import (
     ActionRegistry,
     RegisteredActionDefinition,
     SideEffectPolicyEngine,
-    TypedHumanApprovalRecord
+    TypedHumanApprovalRecord,
+    ActionRequest,
+    ActionPolicy,
+    PolicyDecision as ActionPolicyDecision,
 )
 
 # Expose Execution Provenance subsystem
@@ -146,5 +149,8 @@ __all__.extend([
     "ActionRegistry",
     "RegisteredActionDefinition",
     "SideEffectPolicyEngine",
-    "TypedHumanApprovalRecord"
+    "TypedHumanApprovalRecord",
+    "ActionRequest",
+    "ActionPolicy",
+    "ActionPolicyDecision",
 ])
