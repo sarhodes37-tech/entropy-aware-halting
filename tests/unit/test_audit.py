@@ -860,11 +860,13 @@ def test_github_and_gitlab_token_redaction_comprehensive_cases():
     ghs_tok = "ghs_123456789012345678901234567890123456"
     ghr_tok = "ghr_123456789012345678901234567890123456"
     hf_tok = "hf_1234567890123456789012345678901234"
+    anthropic_key = "sk-ant-api03-abcdef1234567890abcdef1234567890abcdef1234567890-abcdef1234567890"
+    anthropic_admin_key = "sk-ant-admin01-abcdef1234567890abcdef1234567890abcdef1234567890-abcdef1234567890"
 
     # Punctuation boundaries & multiple tokens
     ghp_underscore = "ghp_12345678901234567890_abcdef1234567890"
     ghs_jwt_installation = "ghs_987654_eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJpYXQiOjE2MDAwMDAwMDB9.abcdefghijklmnopqrstuvwxyz_0123456789-ABCDEF"
-    text = f"Tokens: ({fine_grained_pat}); [{classic_ghp_36}], {classic_ghp_40}, {gitlab_pat}, {gho_tok}, {ghu_tok}, {ghs_tok}, {ghr_tok}, {ghp_underscore}, {ghs_jwt_installation}, and {hf_tok}."
+    text = f"Tokens: ({fine_grained_pat}); [{classic_ghp_36}], {classic_ghp_40}, {gitlab_pat}, {gho_tok}, {ghu_tok}, {ghs_tok}, {ghr_tok}, {ghp_underscore}, {ghs_jwt_installation}, {anthropic_key}, {anthropic_admin_key}, and {hf_tok}."
     sanitized_text = _sanitize_sensitive_data(text)
     assert fine_grained_pat not in sanitized_text
     assert classic_ghp_36 not in sanitized_text
@@ -876,8 +878,11 @@ def test_github_and_gitlab_token_redaction_comprehensive_cases():
     assert ghr_tok not in sanitized_text
     assert ghp_underscore not in sanitized_text
     assert ghs_jwt_installation not in sanitized_text
+    assert anthropic_key not in sanitized_text
+    assert anthropic_admin_key not in sanitized_text
+    assert "sk-sk-[REDACTED]" not in sanitized_text
     assert hf_tok not in sanitized_text
-    assert sanitized_text == "Tokens: (sk-[REDACTED]); [sk-[REDACTED]], sk-[REDACTED], sk-[REDACTED], sk-[REDACTED], sk-[REDACTED], sk-[REDACTED], sk-[REDACTED], sk-[REDACTED], sk-[REDACTED], and sk-[REDACTED]."
+    assert sanitized_text == "Tokens: (sk-[REDACTED]); [sk-[REDACTED]], sk-[REDACTED], sk-[REDACTED], sk-[REDACTED], sk-[REDACTED], sk-[REDACTED], sk-[REDACTED], sk-[REDACTED], sk-[REDACTED], sk-[REDACTED], sk-[REDACTED], and sk-[REDACTED]."
 
     # Near-miss inputs (should NOT be redacted)
     short_pat = "github_pat_short123456"
@@ -886,9 +891,11 @@ def test_github_and_gitlab_token_redaction_comprehensive_cases():
     short_gho = "gho_short123"
     short_ghs = "ghs_short123"
     short_hf = "hf_short12345678"
+    short_ant_api = "sk-ant-api03-short"
+    missing_prefix_ant = "ant-api03-short123"
     arbitrary_ghs = "ghs_notajwt_singlepart"
     two_part_ghs = "ghs_notajwt.twoparts"
-    near_miss_text = f"Benign strings: {short_pat}, {short_ghp}, {short_glpat}, {short_gho}, {short_ghs}, {short_hf}, {arbitrary_ghs}, and {two_part_ghs}"
+    near_miss_text = f"Benign strings: {short_pat}, {short_ghp}, {short_glpat}, {short_gho}, {short_ghs}, {short_hf}, {short_ant_api}, {missing_prefix_ant}, {arbitrary_ghs}, and {two_part_ghs}"
     sanitized_near_miss = _sanitize_sensitive_data(near_miss_text)
     assert short_pat in sanitized_near_miss
     assert short_ghp in sanitized_near_miss
@@ -896,6 +903,8 @@ def test_github_and_gitlab_token_redaction_comprehensive_cases():
     assert short_gho in sanitized_near_miss
     assert short_ghs in sanitized_near_miss
     assert short_hf in sanitized_near_miss
+    assert short_ant_api in sanitized_near_miss
+    assert missing_prefix_ant in sanitized_near_miss
     assert arbitrary_ghs in sanitized_near_miss
     assert two_part_ghs in sanitized_near_miss
 
