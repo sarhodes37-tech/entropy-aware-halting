@@ -759,6 +759,70 @@ class EpistemicOrchestrator:
                             out_status = execution_outcome.get("status")
                             if out_status == "EXECUTION_OUTCOME_UNKNOWN":
                                 execution_status = "EXECUTION_OUTCOME_UNKNOWN"
+                                telemetry = profiler.get_telemetry()
+                                initial_staged = self.vector_manager.get_staged_count(traj_id)
+
+                                # Perform revocation on staged vectors
+                                revoked_ids = self.vector_manager.revoke_trajectory(traj_id)
+                                actual_revoked_count = len(revoked_ids)
+
+                                # Mark scope aborted under lock so any subsequent staging attempts are rejected
+                                self.vector_manager.abort_trajectory_scope(traj_id)
+
+                                # If vectors were staged concurrently prior to abort, revoke them as well
+                                if self.vector_manager.get_staged_count(traj_id) > 0:
+                                    concurrent_revoked = self.vector_manager.revoke_trajectory(traj_id)
+                                    actual_revoked_count += len(concurrent_revoked)
+
+                                # Determine outstanding vectors across both active staging and unpurged quarantine
+                                outstanding_ids = self.vector_manager.get_outstanding_vectors(traj_id)
+                                pending_count = len(outstanding_ids)
+
+                                if pending_count > 0:
+                                    cleanup_status = "PENDING_RECONCILIATION"
+                                elif actual_revoked_count > 0:
+                                    cleanup_status = "CONFIRMED"
+                                elif initial_staged == 0:
+                                    cleanup_status = "NOT_REQUIRED"
+                                else:
+                                    cleanup_status = "PENDING_RECONCILIATION"
+
+                                cleanup_info = {
+                                    "status": cleanup_status,
+                                    "vectors_purged": actual_revoked_count,
+                                    "vectors_pending": pending_count
+                                }
+
+                                reason_msg = f"Execution boundary outcome unknown: {execution_outcome.get('reason', 'Terminal audit logging failed')}"
+                                # Compile audit event with vector_cleanup details in metadata
+                                audit_metadata = {
+                                    "vector_cleanup": cleanup_info,
+                                    "vectors_purged": actual_revoked_count,
+                                    "vectors_pending": pending_count,
+                                    "execution_status": "EXECUTION_OUTCOME_UNKNOWN"
+                                }
+                                self.audit_logger.record_event(AuditEvent(
+                                    event_type=AuditLogLevel.HALT,
+                                    gate_name="TrustedExecutionBoundary",
+                                    reason=f"{reason_msg} | Confirmed Purged: {actual_revoked_count} | Pending Reconciliation: {pending_count} | Cleanup: {cleanup_status}",
+                                    model_id=self.model_id,
+                                    payload_snippet=json.dumps(masked_payload),
+                                    cpr_snapshot=cpr,
+                                    telemetry=telemetry,
+                                    metadata=audit_metadata
+                                ))
+                                return {
+                                    "status": "RECONCILIATION_REQUIRED",
+                                    "execution_status": "EXECUTION_OUTCOME_UNKNOWN",
+                                    "gate": "TrustedExecutionBoundary",
+                                    "reason": reason_msg,
+                                    "execution_outcome": execution_outcome,
+                                    "vectors_revoked": actual_revoked_count,
+                                    "vector_cleanup": cleanup_info,
+                                    "masked_payload": cpr.mask_egress_payload(),
+                                    "telemetry": telemetry.__dict__,
+                                    "trajectory_id": traj_id
+                                }
                             elif out_status == "UNVERIFIED_SUCCESS":
                                 execution_status = "UNVERIFIED_SUCCESS"
                                 telemetry = profiler.get_telemetry()
