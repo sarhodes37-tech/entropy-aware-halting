@@ -23,6 +23,8 @@ class RevocationRecord:
             raise ValueError("RevocationRecord: approval_id must be a non-empty string")
         if not self.revoked_by_principal or not isinstance(self.revoked_by_principal, str) or not self.revoked_by_principal.strip():
             raise ValueError("RevocationRecord: revoked_by_principal must be a non-empty string")
+        if not self.reason or not isinstance(self.reason, str) or not self.reason.strip():
+            raise ValueError("RevocationRecord: reason must be a non-empty string")
 
 
 class ReleaseApprovalRevocationRegistry:
@@ -43,9 +45,16 @@ class ReleaseApprovalRevocationRegistry:
         self,
         approval_id: str,
         revoked_by_principal: str,
-        reason: str = ""
+        reason: str
     ) -> RevocationRecord:
         """Atomically records monotonic revocation of an approval ID."""
+        if not approval_id or not isinstance(approval_id, str) or not approval_id.strip():
+            raise ValueError("approval_id must be a non-empty string")
+        if not revoked_by_principal or not isinstance(revoked_by_principal, str) or not revoked_by_principal.strip():
+            raise ValueError("revoked_by_principal must be a non-empty string")
+        if not reason or not isinstance(reason, str) or not reason.strip():
+            raise ValueError("reason must be a non-empty string")
+
         rec = RevocationRecord(
             approval_id=approval_id.strip(),
             revoked_by_principal=revoked_by_principal.strip(),
@@ -57,10 +66,15 @@ class ReleaseApprovalRevocationRegistry:
             return rec
 
     def is_revoked(self, approval_id: str) -> bool:
-        """Authoritatively checks whether an approval ID is revoked."""
+        """Authoritatively checks whether an approval ID is revoked (fails closed on invalid input)."""
+        if not approval_id or not isinstance(approval_id, str) or not approval_id.strip():
+            raise ValueError("approval_id must be a non-empty string")
         with self._lock:
             return approval_id.strip() in self._revocations
 
     def get_revocation_record(self, approval_id: str) -> Optional[RevocationRecord]:
+        """Retrieves revocation record for an approval ID (fails closed on invalid input)."""
+        if not approval_id or not isinstance(approval_id, str) or not approval_id.strip():
+            raise ValueError("approval_id must be a non-empty string")
         with self._lock:
             return self._revocations.get(approval_id.strip())

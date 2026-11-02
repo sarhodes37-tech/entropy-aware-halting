@@ -17,3 +17,8 @@
 **Vulnerability:** Python's standard `http.server.BaseHTTPRequestHandler.version_string()` concatenates `server_version + ' ' + sys_version`, emitting headers like `Server: BaseHTTP/0.6 Python/3.12.13`. This leaks internal server implementation details and exact runtime minor/patch versions to external clients across both successful and error responses.
 **Learning:** Setting `sys_version = ""` alone still leaves a trailing space (`"ServerName "`) because `version_string()` unconditionally joins with `' '`. Fully neutralizing runtime banner disclosures requires overriding `version_string(self)` to return the clean generic token directly alongside setting `server_version` and empty `sys_version`.
 **Prevention:** In standard-library HTTP servers, always explicitly define `server_version`, set `sys_version = ""`, and override `version_string(self)` to return a constant, non-disclosing identifier.
+
+## 2026-11-03 - Enforce Fail-Closed Validation on Security Revocation Registries
+**Vulnerability:** Returning `False` from revocation query functions (such as `is_revoked(None) -> False`) when passed malformed, empty, or non-string identifiers creates an authorization-friendly answer where callers interpret `False` as "approval is valid and unrevoked", converting invalid input into an authorization pass.
+**Learning:** For security-sensitive revocation registries, invalid, missing, or malformed identifiers must never be converted into evidence that an authorization token is safe to use.
+**Prevention:** Always fail closed by raising `ValueError` (or equivalent exception) when revocation check methods receive `None`, non-string, or empty/whitespace-only identifiers, ensuring callers cannot mistakenly proceed as if the identifier were unrevoked.
