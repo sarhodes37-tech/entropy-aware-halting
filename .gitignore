@@ -22,4 +22,5 @@ audit_ledger.json
 logs/*.jsonl
 results/*
 !results/incident_lab_results.json
+!results/permission_gate_benchmark_results.json
 *.log

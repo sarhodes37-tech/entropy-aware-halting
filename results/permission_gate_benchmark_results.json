@@ -1,0 +1,160 @@
+{
+  "environment": {
+    "commit_sha": "f535f0c42e0c6078b96ffb590e03feb40f6c545e",
+    "python_version": "3.12.13",
+    "platform": "Linux-6.8.0-x86_64-with-glibc2.39",
+    "processor": "x86_64",
+    "cpu_count": 4,
+    "exact_command": "python benchmarks/benchmark_permission_gate_caching.py"
+  },
+  "workload_results": {
+    "workload_a_repetitive_schema": {
+      "num_samples": 1000,
+      "repetitions": 10,
+      "baseline_uncached": {
+        "median_total_sec": 0.181296,
+        "p95_total_sec": 0.186207,
+        "mean_total_sec": 0.184715,
+        "mean_ms_per_eval": 0.18471,
+        "median_ms_per_eval": 0.1813
+      },
+      "optimized_cold": {
+        "total_sec": 0.029667,
+        "ms_per_eval": 0.02967,
+        "ratio_vs_baseline_median": 0.16,
+        "cache_info": {
+          "hits": 31968,
+          "misses": 32,
+          "currsize": 32,
+          "maxsize": 4096
+        }
+      },
+      "optimized_warm": {
+        "median_total_sec": 0.029631,
+        "p95_total_sec": 0.030144,
+        "mean_total_sec": 0.029765,
+        "mean_ms_per_eval": 0.02976,
+        "median_ms_per_eval": 0.02963
+      },
+      "relative_speedup_warm": 6.12,
+      "percent_latency_reduction_warm": 83.66,
+      "final_cache_info": {
+        "hits": 351968,
+        "misses": 32,
+        "currsize": 32,
+        "maxsize": 4096
+      }
+    },
+    "workload_b_high_cardinality": {
+      "num_samples": 2000,
+      "repetitions": 10,
+      "baseline_uncached": {
+        "median_total_sec": 0.161581,
+        "p95_total_sec": 0.1625,
+        "mean_total_sec": 0.161595,
+        "mean_ms_per_eval": 0.0808,
+        "median_ms_per_eval": 0.08079
+      },
+      "optimized_cold": {
+        "total_sec": 0.124086,
+        "ms_per_eval": 0.06204,
+        "ratio_vs_baseline_median": 0.77,
+        "cache_info": {
+          "hits": 11998,
+          "misses": 12002,
+          "currsize": 4096,
+          "maxsize": 4096
+        }
+      },
+      "optimized_warm": {
+        "median_total_sec": 0.125458,
+        "p95_total_sec": 0.150863,
+        "mean_total_sec": 0.132157,
+        "mean_ms_per_eval": 0.06608,
+        "median_ms_per_eval": 0.06273
+      },
+      "relative_speedup_warm": 1.29,
+      "percent_latency_reduction_warm": 22.36,
+      "final_cache_info": {
+        "hits": 132038,
+        "misses": 131962,
+        "currsize": 4096,
+        "maxsize": 4096
+      }
+    },
+    "workload_c_mixed_realistic": {
+      "num_samples": 1000,
+      "repetitions": 10,
+      "baseline_uncached": {
+        "median_total_sec": 0.083555,
+        "p95_total_sec": 0.084947,
+        "mean_total_sec": 0.083846,
+        "mean_ms_per_eval": 0.08385,
+        "median_ms_per_eval": 0.08355
+      },
+      "optimized_cold": {
+        "total_sec": 0.046809,
+        "ms_per_eval": 0.04681,
+        "ratio_vs_baseline_median": 0.56,
+        "cache_info": {
+          "hits": 10940,
+          "misses": 1760,
+          "currsize": 1760,
+          "maxsize": 4096
+        }
+      },
+      "optimized_warm": {
+        "median_total_sec": 0.016477,
+        "p95_total_sec": 0.01687,
+        "mean_total_sec": 0.016555,
+        "mean_ms_per_eval": 0.01656,
+        "median_ms_per_eval": 0.01648
+      },
+      "relative_speedup_warm": 5.07,
+      "percent_latency_reduction_warm": 80.28,
+      "final_cache_info": {
+        "hits": 137940,
+        "misses": 1760,
+        "currsize": 1760,
+        "maxsize": 4096
+      }
+    },
+    "workload_d_long_strings": {
+      "num_samples": 1000,
+      "repetitions": 10,
+      "baseline_uncached": {
+        "median_total_sec": 0.48577,
+        "p95_total_sec": 0.506119,
+        "mean_total_sec": 0.479748,
+        "mean_ms_per_eval": 0.47975,
+        "median_ms_per_eval": 0.48577
+      },
+      "optimized_cold": {
+        "total_sec": 0.437064,
+        "ms_per_eval": 0.43706,
+        "ratio_vs_baseline_median": 0.9,
+        "cache_info": {
+          "hits": 8486,
+          "misses": 9,
+          "currsize": 9,
+          "maxsize": 4096
+        }
+      },
+      "optimized_warm": {
+        "median_total_sec": 0.445781,
+        "p95_total_sec": 0.453327,
+        "mean_total_sec": 0.439288,
+        "mean_ms_per_eval": 0.43929,
+        "median_ms_per_eval": 0.44578
+      },
+      "relative_speedup_warm": 1.09,
+      "percent_latency_reduction_warm": 8.23,
+      "final_cache_info": {
+        "hits": 93436,
+        "misses": 9,
+        "currsize": 9,
+        "maxsize": 4096
+      }
+    }
+  }
+}
