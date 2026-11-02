@@ -39,6 +39,33 @@ class RegisteredActionDefinition:
 
 
 @dataclass
+class ActionRequest:
+    action: str
+    resource: Optional[str] = None
+    context: Optional[Dict[str, Any]] = None
+
+
+@dataclass
+class PolicyDecision:
+    allowed: bool
+    reason: str
+
+
+class ActionPolicy:
+    """
+    Action authorization policy evaluating requested actions against allowed actions.
+    """
+
+    def __init__(self, allowed_actions: Optional[Set[str]] = None):
+        self.allowed_actions: Set[str] = set(allowed_actions) if allowed_actions is not None else set()
+
+    def evaluate(self, request: ActionRequest) -> PolicyDecision:
+        if request.action not in self.allowed_actions:
+            return PolicyDecision(allowed=False, reason="Action not explicitly allowed")
+        return PolicyDecision(allowed=True, reason="Allowed by default")
+
+
+@dataclass
 class TypedHumanApprovalRecord:
     approval_id: str
     operation_id: str
