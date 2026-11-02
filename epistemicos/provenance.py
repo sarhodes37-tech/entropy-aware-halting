@@ -137,12 +137,21 @@ class ProvenanceEvent:
 
     def to_dict(self) -> Dict[str, Any]:
         data = asdict(self)
-        return _sanitize_sensitive_data(data)
+        sanitized = _sanitize_sensitive_data(data)
+        # Ensure any non-serializable objects (e.g. MagicMock return values in outcome) are converted
+        try:
+            json.dumps(sanitized)
+            return sanitized
+        except (TypeError, OverflowError):
+            try:
+                return json.loads(json.dumps(sanitized, default=str))
+            except Exception:
+                return sanitized
 
     def compute_event_digest(self) -> str:
         data = self.to_dict()
         check_data = {k: v for k, v in data.items() if k != "event_digest"}
-        serialized = json.dumps(check_data, sort_keys=True).encode("utf-8")
+        serialized = json.dumps(check_data, sort_keys=True, default=str).encode("utf-8")
         return hashlib.sha256(serialized).hexdigest()
 
 

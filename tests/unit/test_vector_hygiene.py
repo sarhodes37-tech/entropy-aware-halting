@@ -160,3 +160,46 @@ def test_trajectory_scope_no_vectors_staged():
         pass  # Do not stage any vectors
     assert manager.get_staged_count("traj_empty") == 0
 
+
+def test_revoke_trajectory_backend_failure_quarantines_unpurged_vectors():
+    """
+    Validates GAP-HALT-07 fix:
+    When backend vector purge fails (e.g. timeout or exception swallowed returning False),
+    VectorHygieneManager preserves failed vector IDs in the unpurged dead-letter quarantine,
+    returns an empty list indicating zero successfully purged vectors, and makes the failed
+    IDs observable via get_unpurged_vectors().
+    """
+    mock_db = MagicMock()
+    mock_db.delete.side_effect = Exception("Backend store connection timeout")
+
+    manager = VectorHygieneManager(db_client=mock_db)
+    traj_id = "traj_fail_001"
+    vectors = ["vec_fail_1", "vec_fail_2"]
+
+    manager.stage_vectors(traj_id, vectors)
+    assert manager.get_staged_count(traj_id) == 2
+
+    # Attempt revocation which encounters backend purge failure
+    revoked = manager.revoke_trajectory(traj_id, namespace="production")
+
+    # Staged count must be cleared from active tracking
+    assert manager.get_staged_count(traj_id) == 0
+    # Revoked return must reflect failure (no vectors confirmed revoked)
+    assert revoked == []
+
+    # Unpurged vectors must be preserved in quarantine
+    unpurged_for_traj = manager.get_unpurged_vectors(traj_id)
+    assert unpurged_for_traj == ["vec_fail_1", "vec_fail_2"]
+
+    all_unpurged = manager.get_unpurged_vectors()
+    assert traj_id in all_unpurged
+    assert all_unpurged[traj_id] == ["vec_fail_1", "vec_fail_2"]
+
+    # Subsequent successful purge clears quarantine
+    mock_db.delete.side_effect = None
+    mock_db.delete.return_value = True
+
+    manager.stage_vectors(traj_id, ["vec_fail_1", "vec_fail_2"])
+    success_revoked = manager.revoke_trajectory(traj_id, namespace="production")
+    assert success_revoked == ["vec_fail_1", "vec_fail_2"]
+    assert manager.get_unpurged_vectors(traj_id) == []

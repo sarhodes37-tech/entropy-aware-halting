@@ -746,6 +746,29 @@ class EpistemicOrchestrator:
                             out_status = execution_outcome.get("status")
                             if out_status == "EXECUTION_OUTCOME_UNKNOWN":
                                 execution_status = "EXECUTION_OUTCOME_UNKNOWN"
+                                telemetry = profiler.get_telemetry()
+                                revoked_ids = self.vector_manager.revoke_trajectory(traj_id)
+                                actual_revoked_count = len(revoked_ids)
+                                reason_msg = f"Execution boundary outcome unknown: {execution_outcome.get('reason', 'Terminal audit logging failed')}"
+                                self._log_pipeline_event(
+                                    event_type=AuditLogLevel.HALT,
+                                    gate_name="TrustedExecutionBoundary",
+                                    reason=f"{reason_msg} | Vectors Revoked: {actual_revoked_count}",
+                                    masked_payload=masked_payload,
+                                    cpr=cpr,
+                                    telemetry=telemetry
+                                )
+                                return {
+                                    "status": "RECONCILIATION_REQUIRED",
+                                    "execution_status": "EXECUTION_OUTCOME_UNKNOWN",
+                                    "gate": "TrustedExecutionBoundary",
+                                    "reason": reason_msg,
+                                    "execution_outcome": execution_outcome,
+                                    "vectors_revoked": actual_revoked_count,
+                                    "masked_payload": cpr.mask_egress_payload(),
+                                    "telemetry": telemetry.__dict__,
+                                    "trajectory_id": traj_id
+                                }
                             elif out_status == "UNVERIFIED_SUCCESS":
                                 execution_status = "UNVERIFIED_SUCCESS"
                                 telemetry = profiler.get_telemetry()

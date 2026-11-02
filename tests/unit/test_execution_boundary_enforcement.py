@@ -1085,3 +1085,135 @@ def test_concurrent_execution_boundary_single_use_enforcement():
     assert len(errors) == 1, f"Expected exactly 1 thread to be rejected, got {len(errors)}"
     assert isinstance(errors[0], PermissionError)
     assert "has already been consumed" in str(errors[0])
+
+
+def test_execution_outcome_unknown_fails_closed_with_reconciliation_required():
+    """
+    Validates GAP-HALT-06 remediation:
+    When TrustedExecutionBoundary executes a protected action successfully, but the terminal
+    EXECUTION_SUCCEEDED provenance recording fails, the boundary returns EXECUTION_OUTCOME_UNKNOWN.
+    EpistemicOrchestrator must NOT return status 'ALLOWED', must NOT commit staged vectors,
+    must revoke trajectory vectors, and must return status 'RECONCILIATION_REQUIRED'.
+    """
+    execution_callback = MagicMock(return_value={"status": "MUTATION_COMMITTED"})
+    orchestrator = EpistemicOrchestrator()
+    perm_gate = PermissionGate(
+        trusted_scope={
+            "allowed_operations": ["execute_transfer"],
+            "allowed_resources": ["/accounts/primary"],
+        }
+    )
+    orchestrator.gates = [perm_gate]
+
+    raw_payload = {"policy_id": "POL-2026-UNKNOWN", "primary_metric": 100.0}
+    corr_id = f"UNKNOWN-CORR-{uuid.uuid4()}"
+    traj_id = f"traj-unknown-{uuid.uuid4()}"
+
+    # Simulate store failure ONLY during terminal EXECUTION_SUCCEEDED event recording
+    original_record = orchestrator.execution_boundary.store.record_event
+
+    def mock_record_event(event):
+        if getattr(event, "event_type", None) == ProvenanceEventType.EXECUTION_SUCCEEDED.value:
+            raise RuntimeError("Disk full during terminal provenance write")
+        return original_record(event)
+
+    orchestrator.execution_boundary.store.record_event = MagicMock(side_effect=mock_record_event)
+
+    # Protected executor stages vectors during execution
+    def worker_action():
+        orchestrator.vector_manager.stage_vectors(traj_id, ["vec_staged_1", "vec_staged_2"])
+        return execution_callback()
+
+    context = {
+        "correlation_id": corr_id,
+        "proposed_actions": [{"action": {"op": "execute_transfer", "endpoint": "/accounts/primary"}}],
+        "actual_executable": worker_action,
+    }
+
+    res = orchestrator.process_submission(raw_payload, context, trajectory_id=traj_id)
+
+    # Invariants under terminal audit write failure:
+    assert res["status"] == "RECONCILIATION_REQUIRED"
+    assert res["execution_status"] == "EXECUTION_OUTCOME_UNKNOWN"
+    assert "Execution boundary outcome unknown" in res["reason"]
+    assert res["execution_outcome"]["status"] == "EXECUTION_OUTCOME_UNKNOWN"
+    assert res["execution_outcome"]["audit_recording_failed"] is True
+    assert res["execution_outcome"]["recovery_required"] is True
+
+    # The executor did run:
+    assert execution_callback.call_count == 1
+
+    # But staged vectors must NOT have been committed
+    assert orchestrator.vector_manager.get_staged_count(traj_id) == 0
+
+    # Capability must be consumed
+    cap_token = res["execution_outcome"].get("attempt_id")  # boundary attempt processed
+    events = orchestrator.execution_boundary.store.get_events_for_correlation(corr_id)
+    grant_events = [e for e in events if e.event_type == "AUTHORIZATION_GRANTED"]
+    assert len(grant_events) == 1
+    token_id = grant_events[0].authorization_token_id
+    assert orchestrator.authority.registry.is_consumed(token_id) is True
+
+
+def test_interaction_execution_outcome_unknown_with_vector_purge_failure():
+    """
+    Validates failure path interaction (GAP-HALT-06 + GAP-HALT-07):
+    When execution outcome is unknown (terminal audit write fails), vector revocation
+    is triggered. If the vector store backend also fails during that revocation,
+    the failed vector IDs are preserved in VectorHygieneManager._unpurged_vectors
+    dead-letter quarantine, vectors_revoked is reported accurately, and the top-level
+    response status is 'RECONCILIATION_REQUIRED'.
+    """
+    mock_db = MagicMock()
+    mock_db.delete.side_effect = Exception("Vector DB cluster unreachable")
+
+    execution_callback = MagicMock(return_value={"status": "DATABASE_RECORD_MODIFIED"})
+    orchestrator = EpistemicOrchestrator(db_client=mock_db)
+    perm_gate = PermissionGate(
+        trusted_scope={
+            "allowed_operations": ["execute_transfer"],
+            "allowed_resources": ["/accounts/primary"],
+        }
+    )
+    orchestrator.gates = [perm_gate]
+
+    raw_payload = {"policy_id": "POL-2026-INTERACTION", "primary_metric": 100.0}
+    corr_id = f"INTERACT-CORR-{uuid.uuid4()}"
+    traj_id = f"traj-interact-{uuid.uuid4()}"
+
+    # Simulate store failure on terminal EXECUTION_SUCCEEDED
+    original_record = orchestrator.execution_boundary.store.record_event
+
+    def mock_record_event(event):
+        if getattr(event, "event_type", None) == ProvenanceEventType.EXECUTION_SUCCEEDED.value:
+            raise RuntimeError("Storage partition read-only")
+        return original_record(event)
+
+    orchestrator.execution_boundary.store.record_event = MagicMock(side_effect=mock_record_event)
+
+    # Protected executor stages vectors during execution
+    def worker_action():
+        orchestrator.vector_manager.stage_vectors(traj_id, ["vec_quarantine_a", "vec_quarantine_b"])
+        return execution_callback()
+
+    context = {
+        "correlation_id": corr_id,
+        "proposed_actions": [{"action": {"op": "execute_transfer", "endpoint": "/accounts/primary"}}],
+        "actual_executable": worker_action,
+    }
+
+    res = orchestrator.process_submission(raw_payload, context, trajectory_id=traj_id)
+
+    # Orchestrator status must be RECONCILIATION_REQUIRED
+    assert res["status"] == "RECONCILIATION_REQUIRED"
+    assert res["execution_status"] == "EXECUTION_OUTCOME_UNKNOWN"
+
+    # vectors_revoked accurately reflects 0 successful purges
+    assert res["vectors_revoked"] == 0
+
+    # Staged count cleared from active tracking
+    assert orchestrator.vector_manager.get_staged_count(traj_id) == 0
+
+    # Dead-letter quarantine preserves unpurged vectors
+    unpurged = orchestrator.vector_manager.get_unpurged_vectors(traj_id)
+    assert unpurged == ["vec_quarantine_a", "vec_quarantine_b"]

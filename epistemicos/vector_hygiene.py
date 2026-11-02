@@ -59,7 +59,19 @@ class VectorHygieneManager:
     def __init__(self, db_client: Any = None):
         self.adapter = VectorStoreAdapter(db_client)
         self._active_trajectories: Dict[str, List[Union[str, int]]] = {}
+        self._unpurged_vectors: Dict[str, List[Union[str, int]]] = {}
         self._lock = RLock()
+
+    def get_unpurged_vectors(self, trajectory_id: Optional[str] = None) -> Union[List[Union[str, int]], Dict[str, List[Union[str, int]]]]:
+        """
+        Returns quarantined vector IDs whose backend purge failed.
+        If trajectory_id is provided, returns the list for that trajectory.
+        Otherwise returns a copy of the dictionary mapping trajectory IDs to unpurged vectors.
+        """
+        with self._lock:
+            if trajectory_id is not None:
+                return list(self._unpurged_vectors.get(trajectory_id, []))
+            return {k: list(v) for k, v in self._unpurged_vectors.items()}
 
     def stage_vectors(self, trajectory_id: str, vector_ids: List[Union[str, int]]) -> None:
         """Stages new vector IDs into the quarantined trajectory scope."""
@@ -87,24 +99,32 @@ class VectorHygieneManager:
     def revoke_trajectory(self, trajectory_id: str, namespace: Optional[str] = None) -> List[Union[str, int]]:
         """
         Purges staged vectors from storage backend upon trajectory failure/veto.
-        Returns list of revoked vector IDs.
+        Returns list of successfully purged vector IDs, or an empty list if purge failed.
+        Failed vector IDs are preserved in `_unpurged_vectors` dead-letter quarantine for manual or deferred maintenance.
         """
         with self._lock:
-            revoked_ids = self._active_trajectories.pop(trajectory_id, [])
+            target_ids = list(self._active_trajectories.get(trajectory_id, []))
 
-        if not revoked_ids:
+        if not target_ids:
             logger.info(f"No staged vectors found to revoke for trajectory [{trajectory_id}].")
             return []
 
-        logger.warning(f"NEGATIVE_YIELD / VETO triggered. Revoking {len(revoked_ids)} vector(s) for trajectory [{trajectory_id}].")
-        success = self.adapter.purge_vectors(revoked_ids, namespace=namespace)
+        logger.warning(f"NEGATIVE_YIELD / VETO triggered. Revoking {len(target_ids)} vector(s) for trajectory [{trajectory_id}].")
+        success = self.adapter.purge_vectors(target_ids, namespace=namespace)
 
-        if success:
-            logger.info(f"State contagion prevented. Trajectory [{trajectory_id}] purged successfully.")
-        else:
-            logger.error(f"Vector purge failed for trajectory [{trajectory_id}]. Manual index maintenance required.")
-
-        return revoked_ids
+        with self._lock:
+            if success:
+                self._active_trajectories.pop(trajectory_id, None)
+                self._unpurged_vectors.pop(trajectory_id, None)
+                logger.info(f"State contagion prevented. Trajectory [{trajectory_id}] purged successfully.")
+                return target_ids
+            else:
+                self._active_trajectories.pop(trajectory_id, None)
+                if trajectory_id not in self._unpurged_vectors:
+                    self._unpurged_vectors[trajectory_id] = []
+                self._unpurged_vectors[trajectory_id].extend(target_ids)
+                logger.error(f"Vector purge failed for trajectory [{trajectory_id}]. Preserved {len(target_ids)} vector ID(s) in unpurged quarantine for reconciliation.")
+                return []
 
     def get_staged_count(self, trajectory_id: str) -> int:
         """Returns the current count of quarantined vectors for a given trajectory."""
