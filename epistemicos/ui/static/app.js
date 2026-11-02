@@ -2475,11 +2475,19 @@ document.addEventListener('DOMContentLoaded', () => {
       const abl = data.ablation_table || {};
       const ablData = abl.available ? abl.data : null;
 
-      // 1. Baseline Performance Table
+      // 1. Baseline Performance Visualizations & Table
+      const baselines = (ablData && ablData.baselines && typeof ablData.baselines === 'object') ? ablData.baselines : null;
+
+      // Render Baseline Performance Chart (Grouped Bars: Precision, Recall, FPR, FNR)
+      this.renderBaselinePerformanceChart(baselines, abl);
+
+      // Render Compute Efficiency Chart (Latency ms vs Tokens)
+      this.renderEfficiencyChart(baselines, abl);
+
       const baselinesTbody = document.getElementById('benchmark-baselines-tbody');
       if (baselinesTbody) {
         baselinesTbody.innerHTML = '';
-        if (!ablData || !ablData.baselines || typeof ablData.baselines !== 'object' || Object.keys(ablData.baselines).length === 0) {
+        if (!baselines || Object.keys(baselines).length === 0) {
           const tr = document.createElement('tr');
           const td = document.createElement('td');
           td.colSpan = 10;
@@ -2488,7 +2496,6 @@ document.addEventListener('DOMContentLoaded', () => {
           tr.appendChild(td);
           baselinesTbody.appendChild(tr);
         } else {
-          const baselines = ablData.baselines;
           Object.keys(baselines).forEach(bName => {
             const b = baselines[bName] || {};
             const cm = b.confusion_matrix;
@@ -2653,10 +2660,14 @@ document.addEventListener('DOMContentLoaded', () => {
       }
 
       // 3. Threshold Sensitivity Analysis
+      const ta = (ablData && ablData.threshold_ablations && typeof ablData.threshold_ablations === 'object') ? ablData.threshold_ablations : null;
+
+      // Render Threshold Sensitivity Chart (Precision & Recall curves across Z-thresholds)
+      this.renderThresholdSensitivityChart(ta, abl);
+
       const thresholdsTbody = document.getElementById('benchmark-thresholds-tbody');
       if (thresholdsTbody) {
         thresholdsTbody.innerHTML = '';
-        const ta = ablData?.threshold_ablations;
 
         if (!ta || typeof ta !== 'object' || Object.keys(ta).length === 0) {
           const tr = document.createElement('tr');
@@ -2720,6 +2731,729 @@ document.addEventListener('DOMContentLoaded', () => {
           });
         }
       }
+    },
+
+    // -------------------------------------------------------------------------
+    // Workbench Visualizations (Accessible Native SVG Charts)
+    // -------------------------------------------------------------------------
+    renderBaselinePerformanceChart(baselines, ablInfo) {
+      const container = document.getElementById('benchmark-baselines-chart-viewport');
+      const takeawayElem = document.getElementById('benchmark-baselines-chart-takeaway');
+      if (!container) return;
+      container.innerHTML = '';
+
+      if (!baselines || typeof baselines !== 'object' || Object.keys(baselines).length === 0) {
+        const msg = document.createElement('div');
+        msg.className = 'chart-empty-msg';
+        msg.textContent = (ablInfo && ablInfo.error) ? ablInfo.error : 'Baseline condition metrics unavailable for visualization.';
+        container.appendChild(msg);
+        if (takeawayElem) {
+          takeawayElem.textContent = 'Baseline condition metrics unavailable for comparative evaluation.';
+        }
+        return;
+      }
+
+      const baselineNames = Object.keys(baselines);
+      if (baselineNames.length === 0) {
+        const msg = document.createElement('div');
+        msg.className = 'chart-empty-msg';
+        msg.textContent = 'No baseline conditions found in artifact.';
+        container.appendChild(msg);
+        if (takeawayElem) {
+          takeawayElem.textContent = 'No baseline conditions found in artifact.';
+        }
+        return;
+      }
+
+      // Dynamic takeaway text: inspect valid precision measurements
+      if (takeawayElem) {
+        const precisionEntries = [];
+        baselineNames.forEach(bName => {
+          const b = baselines[bName] || {};
+          const val = b.precision_pct;
+          if (typeof val === 'number' && Number.isFinite(val) && val >= 0 && val <= 100) {
+            precisionEntries.push({ name: bName, val });
+          }
+        });
+
+        if (precisionEntries.length > 0) {
+          let maxVal = -1;
+          precisionEntries.forEach(e => {
+            if (e.val > maxVal) maxVal = e.val;
+          });
+          const topConditions = precisionEntries.filter(e => Math.abs(e.val - maxVal) < 1e-6);
+          const topNames = topConditions.map(e => e.name).join(', ');
+          takeawayElem.textContent = `Highest recorded precision in evaluated artifact: ${topNames} (${maxVal}%). Compare false-positive vs false-negative trade-offs in the table below.`;
+        } else {
+          takeawayElem.textContent = 'Compares diagnostic and security performance across baseline conditions. Visual bars represent recorded percentages (0–100%); refer to the table below for sample counts and exact values.';
+        }
+      }
+
+      // Metric series to compare: Precision, Recall, FPR, FNR
+      const seriesDefs = [
+        { key: 'precision_pct', label: 'Precision', color: 'var(--accent-interactive, #B69AFF)', stroke: '#B69AFF', pattern: 'solid' },
+        { key: 'recall_pct', label: 'Recall', color: 'var(--accent-primary, #64DED9)', stroke: '#64DED9', pattern: 'dashed' },
+        { key: 'false_positive_rate_pct', label: 'FPR', color: 'var(--status-halted-border, #E5B567)', stroke: '#E5B567', pattern: 'dotted' },
+        { key: 'false_negative_rate_pct', label: 'FNR', color: 'var(--accent-secondary, #FF83B8)', stroke: '#FF83B8', pattern: 'solid' }
+      ];
+
+      // Layout geometry for grouped bar chart
+      const svgNS = 'http://www.w3.org/2000/svg';
+      const labelWidth = 170;
+      const rightPadding = 50;
+      const chartWidth = 780;
+      const plotWidth = chartWidth - labelWidth - rightPadding;
+
+      const groupPadding = 18;
+      const barHeight = 11;
+      const barGap = 3;
+      const groupHeight = (seriesDefs.length * barHeight) + ((seriesDefs.length - 1) * barGap);
+      const topPadding = 30;
+      const bottomPadding = 35;
+      const chartHeight = topPadding + (baselineNames.length * (groupHeight + groupPadding)) + bottomPadding;
+
+      const svg = document.createElementNS(svgNS, 'svg');
+      svg.setAttribute('viewBox', `0 0 ${chartWidth} ${chartHeight}`);
+      svg.setAttribute('width', '100%');
+      svg.setAttribute('height', 'auto');
+      svg.setAttribute('role', 'img');
+      svg.setAttribute('aria-hidden', 'true');
+      svg.style.fontFamily = 'var(--font-mono, monospace)';
+
+      // Background grid lines (0%, 25%, 50%, 75%, 100%)
+      const ticks = [0, 25, 50, 75, 100];
+      ticks.forEach(tick => {
+        const x = labelWidth + (tick / 100) * plotWidth;
+
+        // Grid line
+        const gridLine = document.createElementNS(svgNS, 'line');
+        gridLine.setAttribute('x1', String(x));
+        gridLine.setAttribute('y1', String(topPadding - 5));
+        gridLine.setAttribute('x2', String(x));
+        gridLine.setAttribute('y2', String(chartHeight - bottomPadding + 5));
+        gridLine.setAttribute('stroke', 'rgba(255, 255, 255, 0.08)');
+        gridLine.setAttribute('stroke-dasharray', tick === 0 || tick === 100 ? 'none' : '3,3');
+        svg.appendChild(gridLine);
+
+        // Axis label
+        const axisText = document.createElementNS(svgNS, 'text');
+        axisText.setAttribute('x', String(x));
+        axisText.setAttribute('y', String(chartHeight - bottomPadding + 20));
+        axisText.setAttribute('text-anchor', 'middle');
+        axisText.setAttribute('fill', 'var(--text-muted, #9889B8)');
+        axisText.setAttribute('font-size', '10');
+        axisText.textContent = `${tick}%`;
+        svg.appendChild(axisText);
+      });
+
+      // Axis title
+      const axisTitle = document.createElementNS(svgNS, 'text');
+      axisTitle.setAttribute('x', String(labelWidth + plotWidth / 2));
+      axisTitle.setAttribute('y', String(chartHeight - 6));
+      axisTitle.setAttribute('text-anchor', 'middle');
+      axisTitle.setAttribute('fill', 'var(--text-muted, #9889B8)');
+      axisTitle.setAttribute('font-size', '10');
+      axisTitle.textContent = 'Measured Rate (%)';
+      svg.appendChild(axisTitle);
+
+      // Render baseline groups
+      baselineNames.forEach((bName, groupIdx) => {
+        const b = baselines[bName] || {};
+        const groupY = topPadding + groupIdx * (groupHeight + groupPadding);
+
+        // Baseline name label
+        const nameText = document.createElementNS(svgNS, 'text');
+        nameText.setAttribute('x', String(labelWidth - 10));
+        nameText.setAttribute('y', String(groupY + groupHeight / 2 + 4));
+        nameText.setAttribute('text-anchor', 'end');
+        nameText.setAttribute('fill', 'var(--text-main, #E2DEED)');
+        nameText.setAttribute('font-size', '11');
+        nameText.setAttribute('font-weight', '600');
+        nameText.textContent = bName.length > 22 ? bName.slice(0, 20) + '…' : bName;
+        svg.appendChild(nameText);
+
+        // Render each metric bar in the group
+        seriesDefs.forEach((series, sIdx) => {
+          const barY = groupY + sIdx * (barHeight + barGap);
+          const rawVal = b[series.key];
+
+          const isFiniteNum = typeof rawVal === 'number' && Number.isFinite(rawVal);
+          const isValidPct = isFiniteNum && rawVal >= 0 && rawVal <= 100;
+          const isNA = rawVal === 'N/A';
+
+          if (isValidPct) {
+            // Legitimate percentage in 0-100 range.
+            // A genuine 0% renders zero width. No artificial 2px minimum width.
+            const barW = (rawVal / 100) * plotWidth;
+
+            if (barW > 0) {
+              const rect = document.createElementNS(svgNS, 'rect');
+              rect.setAttribute('x', String(labelWidth));
+              rect.setAttribute('y', String(barY));
+              rect.setAttribute('width', String(barW));
+              rect.setAttribute('height', String(barHeight));
+              rect.setAttribute('fill', series.color);
+              rect.setAttribute('rx', '2');
+              rect.setAttribute('data-baseline', bName);
+              rect.setAttribute('data-metric', series.key);
+              rect.setAttribute('data-value', String(rawVal));
+              svg.appendChild(rect);
+            }
+
+            // Numerical label next to bar (retained even for genuine 0%)
+            const valText = document.createElementNS(svgNS, 'text');
+            valText.setAttribute('x', String(labelWidth + barW + 5));
+            valText.setAttribute('y', String(barY + barHeight - 2));
+            valText.setAttribute('fill', 'var(--text-muted, #9889B8)');
+            valText.setAttribute('font-size', '9');
+            valText.setAttribute('data-baseline', bName);
+            valText.setAttribute('data-metric', series.key);
+            valText.setAttribute('data-value', String(rawVal));
+            valText.textContent = `${rawVal}%`;
+            svg.appendChild(valText);
+          } else {
+            // Values outside [0, 100], non-finite, null, undefined, or 'N/A':
+            // Render NO bar and display explicit indicator. Do not clamp or fabricate 0.
+            const statusLabel = isNA ? 'N/A' : (isFiniteNum ? 'INVALID' : 'UNAVAILABLE');
+            const missingText = document.createElementNS(svgNS, 'text');
+            missingText.setAttribute('x', String(labelWidth + 6));
+            missingText.setAttribute('y', String(barY + barHeight - 2));
+            missingText.setAttribute('fill', 'var(--text-dim, #685A84)');
+            missingText.setAttribute('font-size', '9');
+            missingText.setAttribute('font-style', 'italic');
+            missingText.setAttribute('data-baseline', bName);
+            missingText.setAttribute('data-metric', series.key);
+            missingText.setAttribute('data-value', String(rawVal));
+            missingText.textContent = statusLabel;
+            svg.appendChild(missingText);
+          }
+        });
+
+        // Group separator line (except last)
+        if (groupIdx < baselineNames.length - 1) {
+          const sep = document.createElementNS(svgNS, 'line');
+          sep.setAttribute('x1', String(labelWidth - 30));
+          sep.setAttribute('y1', String(groupY + groupHeight + groupPadding / 2));
+          sep.setAttribute('x2', String(chartWidth - 20));
+          sep.setAttribute('y2', String(groupY + groupHeight + groupPadding / 2));
+          sep.setAttribute('stroke', 'rgba(255, 255, 255, 0.05)');
+          svg.appendChild(sep);
+        }
+      });
+
+      container.appendChild(svg);
+    },
+
+    renderThresholdSensitivityChart(thresholdAblations, ablInfo) {
+      const container = document.getElementById('benchmark-thresholds-chart-viewport');
+      const takeawayElem = document.getElementById('benchmark-thresholds-chart-takeaway');
+      if (!container) return;
+      container.innerHTML = '';
+
+      if (!thresholdAblations || typeof thresholdAblations !== 'object' || Object.keys(thresholdAblations).length === 0) {
+        const msg = document.createElement('div');
+        msg.className = 'chart-empty-msg';
+        msg.textContent = (ablInfo && ablInfo.error) ? ablInfo.error : 'Threshold sensitivity data unavailable for visualization.';
+        container.appendChild(msg);
+        if (takeawayElem) {
+          takeawayElem.textContent = 'Threshold sensitivity data unavailable for visualization.';
+        }
+        return;
+      }
+
+      // Extract and validate threshold items
+      const items = [];
+      Object.keys(thresholdAblations).forEach(k => {
+        const obj = thresholdAblations[k] || {};
+        let zVal = null;
+
+        // If explicit 'z_threshold' property exists in the object
+        if (Object.prototype.hasOwnProperty.call(obj, 'z_threshold') && obj.z_threshold !== undefined && obj.z_threshold !== null) {
+          const rawZ = obj.z_threshold;
+          if (typeof rawZ === 'number' && Number.isFinite(rawZ)) {
+            zVal = rawZ;
+          } else if (typeof rawZ === 'string' && rawZ.trim() !== '' && !Number.isNaN(Number(rawZ.trim()))) {
+            zVal = Number(rawZ.trim());
+          } else {
+            // Explicit but invalid z_threshold; do NOT infer from malformed key!
+            return;
+          }
+        } else {
+          // No explicit z_threshold; carefully inspect key for integer, decimal, or negative number
+          const trimmedKey = k.trim();
+          const match = trimmedKey.match(/[-+]?\d+(?:\.\d+)?/);
+          if (match) {
+            const parsed = parseFloat(match[0]);
+            if (Number.isFinite(parsed)) {
+              zVal = parsed;
+            }
+          }
+        }
+
+        if (zVal === null || !Number.isFinite(zVal)) {
+          return;
+        }
+
+        // Validate precision: must be finite number in [0, 100]
+        let prec = null;
+        if (typeof obj.precision === 'number' && Number.isFinite(obj.precision) && obj.precision >= 0 && obj.precision <= 100) {
+          prec = obj.precision;
+        }
+
+        // Validate recall: must be finite number in [0, 100]
+        let rec = null;
+        if (typeof obj.recall === 'number' && Number.isFinite(obj.recall) && obj.recall >= 0 && obj.recall <= 100) {
+          rec = obj.recall;
+        }
+
+        items.push({
+          key: k,
+          z: zVal,
+          precision: prec,
+          recall: rec,
+          rawPrecision: obj.precision,
+          rawRecall: obj.recall
+        });
+      });
+
+      // Strict numerical ascending sort
+      items.sort((a, b) => a.z - b.z);
+
+      if (items.length === 0) {
+        const msg = document.createElement('div');
+        msg.className = 'chart-empty-msg';
+        msg.textContent = 'No valid numerical threshold observations recorded.';
+        container.appendChild(msg);
+        if (takeawayElem) {
+          takeawayElem.textContent = 'No valid numerical threshold observations recorded.';
+        }
+        return;
+      }
+
+      // Dynamic takeaway text
+      if (takeawayElem) {
+        const minZ = items[0].z;
+        const maxZ = items[items.length - 1].z;
+        const precCount = items.filter(it => it.precision !== null).length;
+        const recCount = items.filter(it => it.recall !== null).length;
+
+        if (items.length === 1) {
+          takeawayElem.textContent = `Single threshold observation recorded at Z=${minZ}. Multiple threshold observations are required to characterize sensitivity curves.`;
+        } else if (precCount === 0 && recCount === 0) {
+          takeawayElem.textContent = `Recorded thresholds range from Z=${minZ} to Z=${maxZ}; precision and recall metrics are unavailable in the artifact.`;
+        } else {
+          takeawayElem.textContent = `Sensitivity evaluated across Z-thresholds from ${minZ} to ${maxZ} (${items.length} observations). Discontinuous segments reflect missing observations.`;
+        }
+      }
+
+      const svgNS = 'http://www.w3.org/2000/svg';
+      const chartWidth = 460;
+      const chartHeight = 220;
+      const padLeft = 45;
+      const padRight = 30;
+      const padTop = 20;
+      const padBottom = 40;
+
+      const plotWidth = chartWidth - padLeft - padRight;
+      const plotHeight = chartHeight - padTop - padBottom;
+
+      const svg = document.createElementNS(svgNS, 'svg');
+      svg.setAttribute('viewBox', `0 0 ${chartWidth} ${chartHeight}`);
+      svg.setAttribute('width', '100%');
+      svg.setAttribute('height', 'auto');
+      svg.setAttribute('role', 'img');
+      svg.setAttribute('aria-hidden', 'true');
+      svg.style.fontFamily = 'var(--font-mono, monospace)';
+
+      // Y-axis grid lines (0%, 25%, 50%, 75%, 100%)
+      const yTicks = [0, 25, 50, 75, 100];
+      yTicks.forEach(tick => {
+        const y = padTop + plotHeight - (tick / 100) * plotHeight;
+
+        const gridLine = document.createElementNS(svgNS, 'line');
+        gridLine.setAttribute('x1', String(padLeft));
+        gridLine.setAttribute('y1', String(y));
+        gridLine.setAttribute('x2', String(chartWidth - padRight));
+        gridLine.setAttribute('y2', String(y));
+        gridLine.setAttribute('stroke', 'rgba(255, 255, 255, 0.08)');
+        gridLine.setAttribute('stroke-dasharray', tick === 0 || tick === 100 ? 'none' : '3,3');
+        svg.appendChild(gridLine);
+
+        const text = document.createElementNS(svgNS, 'text');
+        text.setAttribute('x', String(padLeft - 6));
+        text.setAttribute('y', String(y + 3));
+        text.setAttribute('text-anchor', 'end');
+        text.setAttribute('fill', 'var(--text-muted, #9889B8)');
+        text.setAttribute('font-size', '9');
+        text.textContent = `${tick}%`;
+        svg.appendChild(text);
+      });
+
+      // Horizontal coordinate calculation: linearly proportional to actual numerical z_threshold
+      const minZ = items[0].z;
+      const maxZ = items[items.length - 1].z;
+      const zRange = maxZ - minZ;
+
+      const getX = (z) => {
+        if (zRange === 0 || items.length === 1) {
+          return padLeft + plotWidth / 2;
+        }
+        return padLeft + ((z - minZ) / zRange) * plotWidth;
+      };
+
+      // X-axis ticks and labels at actual threshold locations
+      items.forEach(item => {
+        const x = getX(item.z);
+
+        const tickLine = document.createElementNS(svgNS, 'line');
+        tickLine.setAttribute('x1', String(x));
+        tickLine.setAttribute('y1', String(padTop + plotHeight));
+        tickLine.setAttribute('x2', String(x));
+        tickLine.setAttribute('y2', String(padTop + plotHeight + 4));
+        tickLine.setAttribute('stroke', 'var(--border-default, #44365F)');
+        svg.appendChild(tickLine);
+
+        const label = document.createElementNS(svgNS, 'text');
+        label.setAttribute('x', String(x));
+        label.setAttribute('y', String(padTop + plotHeight + 16));
+        label.setAttribute('text-anchor', 'middle');
+        label.setAttribute('fill', 'var(--text-main, #E2DEED)');
+        label.setAttribute('font-size', '10');
+        label.textContent = `Z=${item.z}`;
+        svg.appendChild(label);
+      });
+
+      // Axis Titles
+      const xTitle = document.createElementNS(svgNS, 'text');
+      xTitle.setAttribute('x', String(padLeft + plotWidth / 2));
+      xTitle.setAttribute('y', String(chartHeight - 6));
+      xTitle.setAttribute('text-anchor', 'middle');
+      xTitle.setAttribute('fill', 'var(--text-muted, #9889B8)');
+      xTitle.setAttribute('font-size', '9');
+      xTitle.textContent = 'Ablation Threshold (Z)';
+      svg.appendChild(xTitle);
+
+      // Build contiguous segments for Precision: missing observations must break lines!
+      const precSegments = [];
+      let currentPrecSeg = [];
+
+      items.forEach(item => {
+        if (item.precision !== null) {
+          const x = getX(item.z);
+          const y = padTop + plotHeight - (item.precision / 100) * plotHeight;
+          currentPrecSeg.push({ x, y, val: item.precision, z: item.z });
+        } else {
+          if (currentPrecSeg.length > 0) {
+            precSegments.push(currentPrecSeg);
+            currentPrecSeg = [];
+          }
+        }
+      });
+      if (currentPrecSeg.length > 0) {
+        precSegments.push(currentPrecSeg);
+      }
+
+      // Build contiguous segments for Recall: missing observations must break lines!
+      const recSegments = [];
+      let currentRecSeg = [];
+
+      items.forEach(item => {
+        if (item.recall !== null) {
+          const x = getX(item.z);
+          const y = padTop + plotHeight - (item.recall / 100) * plotHeight;
+          currentRecSeg.push({ x, y, val: item.recall, z: item.z });
+        } else {
+          if (currentRecSeg.length > 0) {
+            recSegments.push(currentRecSeg);
+            currentRecSeg = [];
+          }
+        }
+      });
+      if (currentRecSeg.length > 0) {
+        recSegments.push(currentRecSeg);
+      }
+
+      // Render Precision polylines for each contiguous segment
+      precSegments.forEach(seg => {
+        if (seg.length > 1) {
+          const path = document.createElementNS(svgNS, 'polyline');
+          path.setAttribute('points', seg.map(p => `${p.x},${p.y}`).join(' '));
+          path.setAttribute('fill', 'none');
+          path.setAttribute('stroke', 'var(--accent-interactive, #B69AFF)');
+          path.setAttribute('stroke-width', '2');
+          path.setAttribute('data-series', 'precision');
+          svg.appendChild(path);
+        }
+      });
+
+      // Render Recall polylines for each contiguous segment
+      recSegments.forEach(seg => {
+        if (seg.length > 1) {
+          const path = document.createElementNS(svgNS, 'polyline');
+          path.setAttribute('points', seg.map(p => `${p.x},${p.y}`).join(' '));
+          path.setAttribute('fill', 'none');
+          path.setAttribute('stroke', 'var(--accent-primary, #64DED9)');
+          path.setAttribute('stroke-width', '2');
+          path.setAttribute('stroke-dasharray', '5,3');
+          path.setAttribute('data-series', 'recall');
+          svg.appendChild(path);
+        }
+      });
+
+      // Render Precision Markers (Circles) for all valid precision points
+      precSegments.forEach(seg => {
+        seg.forEach(p => {
+          const circle = document.createElementNS(svgNS, 'circle');
+          circle.setAttribute('cx', String(p.x));
+          circle.setAttribute('cy', String(p.y));
+          circle.setAttribute('r', '4');
+          circle.setAttribute('fill', 'var(--accent-interactive, #B69AFF)');
+          circle.setAttribute('stroke', 'var(--bg-card, #1D1833)');
+          circle.setAttribute('stroke-width', '1.5');
+          circle.setAttribute('data-threshold', String(p.z));
+          circle.setAttribute('data-series', 'precision');
+          circle.setAttribute('data-value', String(p.val));
+          svg.appendChild(circle);
+
+          const valText = document.createElementNS(svgNS, 'text');
+          valText.setAttribute('x', String(p.x));
+          valText.setAttribute('y', String(p.y - 7));
+          valText.setAttribute('text-anchor', 'middle');
+          valText.setAttribute('fill', 'var(--accent-interactive, #B69AFF)');
+          valText.setAttribute('font-size', '8.5');
+          valText.setAttribute('data-threshold', String(p.z));
+          valText.setAttribute('data-series', 'precision');
+          valText.setAttribute('data-value', String(p.val));
+          valText.textContent = `${p.val}%`;
+          svg.appendChild(valText);
+        });
+      });
+
+      // Render Recall Markers (Squares) for all valid recall points
+      recSegments.forEach(seg => {
+        seg.forEach(p => {
+          const rect = document.createElementNS(svgNS, 'rect');
+          rect.setAttribute('x', String(p.x - 3.5));
+          rect.setAttribute('y', String(p.y - 3.5));
+          rect.setAttribute('width', '7');
+          rect.setAttribute('height', '7');
+          rect.setAttribute('fill', 'var(--accent-primary, #64DED9)');
+          rect.setAttribute('stroke', 'var(--bg-card, #1D1833)');
+          rect.setAttribute('stroke-width', '1.5');
+          rect.setAttribute('data-threshold', String(p.z));
+          rect.setAttribute('data-series', 'recall');
+          rect.setAttribute('data-value', String(p.val));
+          svg.appendChild(rect);
+
+          const valText = document.createElementNS(svgNS, 'text');
+          valText.setAttribute('x', String(p.x));
+          valText.setAttribute('y', String(p.y + 14));
+          valText.setAttribute('text-anchor', 'middle');
+          valText.setAttribute('fill', 'var(--accent-primary, #64DED9)');
+          valText.setAttribute('font-size', '8.5');
+          valText.setAttribute('data-threshold', String(p.z));
+          valText.setAttribute('data-series', 'recall');
+          valText.setAttribute('data-value', String(p.val));
+          valText.textContent = `${p.val}%`;
+          svg.appendChild(valText);
+        });
+      });
+
+      container.appendChild(svg);
+    },
+
+    renderEfficiencyChart(baselines, ablInfo) {
+      const container = document.getElementById('benchmark-efficiency-chart-viewport');
+      const takeawayElem = document.getElementById('benchmark-efficiency-chart-takeaway');
+      if (!container) return;
+      container.innerHTML = '';
+
+      if (!baselines || typeof baselines !== 'object' || Object.keys(baselines).length === 0) {
+        const msg = document.createElement('div');
+        msg.className = 'chart-empty-msg';
+        msg.textContent = (ablInfo && ablInfo.error) ? ablInfo.error : 'Efficiency metrics unavailable for visualization.';
+        container.appendChild(msg);
+        if (takeawayElem) {
+          takeawayElem.textContent = 'Efficiency metrics unavailable for visualization.';
+        }
+        return;
+      }
+
+      // Collect points with valid, finite latency and token counts (>= 0)
+      const points = [];
+      let maxLatency = 0;
+      let maxTokens = 0;
+
+      Object.keys(baselines).forEach(bName => {
+        const b = baselines[bName] || {};
+        const lat = b.avg_latency_ms;
+        const tok = b.total_tokens_spent;
+
+        const latValid = typeof lat === 'number' && Number.isFinite(lat) && lat >= 0;
+        const tokValid = typeof tok === 'number' && Number.isFinite(tok) && tok >= 0;
+
+        if (latValid && tokValid) {
+          points.push({ name: bName, latency: lat, tokens: tok });
+          if (lat > maxLatency) maxLatency = lat;
+          if (tok > maxTokens) maxTokens = tok;
+        }
+      });
+
+      if (points.length === 0) {
+        const msg = document.createElement('div');
+        msg.className = 'chart-empty-msg';
+        msg.textContent = 'No baseline condition contains both valid latency and token metrics.';
+        container.appendChild(msg);
+        if (takeawayElem) {
+          takeawayElem.textContent = 'No baseline condition contains both valid latency and token metrics.';
+        }
+        return;
+      }
+
+      // Dynamic takeaway: identify baseline with lowest measured latency among valid ones
+      if (takeawayElem) {
+        let minLat = Infinity;
+        points.forEach(pt => {
+          if (pt.latency < minLat) minLat = pt.latency;
+        });
+        const fastestBaselines = points.filter(pt => Math.abs(pt.latency - minLat) < 1e-6);
+        const fastestNames = fastestBaselines.map(pt => pt.name).join(', ');
+        takeawayElem.textContent = `Lowest measured latency: ${fastestNames} (${minLat} ms, ${fastestBaselines[0].tokens} tokens). Visualizes latency against token consumption across conditions.`;
+      }
+
+      // Establish sensible chart domains with padding
+      const maxLatDomain = maxLatency > 0 ? maxLatency * 1.25 : 10;
+      const maxTokDomain = maxTokens > 0 ? maxTokens * 1.2 : 1000;
+
+      const svgNS = 'http://www.w3.org/2000/svg';
+      const chartWidth = 780;
+      const chartHeight = 260;
+      const padLeft = 70;
+      const padRight = 140; // Room for baseline label callouts
+      const padTop = 25;
+      const padBottom = 45;
+
+      const plotWidth = chartWidth - padLeft - padRight;
+      const plotHeight = chartHeight - padTop - padBottom;
+
+      const svg = document.createElementNS(svgNS, 'svg');
+      svg.setAttribute('viewBox', `0 0 ${chartWidth} ${chartHeight}`);
+      svg.setAttribute('width', '100%');
+      svg.setAttribute('height', 'auto');
+      svg.setAttribute('role', 'img');
+      svg.setAttribute('aria-hidden', 'true');
+      svg.style.fontFamily = 'var(--font-mono, monospace)';
+
+      // X-axis: Total Tokens Spent
+      const numXTicks = 4;
+      for (let i = 0; i <= numXTicks; i++) {
+        const val = Math.round((i / numXTicks) * maxTokDomain);
+        const x = padLeft + (i / numXTicks) * plotWidth;
+
+        const gridLine = document.createElementNS(svgNS, 'line');
+        gridLine.setAttribute('x1', String(x));
+        gridLine.setAttribute('y1', String(padTop));
+        gridLine.setAttribute('x2', String(x));
+        gridLine.setAttribute('y2', String(padTop + plotHeight));
+        gridLine.setAttribute('stroke', 'rgba(255, 255, 255, 0.08)');
+        gridLine.setAttribute('stroke-dasharray', i === 0 ? 'none' : '3,3');
+        svg.appendChild(gridLine);
+
+        const text = document.createElementNS(svgNS, 'text');
+        text.setAttribute('x', String(x));
+        text.setAttribute('y', String(padTop + plotHeight + 16));
+        text.setAttribute('text-anchor', 'middle');
+        text.setAttribute('fill', 'var(--text-muted, #9889B8)');
+        text.setAttribute('font-size', '9');
+        text.textContent = String(val);
+        svg.appendChild(text);
+      }
+
+      // X-axis Title
+      const xTitle = document.createElementNS(svgNS, 'text');
+      xTitle.setAttribute('x', String(padLeft + plotWidth / 2));
+      xTitle.setAttribute('y', String(chartHeight - 6));
+      xTitle.setAttribute('text-anchor', 'middle');
+      xTitle.setAttribute('fill', 'var(--text-muted, #9889B8)');
+      xTitle.setAttribute('font-size', '10');
+      xTitle.textContent = 'Total Tokens Consumed (Tokens)';
+      svg.appendChild(xTitle);
+
+      // Y-axis: Average Latency (ms)
+      const numYTicks = 4;
+      for (let i = 0; i <= numYTicks; i++) {
+        const val = ((i / numYTicks) * maxLatDomain).toFixed(1);
+        const y = padTop + plotHeight - (i / numYTicks) * plotHeight;
+
+        const gridLine = document.createElementNS(svgNS, 'line');
+        gridLine.setAttribute('x1', String(padLeft));
+        gridLine.setAttribute('y1', String(y));
+        gridLine.setAttribute('x2', String(padLeft + plotWidth));
+        gridLine.setAttribute('y2', String(y));
+        gridLine.setAttribute('stroke', 'rgba(255, 255, 255, 0.08)');
+        gridLine.setAttribute('stroke-dasharray', i === 0 ? 'none' : '3,3');
+        svg.appendChild(gridLine);
+
+        const text = document.createElementNS(svgNS, 'text');
+        text.setAttribute('x', String(padLeft - 8));
+        text.setAttribute('y', String(y + 3));
+        text.setAttribute('text-anchor', 'end');
+        text.setAttribute('fill', 'var(--text-muted, #9889B8)');
+        text.setAttribute('font-size', '9');
+        text.textContent = `${val} ms`;
+        svg.appendChild(text);
+      }
+
+      // Y-axis Title
+      const yTitle = document.createElementNS(svgNS, 'text');
+      yTitle.setAttribute('transform', `rotate(-90 18 ${padTop + plotHeight / 2})`);
+      yTitle.setAttribute('x', '18');
+      yTitle.setAttribute('y', String(padTop + plotHeight / 2));
+      yTitle.setAttribute('text-anchor', 'middle');
+      yTitle.setAttribute('fill', 'var(--text-muted, #9889B8)');
+      yTitle.setAttribute('font-size', '10');
+      yTitle.textContent = 'Avg Latency (ms)';
+      svg.appendChild(yTitle);
+
+      // Plot Points & Labels
+      points.forEach((pt, pIdx) => {
+        const cx = padLeft + (pt.tokens / maxTokDomain) * plotWidth;
+        const cy = padTop + plotHeight - (pt.latency / maxLatDomain) * plotHeight;
+
+        // Data point marker
+        const circle = document.createElementNS(svgNS, 'circle');
+        circle.setAttribute('cx', String(cx));
+        circle.setAttribute('cy', String(cy));
+        circle.setAttribute('r', '5');
+        circle.setAttribute('fill', 'var(--accent-primary, #64DED9)');
+        circle.setAttribute('stroke', 'var(--bg-main, #120F24)');
+        circle.setAttribute('stroke-width', '1.5');
+        circle.setAttribute('data-baseline', pt.name);
+        circle.setAttribute('data-latency', String(pt.latency));
+        circle.setAttribute('data-tokens', String(pt.tokens));
+        svg.appendChild(circle);
+
+        // Data point callout text with anti-collision offsets
+        const label = document.createElementNS(svgNS, 'text');
+        const placeLeft = (pIdx % 2 === 1) || (cx > padLeft + plotWidth * 0.75);
+        const lx = placeLeft ? cx - 8 : cx + 8;
+        const yOffsets = [-8, 14, -18, 22];
+        const ly = cy + yOffsets[pIdx % yOffsets.length];
+
+        label.setAttribute('x', String(lx));
+        label.setAttribute('y', String(ly));
+        label.setAttribute('text-anchor', placeLeft ? 'end' : 'start');
+        label.setAttribute('fill', 'var(--text-main, #E2DEED)');
+        label.setAttribute('font-size', '9');
+        label.setAttribute('font-weight', '500');
+        label.setAttribute('data-baseline', pt.name);
+        label.setAttribute('data-latency', String(pt.latency));
+        label.setAttribute('data-tokens', String(pt.tokens));
+        label.textContent = `${pt.name} (${pt.latency}ms, ${pt.tokens} tok)`;
+        svg.appendChild(label);
+      });
+
+      container.appendChild(svg);
     },
 
     // -------------------------------------------------------------------------
@@ -3154,5 +3888,6 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   };
 
+  window.ObservatoryApp = ObservatoryApp;
   ObservatoryApp.init();
 });
