@@ -35,6 +35,11 @@ class EvidenceValidationResultStatus(str, Enum):
     UNAVAILABLE = "UNAVAILABLE"
 
 
+class AssuranceLevel(str, Enum):
+    FULL_AUTHENTICATED = "FULL_AUTHENTICATED"
+    REDUCED_ASSURANCE = "REDUCED_ASSURANCE"
+
+
 @dataclass
 class EvidenceValidationResult:
     """Explicit typed result of verifying an individual evidence record and its artifact bytes."""
@@ -44,6 +49,7 @@ class EvidenceValidationResult:
     reason: str = ""
     artifact_bytes_verified: bool = False
     evaluator_signature_verified: bool = False
+    assurance_level: AssuranceLevel = AssuranceLevel.FULL_AUTHENTICATED
 
 
 @dataclass
@@ -54,6 +60,7 @@ class ReleaseReadinessEvaluation:
     verified_evidence_records: List[VerificationEvidenceRecord] = field(default_factory=list)
     accepted_evidence_digests: List[str] = field(default_factory=list)
     validation_results: List[EvidenceValidationResult] = field(default_factory=list)
+    effective_assurance_level: AssuranceLevel = AssuranceLevel.FULL_AUTHENTICATED
 
 
 class ReleaseGovernanceEngine:
@@ -61,12 +68,13 @@ class ReleaseGovernanceEngine:
     Subsystem responsible for Change & Release Governance:
     - Registers and hashes Release Manifests.
     - Associates and validates Verification Evidence (both record integrity and artifact byte authenticity).
-    - Verifies evaluator signatures against trusted identity providers.
+    - Verifies evaluator signatures against trusted identity providers (mandatory by default).
     - Evaluates Release Candidates against required evidence with explicit typed outcomes.
     - Verifies Release Approvals against exact manifest digests using Ed25519 asymmetric verification.
+    - Enforces required evidence completeness at both readiness and approval verification boundaries.
     - Checks authoritative revocation registry (fail-closed against object mutation/resurrection).
     - Enforces policy version consistency between manifest and approval.
-    - Emits tamper-evident audit events with fail-closed audit semantics option.
+    - Emits tamper-evident audit events with fail-closed audit semantics (mandating configured audit trail).
     """
 
     def __init__(
@@ -76,7 +84,8 @@ class ReleaseGovernanceEngine:
         allowed_approver_principals: Optional[List[str]] = None,
         revocation_registry: Optional[ReleaseApprovalRevocationRegistry] = None,
         fail_closed_audit: bool = True,
-        require_artifact_bytes_verification: bool = True
+        require_artifact_bytes_verification: bool = True,
+        require_evaluator_signatures: bool = True
     ):
         self.principal_verifier = principal_verifier
         self.audit_trail = audit_trail
@@ -84,10 +93,13 @@ class ReleaseGovernanceEngine:
         self.revocation_registry = revocation_registry or ReleaseApprovalRevocationRegistry()
         self.fail_closed_audit = fail_closed_audit
         self.require_artifact_bytes_verification = require_artifact_bytes_verification
+        self.require_evaluator_signatures = require_evaluator_signatures
 
     def _log_event(self, level: AuditLogLevel, event_name: str, details: Dict[str, Any]):
-        """Logs audit event. If fail_closed_audit=True, raises RuntimeError on write failure."""
-        if self.audit_trail:
+        """Logs audit event. If fail_closed_audit=True, mandates audit_trail presence and raises RuntimeError on failure."""
+        if self.fail_closed_audit:
+            if not self.audit_trail:
+                raise RuntimeError(f"Audit log failure on mandatory event '{event_name}': fail_closed_audit=True but no audit_trail configured")
             try:
                 self.audit_trail.record_event(
                     event_type=level,
@@ -96,8 +108,18 @@ class ReleaseGovernanceEngine:
                     metadata=details
                 )
             except Exception as e:
-                if self.fail_closed_audit:
-                    raise RuntimeError(f"Audit log failure on mandatory event '{event_name}': {str(e)}") from e
+                raise RuntimeError(f"Audit log failure on mandatory event '{event_name}': {str(e)}") from e
+        else:
+            if self.audit_trail:
+                try:
+                    self.audit_trail.record_event(
+                        event_type=level,
+                        gate_name="ReleaseGovernanceEngine",
+                        reason=f"{event_name}: {details.get('reason', '')}",
+                        metadata=details
+                    )
+                except Exception:
+                    pass
 
     def verify_single_evidence(
         self,
@@ -164,26 +186,33 @@ class ReleaseGovernanceEngine:
                         )
                     artifact_verified = True
 
-        # 4. Evaluator signature verification if signature or issuer is present
+        # 4. Evaluator signature verification
         eval_sig_verified = False
-        if evidence.signature or evidence.evaluator_issuer:
+        if self.require_evaluator_signatures:
+            # Under default policy: evaluator signature and issuer are MANDATORY
+            if not evidence.signature and not evidence.evaluator_issuer:
+                return EvidenceValidationResult(
+                    evidence_id=ev_id,
+                    status=EvidenceValidationResultStatus.REJECTED,
+                    reason=f"Evidence '{ev_id}' rejected: evaluator signature and issuer are mandatory under default policy"
+                )
             if not evidence.signature:
                 return EvidenceValidationResult(
                     evidence_id=ev_id,
                     status=EvidenceValidationResultStatus.REJECTED,
-                    reason=f"Evidence '{ev_id}' declares evaluator_issuer but has no signature"
-                )
-            if not self.principal_verifier:
-                return EvidenceValidationResult(
-                    evidence_id=ev_id,
-                    status=EvidenceValidationResultStatus.REJECTED,
-                    reason=f"Evidence '{ev_id}' has evaluator signature but engine has no PrincipalVerifier"
+                    reason=f"Evidence '{ev_id}' rejected: missing evaluator signature"
                 )
             if not evidence.evaluator_issuer:
                 return EvidenceValidationResult(
                     evidence_id=ev_id,
                     status=EvidenceValidationResultStatus.REJECTED,
-                    reason=f"Evidence '{ev_id}' has signature but missing evaluator_issuer"
+                    reason=f"Evidence '{ev_id}' rejected: missing evaluator_issuer"
+                )
+            if not self.principal_verifier:
+                return EvidenceValidationResult(
+                    evidence_id=ev_id,
+                    status=EvidenceValidationResultStatus.REJECTED,
+                    reason=f"Evidence '{ev_id}' rejected: engine has no PrincipalVerifier to verify evaluator signature"
                 )
 
             trusted_pubkeys = getattr(self.principal_verifier, "_trusted_public_keys", {})
@@ -192,7 +221,7 @@ class ReleaseGovernanceEngine:
                 return EvidenceValidationResult(
                     evidence_id=ev_id,
                     status=EvidenceValidationResultStatus.REJECTED,
-                    reason=f"Evidence '{ev_id}' untrusted evaluator issuer '{evidence.evaluator_issuer}'"
+                    reason=f"Evidence '{ev_id}' rejected: untrusted evaluator issuer '{evidence.evaluator_issuer}'"
                 )
 
             try:
@@ -201,7 +230,7 @@ class ReleaseGovernanceEngine:
                 return EvidenceValidationResult(
                     evidence_id=ev_id,
                     status=EvidenceValidationResultStatus.REJECTED,
-                    reason=f"Evidence '{ev_id}' malformed signature encoding"
+                    reason=f"Evidence '{ev_id}' rejected: malformed signature encoding"
                 )
 
             payload = evidence.compute_signature_payload()
@@ -209,9 +238,63 @@ class ReleaseGovernanceEngine:
                 return EvidenceValidationResult(
                     evidence_id=ev_id,
                     status=EvidenceValidationResultStatus.REJECTED,
-                    reason=f"Evidence '{ev_id}' cryptographic evaluator signature verification failed"
+                    reason=f"Evidence '{ev_id}' rejected: cryptographic evaluator signature verification failed"
                 )
             eval_sig_verified = True
+        else:
+            # Explicit reduced-assurance mode: if signature/issuer provided, must still verify
+            if evidence.signature or evidence.evaluator_issuer:
+                if not evidence.signature:
+                    return EvidenceValidationResult(
+                        evidence_id=ev_id,
+                        status=EvidenceValidationResultStatus.REJECTED,
+                        reason=f"Evidence '{ev_id}' declares evaluator_issuer but has no signature"
+                    )
+                if not self.principal_verifier:
+                    return EvidenceValidationResult(
+                        evidence_id=ev_id,
+                        status=EvidenceValidationResultStatus.REJECTED,
+                        reason=f"Evidence '{ev_id}' has evaluator signature but engine has no PrincipalVerifier"
+                    )
+                if not evidence.evaluator_issuer:
+                    return EvidenceValidationResult(
+                        evidence_id=ev_id,
+                        status=EvidenceValidationResultStatus.REJECTED,
+                        reason=f"Evidence '{ev_id}' has signature but missing evaluator_issuer"
+                    )
+
+                trusted_pubkeys = getattr(self.principal_verifier, "_trusted_public_keys", {})
+                trusted_pubkey = trusted_pubkeys.get(evidence.evaluator_issuer)
+                if not trusted_pubkey:
+                    return EvidenceValidationResult(
+                        evidence_id=ev_id,
+                        status=EvidenceValidationResultStatus.REJECTED,
+                        reason=f"Evidence '{ev_id}' untrusted evaluator issuer '{evidence.evaluator_issuer}'"
+                    )
+
+                try:
+                    sig_bytes = bytes.fromhex(evidence.signature) if len(evidence.signature) == 128 else base64.b64decode(evidence.signature)
+                except Exception:
+                    return EvidenceValidationResult(
+                        evidence_id=ev_id,
+                        status=EvidenceValidationResultStatus.REJECTED,
+                        reason=f"Evidence '{ev_id}' malformed signature encoding"
+                    )
+
+                payload = evidence.compute_signature_payload()
+                if not verify_ed25519_signature(sig_bytes, payload, trusted_pubkey):
+                    return EvidenceValidationResult(
+                        evidence_id=ev_id,
+                        status=EvidenceValidationResultStatus.REJECTED,
+                        reason=f"Evidence '{ev_id}' cryptographic evaluator signature verification failed"
+                    )
+                eval_sig_verified = True
+
+        effective_level = (
+            AssuranceLevel.FULL_AUTHENTICATED
+            if (artifact_verified and eval_sig_verified)
+            else AssuranceLevel.REDUCED_ASSURANCE
+        )
 
         return EvidenceValidationResult(
             evidence_id=ev_id,
@@ -219,7 +302,8 @@ class ReleaseGovernanceEngine:
             evidence_digest=evidence.compute_evidence_digest(),
             reason="Verified successfully",
             artifact_bytes_verified=artifact_verified,
-            evaluator_signature_verified=eval_sig_verified
+            evaluator_signature_verified=eval_sig_verified,
+            assurance_level=effective_level
         )
 
     def evaluate_release_readiness(
@@ -280,8 +364,10 @@ class ReleaseGovernanceEngine:
         5. Policy version binding between approval and manifest.
         6. Mandatory evidence verification: every referenced evidence digest must correspond to an
            available record that passes verify_single_evidence (including artifact bytes & evaluator sigs).
-        7. Asymmetric Ed25519 signature verification via PrincipalVerifier.
-        8. Mandatory fail-closed audit event recording.
+        7. Required evidence completeness: approval must reference verified evidence satisfying EVERY
+           evidence type required by manifest.required_evidence_types. Unreferenced records do NOT count.
+        8. Asymmetric Ed25519 signature verification via PrincipalVerifier.
+        9. Mandatory fail-closed audit event recording.
         """
         manifest_digest = manifest.compute_manifest_digest()
 
@@ -377,28 +463,65 @@ class ReleaseGovernanceEngine:
             })
             return False, reason
 
-        # Check 7: Asymmetric Ed25519 cryptographic signature verification
+        # Check 7: Required evidence completeness at approval boundary
+        # The signed approval MUST reference verified evidence satisfying every type in manifest.required_evidence_types
+        referenced_verified_records = [
+            verified_digests_map[d] for d in approval_digests if d in verified_digests_map
+        ]
+        referenced_types = {rec.evidence_type for rec in referenced_verified_records}
+        missing_required_types = set(manifest.required_evidence_types) - referenced_types
+        if missing_required_types:
+            reason = f"Release approval rejected: Approval omits required evidence category(ies): {sorted(list(missing_required_types))}"
+            self._log_event(AuditLogLevel.HALT, "APPROVAL_REQUIRED_EVIDENCE_INCOMPLETE", {
+                "reason": reason,
+                "missing_required_evidence_types": sorted(list(missing_required_types))
+            })
+            return False, reason
+
+        # Check 8: Asymmetric Ed25519 cryptographic signature verification
         if not approval.signature or not isinstance(approval.signature, str):
             reason = f"Release approval rejected: Missing or invalid signature on approval '{approval.approval_id}'"
+            self._log_event(AuditLogLevel.HALT, "APPROVAL_SIGNATURE_INVALID", {
+                "reason": reason,
+                "approval_id": approval.approval_id
+            })
             return False, reason
 
         if not self.principal_verifier:
             reason = "Release approval rejected: ReleaseGovernanceEngine has no configured PrincipalVerifier to verify signature"
+            self._log_event(AuditLogLevel.HALT, "APPROVAL_SIGNATURE_INVALID", {
+                "reason": reason,
+                "approval_id": approval.approval_id
+            })
             return False, reason
 
         trusted_pubkeys = getattr(self.principal_verifier, "_trusted_public_keys", {})
         trusted_pubkey = trusted_pubkeys.get(approval.approver_issuer)
         if not trusted_pubkey:
             reason = f"Release approval rejected: Untrusted identity issuer '{approval.approver_issuer}' on approval"
+            self._log_event(AuditLogLevel.HALT, "APPROVAL_SIGNATURE_INVALID", {
+                "reason": reason,
+                "approval_id": approval.approval_id
+            })
             return False, reason
 
         try:
             sig_bytes = bytes.fromhex(approval.signature) if len(approval.signature) == 128 else base64.b64decode(approval.signature)
         except Exception:
-            return False, "Release approval rejected: Malformed signature encoding"
+            reason = "Release approval rejected: Malformed signature encoding"
+            self._log_event(AuditLogLevel.HALT, "APPROVAL_SIGNATURE_INVALID", {
+                "reason": reason,
+                "approval_id": approval.approval_id
+            })
+            return False, reason
 
         if len(sig_bytes) != 64:
-            return False, f"Release approval rejected: Signature length invalid ({len(sig_bytes)} bytes, expected 64)"
+            reason = f"Release approval rejected: Signature length invalid ({len(sig_bytes)} bytes, expected 64)"
+            self._log_event(AuditLogLevel.HALT, "APPROVAL_SIGNATURE_INVALID", {
+                "reason": reason,
+                "approval_id": approval.approval_id
+            })
+            return False, reason
 
         payload_bytes = approval.compute_signature_payload()
         if not verify_ed25519_signature(sig_bytes, payload_bytes, trusted_pubkey):

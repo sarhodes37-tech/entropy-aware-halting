@@ -18,6 +18,9 @@ Verifies the 14 mandatory security invariants + Hardening criteria:
 14. A post-approval manifest mutation cannot retain the original authorization.
 15. Adversarial tests for revocation resurrection resistance, artifact byte verification, evaluator signatures, digest formatting, policy version mismatch, and audit failure semantics.
 16. Adversarial tests for missing artifact provider, provider returning None, evaluator signature field coverage mutation, and evidence omission at approval boundary.
+17. Required evidence completeness at approval verification boundary (approval omitting one required type rejected; unreferenced records cannot satisfy requirements).
+18. Evaluator authentication policy (missing signature/issuer rejected under default policy; unsigned evidence only accepted under explicit reduced-assurance mode).
+19. Fail-closed auditing when audit_trail is unconfigured.
 """
 
 import hashlib
@@ -151,7 +154,9 @@ def test_invariant_4_approval_succeeds_for_exact_approved_manifest(tmp_path):
     engine = ReleaseGovernanceEngine(
         principal_verifier=verifier,
         allowed_approver_principals=["reviewer_alice"],
-        require_artifact_bytes_verification=False
+        require_artifact_bytes_verification=False,
+        require_evaluator_signatures=False,
+        fail_closed_audit=False
     )
 
     manifest = create_sample_manifest()
@@ -198,7 +203,9 @@ def test_invariant_5_and_6_approval_fails_for_modified_manifest_even_with_same_r
     engine = ReleaseGovernanceEngine(
         principal_verifier=verifier,
         allowed_approver_principals=["reviewer_alice"],
-        require_artifact_bytes_verification=False
+        require_artifact_bytes_verification=False,
+        require_evaluator_signatures=False,
+        fail_closed_audit=False
     )
 
     m_orig = create_sample_manifest(release_id="rel-same-id-123")
@@ -233,7 +240,7 @@ def test_invariant_5_and_6_approval_fails_for_modified_manifest_even_with_same_r
 
 
 def test_invariant_7_evidence_from_older_manifest_cannot_satisfy_new_manifest():
-    engine = ReleaseGovernanceEngine(require_artifact_bytes_verification=False)
+    engine = ReleaseGovernanceEngine(require_artifact_bytes_verification=False, require_evaluator_signatures=False)
     m_old = create_sample_manifest(model_digest="1111111111111111111111111111111111111111111111111111111111111111")
     m_new = create_sample_manifest(model_digest="2222222222222222222222222222222222222222222222222222222222222222")
 
@@ -261,7 +268,7 @@ def test_invariant_7_evidence_from_older_manifest_cannot_satisfy_new_manifest():
 
 
 def test_invariant_8_missing_required_evidence_prevents_readiness():
-    engine = ReleaseGovernanceEngine(require_artifact_bytes_verification=False)
+    engine = ReleaseGovernanceEngine(require_artifact_bytes_verification=False, require_evaluator_signatures=False)
     manifest = create_sample_manifest()
     m_digest = manifest.compute_manifest_digest()
 
@@ -281,9 +288,15 @@ def test_invariant_8_missing_required_evidence_prevents_readiness():
 def test_invariant_9_invalid_or_tampered_approval_signatures_are_rejected():
     auth = MockReleaseAuthority(issuer_id="TrustedCorpIdP")
     verifier = PrincipalVerifier(trusted_public_keys={"TrustedCorpIdP": auth.public_key})
-    engine = ReleaseGovernanceEngine(principal_verifier=verifier, require_artifact_bytes_verification=False)
+    engine = ReleaseGovernanceEngine(
+        principal_verifier=verifier,
+        require_artifact_bytes_verification=False,
+        require_evaluator_signatures=False,
+        fail_closed_audit=False
+    )
 
-    manifest = create_sample_manifest()
+    manifest = create_sample_manifest(display_name="Manifest For Single Evidence")
+    manifest.required_evidence_types = {"layer4_security_audit"}
     m_digest = manifest.compute_manifest_digest()
 
     ev1 = VerificationEvidenceRecord(
@@ -319,7 +332,9 @@ def test_invariant_10_unauthorized_principal_cannot_issue_release_approval():
     engine = ReleaseGovernanceEngine(
         principal_verifier=verifier,
         allowed_approver_principals=["reviewer_alice"],
-        require_artifact_bytes_verification=False
+        require_artifact_bytes_verification=False,
+        require_evaluator_signatures=False,
+        fail_closed_audit=False
     )
 
     manifest = create_sample_manifest()
@@ -355,10 +370,13 @@ def test_invariant_11_revoked_or_expired_approval_cannot_authorize_release_and_r
     engine = ReleaseGovernanceEngine(
         principal_verifier=verifier,
         revocation_registry=rev_registry,
-        require_artifact_bytes_verification=False
+        require_artifact_bytes_verification=False,
+        require_evaluator_signatures=False,
+        fail_closed_audit=False
     )
 
     manifest = create_sample_manifest()
+    manifest.required_evidence_types = {"layer4_security_audit"}
     m_digest = manifest.compute_manifest_digest()
 
     ev1 = VerificationEvidenceRecord(
@@ -428,7 +446,7 @@ def test_invariant_12_duplicate_and_malformed_fields_fail_closed():
 
 
 def test_invariant_13_artifact_byte_verification_and_substitution_detected():
-    engine = ReleaseGovernanceEngine(require_artifact_bytes_verification=True)
+    engine = ReleaseGovernanceEngine(require_artifact_bytes_verification=True, require_evaluator_signatures=False)
     manifest = create_sample_manifest()
     m_digest = manifest.compute_manifest_digest()
 
@@ -468,7 +486,7 @@ def test_invariant_13_artifact_byte_verification_and_substitution_detected():
 
 def test_missing_or_none_artifact_provider_fails_closed():
     """Finding 1: Missing artifact provider or provider returning None cannot establish authenticity."""
-    engine = ReleaseGovernanceEngine(require_artifact_bytes_verification=True)
+    engine = ReleaseGovernanceEngine(require_artifact_bytes_verification=True, require_evaluator_signatures=False)
     manifest = create_sample_manifest()
     m_digest = manifest.compute_manifest_digest()
 
@@ -480,12 +498,10 @@ def test_missing_or_none_artifact_provider_fails_closed():
         artifact_digest="1111111111111111111111111111111111111111111111111111111111111111"
     )
 
-    # 1. No provider supplied
     ready1, msg1, _ = engine.evaluate_release_readiness(manifest, [ev])
     assert ready1 is False
     assert "no artifact_bytes_provider supplied" in msg1
 
-    # 2. Provider returns None
     ready2, msg2, _ = engine.evaluate_release_readiness(manifest, [ev], artifact_bytes_provider=lambda id: None)
     assert ready2 is False
     assert "artifact retrieval returned None" in msg2
@@ -495,7 +511,12 @@ def test_approval_verification_missing_evidence_records_fails_closed():
     """Finding 2: Missing evidence records at approval boundary strictly fails closed."""
     auth = MockReleaseAuthority(issuer_id="TrustedCorpIdP")
     verifier = PrincipalVerifier(trusted_public_keys={"TrustedCorpIdP": auth.public_key})
-    engine = ReleaseGovernanceEngine(principal_verifier=verifier, require_artifact_bytes_verification=False)
+    engine = ReleaseGovernanceEngine(
+        principal_verifier=verifier,
+        require_artifact_bytes_verification=False,
+        require_evaluator_signatures=False,
+        fail_closed_audit=False
+    )
 
     manifest = create_sample_manifest()
     m_digest = manifest.compute_manifest_digest()
@@ -519,7 +540,12 @@ def test_approval_verification_non_passing_evidence_fails_closed():
     """Finding 2: Evidence with FAIL, PARTIAL, or INCONCLUSIVE status fails approval verification."""
     auth = MockReleaseAuthority(issuer_id="TrustedCorpIdP")
     verifier = PrincipalVerifier(trusted_public_keys={"TrustedCorpIdP": auth.public_key})
-    engine = ReleaseGovernanceEngine(principal_verifier=verifier, require_artifact_bytes_verification=False)
+    engine = ReleaseGovernanceEngine(
+        principal_verifier=verifier,
+        require_artifact_bytes_verification=False,
+        require_evaluator_signatures=False,
+        fail_closed_audit=False
+    )
 
     manifest = create_sample_manifest()
     m_digest = manifest.compute_manifest_digest()
@@ -547,8 +573,230 @@ def test_approval_verification_non_passing_evidence_fails_closed():
     assert "has non-passing status 'PARTIAL'" in reason
 
 
+def test_required_evidence_completeness_at_approval_boundary():
+    """Follow-up P0 Finding 1: Approval omitting one required evidence category is strictly rejected."""
+    auth = MockReleaseAuthority(issuer_id="TrustedCorpIdP")
+    verifier = PrincipalVerifier(trusted_public_keys={"TrustedCorpIdP": auth.public_key})
+    engine = ReleaseGovernanceEngine(
+        principal_verifier=verifier,
+        require_artifact_bytes_verification=False,
+        require_evaluator_signatures=False,
+        fail_closed_audit=False
+    )
+
+    manifest = create_sample_manifest()
+    # Requires: {"layer4_security_audit", "clinical_diagnostic_benchmark"}
+    m_digest = manifest.compute_manifest_digest()
+
+    ev1 = VerificationEvidenceRecord(
+        evidence_id="ev-layer4",
+        manifest_digest=m_digest,
+        evidence_type="layer4_security_audit",
+        status=EvidenceVerificationStatus.PASS,
+        artifact_digest="1111111111111111111111111111111111111111111111111111111111111111"
+    )
+    ev2 = VerificationEvidenceRecord(
+        evidence_id="ev-clinical",
+        manifest_digest=m_digest,
+        evidence_type="clinical_diagnostic_benchmark",
+        status=EvidenceVerificationStatus.PASS,
+        artifact_digest="2222222222222222222222222222222222222222222222222222222222222222"
+    )
+
+    # 1. Approval only references ev1 digest (omits clinical_diagnostic_benchmark)
+    approval_incomplete = ReleaseApprovalRecord(
+        approval_id="appr-incomplete",
+        manifest_digest=m_digest,
+        approver_id="reviewer_alice",
+        approver_issuer="TrustedCorpIdP",
+        policy_version="1.0.0",
+        required_evidence_digests=[ev1.compute_evidence_digest()]
+    )
+    auth.sign_approval(approval_incomplete)
+
+    # Both records supplied to function, but approval signed only 1 -> must fail closed
+    verified_inc, reason_inc = engine.verify_release_approval(
+        manifest,
+        approval_incomplete,
+        evidence_records=[ev1, ev2]
+    )
+    assert verified_inc is False
+    assert "Approval omits required evidence category" in reason_inc
+    assert "clinical_diagnostic_benchmark" in reason_inc
+
+    # 2. Complete approval references both digests -> must succeed
+    approval_complete = ReleaseApprovalRecord(
+        approval_id="appr-complete",
+        manifest_digest=m_digest,
+        approver_id="reviewer_alice",
+        approver_issuer="TrustedCorpIdP",
+        policy_version="1.0.0",
+        required_evidence_digests=[ev1.compute_evidence_digest(), ev2.compute_evidence_digest()]
+    )
+    auth.sign_approval(approval_complete)
+
+    verified_comp, reason_comp = engine.verify_release_approval(
+        manifest,
+        approval_complete,
+        evidence_records=[ev1, ev2]
+    )
+    assert verified_comp is True
+    assert "successfully verified" in reason_comp
+
+
+def test_evaluator_authentication_policy_enforcement():
+    """Follow-up P0 Finding 2: Evaluator signature is mandatory under default policy."""
+    eval_auth = MockReleaseAuthority(issuer_id="EvaluatorIdP")
+    verifier = PrincipalVerifier(trusted_public_keys={"EvaluatorIdP": eval_auth.public_key})
+
+    # Default engine: require_evaluator_signatures=True
+    engine_default = ReleaseGovernanceEngine(
+        principal_verifier=verifier,
+        require_evaluator_signatures=True,
+        require_artifact_bytes_verification=False
+    )
+
+    manifest = create_sample_manifest()
+    m_digest = manifest.compute_manifest_digest()
+
+    # 1. Neither signature nor issuer
+    ev_unsigned = VerificationEvidenceRecord(
+        evidence_id="ev-unsigned",
+        manifest_digest=m_digest,
+        evidence_type="layer4_security_audit",
+        status=EvidenceVerificationStatus.PASS,
+        artifact_digest="1111111111111111111111111111111111111111111111111111111111111111"
+    )
+    res1 = engine_default.verify_single_evidence(m_digest, ev_unsigned)
+    assert res1.status.value == "REJECTED"
+    assert "evaluator signature and issuer are mandatory under default policy" in res1.reason
+
+    # 2. Issuer but no signature
+    ev_issuer_only = VerificationEvidenceRecord(
+        evidence_id="ev-issuer-only",
+        manifest_digest=m_digest,
+        evidence_type="layer4_security_audit",
+        status=EvidenceVerificationStatus.PASS,
+        artifact_digest="1111111111111111111111111111111111111111111111111111111111111111",
+        evaluator_issuer="EvaluatorIdP"
+    )
+    res2 = engine_default.verify_single_evidence(m_digest, ev_issuer_only)
+    assert res2.status.value == "REJECTED"
+    assert "missing evaluator signature" in res2.reason
+
+    # 3. Signature but no issuer
+    ev_sig_only = VerificationEvidenceRecord(
+        evidence_id="ev-sig-only",
+        manifest_digest=m_digest,
+        evidence_type="layer4_security_audit",
+        status=EvidenceVerificationStatus.PASS,
+        artifact_digest="1111111111111111111111111111111111111111111111111111111111111111",
+        signature="aa" * 64
+    )
+    res3 = engine_default.verify_single_evidence(m_digest, ev_sig_only)
+    assert res3.status.value == "REJECTED"
+    assert "missing evaluator_issuer" in res3.reason
+
+    # 4. Untrusted evaluator issuer
+    ev_untrusted = VerificationEvidenceRecord(
+        evidence_id="ev-untrusted",
+        manifest_digest=m_digest,
+        evidence_type="layer4_security_audit",
+        status=EvidenceVerificationStatus.PASS,
+        artifact_digest="1111111111111111111111111111111111111111111111111111111111111111",
+        evaluator_issuer="RogueEvaluator"
+    )
+    eval_auth.sign_evidence(ev_untrusted)
+    res4 = engine_default.verify_single_evidence(m_digest, ev_untrusted)
+    assert res4.status.value == "REJECTED"
+    assert "untrusted evaluator issuer" in res4.reason
+
+    # 5. Invalid signature
+    ev_invalid_sig = VerificationEvidenceRecord(
+        evidence_id="ev-invalid-sig",
+        manifest_digest=m_digest,
+        evidence_type="layer4_security_audit",
+        status=EvidenceVerificationStatus.PASS,
+        artifact_digest="1111111111111111111111111111111111111111111111111111111111111111",
+        evaluator_issuer="EvaluatorIdP",
+        signature="00" * 64
+    )
+    res5 = engine_default.verify_single_evidence(m_digest, ev_invalid_sig)
+    assert res5.status.value == "REJECTED"
+    assert "cryptographic evaluator signature verification failed" in res5.reason
+
+    # 6. Valid signature from trusted issuer
+    ev_valid = VerificationEvidenceRecord(
+        evidence_id="ev-valid",
+        manifest_digest=m_digest,
+        evidence_type="layer4_security_audit",
+        status=EvidenceVerificationStatus.PASS,
+        artifact_digest="1111111111111111111111111111111111111111111111111111111111111111",
+        evaluator_issuer="EvaluatorIdP"
+    )
+    eval_auth.sign_evidence(ev_valid)
+    res6 = engine_default.verify_single_evidence(m_digest, ev_valid)
+    assert res6.status.value == "VERIFIED"
+
+    # 7. Explicitly configured reduced-assurance mode allows unsigned evidence
+    engine_reduced = ReleaseGovernanceEngine(
+        principal_verifier=verifier,
+        require_evaluator_signatures=False,
+        require_artifact_bytes_verification=False
+    )
+    res_red = engine_reduced.verify_single_evidence(m_digest, ev_unsigned)
+    assert res_red.status.value == "VERIFIED"
+    assert res_red.assurance_level.value == "REDUCED_ASSURANCE"
+
+
+def test_audit_configuration_gap_fail_closed_when_unconfigured():
+    """Follow-up P1 Finding 4: fail_closed_audit=True raises RuntimeError if audit_trail is unconfigured."""
+    auth = MockReleaseAuthority(issuer_id="TrustedCorpIdP")
+    verifier = PrincipalVerifier(trusted_public_keys={"TrustedCorpIdP": auth.public_key})
+
+    # Engine configured with fail_closed_audit=True but audit_trail=None
+    engine = ReleaseGovernanceEngine(
+        principal_verifier=verifier,
+        audit_trail=None,
+        fail_closed_audit=True,
+        require_artifact_bytes_verification=False,
+        require_evaluator_signatures=False
+    )
+
+    manifest = create_sample_manifest()
+    m_digest = manifest.compute_manifest_digest()
+
+    ev1 = VerificationEvidenceRecord(
+        evidence_id="ev-layer4",
+        manifest_digest=m_digest,
+        evidence_type="layer4_security_audit",
+        status=EvidenceVerificationStatus.PASS,
+        artifact_digest="1111111111111111111111111111111111111111111111111111111111111111"
+    )
+    ev2 = VerificationEvidenceRecord(
+        evidence_id="ev-clinical",
+        manifest_digest=m_digest,
+        evidence_type="clinical_diagnostic_benchmark",
+        status=EvidenceVerificationStatus.PASS,
+        artifact_digest="2222222222222222222222222222222222222222222222222222222222222222"
+    )
+
+    approval = ReleaseApprovalRecord(
+        approval_id="appr-no-audit-trail",
+        manifest_digest=m_digest,
+        approver_id="reviewer_alice",
+        approver_issuer="TrustedCorpIdP",
+        policy_version="1.0.0",
+        required_evidence_digests=[ev1.compute_evidence_digest(), ev2.compute_evidence_digest()]
+    )
+    auth.sign_approval(approval)
+
+    # Must raise RuntimeError because audit write is mandatory but audit trail is unconfigured
+    with pytest.raises(RuntimeError, match="fail_closed_audit=True but no audit_trail configured"):
+        engine.verify_release_approval(manifest, approval, evidence_records=[ev1, ev2])
+
+
 def test_evaluator_signature_mutation_of_component_ids_and_metadata_detected():
-    """Finding 3: Evaluator signature binds evaluated_component_ids and metadata."""
     eval_auth = MockReleaseAuthority(issuer_id="EvaluatorIdP")
     verifier = PrincipalVerifier(trusted_public_keys={"EvaluatorIdP": eval_auth.public_key})
     engine = ReleaseGovernanceEngine(principal_verifier=verifier, require_artifact_bytes_verification=False)
@@ -602,7 +850,12 @@ def test_sha256_digest_strict_validation():
 def test_policy_version_binding_mismatch_rejected():
     auth = MockReleaseAuthority(issuer_id="TrustedCorpIdP")
     verifier = PrincipalVerifier(trusted_public_keys={"TrustedCorpIdP": auth.public_key})
-    engine = ReleaseGovernanceEngine(principal_verifier=verifier, require_artifact_bytes_verification=False)
+    engine = ReleaseGovernanceEngine(
+        principal_verifier=verifier,
+        require_artifact_bytes_verification=False,
+        require_evaluator_signatures=False,
+        fail_closed_audit=False
+    )
 
     manifest = create_sample_manifest(policy_version="2.0.0")
     m_digest = manifest.compute_manifest_digest()
@@ -643,7 +896,8 @@ def test_audit_failure_semantics_fail_closed(monkeypatch):
         principal_verifier=verifier,
         audit_trail=audit_trail,
         fail_closed_audit=True,
-        require_artifact_bytes_verification=False
+        require_artifact_bytes_verification=False,
+        require_evaluator_signatures=False
     )
 
     manifest = create_sample_manifest()

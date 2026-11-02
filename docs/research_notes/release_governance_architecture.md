@@ -1,6 +1,6 @@
 # EpistemicOS Change & Release Governance Architecture Specification
 
-**Status:** Phase 0 Proof of Concept (Evidence Trust-Boundary Hardened)
+**Status:** Phase 0 Proof of Concept (Evidence & Evaluator Hardened)
 **Subsystem:** `epistemicos/release/`
 **Date:** May 2026
 **Audience:** EpistemicOS Core Architecture & Safety Engineering
@@ -19,19 +19,19 @@ This implementation establishes an isolated subsystem under `epistemicos/release
 1. Deterministic canonical release manifests and cryptographic SHA-256 digest calculation.
 2. Cryptographic binding of verification evidence to exact release manifest digests, validating both evidence record integrity and actual artifact byte digests.
 3. Complete evidence-scope binding for evaluator signatures (binding `evidence_id`, `manifest_digest`, `evidence_type`, `status`, `artifact_digest`, `evaluator_id`, `evaluator_issuer`, `evaluated_at_utc`, `evaluated_component_ids`, and `metadata`).
-4. Mandatory evidence verification at the approval verification boundary (preventing approval verification from being executed without verified evidence records).
-5. Asymmetric Ed25519-signed release approvals bound to immutable manifest digests and verified via `PrincipalVerifier` (RFC 8032).
-6. Monotonic, authoritative approval revocation via `ReleaseApprovalRevocationRegistry`, preventing resurrection attacks via in-memory or serialized object mutation.
-7. Deterministic change detection and fail-closed evidence invalidation.
-8. Fail-closed audit logging semantics for release authorization decisions.
+4. Mandatory evidence verification at the approval verification boundary: every referenced digest must correspond to an available verified record.
+5. Required evidence completeness at the approval verification boundary: approvals must reference verified evidence satisfying every category in `manifest.required_evidence_types`; unreferenced records or partial category coverage strictly fail closed.
+6. Evaluator signature verification is mandatory under the default policy; unsigned evidence is rejected unless explicit reduced-assurance mode is configured.
+7. Asymmetric Ed25519-signed release approvals bound to immutable manifest digests and verified via `PrincipalVerifier` (RFC 8032).
+8. Monotonic, authoritative approval revocation via `ReleaseApprovalRevocationRegistry`, preventing resurrection attacks via in-memory or serialized object mutation.
+9. Deterministic change detection and fail-closed evidence invalidation.
+10. Fail-closed audit logging semantics for release authorization decisions, requiring a configured audit trail.
 
 ---
 
 ## 2. Architectural Boundaries & Trust Model
 
 ### 2.1 Cryptographic Distinction Matrix
-
-It is vital to distinguish the separate claims made by each cryptographic mechanism:
 
 | Operation | Mechanism | Security Claim Made | What It Does NOT Claim |
 | :--- | :--- | :--- | :--- |
@@ -74,8 +74,8 @@ It is vital to distinguish the separate claims made by each cryptographic mechan
 |   |    - manifest_digest == D_manifest (Exact match required)                       |   |
 |   |    - status: PASS (Fails closed on FAIL, PARTIAL, or INCONCLUSIVE)              |   |
 |   |    - artifact_digest validated against actual artifact bytes                     |   |
-|   |    - Evaluator signature verified via PrincipalVerifier (RFC 8032)               |   |
-|   |    - Signature binds evaluated_component_ids and metadata                       |   |
+|   |    - Evaluator signature mandatory (RFC 8032 Ed25519 via PrincipalVerifier)     |   |
+|   |    - Evaluator signature binds evaluated_component_ids and metadata             |   |
 |   +---------------------------------------+-----------------------------------------+   |
 |                                           |                                             |
 |                                           v                                             |
@@ -84,9 +84,11 @@ It is vital to distinguish the separate claims made by each cryptographic mechan
 |   |    - manifest_digest == D_manifest                                              |   |
 |   |    - approver_id in allowed_approvers allowlist                                 |   |
 |   |    - Ed25519 signature verified via PrincipalVerifier (RFC 8032)                |   |
-|   |    - Mandatory verified evidence records check at approval boundary             |   |
+|   |    - Mandatory evidence records verified at approval boundary                   |   |
+|   |    - Required evidence completeness enforced (no omitted categories)            |   |
 |   |    - Authoritative Revocation Registry check (anti-resurrection)                |   |
 |   |    - Expiration & Policy Version consistency checks                             |   |
+|   |    - Mandatory fail-closed audit logging (audit trail required)                 |   |
 |   +---------------------------------------+-----------------------------------------+   |
 |                                           |                                             |
 |                                           v                                             |
@@ -101,23 +103,28 @@ It is vital to distinguish the separate claims made by each cryptographic mechan
 
 ---
 
-## 3. Evidence Trust Boundary Hardening
+## 3. Evidence Trust Boundary Hardening & Audit Semantics
 
-### 3.1 Explicit Artifact Byte Verification (P0)
+### 3.1 Explicit Artifact Byte Verification & Mandatory Evaluator Signatures (P0)
 - `verify_single_evidence()` provides shared, deterministic verification for both `evaluate_release_readiness()` and `verify_release_approval()`.
+- Under the default policy (`require_evaluator_signatures=True`), an evidence record must provide both `signature` and `evaluator_issuer`, verified via `PrincipalVerifier`. Missing signatures or untrusted issuers strictly fail closed. Unsigned evidence is only permitted if `require_evaluator_signatures=False` is explicitly configured, returning `AssuranceLevel.REDUCED_ASSURANCE`.
 - When `require_artifact_bytes_verification=True` (default), artifact bytes must be retrievable via `artifact_bytes_provider(evidence_id)` and their SHA-256 digest must strictly match `artifact_digest`. If the provider is missing or returns `None`, verification returns `EvidenceValidationResultStatus.UNAVAILABLE`, preventing silent pass-through of uninspected artifacts.
 
-### 3.2 Mandatory Evidence Verification at Approval Boundary (P0)
-- `verify_release_approval()` mandates `evidence_records: List[VerificationEvidenceRecord]`. Missing evidence records strictly fail closed.
-- Every referenced digest in `approval.required_evidence_digests` must correspond to a record that has passed `verify_single_evidence()` (including artifact bytes and evaluator signatures).
-- Approval verification cannot be bypassed by directly submitting pre-cooked digest strings without the underlying evidence records.
+### 3.2 Required Evidence Completeness at Approval Boundary (P0)
+- `verify_release_approval()` enforces that every category in `manifest.required_evidence_types` is satisfied by a verified evidence record whose digest is explicitly included in `approval.required_evidence_digests`.
+- If an approval omits any required evidence category (even if all referenced records are valid and the approval signature is cryptographically authentic), release authorization is strictly rejected with `APPROVAL_REQUIRED_EVIDENCE_INCOMPLETE`.
+- Unreferenced evidence records supplied to the engine do NOT count toward satisfying required evidence categories.
 
 ### 3.3 Evaluator Signature Scope Binding (P0)
 - `compute_signature_payload()` on `VerificationEvidenceRecord` binds all security-relevant fields into a domain-separated canonical structured JSON payload (`EpistemicOS:VerificationEvidenceRecord:v1`):
   - `evidence_id`, `manifest_digest`, `evidence_type`, `status`, `artifact_digest`, `evaluator_id`, `evaluator_issuer`, `evaluated_at_utc`, sorted `evaluated_component_ids`, and `metadata`.
 - Any mutation of component scope (e.g. attempting to claim a test evaluated `diagnostic_model` when it only evaluated `core_runtime`) or metadata invalidates the evaluator signature.
 
-### 3.4 Authoritative Revocation & Anti-Resurrection
+### 3.4 Fail-Closed Audit Semantics
+- In safety-critical release governance, audit recording cannot be silent or best-effort.
+- When `fail_closed_audit=True` (default), `ReleaseGovernanceEngine` mandates that `audit_trail` is configured and operable. If `audit_trail` is `None` or raises an exception during write, the engine raises `RuntimeError` and refuses to declare the release authorized.
+
+### 3.5 Authoritative Revocation & Anti-Resurrection
 - Revocation state is tracked authoritatively in `ReleaseApprovalRevocationRegistry`.
 - Monotonic revocation records cannot be undone by mutating in-memory `approval.revoked` attributes or replaying previously signed approvals.
 - *Limitation:* The revocation registry is currently in-memory and process-local. Durable disk journaling is deferred to Phase 1.
