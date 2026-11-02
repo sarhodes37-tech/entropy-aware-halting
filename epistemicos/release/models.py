@@ -9,10 +9,20 @@ This module defines deterministic, verifiable data structures representing:
 
 import hashlib
 import json
+import re
 import time
 from dataclasses import dataclass, field, asdict
 from enum import Enum
 from typing import Any, Dict, List, Optional, Set
+
+SHA256_HEX_REGEX = re.compile(r"^[0-9a-fA-F]{64}$")
+
+
+def validate_sha256_hex(val: str, field_name: str) -> str:
+    """Strictly validates that a digest is a 64-character hexadecimal SHA-256 string."""
+    if not val or not isinstance(val, str) or not SHA256_HEX_REGEX.match(val):
+        raise ValueError(f"{field_name} must be a valid 64-character hexadecimal SHA-256 digest, got '{val}'")
+    return val.strip().lower()
 
 
 class ComponentType(str, Enum):
@@ -51,8 +61,9 @@ class ComponentSpec:
             raise ValueError("ComponentSpec: component_type must be a non-empty string")
         if not self.version or not isinstance(self.version, str) or not self.version.strip():
             raise ValueError("ComponentSpec: version must be a non-empty string")
-        if not self.digest or not isinstance(self.digest, str) or not self.digest.strip():
-            raise ValueError("ComponentSpec: digest must be a non-empty hex-digest string")
+        validate_sha256_hex(self.digest, "ComponentSpec.digest")
+        if self.config_digest:
+            validate_sha256_hex(self.config_digest, "ComponentSpec.config_digest")
 
     def to_canonical_dict(self) -> Dict[str, Any]:
         return {
@@ -115,6 +126,9 @@ class ReleaseManifest:
         if not self.target_environment or not isinstance(self.target_environment, str) or not self.target_environment.strip():
             raise ValueError("ReleaseManifest: target_environment must be a non-empty string")
 
+        if self.policy_digest:
+            validate_sha256_hex(self.policy_digest, "ReleaseManifest.policy_digest")
+
         # Validate duplicate component IDs
         seen_ids = set()
         for comp in self.components:
@@ -129,7 +143,6 @@ class ReleaseManifest:
         Returns strictly the canonical fields included in the release manifest digest calculation.
         Informational metadata fields are strictly excluded.
         """
-        # Sort components deterministically by component_id
         sorted_components = sorted(
             [c.to_canonical_dict() for c in self.components],
             key=lambda x: x["component_id"]
@@ -175,19 +188,18 @@ class VerificationEvidenceRecord:
     artifact_digest: str  # SHA-256 digest of raw test report / benchmark artifact on disk
     evaluated_component_ids: Set[str] = field(default_factory=set)  # Components explicitly covered
     evaluator_id: str = "automated_benchmark_harness"
+    evaluator_issuer: Optional[str] = None  # Issuer for asymmetric evaluator signature verification
     evaluated_at_utc: Optional[str] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
-    signature: Optional[str] = None  # Optional evaluator signature
+    signature: Optional[str] = None  # Asymmetric Ed25519 signature from evaluator
 
     def __post_init__(self):
         if not self.evidence_id or not isinstance(self.evidence_id, str) or not self.evidence_id.strip():
             raise ValueError("VerificationEvidenceRecord: evidence_id must be a non-empty string")
-        if not self.manifest_digest or not isinstance(self.manifest_digest, str) or not self.manifest_digest.strip():
-            raise ValueError("VerificationEvidenceRecord: manifest_digest must be a non-empty string")
+        validate_sha256_hex(self.manifest_digest, "VerificationEvidenceRecord.manifest_digest")
         if not self.evidence_type or not isinstance(self.evidence_type, str) or not self.evidence_type.strip():
             raise ValueError("VerificationEvidenceRecord: evidence_type must be a non-empty string")
-        if not self.artifact_digest or not isinstance(self.artifact_digest, str) or not self.artifact_digest.strip():
-            raise ValueError("VerificationEvidenceRecord: artifact_digest must be a non-empty string")
+        validate_sha256_hex(self.artifact_digest, "VerificationEvidenceRecord.artifact_digest")
         if isinstance(self.status, str):
             self.status = EvidenceVerificationStatus(self.status)
 
@@ -200,6 +212,7 @@ class VerificationEvidenceRecord:
             "artifact_digest": self.artifact_digest.strip().lower(),
             "evaluated_component_ids": sorted(list(self.evaluated_component_ids)),
             "evaluator_id": self.evaluator_id.strip(),
+            "evaluator_issuer": self.evaluator_issuer.strip() if self.evaluator_issuer else None,
             "evaluated_at_utc": self.evaluated_at_utc,
             "metadata": self.metadata,
         }
@@ -207,6 +220,20 @@ class VerificationEvidenceRecord:
     def compute_evidence_digest(self) -> str:
         serialized = json.dumps(self.to_canonical_dict(), sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+    def compute_signature_payload(self) -> bytes:
+        """Domain-separated JSON canonical binary payload for evaluator signature."""
+        data = {
+            "domain": "EpistemicOS:VerificationEvidenceRecord:v1",
+            "evidence_id": self.evidence_id.strip(),
+            "manifest_digest": self.manifest_digest.strip().lower(),
+            "evidence_type": self.evidence_type.strip(),
+            "status": self.status.value,
+            "artifact_digest": self.artifact_digest.strip().lower(),
+            "evaluator_id": self.evaluator_id.strip(),
+            "evaluated_at_utc": self.evaluated_at_utc or "",
+        }
+        return json.dumps(data, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
     def is_valid_for_manifest(self, current_manifest_digest: str) -> bool:
         """Checks if evidence is directly bound to the exact manifest digest and is PASS."""
@@ -231,35 +258,37 @@ class ReleaseApprovalRecord:
     timestamp: float = field(default_factory=time.time)
     expires_at: Optional[float] = None
     signature: Optional[str] = None  # Ed25519 signature (hex or base64)
-    revoked: bool = False
-    revocation_reason: Optional[str] = None
 
     def __post_init__(self):
         if not self.approval_id or not isinstance(self.approval_id, str) or not self.approval_id.strip():
             raise ValueError("ReleaseApprovalRecord: approval_id must be a non-empty string")
-        if not self.manifest_digest or not isinstance(self.manifest_digest, str) or not self.manifest_digest.strip():
-            raise ValueError("ReleaseApprovalRecord: manifest_digest must be a non-empty string")
+        validate_sha256_hex(self.manifest_digest, "ReleaseApprovalRecord.manifest_digest")
         if not self.approver_id or not isinstance(self.approver_id, str) or not self.approver_id.strip():
             raise ValueError("ReleaseApprovalRecord: approver_id must be a non-empty string")
         if not self.approver_issuer or not isinstance(self.approver_issuer, str) or not self.approver_issuer.strip():
             raise ValueError("ReleaseApprovalRecord: approver_issuer must be a non-empty string")
         if not self.policy_version or not isinstance(self.policy_version, str) or not self.policy_version.strip():
             raise ValueError("ReleaseApprovalRecord: policy_version must be a non-empty string")
+        for ev_dig in self.required_evidence_digests:
+            validate_sha256_hex(ev_dig, "ReleaseApprovalRecord.required_evidence_digests[]")
 
     def compute_signature_payload(self) -> bytes:
         """
-        Deterministic binary payload for asymmetric Ed25519 verification.
-        Binds approval_id, manifest_digest, approver_id, approver_issuer,
-        policy_version, sorted required_evidence_digests, timestamp, and expires_at.
+        Deterministic, domain-separated canonical structured JSON payload for Ed25519 verification.
+        Eliminates delimiter injection vulnerabilities.
         """
-        exp_str = f"{self.expires_at:.6f}" if self.expires_at is not None else ""
-        sorted_ev = ",".join(sorted(self.required_evidence_digests))
-        payload = (
-            f"{self.approval_id}:{self.manifest_digest.lower()}:{self.approver_id}:"
-            f"{self.approver_issuer}:{self.policy_version}:{sorted_ev}:"
-            f"{self.timestamp:.6f}:{exp_str}"
-        )
-        return payload.encode("utf-8")
+        data = {
+            "domain": "EpistemicOS:ReleaseApprovalRecord:v1",
+            "approval_id": self.approval_id.strip(),
+            "manifest_digest": self.manifest_digest.strip().lower(),
+            "approver_id": self.approver_id.strip(),
+            "approver_issuer": self.approver_issuer.strip(),
+            "policy_version": self.policy_version.strip(),
+            "required_evidence_digests": sorted([d.strip().lower() for d in self.required_evidence_digests]),
+            "timestamp": f"{self.timestamp:.6f}",
+            "expires_at": f"{self.expires_at:.6f}" if self.expires_at is not None else None,
+        }
+        return json.dumps(data, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
     def is_expired(self, current_time: Optional[float] = None) -> bool:
         if self.expires_at is None:
