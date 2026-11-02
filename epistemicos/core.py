@@ -747,14 +747,16 @@ class EpistemicOrchestrator:
                             if out_status == "EXECUTION_OUTCOME_UNKNOWN":
                                 execution_status = "EXECUTION_OUTCOME_UNKNOWN"
                                 telemetry = profiler.get_telemetry()
-                                # Explicitly abort trajectory scope to prevent auto-commit on context exit
-                                self.vector_manager.abort_trajectory_scope(traj_id)
-
                                 initial_staged = self.vector_manager.get_staged_count(traj_id)
+
+                                # Perform revocation on staged vectors
                                 revoked_ids = self.vector_manager.revoke_trajectory(traj_id)
                                 actual_revoked_count = len(revoked_ids)
 
-                                # If vectors were staged concurrently during backend purge, revoke them as well
+                                # Mark scope aborted under lock so any subsequent staging attempts are rejected
+                                self.vector_manager.abort_trajectory_scope(traj_id)
+
+                                # If vectors were staged concurrently prior to abort, revoke them as well
                                 if self.vector_manager.get_staged_count(traj_id) > 0:
                                     concurrent_revoked = self.vector_manager.revoke_trajectory(traj_id)
                                     actual_revoked_count += len(concurrent_revoked)

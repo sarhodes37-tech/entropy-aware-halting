@@ -1504,12 +1504,17 @@ def test_orchestrator_integration_late_concurrent_staging_during_outcome_unknown
     pipeline_thread = threading.Thread(target=run_pipeline)
     pipeline_thread.start()
 
+    staging_error = []
+
     try:
-        # Wait until orchestrator reaches get_outstanding_vectors (after all revoke calls)
+        # Wait until orchestrator reaches get_outstanding_vectors (after abort and all revoke calls)
         assert in_final_revoke_event.wait(timeout=5) is True
 
-        # Late concurrent stage: another thread stages Batch B right before return
-        orchestrator.vector_manager.stage_vectors(traj_id, ["vec_late_B_1", "vec_late_B_2", "vec_late_B_3"])
+        # Late concurrent stage attempt: must be explicitly rejected because trajectory is aborted
+        try:
+            orchestrator.vector_manager.stage_vectors(traj_id, ["vec_late_B_1", "vec_late_B_2", "vec_late_B_3"])
+        except RuntimeError as e:
+            staging_error.append(e)
     finally:
         continue_final_revoke_event.set()
 
@@ -1520,25 +1525,29 @@ def test_orchestrator_integration_late_concurrent_staging_during_outcome_unknown
     res = orchestrator_result[0]
 
     # Invariants verification:
-    # 1. Top-level status is RECONCILIATION_REQUIRED
+    # 1. Late staging after abort was explicitly rejected with RuntimeError
+    assert len(staging_error) == 1
+    assert "Cannot stage vectors for aborted trajectory" in str(staging_error[0])
+
+    # 2. Top-level status is RECONCILIATION_REQUIRED
     assert res["status"] == "RECONCILIATION_REQUIRED"
 
-    # 2. commit_trajectory was NEVER called
+    # 3. commit_trajectory was NEVER called
     assert commit_invocations == []
 
-    # 3. Batch A was purged
+    # 4. Batch A was purged
     assert "vec_batch_A_1" in mock_db.delete.call_args[1]["ids"]
     assert "vec_batch_A_2" in mock_db.delete.call_args[1]["ids"]
 
-    # 4. Batch B remains in active staging (not committed!)
-    assert orchestrator.vector_manager.get_staged_count(traj_id) == 3
+    # 5. Rejected Batch B was not accepted into active staging
+    assert orchestrator.vector_manager.get_staged_count(traj_id) == 0
     outstanding = orchestrator.vector_manager.get_outstanding_vectors(traj_id)
-    assert set(outstanding) == {"vec_late_B_1", "vec_late_B_2", "vec_late_B_3"}
+    assert outstanding == []
 
-    # 5. vectors_pending accurately equals 3, and status is PENDING_RECONCILIATION (never CONFIRMED)
-    assert res["vector_cleanup"]["status"] == "PENDING_RECONCILIATION"
+    # 6. vectors_pending is 0, status is CONFIRMED for Batch A (since Batch B was rejected)
+    assert res["vector_cleanup"]["status"] == "CONFIRMED"
     assert res["vector_cleanup"]["vectors_purged"] == 2
-    assert res["vector_cleanup"]["vectors_pending"] == 3
+    assert res["vector_cleanup"]["vectors_pending"] == 0
 
     # 6. Audit event reports identical cleanup data
     with open(orchestrator.audit_log_path, "r") as f:
@@ -1546,5 +1555,5 @@ def test_orchestrator_integration_late_concurrent_staging_during_outcome_unknown
     halt_events = [e for e in audit_lines if e["event_type"] == "DETERMINISTIC_HALT" and "Execution boundary outcome unknown" in e["reason"]]
     assert len(halt_events) == 1
     audit_ev = halt_events[0]
-    assert audit_ev["metadata"]["vector_cleanup"]["status"] == "PENDING_RECONCILIATION"
-    assert audit_ev["metadata"]["vector_cleanup"]["vectors_pending"] == 3
+    assert audit_ev["metadata"]["vector_cleanup"]["status"] == "CONFIRMED"
+    assert audit_ev["metadata"]["vector_cleanup"]["vectors_pending"] == 0

@@ -442,3 +442,119 @@ def test_revoke_trajectory_include_quarantined():
     assert set(purged) == {"vec_old_fail", "vec_new_active"}
     assert manager.get_staged_count(traj_id) == 0
     assert manager.get_unpurged_vectors(traj_id) == []
+
+
+# =====================================================================
+# ATOMIC ABORT BOUNDARY TESTS (TESTS A, B, C)
+# =====================================================================
+
+def test_atomic_abort_boundary_staging_before_abort():
+    """
+    Test A — staging before abort:
+    - Stage Batch A.
+    - Abort the trajectory.
+    - Verify Batch A remains discoverable and cannot be auto-committed on context exit.
+    - Verify cleanup can still revoke it.
+    """
+    mock_db = MagicMock()
+    mock_db.delete.return_value = True
+
+    manager = VectorHygieneManager(db_client=mock_db)
+    traj_id = "traj_test_a"
+
+    with manager.trajectory_scope(traj_id):
+        manager.stage_vectors(traj_id, ["vec_A_1", "vec_A_2"])
+        assert manager.get_staged_count(traj_id) == 2
+        manager.abort_trajectory_scope(traj_id)
+        assert manager.is_scope_aborted(traj_id) is True
+
+    # Upon context exit, auto-commit was bypassed because scope was aborted
+    # Batch A remains in active staging rather than being committed to primary index
+    assert manager.get_staged_count(traj_id) == 2
+
+    # Verify cleanup can still revoke Batch A
+    revoked = manager.revoke_trajectory(traj_id)
+    assert revoked == ["vec_A_1", "vec_A_2"]
+    assert manager.get_staged_count(traj_id) == 0
+
+
+def test_atomic_abort_boundary_staging_after_abort():
+    """
+    Test B — staging after abort:
+    - Abort the trajectory.
+    - Attempt to stage Batch B.
+    - Verify the operation is explicitly rejected with RuntimeError.
+    - Verify Batch B is not silently accepted, discarded, or reported as purged.
+    - Verify the rejection is observable to the caller.
+    """
+    manager = VectorHygieneManager()
+    traj_id = "traj_test_b"
+
+    with manager.trajectory_scope(traj_id):
+        manager.abort_trajectory_scope(traj_id)
+        assert manager.is_scope_aborted(traj_id) is True
+
+        with pytest.raises(RuntimeError, match="Cannot stage vectors for aborted trajectory"):
+            manager.stage_vectors(traj_id, ["vec_B_1", "vec_B_2"])
+
+        # Batch B was not accepted into active staging
+        assert manager.get_staged_count(traj_id) == 0
+        assert manager.get_outstanding_vectors(traj_id) == []
+
+
+def test_atomic_abort_boundary_concurrent_abort_vs_staging():
+    """
+    Test C — concurrent abort versus staging:
+    - Races stage_vectors() against abort_trajectory_scope() at the manager lock.
+    - Uses threading.Barrier for deterministic lock contention.
+    - Verifies exactly one valid ordering occurs:
+      1) Staging wins lock first: Batch is accepted into active tracking, then abort marks scope; or
+      2) Abort wins lock first: Staging is rejected with RuntimeError.
+    """
+    import threading
+
+    manager = VectorHygieneManager()
+    traj_id = "traj_test_c"
+
+    barrier = threading.Barrier(2)
+    stage_error = []
+    stage_succeeded = []
+
+    def stager():
+        try:
+            barrier.wait(timeout=5)
+            manager.stage_vectors(traj_id, ["vec_race_1", "vec_race_2"])
+            stage_succeeded.append(True)
+        except Exception as e:
+            stage_error.append(e)
+
+    def aborter():
+        try:
+            barrier.wait(timeout=5)
+            manager.abort_trajectory_scope(traj_id)
+        except Exception:
+            pass
+
+    t1 = threading.Thread(target=stager)
+    t2 = threading.Thread(target=aborter)
+
+    t1.start()
+    t2.start()
+    t1.join(timeout=5)
+    t2.join(timeout=5)
+
+    assert t1.is_alive() is False
+    assert t2.is_alive() is False
+
+    # Assert exactly one valid outcome occurred
+    if stage_succeeded:
+        # Staging won the lock first: vectors were accepted and are now outstanding under aborted scope
+        assert len(stage_succeeded) == 1
+        assert manager.get_staged_count(traj_id) == 2
+        assert manager.is_scope_aborted(traj_id) is True
+    else:
+        # Abort won the lock first: staging was rejected with RuntimeError
+        assert len(stage_error) == 1
+        assert isinstance(stage_error[0], RuntimeError)
+        assert "Cannot stage vectors for aborted trajectory" in str(stage_error[0])
+        assert manager.get_staged_count(traj_id) == 0

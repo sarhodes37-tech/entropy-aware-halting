@@ -101,11 +101,20 @@ class VectorHygieneManager:
             return outstanding
 
     def stage_vectors(self, trajectory_id: str, vector_ids: List[Union[str, int]]) -> None:
-        """Stages new vector IDs into the quarantined trajectory scope."""
+        """
+        Stages new vector IDs into the quarantined trajectory scope.
+        Rejects staging with RuntimeError if the trajectory scope has been aborted.
+        """
         if not vector_ids:
             return
 
         with self._lock:
+            if self.is_scope_aborted(trajectory_id):
+                raise RuntimeError(
+                    f"Cannot stage vectors for aborted trajectory [{trajectory_id}]: "
+                    "trajectory scope has been marked as aborted/reconciliation-required."
+                )
+
             if trajectory_id not in self._active_trajectories:
                 self._active_trajectories[trajectory_id] = []
             self._active_trajectories[trajectory_id].extend(vector_ids)
