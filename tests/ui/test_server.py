@@ -724,3 +724,36 @@ def test_main_cli_functionality(monkeypatch):
     assert host == "127.0.0.1"
     assert port == 0
     assert str(adapter.audit_log_path) == "test_audit.jsonl"
+
+
+def test_server_header_generic_banner_and_version_suppression(test_server):
+    """
+    Verifies that the Server response header does not disclose underlying Python
+    or BaseHTTP implementation details across successful and error responses.
+    """
+    base_url = test_server
+
+    # 1. API endpoint response
+    req_api = urllib.request.Request(f"{base_url}/api/overview")
+    with urllib.request.urlopen(req_api) as resp:
+        server_header = resp.headers.get("Server", "")
+        assert server_header == "EpistemicOS-Observatory"
+        assert "Python" not in server_header
+        assert "BaseHTTP" not in server_header
+
+    # 2. Static asset response
+    req_static = urllib.request.Request(f"{base_url}/")
+    with urllib.request.urlopen(req_static) as resp:
+        server_header = resp.headers.get("Server", "")
+        assert server_header == "EpistemicOS-Observatory"
+        assert "Python" not in server_header
+        assert "BaseHTTP" not in server_header
+
+    # 3. HTTP error response
+    req_err = urllib.request.Request(f"{base_url}/api/non_existent_route")
+    with pytest.raises(urllib.error.HTTPError) as exc_info:
+        urllib.request.urlopen(req_err)
+    err_server_header = exc_info.value.headers.get("Server", "")
+    assert err_server_header == "EpistemicOS-Observatory"
+    assert "Python" not in err_server_header
+    assert "BaseHTTP" not in err_server_header
