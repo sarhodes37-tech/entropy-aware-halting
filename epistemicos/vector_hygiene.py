@@ -227,17 +227,45 @@ class VectorHygieneManager:
         with self._lock:
             return len(self._active_trajectories.get(trajectory_id, []))
 
+    def abort_trajectory_scope(self, trajectory_id: str) -> None:
+        """
+        Marks an active trajectory scope as aborted, preventing trajectory_scope()
+        from auto-committing remaining staged vectors on normal exit.
+        """
+        with self._lock:
+            if not hasattr(self, "_aborted_scopes"):
+                self._aborted_scopes = set()
+            self._aborted_scopes.add(trajectory_id)
+
+    def is_scope_aborted(self, trajectory_id: str) -> bool:
+        with self._lock:
+            if not hasattr(self, "_aborted_scopes"):
+                self._aborted_scopes = set()
+            return trajectory_id in self._aborted_scopes
+
     @contextmanager
-    def trajectory_scope(self, trajectory_id: str, namespace: Optional[str] = None):
+    def trajectory_scope(self, trajectory_id: str, namespace: Optional[str] = None, auto_commit: bool = True):
         """
         Context manager providing atomic transactional boundaries for vector staging.
         Auto-revokes if an exception or unhandled error occurs during execution.
+        If auto_commit is False or abort_trajectory_scope(trajectory_id) was called,
+        remaining staged vectors are NOT committed on normal context-manager exit.
         """
+        with self._lock:
+            if not hasattr(self, "_aborted_scopes"):
+                self._aborted_scopes = set()
+            self._aborted_scopes.discard(trajectory_id)
+
         try:
             yield self
-            if self.get_staged_count(trajectory_id) > 0:
+            should_commit = auto_commit and not self.is_scope_aborted(trajectory_id)
+            if should_commit and self.get_staged_count(trajectory_id) > 0:
                 self.commit_trajectory(trajectory_id)
         except Exception as err:
             logger.error(f"Trajectory [{trajectory_id}] aborted due to exception: {err}. Auto-revoking vectors.")
             self.revoke_trajectory(trajectory_id, namespace=namespace)
             raise
+        finally:
+            with self._lock:
+                if hasattr(self, "_aborted_scopes"):
+                    self._aborted_scopes.discard(trajectory_id)

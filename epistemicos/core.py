@@ -747,9 +747,19 @@ class EpistemicOrchestrator:
                             if out_status == "EXECUTION_OUTCOME_UNKNOWN":
                                 execution_status = "EXECUTION_OUTCOME_UNKNOWN"
                                 telemetry = profiler.get_telemetry()
+                                # Explicitly abort trajectory scope to prevent auto-commit on context exit
+                                self.vector_manager.abort_trajectory_scope(traj_id)
+
                                 initial_staged = self.vector_manager.get_staged_count(traj_id)
                                 revoked_ids = self.vector_manager.revoke_trajectory(traj_id)
                                 actual_revoked_count = len(revoked_ids)
+
+                                # If vectors were staged concurrently or failed to purge, ensure any remaining
+                                # active staged vectors are also revoked or quarantined rather than committed
+                                if self.vector_manager.get_staged_count(traj_id) > 0:
+                                    concurrent_revoked = self.vector_manager.revoke_trajectory(traj_id)
+                                    actual_revoked_count += len(concurrent_revoked)
+
                                 unpurged_ids = self.vector_manager.get_unpurged_vectors(traj_id)
                                 pending_count = len(unpurged_ids)
 
@@ -769,14 +779,23 @@ class EpistemicOrchestrator:
                                 }
 
                                 reason_msg = f"Execution boundary outcome unknown: {execution_outcome.get('reason', 'Terminal audit logging failed')}"
-                                self._log_pipeline_event(
+                                # Compile audit event with vector_cleanup details in metadata
+                                audit_metadata = {
+                                    "vector_cleanup": cleanup_info,
+                                    "vectors_purged": actual_revoked_count,
+                                    "vectors_pending": pending_count,
+                                    "execution_status": "EXECUTION_OUTCOME_UNKNOWN"
+                                }
+                                self.audit_logger.record_event(AuditEvent(
                                     event_type=AuditLogLevel.HALT,
                                     gate_name="TrustedExecutionBoundary",
-                                    reason=f"{reason_msg} | Vectors Revoked: {actual_revoked_count} | Cleanup: {cleanup_status}",
-                                    masked_payload=masked_payload,
-                                    cpr=cpr,
-                                    telemetry=telemetry
-                                )
+                                    reason=f"{reason_msg} | Confirmed Purged: {actual_revoked_count} | Pending Reconciliation: {pending_count} | Cleanup: {cleanup_status}",
+                                    model_id=self.model_id,
+                                    payload_snippet=json.dumps(masked_payload),
+                                    cpr_snapshot=cpr,
+                                    telemetry=telemetry,
+                                    metadata=audit_metadata
+                                ))
                                 return {
                                     "status": "RECONCILIATION_REQUIRED",
                                     "execution_status": "EXECUTION_OUTCOME_UNKNOWN",

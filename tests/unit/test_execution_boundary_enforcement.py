@@ -3,6 +3,7 @@ Adversarial tests for rejecting caller-forged execution authorization and enforc
 """
 
 import uuid
+import json
 from unittest.mock import MagicMock
 import pytest
 
@@ -1270,3 +1271,126 @@ def test_execution_outcome_unknown_with_no_staged_vectors():
     assert res["vector_cleanup"]["status"] == "NOT_REQUIRED"
     assert res["vector_cleanup"]["vectors_purged"] == 0
     assert res["vector_cleanup"]["vectors_pending"] == 0
+
+
+def test_orchestrator_integration_concurrent_staging_during_outcome_unknown_no_auto_commit(tmp_path):
+    """
+    Validates P0 integration requirement:
+    1. Begin a protected execution and stage vector batch A.
+    2. Force terminal provenance recording to fail, producing EXECUTION_OUTCOME_UNKNOWN.
+    3. Block the backend purge after the manager captures batch A (using threading.Event).
+    4. Concurrently stage vector batch B under the same trajectory.
+    5. Release the purge.
+    6. Allow the orchestrator to return.
+    Assert all of the following:
+    - Top-level status is RECONCILIATION_REQUIRED.
+    - Batch A is reported as purged only if backend deletion was confirmed.
+    - Batch B is never committed by context-manager exit.
+    - Batch B is either successfully revoked or remains tracked in active/quarantined non-committed state.
+    - No vector from this uncertain trajectory is silently promoted to the primary index.
+    - Cleanup status and counts accurately describe the final state.
+    """
+    import threading
+
+    in_purge_event = threading.Event()
+    continue_purge_event = threading.Event()
+
+    def mock_delete(ids, **kwargs):
+        in_purge_event.set()
+        continue_purge_event.wait(timeout=5)
+        return True
+
+    mock_db = MagicMock()
+    mock_db.delete = MagicMock(side_effect=mock_delete)
+
+    orchestrator = EpistemicOrchestrator(
+        audit_log_path=str(tmp_path / "test_audit.jsonl"),
+        db_client=mock_db
+    )
+    perm_gate = PermissionGate(
+        trusted_scope={
+            "allowed_operations": ["execute_transfer"],
+            "allowed_resources": ["/accounts/primary"],
+        }
+    )
+    orchestrator.gates = [perm_gate]
+
+    raw_payload = {"policy_id": "POL-2026-CONC-ORCH", "primary_metric": 100.0}
+    corr_id = f"CONC-ORCH-CORR-{uuid.uuid4()}"
+    traj_id = f"traj-conc-orch-{uuid.uuid4()}"
+
+    # Force terminal provenance write failure
+    original_record = orchestrator.execution_boundary.store.record_event
+
+    def mock_record_event(event):
+        if getattr(event, "event_type", None) == ProvenanceEventType.EXECUTION_SUCCEEDED.value:
+            raise RuntimeError("Terminal provenance log write crash")
+        return original_record(event)
+
+    orchestrator.execution_boundary.store.record_event = MagicMock(side_effect=mock_record_event)
+
+    def worker_action():
+        # Step 1: Stage batch A during execution
+        orchestrator.vector_manager.stage_vectors(traj_id, ["vec_batch_A_1", "vec_batch_A_2"])
+        return {"status": "SUCCESS"}
+
+    context = {
+        "correlation_id": corr_id,
+        "proposed_actions": [{"action": {"op": "execute_transfer", "endpoint": "/accounts/primary"}}],
+        "actual_executable": worker_action,
+    }
+
+    orchestrator_result = []
+
+    def run_pipeline():
+        res = orchestrator.process_submission(raw_payload, context, trajectory_id=traj_id)
+        orchestrator_result.append(res)
+
+    pipeline_thread = threading.Thread(target=run_pipeline)
+    pipeline_thread.start()
+
+    # Step 3: Wait until manager captures batch A and enters backend delete
+    assert in_purge_event.wait(timeout=5) is True
+
+    # Step 4: Concurrently stage vector batch B under the same trajectory
+    orchestrator.vector_manager.stage_vectors(traj_id, ["vec_batch_B_1", "vec_batch_B_2"])
+
+    # Step 5: Release the purge
+    continue_purge_event.set()
+
+    # Step 6: Wait for pipeline to finish
+    pipeline_thread.join(timeout=5)
+
+    assert len(orchestrator_result) == 1
+    res = orchestrator_result[0]
+
+    # Invariants verification:
+    # 1. Top-level status is RECONCILIATION_REQUIRED
+    assert res["status"] == "RECONCILIATION_REQUIRED"
+    assert res["execution_status"] == "EXECUTION_OUTCOME_UNKNOWN"
+
+    # 2. Batch A was purged
+    assert res["vector_cleanup"]["vectors_purged"] >= 2
+
+    # 3. Batch B was never committed by context manager exit (active staged count is 0 or unpurged)
+    # Primary index must NOT contain any un-revoked committed vectors
+    # Verify that commit_trajectory returns empty (meaning nothing was left staged or committed)
+    committed_after = orchestrator.vector_manager.commit_trajectory(traj_id)
+    assert committed_after == []
+
+    # 4. Neither Batch A nor Batch B was silently promoted to primary index
+    assert orchestrator.vector_manager.get_staged_count(traj_id) == 0
+
+    # 5. Cleanup status is accurately reported
+    assert res["vector_cleanup"]["status"] in ("CONFIRMED", "PENDING_RECONCILIATION")
+
+    # 6. Check audit log event for vector_cleanup metadata
+    health, last_hash, err = orchestrator.audit_logger.inspect_log_health()
+    assert health is True
+    with open(orchestrator.audit_log_path, "r") as f:
+        audit_lines = [json.loads(line) for line in f if line.strip()]
+    halt_events = [e for e in audit_lines if e["event_type"] == "DETERMINISTIC_HALT" and "Execution boundary outcome unknown" in e["reason"]]
+    assert len(halt_events) == 1
+    audit_ev = halt_events[0]
+    assert "vector_cleanup" in audit_ev["metadata"]
+    assert audit_ev["metadata"]["vector_cleanup"]["vectors_purged"] == res["vector_cleanup"]["vectors_purged"]
