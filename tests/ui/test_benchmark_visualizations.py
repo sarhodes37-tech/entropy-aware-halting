@@ -115,8 +115,9 @@ def navigate_to_benchmarks(page, base_url):
     page.goto(f"{base_url}/index.html", wait_until="networkidle")
     page.click("#tab-benchmarks")
     page.wait_for_selector("#view-benchmarks:not(.hidden)", state="visible")
-    # Wait for benchmark baseline rows to populate
+    # Wait for benchmark baseline rows and threshold rows to populate
     page.wait_for_selector("#benchmark-baselines-tbody tr", state="visible")
+    page.wait_for_selector("#benchmark-thresholds-tbody tr", state="visible")
 
 
 def test_native_svg_charts_rendered_with_aria_hidden(running_server):
@@ -252,6 +253,71 @@ def test_baseline_percentage_encoding_and_boundary_handling(running_server):
         browser.close()
 
 
+def verify_threshold_chart_table_equivalence(page):
+    """Extract visible threshold table values and compare against plotted chart markers with data-* attributes."""
+    # 1. Extract visible table rows
+    table_threshold_values = page.evaluate(r"""() => {
+        const rows = document.querySelectorAll('#benchmark-thresholds-table tbody tr');
+        const results = {};
+        rows.forEach(tr => {
+            const th = tr.querySelector('th');
+            if (!th) return;
+            const zRaw = th.textContent.replace(/Z\s*=\s*/i, '').trim();
+            const zNum = parseFloat(zRaw);
+            const tds = Array.from(tr.querySelectorAll('td')).map(td => td.textContent.trim());
+            // Columns: 0: TC, 1: FC, 2: TR, 3: FR, 4: Precision %, 5: Recall %
+            if (tds.length >= 6) {
+                results[String(zNum)] = {
+                    precision: tds[4].replace('%', '').trim(),
+                    recall: tds[5].replace('%', '').trim()
+                };
+            }
+        });
+        return results;
+    }""")
+
+    assert len(table_threshold_values) > 0, "No rows found in #benchmark-thresholds-table"
+
+    # 2. Extract plotted chart markers
+    chart_thresh_points = page.evaluate("""() => {
+        const results = [];
+        document.querySelectorAll('#benchmark-thresholds-chart-viewport svg [data-threshold]').forEach(el => {
+            results.push({
+                threshold: el.getAttribute('data-threshold'),
+                series: el.getAttribute('data-series'),
+                value: el.getAttribute('data-value'),
+                tag: el.tagName.toLowerCase()
+            });
+        });
+        return results;
+    }""")
+
+    assert len(chart_thresh_points) > 0, "No threshold points plotted in SVG"
+
+    # Compare each table row with plotted points
+    for z_str, table_vals in table_threshold_values.items():
+        z_float = float(z_str)
+        for series in ['precision', 'recall']:
+            expected_val = table_vals[series]
+            # Find matching markers
+            matching_markers = [
+                pt for pt in chart_thresh_points
+                if abs(float(pt['threshold']) - z_float) < 1e-4 and pt['series'] == series and pt['tag'] in ('circle', 'rect')
+            ]
+
+            if expected_val in ('N/A', '—', '-', 'null', ''):
+                # Missing/invalid measurement must NOT be plotted as a valid marker
+                assert len(matching_markers) == 0, f"Missing observation Z={z_str} {series} should not be plotted"
+            else:
+                assert len(matching_markers) == 1, f"Expected 1 marker for Z={z_str} {series}, found {len(matching_markers)}"
+                marker_val = float(matching_markers[0]['value'])
+                table_num = float(expected_val)
+                assert abs(marker_val - table_num) < 1e-2, (
+                    f"Mismatch for Z={z_str} {series}: chart marker={marker_val}, table={table_num}"
+                )
+    return True
+
+
 def test_deterministic_chart_to_table_numerical_equivalence(running_server):
     if not PLAYWRIGHT_AVAILABLE:
         pytest.skip("Playwright not installed")
@@ -335,18 +401,7 @@ def test_deterministic_chart_to_table_numerical_equivalence(running_server):
             assert abs(float(pt["latency"]) - float(matched_t["avg_latency_ms"])) < 1e-2
             assert abs(float(pt["tokens"]) - float(matched_t["total_tokens_spent"])) < 1e-2
 
-        chart_thresh_points = page.evaluate("""() => {
-            const results = [];
-            document.querySelectorAll('#benchmark-thresholds-chart-viewport svg [data-threshold]').forEach(el => {
-                results.push({
-                    threshold: el.getAttribute('data-threshold'),
-                    series: el.getAttribute('data-series'),
-                    value: el.getAttribute('data-value')
-                });
-            });
-            return results;
-        }""")
-        assert len(chart_thresh_points) > 0
+        verify_threshold_chart_table_equivalence(page)
         browser.close()
 
 
@@ -462,7 +517,7 @@ def test_forced_colors_and_reduced_motion(running_server):
 
 
 def test_negative_control_mismatched_chart_table_values_detected(running_server):
-    """Negative control: Verify that chart-table equivalence check fails when a plotted value diverges from table value."""
+    """Negative control: Verify that threshold chart-table equivalence assertion fails when a plotted value diverges from table value, and passes when restored."""
     if not PLAYWRIGHT_AVAILABLE:
         pytest.skip("Playwright not installed")
     with sync_playwright() as p:
@@ -470,35 +525,38 @@ def test_negative_control_mismatched_chart_table_values_detected(running_server)
         page = browser.new_page()
         navigate_to_benchmarks(page, running_server)
 
-        # Deliberately distort a chart data-* attribute to simulate rendering divergence
+        # Baseline check: equivalence passes initially
+        assert verify_threshold_chart_table_equivalence(page) is True
+
+        # Deliberately distort a threshold marker's data-value
         page.evaluate("""() => {
-            const target = document.querySelector('#benchmark-baselines-chart-viewport svg text[data-baseline="Combined Gating"][data-metric="precision_pct"]');
-            if (target) {
-                target.setAttribute('data-value', '42.0');
+            const marker = document.querySelector('#benchmark-thresholds-chart-viewport svg circle[data-threshold="2"][data-series="precision"], #benchmark-thresholds-chart-viewport svg circle[data-threshold="2.0"][data-series="precision"]');
+            if (marker) {
+                window._origThreshVal = marker.getAttribute('data-value');
+                marker.setAttribute('data-value', '42.0');
             }
         }""")
 
-        chart_val = page.evaluate("""() => {
-            const target = document.querySelector('#benchmark-baselines-chart-viewport svg text[data-baseline="Combined Gating"][data-metric="precision_pct"]');
-            return target ? target.getAttribute('data-value') : null;
+        # Confirm that the EXACT SAME equivalence assertion helper fails on the distorted value
+        divergence_caught = False
+        try:
+            verify_threshold_chart_table_equivalence(page)
+        except AssertionError as exc:
+            divergence_caught = True
+            assert "Mismatch for Z=2" in str(exc) or "42.0" in str(exc)
+
+        assert divergence_caught is True, "Equivalence assertion must raise AssertionError when threshold chart value diverges from table"
+
+        # Restore original value
+        page.evaluate("""() => {
+            const marker = document.querySelector('#benchmark-thresholds-chart-viewport svg circle[data-threshold="2"][data-series="precision"], #benchmark-thresholds-chart-viewport svg circle[data-threshold="2.0"][data-series="precision"]');
+            if (marker && window._origThreshVal) {
+                marker.setAttribute('data-value', window._origThreshVal);
+            }
         }""")
 
-        # Table value for Combined Gating precision is 100%
-        table_val = page.evaluate("""() => {
-            const row = Array.from(document.querySelectorAll('#benchmark-baselines-table tbody tr')).find(tr => {
-                const th = tr.querySelector('th');
-                return th && th.textContent.trim().toUpperCase() === 'COMBINED GATING';
-            });
-            if (!row) return null;
-            return row.querySelectorAll('td')[4].textContent.replace('%', '').trim();
-        }""")
-
-        # The negative control asserts that this discrepancy is detected
-        assert chart_val == '42.0'
-        assert table_val == '100%' or table_val == '100'
-        # Check that equivalence fails as expected
-        discrepancy_detected = abs(float(chart_val) - float(table_val)) > 1e-2
-        assert discrepancy_detected is True, "Equivalence check must detect value divergence between chart and table"
+        # Confirm that the exact same equivalence assertion passes after restoration
+        assert verify_threshold_chart_table_equivalence(page) is True
         browser.close()
 
 
