@@ -1,25 +1,33 @@
 """
 Unit test suite for epistemicos.action_policy module.
 Validates ActionPolicy evaluation, ActionRequest, PolicyDecision,
-and related action policy and side-effect engine functionality.
+and related action policy and side-effect engine security invariants.
 """
 
-import time
 import pytest
+from epistemicos import ActionPolicy, ActionRequest
 from epistemicos.action_policy import (
-    ActionCategory,
-    ActionPolicy,
-    ActionRequest,
-    ActionRegistry,
     PolicyDecision,
-    RegisteredActionDefinition,
     SideEffectPolicyEngine,
     TypedHumanApprovalRecord,
 )
 
 
-class TestActionPolicyEvaluate:
-    """Test suite for ActionPolicy.evaluate and related authorization behavior."""
+class TestActionPolicySecurityContract:
+    """
+    Test suite for ActionPolicy.evaluate verifying behavioral invariants,
+    failure modes, and documentation of the preliminary action allowlist contract.
+    """
+
+    def test_public_package_imports(self):
+        """Validates that ActionRequest, ActionPolicy, and ActionPolicyDecision are exposed at package root."""
+        from epistemicos import ActionPolicy as RootActionPolicy
+        from epistemicos import ActionRequest as RootActionRequest
+        from epistemicos import ActionPolicyDecision as RootActionPolicyDecision
+
+        assert RootActionPolicy is ActionPolicy
+        assert RootActionRequest is ActionRequest
+        assert RootActionPolicyDecision is PolicyDecision
 
     def test_evaluate_allowed_action(self):
         """Validates that an action in allowed_actions produces an allowed PolicyDecision."""
@@ -41,48 +49,119 @@ class TestActionPolicyEvaluate:
         assert decision.allowed is False
         assert decision.reason == "Action not explicitly allowed"
 
-    def test_evaluate_default_empty_allowed_actions(self):
-        """Validates default initialization of ActionPolicy with None/empty allowed_actions."""
+    def test_evaluate_same_action_different_resources(self):
+        """
+        Validates the security contract that ActionPolicy is strictly an action-name allowlist.
+        Both requests with the same allowed action against two different resources (one public,
+        one sensitive) are allowed at this preliminary filter stage. Comprehensive resource-level
+        scoping and path restrictions must be enforced downstream by SideEffectPolicyEngine
+        or TrustedExecutionBoundary.
+        """
+        policy = ActionPolicy(allowed_actions={"read_file"})
+        req_public = ActionRequest(action="read_file", resource="/public/readme.txt")
+        req_secret = ActionRequest(action="read_file", resource="/etc/shadow")
+
+        dec_public = policy.evaluate(req_public)
+        dec_secret = policy.evaluate(req_secret)
+
+        # Under the action-name-only contract, both evaluate to allowed:
+        assert dec_public.allowed is True
+        assert dec_secret.allowed is True
+        assert dec_public.reason == "Allowed by default"
+        assert dec_secret.reason == "Allowed by default"
+
+    def test_evaluate_context_preservation_and_intentional_omission(self):
+        """
+        Validates that ActionRequest preserves context metadata, but ActionPolicy intentionally
+        does not use context to grant or deny access (contract is action-name-only).
+        """
+        policy = ActionPolicy(allowed_actions={"read_file"})
+        ctx_admin = {"role": "admin", "privileged": True}
+        ctx_unauth = {"role": "guest", "privileged": False}
+
+        req_admin = ActionRequest(action="read_file", resource="/data", context=ctx_admin)
+        req_guest = ActionRequest(action="read_file", resource="/data", context=ctx_unauth)
+        req_denied_admin = ActionRequest(action="delete_db", resource="/data", context=ctx_admin)
+
+        assert req_admin.context == ctx_admin
+        assert req_guest.context == ctx_unauth
+
+        # Context does not alter ActionPolicy evaluation:
+        assert policy.evaluate(req_admin).allowed is True
+        assert policy.evaluate(req_guest).allowed is True
+        assert policy.evaluate(req_denied_admin).allowed is False
+
+    def test_evaluate_missing_empty_and_malformed_actions(self):
+        """Validates fail-closed denial for missing, empty, or non-string action values."""
+        policy = ActionPolicy(allowed_actions={"", "   ", "read_file"})
+
+        # Empty string
+        dec_empty = policy.evaluate(ActionRequest(action=""))
+        assert dec_empty.allowed is False
+        assert dec_empty.reason == "Action not explicitly allowed"
+
+        # None as action
+        dec_none = policy.evaluate(ActionRequest(action=None))  # type: ignore
+        assert dec_none.allowed is False
+        assert dec_none.reason == "Action not explicitly allowed"
+
+        # Non-string action type
+        dec_int = policy.evaluate(ActionRequest(action=12345))  # type: ignore
+        assert dec_int.allowed is False
+        assert dec_int.reason == "Action not explicitly allowed"
+
+    def test_evaluate_invalid_request_type(self):
+        """Validates that passing a non-ActionRequest object raises TypeError."""
+        policy = ActionPolicy(allowed_actions={"read_file"})
+
+        with pytest.raises(TypeError, match="Expected ActionRequest instance"):
+            policy.evaluate("read_file")  # type: ignore
+
+        with pytest.raises(TypeError, match="Expected ActionRequest instance"):
+            policy.evaluate({"action": "read_file"})  # type: ignore
+
+    def test_evaluate_mutation_of_caller_allowed_actions_set(self):
+        """Validates that mutating the caller's set after initialization does not alter policy state."""
+        caller_set = {"read_data"}
+        policy = ActionPolicy(allowed_actions=caller_set)
+
+        # Mutate caller set after policy initialization
+        caller_set.add("delete_db")
+
+        # Action added to caller_set should still be denied by the policy
+        assert policy.evaluate(ActionRequest(action="delete_db")).allowed is False
+        assert "delete_db" not in policy.allowed_actions
+
+    def test_independent_policy_instances(self):
+        """Validates that distinct ActionPolicy instances have independent, non-shared state."""
+        pol1 = ActionPolicy(allowed_actions={"action_a"})
+        pol2 = ActionPolicy(allowed_actions={"action_b"})
+
+        req_a = ActionRequest(action="action_a")
+        req_b = ActionRequest(action="action_b")
+
+        assert pol1.evaluate(req_a).allowed is True
+        assert pol1.evaluate(req_b).allowed is False
+
+        assert pol2.evaluate(req_a).allowed is False
+        assert pol2.evaluate(req_b).allowed is True
+
+    def test_evaluate_default_and_explicit_empty_allowed_actions(self):
+        """Validates default initialization of ActionPolicy with None or empty set denies all actions."""
         policy_default = ActionPolicy()
         assert policy_default.allowed_actions == set()
+        assert policy_default.evaluate(ActionRequest(action="any_action")).allowed is False
 
-        request = ActionRequest(action="any_action")
-        decision = policy_default.evaluate(request)
-        assert decision.allowed is False
-        assert decision.reason == "Action not explicitly allowed"
-
-    def test_evaluate_explicit_empty_allowed_actions(self):
-        """Validates ActionPolicy initialized with an empty set denies actions."""
-        policy = ActionPolicy(allowed_actions=set())
-        request = ActionRequest(action="any_action")
-        decision = policy.evaluate(request)
-        assert decision.allowed is False
-        assert decision.reason == "Action not explicitly allowed"
+        policy_explicit_empty = ActionPolicy(allowed_actions=set())
+        assert policy_explicit_empty.evaluate(ActionRequest(action="any_action")).allowed is False
 
     def test_evaluate_case_sensitivity(self):
         """Validates exact case sensitivity of action matching."""
         policy = ActionPolicy(allowed_actions={"read_file"})
-        request_upper = ActionRequest(action="READ_FILE")
-        decision = policy.evaluate(request_upper)
-        assert decision.allowed is False
-        assert decision.reason == "Action not explicitly allowed"
+        assert policy.evaluate(ActionRequest(action="READ_FILE")).allowed is False
+        assert policy.evaluate(ActionRequest(action="read_file")).allowed is True
 
-    def test_action_request_fields_preservation(self):
-        """Validates that ActionRequest preserves action, resource, and context fields."""
-        ctx = {"user_id": "usr_123", "role": "auditor"}
-        req = ActionRequest(action="inspect_log", resource="/var/log/audit.log", context=ctx)
-        assert req.action == "inspect_log"
-        assert req.resource == "/var/log/audit.log"
-        assert req.context == ctx
-
-    def test_action_request_default_fields(self):
-        """Validates default values for optional ActionRequest fields."""
-        req = ActionRequest(action="status")
-        assert req.action == "status"
-        assert req.resource is None
-        assert req.context is None
-
-    def test_policy_decision_dataclass_fields(self):
+    def test_policy_decision_dataclass_equality(self):
         """Validates PolicyDecision attribute assignment and equality."""
         dec1 = PolicyDecision(allowed=True, reason="Allowed by default")
         dec2 = PolicyDecision(allowed=True, reason="Allowed by default")
@@ -94,194 +173,144 @@ class TestActionPolicyEvaluate:
         assert dec1 != dec3
 
 
-class TestActionPolicyEdgeCasesAndEngine:
-    """Additional unit tests ensuring comprehensive coverage of action_policy.py."""
+class TestSideEffectPolicyEngineInvariants:
+    """
+    Focused unit tests for SideEffectPolicyEngine security invariants,
+    avoiding duplicate coverage already asserted in test_phase2_egress_controls.py.
+    """
 
-    def test_action_registry_custom_actions_and_lookup(self):
-        """Validates custom actions registration, lookup, and fallback classification."""
-        custom_action = RegisteredActionDefinition(
-            operation_id="custom_analytics",
-            category=ActionCategory.READ_ONLY_LOCAL,
-            description="Custom local analytics read",
-            requires_human_approval=False,
-            allowed_resources={"*"},
-            is_externally_consequential=False,
+    def test_signature_binds_all_signed_fields(self):
+        """
+        Validates that TypedHumanApprovalRecord HMAC signature binds every field:
+        tampering with any single signed field invalidates the approval verification.
+        """
+        secret = "TEST_SECRET"
+        engine = SideEffectPolicyEngine(signing_secret=secret)
+        payload = {"op": "publish"}
+        digest = engine.compute_canonical_digest(payload)
+
+        base_fields = {
+            "approval_id": "APP-FIELD-1",
+            "operation_id": "package_publish",
+            "target_resource": "https://registry.npmjs.org/pkg",
+            "canonical_args_digest": digest,
+            "task_id": "TASK-FIELD-1",
+            "policy_version": "1.0.0",
+            "approved_by_principal": "security_admin",
+            "timestamp": "2026-01-01T00:00:00Z",
+        }
+
+        valid_sig = engine.compute_approval_signature((
+            base_fields["approval_id"],
+            base_fields["operation_id"],
+            base_fields["target_resource"],
+            base_fields["canonical_args_digest"],
+            base_fields["task_id"],
+            base_fields["policy_version"],
+            base_fields["approved_by_principal"],
+        ))
+
+        # Baseline valid verification
+        valid_rec = TypedHumanApprovalRecord(signature=valid_sig, **base_fields)
+        ok, msg = engine.verify_approval_record(
+            record=valid_rec,
+            expected_operation_id=base_fields["operation_id"],
+            expected_target=base_fields["target_resource"],
+            expected_payload=payload,
+            expected_task_id=base_fields["task_id"],
+            expected_policy_version=base_fields["policy_version"],
         )
-        registry = ActionRegistry(custom_actions={"custom_analytics": custom_action})
-        assert registry.lookup_action("custom_analytics") == custom_action
-        assert registry.classify_action("custom_analytics") == ActionCategory.READ_ONLY_LOCAL
+        assert ok is True
+        assert msg == "Approval record validated"
 
-        # Fallback to STATE_MUTATION for unknown action
-        assert registry.classify_action("completely_unknown_op") == ActionCategory.STATE_MUTATION
-
-    def test_compute_canonical_digest_variants(self):
-        """Validates compute_canonical_digest with bytes, str, dict, and non-serializable object."""
-        engine = SideEffectPolicyEngine(signing_secret="TEST_SECRET")
-
-        # Bytes
-        d_bytes = engine.compute_canonical_digest(b"test_payload")
-        assert isinstance(d_bytes, str) and len(d_bytes) == 64
-
-        # String
-        d_str = engine.compute_canonical_digest("test_payload")
-        assert d_bytes == d_str
-
-        # Dict JSON serializable
-        d_dict = engine.compute_canonical_digest({"b": 2, "a": 1})
-        d_dict2 = engine.compute_canonical_digest({"a": 1, "b": 2})
-        assert d_dict == d_dict2  # sort_keys ensures identical hash
-
-        # Object causing json dumps fallback (e.g. object with circular ref or custom type)
-        from unittest.mock import patch
-        with patch("json.dumps", side_effect=TypeError("cannot serialize")):
-            d_fallback = engine.compute_canonical_digest({"key": "val"})
-            assert isinstance(d_fallback, str) and len(d_fallback) == 64
-
-    def test_compute_approval_signature_missing_secret(self):
-        """Validates ValueError when compute_approval_signature has no signing secret."""
-        engine = SideEffectPolicyEngine(signing_secret=None)
-        engine.signing_secret = None
-        with pytest.raises(ValueError, match="No signing secret configured"):
-            engine.compute_approval_signature(("a", "b", "c"))
-
-    def test_verify_approval_record_invalid_record(self):
-        """Validates rejection of non-TypedHumanApprovalRecord input."""
-        engine = SideEffectPolicyEngine(signing_secret="SECRET")
-        valid, msg = engine.verify_approval_record(
-            record=None,  # type: ignore
-            expected_operation_id="op",
-            expected_target="tgt",
-            expected_payload={},
-            expected_task_id="tsk",
+        # Tampering with approved_by_principal invalidates signature
+        tampered_rec = TypedHumanApprovalRecord(
+            approval_id=base_fields["approval_id"],
+            operation_id=base_fields["operation_id"],
+            target_resource=base_fields["target_resource"],
+            canonical_args_digest=base_fields["canonical_args_digest"],
+            task_id=base_fields["task_id"],
+            policy_version=base_fields["policy_version"],
+            approved_by_principal="attacker_principal",
+            timestamp="2026-01-01T00:00:00Z",
+            signature=valid_sig,
         )
-        assert valid is False
-        assert msg == "Invalid or missing approval record"
+        ok_tampered, msg_tampered = engine.verify_approval_record(
+            record=tampered_rec,
+            expected_operation_id=base_fields["operation_id"],
+            expected_target=base_fields["target_resource"],
+            expected_payload=payload,
+            expected_task_id=base_fields["task_id"],
+        )
+        assert ok_tampered is False
+        assert "Approval signature verification failed" in msg_tampered
 
-    def test_verify_approval_record_missing_secret(self):
-        """Validates rejection when engine has no signing secret."""
-        engine = SideEffectPolicyEngine(signing_secret=None)
-        engine.signing_secret = None
+    def test_expired_approval_record_with_explicit_timestamp(self):
+        """Validates that expired TypedHumanApprovalRecord fails closed even with a valid signature."""
+        secret = "TEST_SECRET"
+        engine = SideEffectPolicyEngine(signing_secret=secret)
+        payload = {"data": "test"}
+        digest = engine.compute_canonical_digest(payload)
+        expires_at = 1700000000.0
+
+        sig = engine.compute_approval_signature((
+            "APP-EXP-1", "package_publish", "https://registry.npmjs.org",
+            digest, "TASK-EXP", "1.0.0", "admin", str(expires_at)
+        ))
+
         record = TypedHumanApprovalRecord(
-            approval_id="A1",
-            operation_id="op",
-            target_resource="tgt",
-            canonical_args_digest="digest",
-            task_id="tsk",
+            approval_id="APP-EXP-1",
+            operation_id="package_publish",
+            target_resource="https://registry.npmjs.org",
+            canonical_args_digest=digest,
+            task_id="TASK-EXP",
             policy_version="1.0.0",
             approved_by_principal="admin",
             timestamp="2026-01-01T00:00:00Z",
-            signature="sig",
+            signature=sig,
+            expires_at=expires_at,
         )
+
+        # Verification at time > expires_at must fail
         valid, msg = engine.verify_approval_record(
             record=record,
-            expected_operation_id="op",
-            expected_target="tgt",
-            expected_payload={},
-            expected_task_id="tsk",
-        )
-        assert valid is False
-        assert msg == "No signing secret configured for approval verification"
-
-    def test_verify_approval_record_mismatches(self):
-        """Validates individual mismatch checks in verify_approval_record."""
-        secret = "TEST_SECRET"
-        engine = SideEffectPolicyEngine(signing_secret=secret)
-        payload = {"param": "val"}
-        digest = engine.compute_canonical_digest(payload)
-
-        base_kwargs = {
-            "approval_id": "APP_1",
-            "operation_id": "op_test",
-            "target_resource": "res_target",
-            "canonical_args_digest": digest,
-            "task_id": "task_1",
-            "policy_version": "1.0.0",
-            "approved_by_principal": "admin",
-            "timestamp": "2026-01-01T00:00:00Z",
-        }
-        sig = engine.compute_approval_signature((
-            base_kwargs["approval_id"],
-            base_kwargs["operation_id"],
-            base_kwargs["target_resource"],
-            base_kwargs["canonical_args_digest"],
-            base_kwargs["task_id"],
-            base_kwargs["policy_version"],
-            base_kwargs["approved_by_principal"],
-        ))
-        record = TypedHumanApprovalRecord(signature=sig, **base_kwargs)
-
-        # 1. Operation mismatch
-        valid, msg = engine.verify_approval_record(
-            record=record,
-            expected_operation_id="different_op",
-            expected_target="res_target",
+            expected_operation_id="package_publish",
+            expected_target="https://registry.npmjs.org",
             expected_payload=payload,
-            expected_task_id="task_1",
+            expected_task_id="TASK-EXP",
+            current_time=expires_at + 10.0,
         )
         assert valid is False
-        assert "Approval operation mismatch" in msg
+        assert "Approval record expired" in msg
 
-        # 2. Target mismatch
-        valid, msg = engine.verify_approval_record(
-            record=record,
-            expected_operation_id="op_test",
-            expected_target="different_target",
-            expected_payload=payload,
-            expected_task_id="task_1",
-        )
-        assert valid is False
-        assert "Approval target mismatch" in msg
-
-        # 3. Payload digest mismatch
-        valid, msg = engine.verify_approval_record(
-            record=record,
-            expected_operation_id="op_test",
-            expected_target="res_target",
-            expected_payload={"different": "payload"},
-            expected_task_id="task_1",
-        )
-        assert valid is False
-        assert "Approval payload digest mismatch" in msg
-
-        # 4. Task mismatch
-        valid, msg = engine.verify_approval_record(
-            record=record,
-            expected_operation_id="op_test",
-            expected_target="res_target",
-            expected_payload=payload,
-            expected_task_id="different_task",
-        )
-        assert valid is False
-        assert "Approval task mismatch" in msg
-
-        # 5. Policy version mismatch
-        valid, msg = engine.verify_approval_record(
-            record=record,
-            expected_operation_id="op_test",
-            expected_target="res_target",
-            expected_payload=payload,
-            expected_task_id="task_1",
-            expected_policy_version="2.0.0",
-        )
-        assert valid is False
-        assert "Approval policy version mismatch" in msg
-
-        # 6. Bad signature
-        bad_sig_record = TypedHumanApprovalRecord(signature="invalid_sig", **base_kwargs)
-        valid, msg = engine.verify_approval_record(
-            record=bad_sig_record,
-            expected_operation_id="op_test",
-            expected_target="res_target",
-            expected_payload=payload,
-            expected_task_id="task_1",
-        )
-        assert valid is False
-        assert "Approval signature verification failed" in msg
-
-    def test_violation_counts_tracking(self):
-        """Validates violation count tracking on correlation IDs."""
+    def test_unregistered_action_fails_closed(self):
+        """Validates that unregistered actions fail closed with scope violation recording."""
         engine = SideEffectPolicyEngine(signing_secret="TEST_SECRET")
-        assert engine.get_violation_count("corr_xyz") == 0
-        assert engine.record_scope_violation("corr_xyz") == 1
-        assert engine.record_scope_violation("corr_xyz") == 2
-        assert engine.get_violation_count("corr_xyz") == 2
+        allowed, reason = engine.evaluate_side_effect_authorization(
+            operation_id="completely_unregistered_action",
+            target_resource="http://example.com",
+            payload={},
+            task_id="TASK-1",
+            correlation_id="CORR-UNREG-1",
+        )
+        assert allowed is False
+        assert "is unregistered" in reason
+        assert engine.get_violation_count("CORR-UNREG-1") == 1
+
+    def test_canonical_digest_fallback_behavior_and_limitation(self):
+        """
+        Documents and asserts the current behavior of the json.dumps fallback in compute_canonical_digest.
+
+        ARCHITECTURAL NOTE:
+        When json.dumps raises an exception, the engine falls back to `str(payload).encode("utf-8")`.
+        This produces a valid SHA-256 hash, but `str()` serialization is NOT canonical across
+        different object formats or memory addresses (e.g. object default reprs). This test
+        confirms the current fallback behavior without endorsing it as collision-resistant canonicalization.
+        """
+        engine = SideEffectPolicyEngine(signing_secret="TEST_SECRET")
+        from unittest.mock import patch
+
+        with patch("json.dumps", side_effect=TypeError("Simulation of non-serializable object")):
+            fallback_digest = engine.compute_canonical_digest({"unserializable": True})
+            assert isinstance(fallback_digest, str)
+            assert len(fallback_digest) == 64

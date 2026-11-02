@@ -53,13 +53,28 @@ class PolicyDecision:
 
 class ActionPolicy:
     """
-    Action authorization policy evaluating requested actions against allowed actions.
+    Lightweight preliminary action allowlist filter.
+
+    SECURITY CONTRACT:
+    - ActionPolicy is deliberately an action-name-only allowlist filter.
+    - It evaluates only whether `request.action` is present in `self.allowed_actions`.
+    - It is NOT an authorization boundary and does NOT enforce resource-level scopes,
+      principal identity assertions, or typed human approval requirements.
+    - `request.resource` and `request.context` are intentionally ignored by this preliminary
+      filter. Comprehensive resource allowlists, cryptographic principal verification, and
+      typed human approvals are enforced downstream by `SideEffectPolicyEngine`,
+      `AuthorizationAuthority`, and `TrustedExecutionBoundary`.
     """
 
     def __init__(self, allowed_actions: Optional[Set[str]] = None):
+        # Store a defensive copy to prevent caller mutation of internal policy state
         self.allowed_actions: Set[str] = set(allowed_actions) if allowed_actions is not None else set()
 
     def evaluate(self, request: ActionRequest) -> PolicyDecision:
+        if not isinstance(request, ActionRequest):
+            raise TypeError(f"Expected ActionRequest instance, got {type(request).__name__}")
+        if not isinstance(request.action, str) or not request.action:
+            return PolicyDecision(allowed=False, reason="Action not explicitly allowed")
         if request.action not in self.allowed_actions:
             return PolicyDecision(allowed=False, reason="Action not explicitly allowed")
         return PolicyDecision(allowed=True, reason="Allowed by default")
@@ -241,6 +256,15 @@ class SideEffectPolicyEngine:
         self._violation_counts: Dict[str, int] = {}  # Map correlation_id / session_id to attempt count
 
     def compute_canonical_digest(self, payload: Any) -> str:
+        """
+        Computes SHA-256 digest over canonicalized payload representation.
+
+        ARCHITECTURAL LIMITATION:
+        The `str(payload)` exception fallback produces non-canonical string representations
+        vulnerable to formatting ambiguities and does not guarantee collision resistance for
+        complex arbitrary Python objects. Production security-sensitive binding requires
+        strict RFC 8785 (JCS) canonical JSON serialization without lossy fallback.
+        """
         if isinstance(payload, bytes):
             cb = payload
         elif isinstance(payload, str):
