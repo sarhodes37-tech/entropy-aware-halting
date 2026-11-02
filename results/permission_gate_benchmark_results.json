@@ -1,7 +1,7 @@
 {
   "environment": {
-    "evaluated_source_commit_sha": "21ace4c13a9cd0c6aaa7fdd74a953a370ddf2f31",
-    "source_branch": "jules-4904151912201529320-7183f437",
+    "evaluated_source_commit_sha": "43f5e3ac577d78b964f74929f5e7a6fe40aecb3e",
+    "source_branch": "bolt-permission-gate-regex-cache-4904151912201529320",
     "source_working_tree_clean": true,
     "source_working_tree_status": "CLEAN",
     "results_provenance_note": "evaluated_source_commit_sha identifies the exact source commit being benchmarked. The generated results JSON artifact itself is committed subsequently into the repository.",
@@ -17,21 +17,21 @@
       "repetitions": 30,
       "methodology": "Paired alternating execution, 30 repetitions, p95 nearest-rank",
       "baseline_uncached": {
-        "median_total_sec": 0.167652,
-        "p95_total_sec": 0.169537,
-        "mean_total_sec": 0.167751,
-        "median_ms_per_eval": 0.16765,
-        "p95_ms_per_eval": 0.16954,
-        "mean_ms_per_eval": 0.16775
+        "median_total_sec": 0.169398,
+        "p95_total_sec": 0.181629,
+        "mean_total_sec": 0.172295,
+        "median_ms_per_eval": 0.1694,
+        "p95_ms_per_eval": 0.18163,
+        "mean_ms_per_eval": 0.17229
       },
       "optimized_cold": {
-        "median_total_sec": 0.029193,
-        "p95_total_sec": 0.029729,
-        "mean_total_sec": 0.029268,
-        "median_ms_per_eval": 0.02919,
-        "p95_ms_per_eval": 0.02973,
-        "mean_ms_per_eval": 0.02927,
-        "cold_vs_baseline_ratio": 0.17,
+        "median_total_sec": 0.030357,
+        "p95_total_sec": 0.031997,
+        "mean_total_sec": 0.0305,
+        "median_ms_per_eval": 0.03036,
+        "p95_ms_per_eval": 0.032,
+        "mean_ms_per_eval": 0.0305,
+        "cold_vs_baseline_ratio": 0.18,
         "single_trial_cache_stats": {
           "hits": 31968,
           "misses": 32,
@@ -40,15 +40,15 @@
         }
       },
       "optimized_warm": {
-        "median_total_sec": 0.029175,
-        "p95_total_sec": 0.029981,
-        "mean_total_sec": 0.029294,
+        "median_total_sec": 0.029183,
+        "p95_total_sec": 0.031134,
+        "mean_total_sec": 0.029453,
         "median_ms_per_eval": 0.02918,
-        "p95_ms_per_eval": 0.02998,
-        "mean_ms_per_eval": 0.02929
+        "p95_ms_per_eval": 0.03113,
+        "mean_ms_per_eval": 0.02945
       },
-      "relative_speedup_warm": 5.75,
-      "percent_latency_reduction_warm": 82.6,
+      "relative_speedup_warm": 5.8,
+      "percent_latency_reduction_warm": 82.77,
       "final_cache_stats": {
         "hits": 991968,
         "misses": 32,
@@ -61,21 +61,21 @@
       "repetitions": 30,
       "methodology": "Paired alternating execution, 30 repetitions, p95 nearest-rank",
       "baseline_uncached": {
-        "median_total_sec": 0.152386,
-        "p95_total_sec": 0.154332,
-        "mean_total_sec": 0.152506,
-        "median_ms_per_eval": 0.07619,
-        "p95_ms_per_eval": 0.07717,
-        "mean_ms_per_eval": 0.07625
+        "median_total_sec": 0.153778,
+        "p95_total_sec": 0.15602,
+        "mean_total_sec": 0.153748,
+        "median_ms_per_eval": 0.07689,
+        "p95_ms_per_eval": 0.07801,
+        "mean_ms_per_eval": 0.07687
       },
       "optimized_cold": {
-        "median_total_sec": 0.121922,
-        "p95_total_sec": 0.123248,
-        "mean_total_sec": 0.121976,
-        "median_ms_per_eval": 0.06096,
-        "p95_ms_per_eval": 0.06162,
-        "mean_ms_per_eval": 0.06099,
-        "cold_vs_baseline_ratio": 0.8,
+        "median_total_sec": 0.121469,
+        "p95_total_sec": 0.123522,
+        "mean_total_sec": 0.121766,
+        "median_ms_per_eval": 0.06073,
+        "p95_ms_per_eval": 0.06176,
+        "mean_ms_per_eval": 0.06088,
+        "cold_vs_baseline_ratio": 0.79,
         "single_trial_cache_stats": {
           "hits": 11998,
           "misses": 12002,
@@ -84,15 +84,15 @@
         }
       },
       "optimized_warm": {
-        "median_total_sec": 0.120824,
-        "p95_total_sec": 0.122831,
-        "mean_total_sec": 0.120944,
-        "median_ms_per_eval": 0.06041,
-        "p95_ms_per_eval": 0.06142,
-        "mean_ms_per_eval": 0.06047
+        "median_total_sec": 0.120914,
+        "p95_total_sec": 0.12308,
+        "mean_total_sec": 0.121136,
+        "median_ms_per_eval": 0.06046,
+        "p95_ms_per_eval": 0.06154,
+        "mean_ms_per_eval": 0.06057
       },
-      "relative_speedup_warm": 1.26,
-      "percent_latency_reduction_warm": 20.71,
+      "relative_speedup_warm": 1.27,
+      "percent_latency_reduction_warm": 21.37,
       "final_cache_stats": {
         "hits": 372118,
         "misses": 371882,
@@ -105,20 +105,20 @@
       "repetitions": 30,
       "methodology": "Paired alternating execution, 30 repetitions, p95 nearest-rank",
       "baseline_uncached": {
-        "median_total_sec": 0.079669,
-        "p95_total_sec": 0.080994,
-        "mean_total_sec": 0.079858,
-        "median_ms_per_eval": 0.07967,
-        "p95_ms_per_eval": 0.08099,
-        "mean_ms_per_eval": 0.07986
+        "median_total_sec": 0.081005,
+        "p95_total_sec": 0.084393,
+        "mean_total_sec": 0.081613,
+        "median_ms_per_eval": 0.08101,
+        "p95_ms_per_eval": 0.08439,
+        "mean_ms_per_eval": 0.08161
       },
       "optimized_cold": {
-        "median_total_sec": 0.045281,
-        "p95_total_sec": 0.046101,
-        "mean_total_sec": 0.045511,
-        "median_ms_per_eval": 0.04528,
-        "p95_ms_per_eval": 0.0461,
-        "mean_ms_per_eval": 0.04551,
+        "median_total_sec": 0.046255,
+        "p95_total_sec": 0.048209,
+        "mean_total_sec": 0.046506,
+        "median_ms_per_eval": 0.04626,
+        "p95_ms_per_eval": 0.04821,
+        "mean_ms_per_eval": 0.04651,
         "cold_vs_baseline_ratio": 0.57,
         "single_trial_cache_stats": {
           "hits": 10940,
@@ -128,15 +128,15 @@
         }
       },
       "optimized_warm": {
-        "median_total_sec": 0.016416,
-        "p95_total_sec": 0.016611,
-        "mean_total_sec": 0.016424,
-        "median_ms_per_eval": 0.01642,
-        "p95_ms_per_eval": 0.01661,
-        "mean_ms_per_eval": 0.01642
+        "median_total_sec": 0.016293,
+        "p95_total_sec": 0.01733,
+        "mean_total_sec": 0.016441,
+        "median_ms_per_eval": 0.01629,
+        "p95_ms_per_eval": 0.01733,
+        "mean_ms_per_eval": 0.01644
       },
-      "relative_speedup_warm": 4.85,
-      "percent_latency_reduction_warm": 79.39,
+      "relative_speedup_warm": 4.97,
+      "percent_latency_reduction_warm": 79.89,
       "final_cache_stats": {
         "hits": 391940,
         "misses": 1760,
@@ -149,20 +149,20 @@
       "repetitions": 30,
       "methodology": "Paired alternating execution, 30 repetitions, p95 nearest-rank",
       "baseline_uncached": {
-        "median_total_sec": 0.4123,
-        "p95_total_sec": 0.417619,
-        "mean_total_sec": 0.412816,
-        "median_ms_per_eval": 0.4123,
-        "p95_ms_per_eval": 0.41762,
-        "mean_ms_per_eval": 0.41282
+        "median_total_sec": 0.418323,
+        "p95_total_sec": 0.423494,
+        "mean_total_sec": 0.418764,
+        "median_ms_per_eval": 0.41832,
+        "p95_ms_per_eval": 0.42349,
+        "mean_ms_per_eval": 0.41876
       },
       "optimized_cold": {
-        "median_total_sec": 0.378128,
-        "p95_total_sec": 0.380735,
-        "mean_total_sec": 0.378366,
-        "median_ms_per_eval": 0.37813,
-        "p95_ms_per_eval": 0.38074,
-        "mean_ms_per_eval": 0.37837,
+        "median_total_sec": 0.383566,
+        "p95_total_sec": 0.385131,
+        "mean_total_sec": 0.383287,
+        "median_ms_per_eval": 0.38357,
+        "p95_ms_per_eval": 0.38513,
+        "mean_ms_per_eval": 0.38329,
         "cold_vs_baseline_ratio": 0.92,
         "single_trial_cache_stats": {
           "hits": 8491,
@@ -172,15 +172,15 @@
         }
       },
       "optimized_warm": {
-        "median_total_sec": 0.378703,
-        "p95_total_sec": 0.381555,
-        "mean_total_sec": 0.378796,
-        "median_ms_per_eval": 0.3787,
-        "p95_ms_per_eval": 0.38155,
-        "mean_ms_per_eval": 0.3788
+        "median_total_sec": 0.382935,
+        "p95_total_sec": 0.386881,
+        "mean_total_sec": 0.383304,
+        "median_ms_per_eval": 0.38294,
+        "p95_ms_per_eval": 0.38688,
+        "mean_ms_per_eval": 0.3833
       },
       "relative_speedup_warm": 1.09,
-      "percent_latency_reduction_warm": 8.15,
+      "percent_latency_reduction_warm": 8.46,
       "final_cache_stats": {
         "hits": 263491,
         "misses": 9,
