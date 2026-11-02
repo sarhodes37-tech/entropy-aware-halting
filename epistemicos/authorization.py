@@ -1153,7 +1153,7 @@ class PrincipalVerifier:
         clock_skew_seconds: float = 5.0
     ):
         raw_keys: Dict[str, bytes] = {}
-        self.clock_skew_seconds = clock_skew_seconds
+        super().__setattr__("_clock_skew_seconds", float(clock_skew_seconds))
 
         keys_input = trusted_public_keys
         if keys_input is None:
@@ -1194,14 +1194,23 @@ class PrincipalVerifier:
         # Immutable MappingProxyType prevents runtime modification of trusted public keys
         super().__setattr__("_trusted_public_keys", types.MappingProxyType(raw_keys))
 
+    @property
+    def clock_skew_seconds(self) -> float:
+        """Read-only clock skew tolerance. Reassignment is prohibited."""
+        return self._clock_skew_seconds
+
     def __setattr__(self, name: str, value: Any) -> None:
         if "_trusted_public_keys" in self.__dict__ and name in ("_trusted_public_keys", "trusted_public_keys"):
             raise PermissionError("Access denied: PrincipalVerifier._trusted_public_keys is immutable and cannot be reassigned")
+        if "_clock_skew_seconds" in self.__dict__ and name in ("_clock_skew_seconds", "clock_skew_seconds"):
+            raise PermissionError("Access denied: PrincipalVerifier.clock_skew_seconds is immutable and cannot be reassigned")
         super().__setattr__(name, value)
 
     def __delattr__(self, name: str) -> None:
         if name in ("_trusted_public_keys", "trusted_public_keys"):
             raise PermissionError("Access denied: PrincipalVerifier._trusted_public_keys cannot be deleted")
+        if name in ("_clock_skew_seconds", "clock_skew_seconds"):
+            raise PermissionError("Access denied: PrincipalVerifier.clock_skew_seconds cannot be deleted")
         super().__delattr__(name)
 
     def has_trusted_issuers(self) -> bool:

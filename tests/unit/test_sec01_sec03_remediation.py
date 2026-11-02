@@ -319,6 +319,19 @@ def test_sec01_test_b_verifier_trust_store_replacement_rejected(tmp_path):
         del auth.principal_provider._trusted_public_keys
     assert "cannot be deleted" in str(exc_del.value)
 
+    # 2c. Attempt reassignment or deletion of clock_skew_seconds configuration
+    with pytest.raises(PermissionError) as exc_skew:
+        auth.principal_provider.clock_skew_seconds = 999999999
+    assert "immutable and cannot be reassigned" in str(exc_skew.value)
+
+    with pytest.raises(PermissionError) as exc_skew_priv:
+        auth.principal_provider._clock_skew_seconds = 999999999
+    assert "immutable and cannot be reassigned" in str(exc_skew_priv.value)
+
+    with pytest.raises(PermissionError) as exc_skew_del:
+        del auth.principal_provider.clock_skew_seconds
+    assert "cannot be deleted" in str(exc_skew_del.value)
+
     # 3. Submit assertion signed by attacker's key
     with pytest.raises(PermissionError) as exc_exec:
         tool(target="/admin/secrets", authenticated_principal=attacker_assertion)
