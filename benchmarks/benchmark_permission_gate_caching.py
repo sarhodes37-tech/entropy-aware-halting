@@ -37,9 +37,74 @@ from typing import Dict, Any, List, Tuple
 REPO_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from epistemicos.gates import PermissionGate, GateInput, GateDecision  # noqa: E402
+from epistemicos.gates import PermissionGate, GateInput, GateOutcome, GateDecision  # noqa: E402
 
 RESULTS_PATH = REPO_ROOT / "results" / "permission_gate_benchmark_results.json"
+
+
+class OriginalUncachedPermissionGate(PermissionGate):
+    """
+    Faithful baseline reproduction of pre-optimization PermissionGate._deep_regex_inspection.
+    Directly invokes self.injection_regex.search on encountered strings without any
+    caching wrappers (_cached_search, _is_injected) or length guard overhead, isolating the
+    pure delta of bounded memoization against the original implementation.
+    """
+
+    def _deep_regex_inspection(self, payload: Dict[str, Any], proposed_actions: List[Any], llm_output: Any, t0: float) -> Any:
+        def _check_stack(obj: Any) -> bool:
+            if not obj:
+                return False
+            stack = [obj]
+            seen = set()
+            search = self.injection_regex.search
+            add_seen = seen.add
+            pop = stack.pop
+            append = stack.append
+            scalar_types = frozenset({int, float, bool, bytes, bytearray, type(None)})
+
+            while stack:
+                curr = pop()
+                cls = curr.__class__
+
+                if isinstance(curr, str):
+                    if search(curr):
+                        return True
+                    continue
+
+                if cls in scalar_types:
+                    continue
+
+                curr_id = id(curr)
+                if curr_id in seen:
+                    continue
+                add_seen(curr_id)
+
+                if isinstance(curr, dict):
+                    for k, v in curr.items():
+                        if isinstance(k, str):
+                            if search(k):
+                                return True
+                        else:
+                            append(k)
+                        append(v)
+                elif cls in (list, tuple, set) or isinstance(curr, (list, tuple, set)):
+                    for item in curr:
+                        append(item)
+                elif hasattr(curr, "__dict__"):
+                    append(curr.__dict__)
+
+            return False
+
+        if _check_stack(payload) or _check_stack(proposed_actions) or _check_stack(llm_output):
+            return GateOutcome(
+                decision=GateDecision.HALT,
+                reason_code="Unsafe Command Injection, Jailbreak, or System Override Intercepted",
+                gate_name=self.gate_name,
+                gate_version=self.config.version,
+                evidence={"status": "HALTED", "confidence": 0.0, "vectors_revoked": 1},
+                latency_ms=(time.perf_counter() - t0) * 1000
+            )
+        return None
 
 
 def get_environment_info() -> Dict[str, Any]:
@@ -54,19 +119,26 @@ def get_environment_info() -> Dict[str, Any]:
         branch = "UNKNOWN"
 
     try:
-        # Check if source tree (excluding results) has modifications
+        # Check if source tree (excluding results artifacts) has modifications
         status_proc = subprocess.run(
-            ["git", "status", "--porcelain", "epistemicos/", "benchmarks/", ".jules/"],
+            ["git", "status", "--porcelain", "epistemicos/", "benchmarks/", "tests/", ".jules/"],
             cwd=REPO_ROOT, capture_output=True, text=True, check=True
         )
-        is_clean = len(status_proc.stdout.strip()) == 0
+        uncommitted = [line for line in status_proc.stdout.splitlines() if line.strip()]
+        is_source_clean = len(uncommitted) == 0
     except Exception:
-        is_clean = False
+        is_source_clean = False
+        uncommitted = []
 
     return {
-        "commit_sha": commit,
-        "branch": branch,
-        "working_tree_clean": is_clean,
+        "evaluated_source_commit_sha": commit,
+        "source_branch": branch,
+        "source_working_tree_clean": is_source_clean,
+        "source_working_tree_status": "CLEAN" if is_source_clean else f"DIRTY: {uncommitted}",
+        "results_provenance_note": (
+            "evaluated_source_commit_sha identifies the exact source commit being benchmarked. "
+            "The generated results JSON artifact itself is committed subsequently into the repository."
+        ),
         "python_version": platform.python_version(),
         "platform": platform.platform(),
         "processor": platform.processor() or "x86_64",
@@ -370,9 +442,8 @@ def main():
     }
 
     cached_gate = PermissionGate(trusted_scope=trusted_scope)
-    uncached_gate = PermissionGate(trusted_scope=trusted_scope)
-    # Strictly disable caching on baseline gate
-    uncached_gate._cached_injection_search = lambda s: bool(uncached_gate.injection_regex.search(s))
+    # Faithful baseline: uses OriginalUncachedPermissionGate with direct injection_regex.search
+    uncached_gate = OriginalUncachedPermissionGate(trusted_scope=trusted_scope)
 
     workloads = {
         "workload_a_repetitive_schema": generate_workload_a(num_samples=1000),
@@ -388,9 +459,9 @@ def main():
 
     print("=" * 84)
     print("⚡ EpistemicOS PermissionGate Regex Memoization Benchmark (Statistical Rigor)")
-    print(f"Commit SHA:   {env_info['commit_sha']}")
-    print(f"Branch:       {env_info['branch']} (Clean: {env_info['working_tree_clean']})")
-    print(f"Python:       {env_info['python_version']} on {env_info['platform']}")
+    print(f"Source Commit: {env_info['evaluated_source_commit_sha']}")
+    print(f"Branch:        {env_info['source_branch']} (Clean: {env_info['source_working_tree_clean']})")
+    print(f"Python:        {env_info['python_version']} on {env_info['platform']}")
     print("=" * 84)
 
     for w_name, w_samples in workloads.items():

@@ -1,8 +1,10 @@
 {
   "environment": {
-    "commit_sha": "7260d69dc6a2f6f3ec20299d00624d81dc57a84b",
-    "branch": "jules-4904151912201529320-7183f437",
-    "working_tree_clean": true,
+    "evaluated_source_commit_sha": "21ace4c13a9cd0c6aaa7fdd74a953a370ddf2f31",
+    "source_branch": "jules-4904151912201529320-7183f437",
+    "source_working_tree_clean": true,
+    "source_working_tree_status": "CLEAN",
+    "results_provenance_note": "evaluated_source_commit_sha identifies the exact source commit being benchmarked. The generated results JSON artifact itself is committed subsequently into the repository.",
     "python_version": "3.12.13",
     "platform": "Linux-6.8.0-x86_64-with-glibc2.39",
     "processor": "x86_64",
@@ -15,21 +17,21 @@
       "repetitions": 30,
       "methodology": "Paired alternating execution, 30 repetitions, p95 nearest-rank",
       "baseline_uncached": {
-        "median_total_sec": 0.178037,
-        "p95_total_sec": 0.184318,
-        "mean_total_sec": 0.178692,
-        "median_ms_per_eval": 0.17804,
-        "p95_ms_per_eval": 0.18432,
-        "mean_ms_per_eval": 0.17869
+        "median_total_sec": 0.167652,
+        "p95_total_sec": 0.169537,
+        "mean_total_sec": 0.167751,
+        "median_ms_per_eval": 0.16765,
+        "p95_ms_per_eval": 0.16954,
+        "mean_ms_per_eval": 0.16775
       },
       "optimized_cold": {
-        "median_total_sec": 0.029138,
-        "p95_total_sec": 0.030963,
-        "mean_total_sec": 0.029392,
-        "median_ms_per_eval": 0.02914,
-        "p95_ms_per_eval": 0.03096,
-        "mean_ms_per_eval": 0.02939,
-        "cold_vs_baseline_ratio": 0.16,
+        "median_total_sec": 0.029193,
+        "p95_total_sec": 0.029729,
+        "mean_total_sec": 0.029268,
+        "median_ms_per_eval": 0.02919,
+        "p95_ms_per_eval": 0.02973,
+        "mean_ms_per_eval": 0.02927,
+        "cold_vs_baseline_ratio": 0.17,
         "single_trial_cache_stats": {
           "hits": 31968,
           "misses": 32,
@@ -38,15 +40,15 @@
         }
       },
       "optimized_warm": {
-        "median_total_sec": 0.028894,
-        "p95_total_sec": 0.029915,
-        "mean_total_sec": 0.028915,
-        "median_ms_per_eval": 0.02889,
-        "p95_ms_per_eval": 0.02991,
-        "mean_ms_per_eval": 0.02891
+        "median_total_sec": 0.029175,
+        "p95_total_sec": 0.029981,
+        "mean_total_sec": 0.029294,
+        "median_ms_per_eval": 0.02918,
+        "p95_ms_per_eval": 0.02998,
+        "mean_ms_per_eval": 0.02929
       },
-      "relative_speedup_warm": 6.16,
-      "percent_latency_reduction_warm": 83.77,
+      "relative_speedup_warm": 5.75,
+      "percent_latency_reduction_warm": 82.6,
       "final_cache_stats": {
         "hits": 991968,
         "misses": 32,
@@ -59,21 +61,21 @@
       "repetitions": 30,
       "methodology": "Paired alternating execution, 30 repetitions, p95 nearest-rank",
       "baseline_uncached": {
-        "median_total_sec": 0.161895,
-        "p95_total_sec": 0.172874,
-        "mean_total_sec": 0.162699,
-        "median_ms_per_eval": 0.08095,
-        "p95_ms_per_eval": 0.08644,
-        "mean_ms_per_eval": 0.08135
+        "median_total_sec": 0.152386,
+        "p95_total_sec": 0.154332,
+        "mean_total_sec": 0.152506,
+        "median_ms_per_eval": 0.07619,
+        "p95_ms_per_eval": 0.07717,
+        "mean_ms_per_eval": 0.07625
       },
       "optimized_cold": {
-        "median_total_sec": 0.122581,
-        "p95_total_sec": 0.139682,
-        "mean_total_sec": 0.124172,
-        "median_ms_per_eval": 0.06129,
-        "p95_ms_per_eval": 0.06984,
-        "mean_ms_per_eval": 0.06209,
-        "cold_vs_baseline_ratio": 0.76,
+        "median_total_sec": 0.121922,
+        "p95_total_sec": 0.123248,
+        "mean_total_sec": 0.121976,
+        "median_ms_per_eval": 0.06096,
+        "p95_ms_per_eval": 0.06162,
+        "mean_ms_per_eval": 0.06099,
+        "cold_vs_baseline_ratio": 0.8,
         "single_trial_cache_stats": {
           "hits": 11998,
           "misses": 12002,
@@ -82,15 +84,15 @@
         }
       },
       "optimized_warm": {
-        "median_total_sec": 0.122997,
-        "p95_total_sec": 0.140096,
-        "mean_total_sec": 0.12496,
-        "median_ms_per_eval": 0.0615,
-        "p95_ms_per_eval": 0.07005,
-        "mean_ms_per_eval": 0.06248
+        "median_total_sec": 0.120824,
+        "p95_total_sec": 0.122831,
+        "mean_total_sec": 0.120944,
+        "median_ms_per_eval": 0.06041,
+        "p95_ms_per_eval": 0.06142,
+        "mean_ms_per_eval": 0.06047
       },
-      "relative_speedup_warm": 1.32,
-      "percent_latency_reduction_warm": 24.03,
+      "relative_speedup_warm": 1.26,
+      "percent_latency_reduction_warm": 20.71,
       "final_cache_stats": {
         "hits": 372118,
         "misses": 371882,
@@ -103,21 +105,21 @@
       "repetitions": 30,
       "methodology": "Paired alternating execution, 30 repetitions, p95 nearest-rank",
       "baseline_uncached": {
-        "median_total_sec": 0.084594,
-        "p95_total_sec": 0.091591,
-        "mean_total_sec": 0.085642,
-        "median_ms_per_eval": 0.08459,
-        "p95_ms_per_eval": 0.09159,
-        "mean_ms_per_eval": 0.08564
+        "median_total_sec": 0.079669,
+        "p95_total_sec": 0.080994,
+        "mean_total_sec": 0.079858,
+        "median_ms_per_eval": 0.07967,
+        "p95_ms_per_eval": 0.08099,
+        "mean_ms_per_eval": 0.07986
       },
       "optimized_cold": {
-        "median_total_sec": 0.046379,
-        "p95_total_sec": 0.052248,
-        "mean_total_sec": 0.047351,
-        "median_ms_per_eval": 0.04638,
-        "p95_ms_per_eval": 0.05225,
-        "mean_ms_per_eval": 0.04735,
-        "cold_vs_baseline_ratio": 0.55,
+        "median_total_sec": 0.045281,
+        "p95_total_sec": 0.046101,
+        "mean_total_sec": 0.045511,
+        "median_ms_per_eval": 0.04528,
+        "p95_ms_per_eval": 0.0461,
+        "mean_ms_per_eval": 0.04551,
+        "cold_vs_baseline_ratio": 0.57,
         "single_trial_cache_stats": {
           "hits": 10940,
           "misses": 1760,
@@ -126,15 +128,15 @@
         }
       },
       "optimized_warm": {
-        "median_total_sec": 0.016096,
-        "p95_total_sec": 0.016942,
-        "mean_total_sec": 0.016289,
-        "median_ms_per_eval": 0.0161,
-        "p95_ms_per_eval": 0.01694,
-        "mean_ms_per_eval": 0.01629
+        "median_total_sec": 0.016416,
+        "p95_total_sec": 0.016611,
+        "mean_total_sec": 0.016424,
+        "median_ms_per_eval": 0.01642,
+        "p95_ms_per_eval": 0.01661,
+        "mean_ms_per_eval": 0.01642
       },
-      "relative_speedup_warm": 5.26,
-      "percent_latency_reduction_warm": 80.97,
+      "relative_speedup_warm": 4.85,
+      "percent_latency_reduction_warm": 79.39,
       "final_cache_stats": {
         "hits": 391940,
         "misses": 1760,
@@ -147,20 +149,20 @@
       "repetitions": 30,
       "methodology": "Paired alternating execution, 30 repetitions, p95 nearest-rank",
       "baseline_uncached": {
-        "median_total_sec": 0.42321,
-        "p95_total_sec": 0.449399,
-        "mean_total_sec": 0.428106,
-        "median_ms_per_eval": 0.42321,
-        "p95_ms_per_eval": 0.4494,
-        "mean_ms_per_eval": 0.42811
+        "median_total_sec": 0.4123,
+        "p95_total_sec": 0.417619,
+        "mean_total_sec": 0.412816,
+        "median_ms_per_eval": 0.4123,
+        "p95_ms_per_eval": 0.41762,
+        "mean_ms_per_eval": 0.41282
       },
       "optimized_cold": {
-        "median_total_sec": 0.388327,
-        "p95_total_sec": 0.397384,
-        "mean_total_sec": 0.3893,
-        "median_ms_per_eval": 0.38833,
-        "p95_ms_per_eval": 0.39738,
-        "mean_ms_per_eval": 0.3893,
+        "median_total_sec": 0.378128,
+        "p95_total_sec": 0.380735,
+        "mean_total_sec": 0.378366,
+        "median_ms_per_eval": 0.37813,
+        "p95_ms_per_eval": 0.38074,
+        "mean_ms_per_eval": 0.37837,
         "cold_vs_baseline_ratio": 0.92,
         "single_trial_cache_stats": {
           "hits": 8491,
@@ -170,15 +172,15 @@
         }
       },
       "optimized_warm": {
-        "median_total_sec": 0.384062,
-        "p95_total_sec": 0.410996,
-        "mean_total_sec": 0.387949,
-        "median_ms_per_eval": 0.38406,
-        "p95_ms_per_eval": 0.411,
-        "mean_ms_per_eval": 0.38795
+        "median_total_sec": 0.378703,
+        "p95_total_sec": 0.381555,
+        "mean_total_sec": 0.378796,
+        "median_ms_per_eval": 0.3787,
+        "p95_ms_per_eval": 0.38155,
+        "mean_ms_per_eval": 0.3788
       },
-      "relative_speedup_warm": 1.1,
-      "percent_latency_reduction_warm": 9.25,
+      "relative_speedup_warm": 1.09,
+      "percent_latency_reduction_warm": 8.15,
       "final_cache_stats": {
         "hits": 263491,
         "misses": 9,
