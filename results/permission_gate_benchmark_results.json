@@ -1,6 +1,8 @@
 {
   "environment": {
-    "commit_sha": "f535f0c42e0c6078b96ffb590e03feb40f6c545e",
+    "commit_sha": "7260d69dc6a2f6f3ec20299d00624d81dc57a84b",
+    "branch": "jules-4904151912201529320-7183f437",
+    "working_tree_clean": true,
     "python_version": "3.12.13",
     "platform": "Linux-6.8.0-x86_64-with-glibc2.39",
     "processor": "x86_64",
@@ -10,19 +12,25 @@
   "workload_results": {
     "workload_a_repetitive_schema": {
       "num_samples": 1000,
-      "repetitions": 10,
+      "repetitions": 30,
+      "methodology": "Paired alternating execution, 30 repetitions, p95 nearest-rank",
       "baseline_uncached": {
-        "median_total_sec": 0.181296,
-        "p95_total_sec": 0.186207,
-        "mean_total_sec": 0.184715,
-        "mean_ms_per_eval": 0.18471,
-        "median_ms_per_eval": 0.1813
+        "median_total_sec": 0.178037,
+        "p95_total_sec": 0.184318,
+        "mean_total_sec": 0.178692,
+        "median_ms_per_eval": 0.17804,
+        "p95_ms_per_eval": 0.18432,
+        "mean_ms_per_eval": 0.17869
       },
       "optimized_cold": {
-        "total_sec": 0.029667,
-        "ms_per_eval": 0.02967,
-        "ratio_vs_baseline_median": 0.16,
-        "cache_info": {
+        "median_total_sec": 0.029138,
+        "p95_total_sec": 0.030963,
+        "mean_total_sec": 0.029392,
+        "median_ms_per_eval": 0.02914,
+        "p95_ms_per_eval": 0.03096,
+        "mean_ms_per_eval": 0.02939,
+        "cold_vs_baseline_ratio": 0.16,
+        "single_trial_cache_stats": {
           "hits": 31968,
           "misses": 32,
           "currsize": 32,
@@ -30,16 +38,17 @@
         }
       },
       "optimized_warm": {
-        "median_total_sec": 0.029631,
-        "p95_total_sec": 0.030144,
-        "mean_total_sec": 0.029765,
-        "mean_ms_per_eval": 0.02976,
-        "median_ms_per_eval": 0.02963
+        "median_total_sec": 0.028894,
+        "p95_total_sec": 0.029915,
+        "mean_total_sec": 0.028915,
+        "median_ms_per_eval": 0.02889,
+        "p95_ms_per_eval": 0.02991,
+        "mean_ms_per_eval": 0.02891
       },
-      "relative_speedup_warm": 6.12,
-      "percent_latency_reduction_warm": 83.66,
-      "final_cache_info": {
-        "hits": 351968,
+      "relative_speedup_warm": 6.16,
+      "percent_latency_reduction_warm": 83.77,
+      "final_cache_stats": {
+        "hits": 991968,
         "misses": 32,
         "currsize": 32,
         "maxsize": 4096
@@ -47,19 +56,25 @@
     },
     "workload_b_high_cardinality": {
       "num_samples": 2000,
-      "repetitions": 10,
+      "repetitions": 30,
+      "methodology": "Paired alternating execution, 30 repetitions, p95 nearest-rank",
       "baseline_uncached": {
-        "median_total_sec": 0.161581,
-        "p95_total_sec": 0.1625,
-        "mean_total_sec": 0.161595,
-        "mean_ms_per_eval": 0.0808,
-        "median_ms_per_eval": 0.08079
+        "median_total_sec": 0.161895,
+        "p95_total_sec": 0.172874,
+        "mean_total_sec": 0.162699,
+        "median_ms_per_eval": 0.08095,
+        "p95_ms_per_eval": 0.08644,
+        "mean_ms_per_eval": 0.08135
       },
       "optimized_cold": {
-        "total_sec": 0.124086,
-        "ms_per_eval": 0.06204,
-        "ratio_vs_baseline_median": 0.77,
-        "cache_info": {
+        "median_total_sec": 0.122581,
+        "p95_total_sec": 0.139682,
+        "mean_total_sec": 0.124172,
+        "median_ms_per_eval": 0.06129,
+        "p95_ms_per_eval": 0.06984,
+        "mean_ms_per_eval": 0.06209,
+        "cold_vs_baseline_ratio": 0.76,
+        "single_trial_cache_stats": {
           "hits": 11998,
           "misses": 12002,
           "currsize": 4096,
@@ -67,36 +82,43 @@
         }
       },
       "optimized_warm": {
-        "median_total_sec": 0.125458,
-        "p95_total_sec": 0.150863,
-        "mean_total_sec": 0.132157,
-        "mean_ms_per_eval": 0.06608,
-        "median_ms_per_eval": 0.06273
+        "median_total_sec": 0.122997,
+        "p95_total_sec": 0.140096,
+        "mean_total_sec": 0.12496,
+        "median_ms_per_eval": 0.0615,
+        "p95_ms_per_eval": 0.07005,
+        "mean_ms_per_eval": 0.06248
       },
-      "relative_speedup_warm": 1.29,
-      "percent_latency_reduction_warm": 22.36,
-      "final_cache_info": {
-        "hits": 132038,
-        "misses": 131962,
+      "relative_speedup_warm": 1.32,
+      "percent_latency_reduction_warm": 24.03,
+      "final_cache_stats": {
+        "hits": 372118,
+        "misses": 371882,
         "currsize": 4096,
         "maxsize": 4096
       }
     },
     "workload_c_mixed_realistic": {
       "num_samples": 1000,
-      "repetitions": 10,
+      "repetitions": 30,
+      "methodology": "Paired alternating execution, 30 repetitions, p95 nearest-rank",
       "baseline_uncached": {
-        "median_total_sec": 0.083555,
-        "p95_total_sec": 0.084947,
-        "mean_total_sec": 0.083846,
-        "mean_ms_per_eval": 0.08385,
-        "median_ms_per_eval": 0.08355
+        "median_total_sec": 0.084594,
+        "p95_total_sec": 0.091591,
+        "mean_total_sec": 0.085642,
+        "median_ms_per_eval": 0.08459,
+        "p95_ms_per_eval": 0.09159,
+        "mean_ms_per_eval": 0.08564
       },
       "optimized_cold": {
-        "total_sec": 0.046809,
-        "ms_per_eval": 0.04681,
-        "ratio_vs_baseline_median": 0.56,
-        "cache_info": {
+        "median_total_sec": 0.046379,
+        "p95_total_sec": 0.052248,
+        "mean_total_sec": 0.047351,
+        "median_ms_per_eval": 0.04638,
+        "p95_ms_per_eval": 0.05225,
+        "mean_ms_per_eval": 0.04735,
+        "cold_vs_baseline_ratio": 0.55,
+        "single_trial_cache_stats": {
           "hits": 10940,
           "misses": 1760,
           "currsize": 1760,
@@ -104,16 +126,17 @@
         }
       },
       "optimized_warm": {
-        "median_total_sec": 0.016477,
-        "p95_total_sec": 0.01687,
-        "mean_total_sec": 0.016555,
-        "mean_ms_per_eval": 0.01656,
-        "median_ms_per_eval": 0.01648
+        "median_total_sec": 0.016096,
+        "p95_total_sec": 0.016942,
+        "mean_total_sec": 0.016289,
+        "median_ms_per_eval": 0.0161,
+        "p95_ms_per_eval": 0.01694,
+        "mean_ms_per_eval": 0.01629
       },
-      "relative_speedup_warm": 5.07,
-      "percent_latency_reduction_warm": 80.28,
-      "final_cache_info": {
-        "hits": 137940,
+      "relative_speedup_warm": 5.26,
+      "percent_latency_reduction_warm": 80.97,
+      "final_cache_stats": {
+        "hits": 391940,
         "misses": 1760,
         "currsize": 1760,
         "maxsize": 4096
@@ -121,36 +144,43 @@
     },
     "workload_d_long_strings": {
       "num_samples": 1000,
-      "repetitions": 10,
+      "repetitions": 30,
+      "methodology": "Paired alternating execution, 30 repetitions, p95 nearest-rank",
       "baseline_uncached": {
-        "median_total_sec": 0.48577,
-        "p95_total_sec": 0.506119,
-        "mean_total_sec": 0.479748,
-        "mean_ms_per_eval": 0.47975,
-        "median_ms_per_eval": 0.48577
+        "median_total_sec": 0.42321,
+        "p95_total_sec": 0.449399,
+        "mean_total_sec": 0.428106,
+        "median_ms_per_eval": 0.42321,
+        "p95_ms_per_eval": 0.4494,
+        "mean_ms_per_eval": 0.42811
       },
       "optimized_cold": {
-        "total_sec": 0.437064,
-        "ms_per_eval": 0.43706,
-        "ratio_vs_baseline_median": 0.9,
-        "cache_info": {
-          "hits": 8486,
+        "median_total_sec": 0.388327,
+        "p95_total_sec": 0.397384,
+        "mean_total_sec": 0.3893,
+        "median_ms_per_eval": 0.38833,
+        "p95_ms_per_eval": 0.39738,
+        "mean_ms_per_eval": 0.3893,
+        "cold_vs_baseline_ratio": 0.92,
+        "single_trial_cache_stats": {
+          "hits": 8491,
           "misses": 9,
           "currsize": 9,
           "maxsize": 4096
         }
       },
       "optimized_warm": {
-        "median_total_sec": 0.445781,
-        "p95_total_sec": 0.453327,
-        "mean_total_sec": 0.439288,
-        "mean_ms_per_eval": 0.43929,
-        "median_ms_per_eval": 0.44578
+        "median_total_sec": 0.384062,
+        "p95_total_sec": 0.410996,
+        "mean_total_sec": 0.387949,
+        "median_ms_per_eval": 0.38406,
+        "p95_ms_per_eval": 0.411,
+        "mean_ms_per_eval": 0.38795
       },
-      "relative_speedup_warm": 1.09,
-      "percent_latency_reduction_warm": 8.23,
-      "final_cache_info": {
-        "hits": 93436,
+      "relative_speedup_warm": 1.1,
+      "percent_latency_reduction_warm": 9.25,
+      "final_cache_stats": {
+        "hits": 263491,
         "misses": 9,
         "currsize": 9,
         "maxsize": 4096
