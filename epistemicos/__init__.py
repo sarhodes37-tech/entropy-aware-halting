@@ -148,3 +148,33 @@ __all__.extend([
     "SideEffectPolicyEngine",
     "TypedHumanApprovalRecord"
 ])
+
+try:
+    from epistemicos.release import (
+        ComponentSpec,
+        ComponentType,
+        EvidenceVerificationStatus,
+        ReleaseApprovalRecord,
+        ReleaseManifest,
+        VerificationEvidenceRecord,
+        ChangeCategory,
+        ChangeImpactReport,
+        ComponentDelta,
+        EvidenceInvalidator,
+        ReleaseGovernanceEngine,
+    )
+    __all__.extend([
+        "ComponentSpec",
+        "ComponentType",
+        "EvidenceVerificationStatus",
+        "ReleaseApprovalRecord",
+        "ReleaseManifest",
+        "VerificationEvidenceRecord",
+        "ChangeCategory",
+        "ChangeImpactReport",
+        "ComponentDelta",
+        "EvidenceInvalidator",
+        "ReleaseGovernanceEngine",
+    ])
+except ImportError:
+    pass
