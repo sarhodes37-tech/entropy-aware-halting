@@ -749,7 +749,9 @@ def test_live_region_announcements(a11y_comprehensive_server):
         page.wait_for_selector(".quick-entry-btn[data-jump-tab='traces'][data-filter='DENIED']")
         page.evaluate("() => { document.getElementById('a11y-status-announcer').textContent = ''; }")
         page.click(".quick-entry-btn[data-jump-tab='traces'][data-filter='DENIED']")
-        page.wait_for_function("() => document.getElementById('a11y-status-announcer').textContent.includes('Filtered: DENIED')")
+        page.wait_for_function(
+            "() => document.getElementById('a11y-status-announcer').textContent.includes('Filtered: DENIED')"
+        )
         assert "Filtered: DENIED" in announcer.text_content()
         # Verify focus shifted to status filter
         focused_id = page.evaluate("() => document.activeElement ? document.activeElement.id : ''")
@@ -757,11 +759,16 @@ def test_live_region_announcements(a11y_comprehensive_server):
 
         # 8. Copy to clipboard announcement
         page.wait_for_selector("#trace-list .trace-item")
-        page.click("#trace-list .trace-item")
+        page.locator("#trace-list .trace-item").first.click()
+        page.wait_for_function(
+            "() => document.getElementById('a11y-status-announcer').textContent.includes('Selected execution trace')"
+        )
         page.wait_for_selector(".copy-btn")
         page.evaluate("() => { document.getElementById('a11y-status-announcer').textContent = ''; }")
-        page.click(".copy-btn")
-        page.wait_for_function("() => document.getElementById('a11y-status-announcer').textContent.length > 0")
+        page.locator(".copy-btn").first.click()
+        page.wait_for_function(
+            "() => document.getElementById('a11y-status-announcer').textContent.toLowerCase().includes('clipboard')"
+        )
         assert "clipboard" in announcer.text_content().lower()
 
         browser.close()
