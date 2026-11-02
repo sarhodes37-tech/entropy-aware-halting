@@ -69,6 +69,8 @@ class VectorHygieneManager:
         self.adapter = VectorStoreAdapter(db_client)
         self._active_trajectories: Dict[str, List[Union[str, int]]] = {}
         self._unpurged_vectors: Dict[str, List[Union[str, int]]] = {}
+        self._aborted_trajectories: Set[str] = set()
+        self._active_scopes: Dict[str, Set[str]] = {}
         self._lock = RLock()
 
     def get_unpurged_vectors(self, trajectory_id: Optional[str] = None) -> Union[List[Union[str, int]], Dict[str, List[Union[str, int]]]]:
@@ -233,15 +235,15 @@ class VectorHygieneManager:
         from auto-committing remaining staged vectors on normal exit.
         """
         with self._lock:
-            if not hasattr(self, "_aborted_scopes"):
-                self._aborted_scopes = set()
-            self._aborted_scopes.add(trajectory_id)
+            if not hasattr(self, "_aborted_trajectories"):
+                self._aborted_trajectories = set()
+            self._aborted_trajectories.add(trajectory_id)
 
     def is_scope_aborted(self, trajectory_id: str) -> bool:
         with self._lock:
-            if not hasattr(self, "_aborted_scopes"):
-                self._aborted_scopes = set()
-            return trajectory_id in self._aborted_scopes
+            if not hasattr(self, "_aborted_trajectories"):
+                self._aborted_trajectories = set()
+            return trajectory_id in self._aborted_trajectories
 
     @contextmanager
     def trajectory_scope(self, trajectory_id: str, namespace: Optional[str] = None, auto_commit: bool = True):
@@ -250,11 +252,25 @@ class VectorHygieneManager:
         Auto-revokes if an exception or unhandled error occurs during execution.
         If auto_commit is False or abort_trajectory_scope(trajectory_id) was called,
         remaining staged vectors are NOT committed on normal context-manager exit.
+
+        Scope Isolation Invariant:
+        Each scope invocation registers an internal scope ID. Entry never clears an existing
+        abort marker if other scopes for the same trajectory are already active. An abort marker
+        is only cleared upon final exit of all active scopes for the trajectory.
         """
+        import uuid
+        scope_id = str(uuid.uuid4())
         with self._lock:
-            if not hasattr(self, "_aborted_scopes"):
-                self._aborted_scopes = set()
-            self._aborted_scopes.discard(trajectory_id)
+            if not hasattr(self, "_active_scopes"):
+                self._active_scopes = {}
+            if not hasattr(self, "_aborted_trajectories"):
+                self._aborted_trajectories = set()
+
+            if trajectory_id not in self._active_scopes:
+                self._active_scopes[trajectory_id] = set()
+                # Fresh entry with no overlapping scopes: clear stale abort marker
+                self._aborted_trajectories.discard(trajectory_id)
+            self._active_scopes[trajectory_id].add(scope_id)
 
         try:
             yield self
@@ -267,5 +283,9 @@ class VectorHygieneManager:
             raise
         finally:
             with self._lock:
-                if hasattr(self, "_aborted_scopes"):
-                    self._aborted_scopes.discard(trajectory_id)
+                if hasattr(self, "_active_scopes") and trajectory_id in self._active_scopes:
+                    self._active_scopes[trajectory_id].discard(scope_id)
+                    if not self._active_scopes[trajectory_id]:
+                        del self._active_scopes[trajectory_id]
+                        if hasattr(self, "_aborted_trajectories"):
+                            self._aborted_trajectories.discard(trajectory_id)

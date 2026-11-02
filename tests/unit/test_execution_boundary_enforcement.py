@@ -1340,6 +1340,17 @@ def test_orchestrator_integration_concurrent_staging_during_outcome_unknown_no_a
         "actual_executable": worker_action,
     }
 
+    # Direct instrumentation / spy on commit_trajectory to observe any invocation
+    commit_invocations = []
+    real_commit = orchestrator.vector_manager.commit_trajectory
+
+    def spy_commit(trajectory_id):
+        result = real_commit(trajectory_id)
+        commit_invocations.append({"trajectory_id": trajectory_id, "committed_ids": list(result)})
+        return result
+
+    orchestrator.vector_manager.commit_trajectory = spy_commit
+
     orchestrator_result = []
 
     def run_pipeline():
@@ -1349,17 +1360,19 @@ def test_orchestrator_integration_concurrent_staging_during_outcome_unknown_no_a
     pipeline_thread = threading.Thread(target=run_pipeline)
     pipeline_thread.start()
 
-    # Step 3: Wait until manager captures batch A and enters backend delete
-    assert in_purge_event.wait(timeout=5) is True
+    try:
+        # Step 3: Wait until manager captures batch A and enters backend delete
+        assert in_purge_event.wait(timeout=5) is True
 
-    # Step 4: Concurrently stage vector batch B under the same trajectory
-    orchestrator.vector_manager.stage_vectors(traj_id, ["vec_batch_B_1", "vec_batch_B_2"])
+        # Step 4: Concurrently stage vector batch B under the same trajectory
+        orchestrator.vector_manager.stage_vectors(traj_id, ["vec_batch_B_1", "vec_batch_B_2"])
+    finally:
+        # Step 5: Always release the purge event to prevent hanging threads even if assertion fails
+        continue_purge_event.set()
 
-    # Step 5: Release the purge
-    continue_purge_event.set()
-
-    # Step 6: Wait for pipeline to finish
+    # Step 6: Wait for pipeline to finish and assert thread termination
     pipeline_thread.join(timeout=5)
+    assert pipeline_thread.is_alive() is False
 
     assert len(orchestrator_result) == 1
     res = orchestrator_result[0]
@@ -1369,20 +1382,28 @@ def test_orchestrator_integration_concurrent_staging_during_outcome_unknown_no_a
     assert res["status"] == "RECONCILIATION_REQUIRED"
     assert res["execution_status"] == "EXECUTION_OUTCOME_UNKNOWN"
 
-    # 2. Batch A was purged
-    assert res["vector_cleanup"]["vectors_purged"] >= 2
+    # 2. Directly verify commit_trajectory spy:
+    # commit_trajectory must NEVER have been called for this trajectory during context exit
+    assert commit_invocations == [], f"Unexpected commit_trajectory call detected: {commit_invocations}"
 
-    # 3. Batch B was never committed by context manager exit (active staged count is 0 or unpurged)
-    # Primary index must NOT contain any un-revoked committed vectors
-    # Verify that commit_trajectory returns empty (meaning nothing was left staged or committed)
-    committed_after = orchestrator.vector_manager.commit_trajectory(traj_id)
-    assert committed_after == []
+    # 3. Batch A was purged by the backend delete mock
+    assert mock_db.delete.call_count >= 1
+    deleted_calls = []
+    for c in mock_db.delete.call_args_list:
+        if "ids" in c.kwargs:
+            deleted_calls.append(c.kwargs["ids"])
+        elif c.args:
+            deleted_calls.append(c.args[0])
+    all_deleted_ids = [vid for call in deleted_calls for vid in (call if isinstance(call, list) else [])]
+    assert "vec_batch_A_1" in all_deleted_ids
+    assert "vec_batch_A_2" in all_deleted_ids
 
-    # 4. Neither Batch A nor Batch B was silently promoted to primary index
+    # 4. Batch B was never committed and is either purged or tracked in unpurged quarantine
     assert orchestrator.vector_manager.get_staged_count(traj_id) == 0
 
-    # 5. Cleanup status is accurately reported
+    # 5. Cleanup status and counts accurately match observed operations
     assert res["vector_cleanup"]["status"] in ("CONFIRMED", "PENDING_RECONCILIATION")
+    assert res["vector_cleanup"]["vectors_purged"] == len(all_deleted_ids)
 
     # 6. Check audit log event for vector_cleanup metadata
     health, last_hash, err = orchestrator.audit_logger.inspect_log_health()

@@ -1,15 +1,15 @@
-# EpistemicOS Architecture Audit: Halt Lifecycle, State Preservation & Controlled Resumability Specification (v1.5.2)
+# EpistemicOS Architecture Audit & Phase 1 Remediation: Halt Lifecycle, State Preservation & Controlled Resumability Specification (v1.6.0)
 
 **Author:** Jules (Principal Architecture Subsystem Auditor)
-**Document Revision:** `1.5.2`
+**Document Revision:** `1.6.0` (Original Audit `v1.5.2` + Phase 1 Remediation Addendum)
 **Revision Date:** November 2026
 **Target Repository:** `sarhodes37-tech/entropy-aware-halting` (`epistemicos`)
-**Baseline Git Commit SHA:** `26d442d6d7f655b22d08991b08ca206979936311`
+**Original Audit Baseline Git Commit SHA:** `26d442d6d7f655b22d08991b08ca206979936311`
 **Baseline Commit Date:** Sun Nov 1 08:51:11 2026 -0500 (13:51:11 UTC)
 **Baseline Commit Message:** `Merge pull request #326 from sarhodes37-tech/sentinel-harden-token-detection-7855408756707708238`
-**Git Branch:** `jules-9283081714373314343-b47da78e`
+**Git Branch:** `fix/halt-reconciliation-vector-quarantine-9283081714373314343`
 **Audit Scope:** Repository-wide architectural audit of EpistemicOS halt lifecycles, in-flight execution handling, state survival/invalidation rules, recovery semantics, and controlled resumability constraints across `epistemicos/core.py`, `epistemicos/scheduler.py`, `epistemicos/gates.py`, `epistemicos/models.py`, `epistemicos/provenance.py`, `epistemicos/authorization.py`, `epistemicos/containment.py`, `epistemicos/tools.py`, `epistemicos/vector_hygiene.py`, `epistemicos/telemetry.py`, and `epistemicos/shower_curtain/`.
-**Status:** ARCHITECTURAL AUDIT & FORMAL SPECIFICATION ONLY (STRICTLY NO PRODUCTION CODE, TEST, SCHEMA, OR RUNTIME MUTATION)
+**Status:** ARCHITECTURAL AUDIT WITH PHASE 1 REMEDIATION ADDENDUM (GAP-HALT-06 & GAP-HALT-07 REMEDIATED AND TESTED)
 
 ---
 
@@ -31,7 +31,7 @@
 ## 1. Auditable Source Baseline & Verification Methodology
 
 ### 1.1 Source Baseline & Verification Note
-Every claim, citation, and analysis in this v1.5.2 audit is strictly grounded in the codebase at:
+Every claim, citation, and analysis in the original v1.5.2 audit section is strictly grounded in the codebase at the historical baseline commit `26d442d6d7f655b22d08991b08ca206979936311`. Subsequent Phase 1 remediation updates (v1.6.0) document the verified implementation of GAP-HALT-06 and GAP-HALT-07 on branch `fix/halt-reconciliation-vector-quarantine-9283081714373314343`.
 - **Repository Remote:** `origin https://github.com/sarhodes37-tech/entropy-aware-halting`
 - **Commit SHA:** `26d442d6d7f655b22d08991b08ca206979936311`
 - **Commit Date:** Sun Nov 1 08:51:11 2026 -0500 (13:51:11 UTC)
