@@ -82,6 +82,11 @@ document.addEventListener('DOMContentLoaded', () => {
             if (filterSelect) filterSelect.value = filter;
           }
           this.switchTab(targetTab);
+          if (filter && targetTab === 'traces') {
+            this.announce(`Navigated to Execution Trace Explorer (Filtered: ${filter})`);
+            const targetFocusEl = document.getElementById('trace-status-filter') || document.getElementById('trace-search');
+            if (targetFocusEl) targetFocusEl.focus();
+          }
         });
       });
 
@@ -357,6 +362,7 @@ document.addEventListener('DOMContentLoaded', () => {
       };
 
       if (!navigator.clipboard || !navigator.clipboard.writeText) {
+        this.announce('Copy to clipboard unavailable.');
         if (btnElement) {
           const origText = btnElement.textContent;
           btnElement.textContent = 'Copy Unavailable';
@@ -372,6 +378,7 @@ document.addEventListener('DOMContentLoaded', () => {
       }
 
       navigator.clipboard.writeText(text).then(() => {
+        this.announce('Copied to clipboard.');
         if (btnElement) {
           const origText = btnElement.textContent;
           btnElement.textContent = '✓ Copied!';
@@ -385,6 +392,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
       }).catch(err => {
         console.error('Copy failed:', err);
+        this.announce('Failed to copy to clipboard.');
         if (btnElement) {
           const origText = btnElement.textContent;
           btnElement.textContent = 'Copy Failed';

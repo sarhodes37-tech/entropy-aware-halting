@@ -745,6 +745,25 @@ def test_live_region_announcements(a11y_comprehensive_server):
         assert announcer.text_content() == "Failed to update overview metrics."
         page.unroute("**/api/overview")
 
+        # 7. Investigative shortcuts on Overview with focus and announcements
+        page.wait_for_selector(".quick-entry-btn[data-jump-tab='traces'][data-filter='DENIED']")
+        page.evaluate("() => { document.getElementById('a11y-status-announcer').textContent = ''; }")
+        page.click(".quick-entry-btn[data-jump-tab='traces'][data-filter='DENIED']")
+        page.wait_for_function("() => document.getElementById('a11y-status-announcer').textContent.includes('Filtered: DENIED')")
+        assert "Filtered: DENIED" in announcer.text_content()
+        # Verify focus shifted to status filter
+        focused_id = page.evaluate("() => document.activeElement ? document.activeElement.id : ''")
+        assert focused_id in ["trace-status-filter", "trace-search"]
+
+        # 8. Copy to clipboard announcement
+        page.wait_for_selector("#trace-list .trace-item")
+        page.click("#trace-list .trace-item")
+        page.wait_for_selector(".copy-btn")
+        page.evaluate("() => { document.getElementById('a11y-status-announcer').textContent = ''; }")
+        page.click(".copy-btn")
+        page.wait_for_function("() => document.getElementById('a11y-status-announcer').textContent.length > 0")
+        assert "clipboard" in announcer.text_content().lower()
+
         browser.close()
 
 
