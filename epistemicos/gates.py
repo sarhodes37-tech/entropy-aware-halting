@@ -14,6 +14,7 @@ Components:
 """
 
 from abc import ABC, abstractmethod
+import functools
 import os
 import re
 import time
@@ -344,6 +345,9 @@ class PermissionGate(ControlPlaneGate):
             r"(\b(sudo|rm|curl|wget|bash|sh|exec|nc|netcat|nmap|ping)\b|[;|`]|&&|\$\(|\[SYSTEM OVERRIDE\]|import\s+os|ignore previous instructions|system prompt|jailbreak|exfiltrate|web_search|\bpytest(\.mark)?\.skip|\bpytest:\s*skip|\bunittest\.skip|\bassert\s+True\b|\bsys\.exit\(0\)|\bskip\s+test\b)",
             re.IGNORECASE
         )
+        self._cached_injection_search = functools.lru_cache(maxsize=4096)(
+            lambda s: bool(self.injection_regex.search(s))
+        )
 
     def _enforce_contract_model(self, llm_output: Any, t0: float) -> Optional[GateOutcome]:
         if self.contract_model is not None and llm_output is not None:
@@ -480,12 +484,24 @@ class PermissionGate(ControlPlaneGate):
         return None
 
     def _deep_regex_inspection(self, payload: Dict[str, Any], proposed_actions: List[Any], llm_output: Any, t0: float) -> Optional[GateOutcome]:
+        # Performance optimization: Memoize regex matches on recurring short strings (e.g. dictionary keys,
+        # operation identifiers, resource names) to eliminate redundant regex evaluation overhead across
+        # iterations and repeated schema traversals. Instance-level cache is preserved across calls.
+        raw_search = self.injection_regex.search
+        _cached_search = self._cached_injection_search
+
+        def _is_injected(s: str) -> bool:
+            # Bound cache entries to short strings (<= 256 chars) to prevent large free-form text
+            # from bloating cache memory while accelerating recurring schema keys and identifiers.
+            if len(s) > 256:
+                return bool(raw_search(s))
+            return _cached_search(s)
+
         def _check_stack(obj: Any) -> bool:
             if not obj:
                 return False
             stack = [obj]
             seen = set()
-            search = self.injection_regex.search
             add_seen = seen.add
             pop = stack.pop
             append = stack.append
@@ -496,7 +512,7 @@ class PermissionGate(ControlPlaneGate):
                 cls = curr.__class__
 
                 if cls is str:
-                    if search(curr):
+                    if _is_injected(curr):
                         return True
                     continue
 
@@ -510,8 +526,8 @@ class PermissionGate(ControlPlaneGate):
 
                 if isinstance(curr, dict):
                     for k, v in curr.items():
-                        if isinstance(k, str):
-                            if search(k):
+                        if k.__class__ is str:
+                            if _is_injected(k):
                                 return True
                         else:
                             append(k)
