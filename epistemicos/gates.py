@@ -511,7 +511,7 @@ class PermissionGate(ControlPlaneGate):
                 curr = pop()
                 cls = curr.__class__
 
-                if cls is str:
+                if isinstance(curr, str):
                     if _is_injected(curr):
                         return True
                     continue
@@ -526,7 +526,7 @@ class PermissionGate(ControlPlaneGate):
 
                 if isinstance(curr, dict):
                     for k, v in curr.items():
-                        if k.__class__ is str:
+                        if isinstance(k, str):
                             if _is_injected(k):
                                 return True
                         else:
