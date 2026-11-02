@@ -860,6 +860,72 @@ def test_assurance_level_propagation_full_vs_reduced():
     assert readiness_mixed.is_ready is True
     assert readiness_mixed.effective_assurance_level == AssuranceLevel.REDUCED_ASSURANCE
 
+    approval_mixed = ReleaseApprovalRecord(
+        approval_id="appr-mixed",
+        manifest_digest=m_digest,
+        approver_id="reviewer_alice",
+        approver_issuer="TrustedCorpIdP",
+        policy_version="1.0.0",
+        required_evidence_digests=readiness_mixed.accepted_evidence_digests
+    )
+    auth.sign_approval(approval_mixed)
+
+    appr_res_mixed = engine_reduced.verify_release_approval(manifest, approval_mixed, evidence_records=[ev1, ev_unsigned2], artifact_bytes_provider=prov_mixed)
+    assert appr_res_mixed.is_verified is True
+    assert appr_res_mixed.effective_assurance_level == AssuranceLevel.REDUCED_ASSURANCE
+
+    # Test Case 4: Disabling artifact-byte verification while retaining evaluator signatures produces REDUCED_ASSURANCE in approval result
+    engine_no_art = ReleaseGovernanceEngine(
+        principal_verifier=verifier,
+        allowed_approver_principals=["reviewer_alice"],
+        require_artifact_bytes_verification=False,
+        require_evaluator_signatures=True,
+        fail_closed_audit=False
+    )
+    readiness_no_art = engine_no_art.evaluate_release_readiness(manifest, [ev1, ev2])
+    assert readiness_no_art.is_ready is True
+    assert readiness_no_art.effective_assurance_level == AssuranceLevel.REDUCED_ASSURANCE
+
+    approval_no_art = ReleaseApprovalRecord(
+        approval_id="appr-no-art",
+        manifest_digest=m_digest,
+        approver_id="reviewer_alice",
+        approver_issuer="TrustedCorpIdP",
+        policy_version="1.0.0",
+        required_evidence_digests=readiness_no_art.accepted_evidence_digests
+    )
+    auth.sign_approval(approval_no_art)
+
+    appr_res_no_art = engine_no_art.verify_release_approval(manifest, approval_no_art, evidence_records=[ev1, ev2])
+    assert appr_res_no_art.is_verified is True
+    assert appr_res_no_art.effective_assurance_level == AssuranceLevel.REDUCED_ASSURANCE
+
+    # Test Case 5: Disabling evaluator-signature verification while retaining artifact-byte verification produces REDUCED_ASSURANCE in approval result
+    engine_no_sig = ReleaseGovernanceEngine(
+        principal_verifier=verifier,
+        allowed_approver_principals=["reviewer_alice"],
+        require_artifact_bytes_verification=True,
+        require_evaluator_signatures=False,
+        fail_closed_audit=False
+    )
+    readiness_no_sig = engine_no_sig.evaluate_release_readiness(manifest, [ev_unsigned1, ev_unsigned2], artifact_bytes_provider=prov_unsigned)
+    assert readiness_no_sig.is_ready is True
+    assert readiness_no_sig.effective_assurance_level == AssuranceLevel.REDUCED_ASSURANCE
+
+    approval_no_sig = ReleaseApprovalRecord(
+        approval_id="appr-no-sig",
+        manifest_digest=m_digest,
+        approver_id="reviewer_alice",
+        approver_issuer="TrustedCorpIdP",
+        policy_version="1.0.0",
+        required_evidence_digests=readiness_no_sig.accepted_evidence_digests
+    )
+    auth.sign_approval(approval_no_sig)
+
+    appr_res_no_sig = engine_no_sig.verify_release_approval(manifest, approval_no_sig, evidence_records=[ev_unsigned1, ev_unsigned2], artifact_bytes_provider=prov_unsigned)
+    assert appr_res_no_sig.is_verified is True
+    assert appr_res_no_sig.effective_assurance_level == AssuranceLevel.REDUCED_ASSURANCE
+
 
 def test_audit_configuration_gap_fail_closed_when_unconfigured():
     auth = MockReleaseAuthority(issuer_id="TrustedCorpIdP")
