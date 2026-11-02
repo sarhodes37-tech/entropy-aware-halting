@@ -179,15 +179,30 @@ class TestSideEffectPolicyEngineInvariants:
     avoiding duplicate coverage already asserted in test_phase2_egress_controls.py.
     """
 
-    def test_signature_binds_all_signed_fields(self):
+    @pytest.mark.parametrize(
+        "field_name, tampered_val",
+        [
+            ("approval_id", "APP-TAMPERED-999"),
+            ("operation_id", "delete_db"),
+            ("target_resource", "https://registry.npmjs.org/tampered-pkg"),
+            ("canonical_args_digest", "0000000000000000000000000000000000000000000000000000000000000000"),
+            ("task_id", "TASK-TAMPERED-999"),
+            ("policy_version", "2.0.0"),
+            ("approved_by_principal", "attacker_principal"),
+            ("expires_at", 1700000500.0),
+        ],
+    )
+    def test_signature_binds_every_signed_field_individually(self, field_name, tampered_val):
         """
-        Validates that TypedHumanApprovalRecord HMAC signature binds every field:
-        tampering with any single signed field invalidates the approval verification.
+        Validates that TypedHumanApprovalRecord HMAC signature binds every single signed field.
+        Tampering with each individual signed field while updating the corresponding expectation
+        bypasses the initial field-equality checks and isolates failure to signature verification.
         """
         secret = "TEST_SECRET"
         engine = SideEffectPolicyEngine(signing_secret=secret)
         payload = {"op": "publish"}
         digest = engine.compute_canonical_digest(payload)
+        base_expires_at = 1700000000.0
 
         base_fields = {
             "approval_id": "APP-FIELD-1",
@@ -197,6 +212,95 @@ class TestSideEffectPolicyEngineInvariants:
             "task_id": "TASK-FIELD-1",
             "policy_version": "1.0.0",
             "approved_by_principal": "security_admin",
+            "timestamp": "2026-01-01T00:00:00Z",
+            "expires_at": base_expires_at,
+        }
+
+        # Baseline valid signature computed across all 8 fields including expires_at
+        valid_sig = engine.compute_approval_signature((
+            base_fields["approval_id"],
+            base_fields["operation_id"],
+            base_fields["target_resource"],
+            base_fields["canonical_args_digest"],
+            base_fields["task_id"],
+            base_fields["policy_version"],
+            base_fields["approved_by_principal"],
+            str(base_fields["expires_at"]),
+        ))
+
+        # Baseline verification passes
+        valid_rec = TypedHumanApprovalRecord(signature=valid_sig, **base_fields)
+        ok, msg = engine.verify_approval_record(
+            record=valid_rec,
+            expected_operation_id=base_fields["operation_id"],
+            expected_target=base_fields["target_resource"],
+            expected_payload=payload,
+            expected_task_id=base_fields["task_id"],
+            expected_policy_version=base_fields["policy_version"],
+            current_time=1699999000.0,
+        )
+        assert ok is True, f"Baseline verification failed: {msg}"
+
+        # Tamper with exactly one field
+        tampered_fields = dict(base_fields)
+        tampered_fields[field_name] = tampered_val
+        tampered_rec = TypedHumanApprovalRecord(signature=valid_sig, **tampered_fields)
+
+        # Align expected arguments so field-mismatch checks pass and the check reaches signature verification
+        exp_op = tampered_fields["operation_id"]
+        exp_target = tampered_fields["target_resource"]
+        exp_task = tampered_fields["task_id"]
+        exp_version = tampered_fields["policy_version"]
+        eval_payload = payload
+
+        if field_name == "canonical_args_digest":
+            eval_payload = b"tampered_payload_matching_digest"
+            from unittest.mock import patch
+            with patch.object(engine, "compute_canonical_digest", return_value=tampered_val):
+                ok_tampered, msg_tampered = engine.verify_approval_record(
+                    record=tampered_rec,
+                    expected_operation_id=exp_op,
+                    expected_target=exp_target,
+                    expected_payload=eval_payload,
+                    expected_task_id=exp_task,
+                    expected_policy_version=exp_version,
+                    current_time=1699999000.0,
+                )
+        else:
+            ok_tampered, msg_tampered = engine.verify_approval_record(
+                record=tampered_rec,
+                expected_operation_id=exp_op,
+                expected_target=exp_target,
+                expected_payload=eval_payload,
+                expected_task_id=exp_task,
+                expected_policy_version=exp_version,
+                current_time=1699999000.0,
+            )
+
+        assert ok_tampered is False
+        assert msg_tampered == "Approval signature verification failed", (
+            f"Expected signature verification failure for tampered field '{field_name}', got '{msg_tampered}'"
+        )
+
+    def test_timestamp_is_not_signed_and_modification_preserves_signature(self):
+        """
+        Explicitly documents and tests the current behavioral invariant that `timestamp` is NOT
+        included in the HMAC signature tuple (both for expiring and non-expiring records).
+        Modifying `record.timestamp` does not invalidate the HMAC signature.
+        """
+        secret = "TEST_SECRET"
+        engine = SideEffectPolicyEngine(signing_secret=secret)
+        payload = {"op": "test"}
+        digest = engine.compute_canonical_digest(payload)
+
+        base_fields = {
+            "approval_id": "APP-TIME-1",
+            "operation_id": "local_read",
+            "target_resource": "/data",
+            "canonical_args_digest": digest,
+            "task_id": "TASK-TIME-1",
+            "policy_version": "1.0.0",
+            "approved_by_principal": "auditor",
             "timestamp": "2026-01-01T00:00:00Z",
         }
 
@@ -210,40 +314,30 @@ class TestSideEffectPolicyEngineInvariants:
             base_fields["approved_by_principal"],
         ))
 
-        # Baseline valid verification
-        valid_rec = TypedHumanApprovalRecord(signature=valid_sig, **base_fields)
-        ok, msg = engine.verify_approval_record(
-            record=valid_rec,
-            expected_operation_id=base_fields["operation_id"],
-            expected_target=base_fields["target_resource"],
-            expected_payload=payload,
-            expected_task_id=base_fields["task_id"],
-            expected_policy_version=base_fields["policy_version"],
-        )
-        assert ok is True
-        assert msg == "Approval record validated"
-
-        # Tampering with approved_by_principal invalidates signature
-        tampered_rec = TypedHumanApprovalRecord(
+        # Modifying timestamp to a completely different timestamp
+        modified_rec = TypedHumanApprovalRecord(
+            signature=valid_sig,
+            timestamp="2099-12-31T23:59:59Z",
             approval_id=base_fields["approval_id"],
             operation_id=base_fields["operation_id"],
             target_resource=base_fields["target_resource"],
             canonical_args_digest=base_fields["canonical_args_digest"],
             task_id=base_fields["task_id"],
             policy_version=base_fields["policy_version"],
-            approved_by_principal="attacker_principal",
-            timestamp="2026-01-01T00:00:00Z",
-            signature=valid_sig,
+            approved_by_principal=base_fields["approved_by_principal"],
         )
-        ok_tampered, msg_tampered = engine.verify_approval_record(
-            record=tampered_rec,
+
+        ok, msg = engine.verify_approval_record(
+            record=modified_rec,
             expected_operation_id=base_fields["operation_id"],
             expected_target=base_fields["target_resource"],
             expected_payload=payload,
             expected_task_id=base_fields["task_id"],
+            expected_policy_version=base_fields["policy_version"],
         )
-        assert ok_tampered is False
-        assert "Approval signature verification failed" in msg_tampered
+        # Demonstrates that timestamp is currently unsigned and does not invalidate verification
+        assert ok is True
+        assert msg == "Approval record validated"
 
     def test_expired_approval_record_with_explicit_timestamp(self):
         """Validates that expired TypedHumanApprovalRecord fails closed even with a valid signature."""
