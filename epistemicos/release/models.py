@@ -222,7 +222,20 @@ class VerificationEvidenceRecord:
         return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
     def compute_signature_payload(self) -> bytes:
-        """Domain-separated JSON canonical binary payload for evaluator signature."""
+        """
+        Domain-separated JSON canonical binary payload for evaluator signature.
+        Binds ALL security-relevant evidence fields:
+        - evidence_id
+        - manifest_digest
+        - evidence_type
+        - status
+        - artifact_digest
+        - evaluator_id
+        - evaluator_issuer
+        - evaluated_at_utc
+        - evaluated_component_ids (sorted)
+        - metadata
+        """
         data = {
             "domain": "EpistemicOS:VerificationEvidenceRecord:v1",
             "evidence_id": self.evidence_id.strip(),
@@ -231,7 +244,10 @@ class VerificationEvidenceRecord:
             "status": self.status.value,
             "artifact_digest": self.artifact_digest.strip().lower(),
             "evaluator_id": self.evaluator_id.strip(),
+            "evaluator_issuer": self.evaluator_issuer.strip() if self.evaluator_issuer else None,
             "evaluated_at_utc": self.evaluated_at_utc or "",
+            "evaluated_component_ids": sorted(list(self.evaluated_component_ids)),
+            "metadata": self.metadata,
         }
         return json.dumps(data, sort_keys=True, separators=(",", ":")).encode("utf-8")
 

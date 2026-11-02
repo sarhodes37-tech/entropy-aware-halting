@@ -9,6 +9,8 @@ import base64
 import hashlib
 import time
 import uuid
+from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union
 
 from epistemicos.audit import TamperEvidentAuditTrail, AuditLogLevel
@@ -27,13 +29,40 @@ from epistemicos.release.invalidation import EvidenceInvalidator, ChangeImpactRe
 from epistemicos.release.revocation import ReleaseApprovalRevocationRegistry
 
 
+class EvidenceValidationResultStatus(str, Enum):
+    VERIFIED = "VERIFIED"
+    REJECTED = "REJECTED"
+    UNAVAILABLE = "UNAVAILABLE"
+
+
+@dataclass
+class EvidenceValidationResult:
+    """Explicit typed result of verifying an individual evidence record and its artifact bytes."""
+    evidence_id: str
+    status: EvidenceValidationResultStatus
+    evidence_digest: Optional[str] = None
+    reason: str = ""
+    artifact_bytes_verified: bool = False
+    evaluator_signature_verified: bool = False
+
+
+@dataclass
+class ReleaseReadinessEvaluation:
+    """Overall evaluation of a release candidate against required evidence."""
+    is_ready: bool
+    reason: str
+    verified_evidence_records: List[VerificationEvidenceRecord] = field(default_factory=list)
+    accepted_evidence_digests: List[str] = field(default_factory=list)
+    validation_results: List[EvidenceValidationResult] = field(default_factory=list)
+
+
 class ReleaseGovernanceEngine:
     """
     Subsystem responsible for Change & Release Governance:
     - Registers and hashes Release Manifests.
     - Associates and validates Verification Evidence (both record integrity and artifact byte authenticity).
     - Verifies evaluator signatures against trusted identity providers.
-    - Evaluates Release Candidates against required evidence.
+    - Evaluates Release Candidates against required evidence with explicit typed outcomes.
     - Verifies Release Approvals against exact manifest digests using Ed25519 asymmetric verification.
     - Checks authoritative revocation registry (fail-closed against object mutation/resurrection).
     - Enforces policy version consistency between manifest and approval.
@@ -46,13 +75,15 @@ class ReleaseGovernanceEngine:
         audit_trail: Optional[TamperEvidentAuditTrail] = None,
         allowed_approver_principals: Optional[List[str]] = None,
         revocation_registry: Optional[ReleaseApprovalRevocationRegistry] = None,
-        fail_closed_audit: bool = True
+        fail_closed_audit: bool = True,
+        require_artifact_bytes_verification: bool = True
     ):
         self.principal_verifier = principal_verifier
         self.audit_trail = audit_trail
         self.allowed_approver_principals = set(allowed_approver_principals) if allowed_approver_principals is not None else None
         self.revocation_registry = revocation_registry or ReleaseApprovalRevocationRegistry()
         self.fail_closed_audit = fail_closed_audit
+        self.require_artifact_bytes_verification = require_artifact_bytes_verification
 
     def _log_event(self, level: AuditLogLevel, event_name: str, details: Dict[str, Any]):
         """Logs audit event. If fail_closed_audit=True, raises RuntimeError on write failure."""
@@ -68,6 +99,129 @@ class ReleaseGovernanceEngine:
                 if self.fail_closed_audit:
                     raise RuntimeError(f"Audit log failure on mandatory event '{event_name}': {str(e)}") from e
 
+    def verify_single_evidence(
+        self,
+        manifest_digest: str,
+        evidence: VerificationEvidenceRecord,
+        artifact_bytes_provider: Optional[Callable[[str], Optional[bytes]]] = None
+    ) -> EvidenceValidationResult:
+        """
+        Shared internal verification function for an individual evidence record.
+        Ensures readiness evaluation and approval verification use identical trust rules.
+        """
+        ev_id = evidence.evidence_id
+
+        # 1. Manifest digest binding
+        if evidence.manifest_digest.lower() != manifest_digest.lower():
+            return EvidenceValidationResult(
+                evidence_id=ev_id,
+                status=EvidenceValidationResultStatus.REJECTED,
+                reason=f"Evidence '{ev_id}' bound to foreign manifest digest '{evidence.manifest_digest[:12]}...', expected '{manifest_digest[:12]}...'"
+            )
+
+        # 2. Status check (Must be PASS; reject FAIL, PARTIAL, INCONCLUSIVE)
+        if evidence.status != EvidenceVerificationStatus.PASS:
+            return EvidenceValidationResult(
+                evidence_id=ev_id,
+                status=EvidenceValidationResultStatus.REJECTED,
+                reason=f"Evidence '{ev_id}' has non-passing status '{evidence.status.value}'"
+            )
+
+        # 3. Explicit artifact-byte verification
+        artifact_verified = False
+        if self.require_artifact_bytes_verification:
+            if not artifact_bytes_provider:
+                return EvidenceValidationResult(
+                    evidence_id=ev_id,
+                    status=EvidenceValidationResultStatus.UNAVAILABLE,
+                    reason=f"Evidence '{ev_id}' artifact verification unavailable: no artifact_bytes_provider supplied"
+                )
+            art_bytes = artifact_bytes_provider(ev_id)
+            if art_bytes is None:
+                return EvidenceValidationResult(
+                    evidence_id=ev_id,
+                    status=EvidenceValidationResultStatus.UNAVAILABLE,
+                    reason=f"Evidence '{ev_id}' artifact retrieval returned None: artifact not found or inaccessible"
+                )
+            computed_art_digest = hashlib.sha256(art_bytes).hexdigest()
+            if computed_art_digest.lower() != evidence.artifact_digest.lower():
+                return EvidenceValidationResult(
+                    evidence_id=ev_id,
+                    status=EvidenceValidationResultStatus.REJECTED,
+                    reason=f"Evidence '{ev_id}' artifact byte digest mismatch: computed '{computed_art_digest[:12]}...', declared '{evidence.artifact_digest[:12]}...'"
+                )
+            artifact_verified = True
+        else:
+            if artifact_bytes_provider:
+                art_bytes = artifact_bytes_provider(ev_id)
+                if art_bytes is not None:
+                    computed_art_digest = hashlib.sha256(art_bytes).hexdigest()
+                    if computed_art_digest.lower() != evidence.artifact_digest.lower():
+                        return EvidenceValidationResult(
+                            evidence_id=ev_id,
+                            status=EvidenceValidationResultStatus.REJECTED,
+                            reason=f"Evidence '{ev_id}' artifact byte digest mismatch: computed '{computed_art_digest[:12]}...', declared '{evidence.artifact_digest[:12]}...'"
+                        )
+                    artifact_verified = True
+
+        # 4. Evaluator signature verification if signature or issuer is present
+        eval_sig_verified = False
+        if evidence.signature or evidence.evaluator_issuer:
+            if not evidence.signature:
+                return EvidenceValidationResult(
+                    evidence_id=ev_id,
+                    status=EvidenceValidationResultStatus.REJECTED,
+                    reason=f"Evidence '{ev_id}' declares evaluator_issuer but has no signature"
+                )
+            if not self.principal_verifier:
+                return EvidenceValidationResult(
+                    evidence_id=ev_id,
+                    status=EvidenceValidationResultStatus.REJECTED,
+                    reason=f"Evidence '{ev_id}' has evaluator signature but engine has no PrincipalVerifier"
+                )
+            if not evidence.evaluator_issuer:
+                return EvidenceValidationResult(
+                    evidence_id=ev_id,
+                    status=EvidenceValidationResultStatus.REJECTED,
+                    reason=f"Evidence '{ev_id}' has signature but missing evaluator_issuer"
+                )
+
+            trusted_pubkeys = getattr(self.principal_verifier, "_trusted_public_keys", {})
+            trusted_pubkey = trusted_pubkeys.get(evidence.evaluator_issuer)
+            if not trusted_pubkey:
+                return EvidenceValidationResult(
+                    evidence_id=ev_id,
+                    status=EvidenceValidationResultStatus.REJECTED,
+                    reason=f"Evidence '{ev_id}' untrusted evaluator issuer '{evidence.evaluator_issuer}'"
+                )
+
+            try:
+                sig_bytes = bytes.fromhex(evidence.signature) if len(evidence.signature) == 128 else base64.b64decode(evidence.signature)
+            except Exception:
+                return EvidenceValidationResult(
+                    evidence_id=ev_id,
+                    status=EvidenceValidationResultStatus.REJECTED,
+                    reason=f"Evidence '{ev_id}' malformed signature encoding"
+                )
+
+            payload = evidence.compute_signature_payload()
+            if not verify_ed25519_signature(sig_bytes, payload, trusted_pubkey):
+                return EvidenceValidationResult(
+                    evidence_id=ev_id,
+                    status=EvidenceValidationResultStatus.REJECTED,
+                    reason=f"Evidence '{ev_id}' cryptographic evaluator signature verification failed"
+                )
+            eval_sig_verified = True
+
+        return EvidenceValidationResult(
+            evidence_id=ev_id,
+            status=EvidenceValidationResultStatus.VERIFIED,
+            evidence_digest=evidence.compute_evidence_digest(),
+            reason="Verified successfully",
+            artifact_bytes_verified=artifact_verified,
+            evaluator_signature_verified=eval_sig_verified
+        )
+
     def evaluate_release_readiness(
         self,
         manifest: ReleaseManifest,
@@ -76,14 +230,6 @@ class ReleaseGovernanceEngine:
     ) -> Tuple[bool, str, List[str]]:
         """
         Evaluates whether a release manifest has all required verification evidence satisfied.
-
-        Security Validations:
-        1. Evidence must be bound to this exact manifest digest.
-        2. Evidence status must be PASS.
-        3. If artifact bytes are provided or retrievable, verify SHA-256(bytes) == ev.artifact_digest.
-        4. If evaluator signature is present, verify it against PrincipalVerifier.
-        5. Fails closed on missing required evidence types.
-
         Returns: (is_ready, reason, list_of_accepted_evidence_digests)
         """
         manifest_digest = manifest.compute_manifest_digest()
@@ -94,62 +240,17 @@ class ReleaseGovernanceEngine:
         rejected_reasons = []
 
         for ev in evidence_records:
-            # Check 1: Must be directly bound to this exact manifest digest
-            if ev.manifest_digest.lower() != manifest_digest.lower():
-                rejected_reasons.append(
-                    f"Evidence '{ev.evidence_id}' bound to foreign manifest digest '{ev.manifest_digest[:12]}...', expected '{manifest_digest[:12]}...'"
-                )
+            res = self.verify_single_evidence(
+                manifest_digest=manifest_digest,
+                evidence=ev,
+                artifact_bytes_provider=artifact_bytes_provider
+            )
+            if res.status != EvidenceValidationResultStatus.VERIFIED:
+                rejected_reasons.append(res.reason)
                 continue
-
-            # Check 2: Must have status PASS
-            if ev.status != EvidenceVerificationStatus.PASS:
-                rejected_reasons.append(
-                    f"Evidence '{ev.evidence_id}' has non-passing status '{ev.status.value}'"
-                )
-                continue
-
-            # Check 3: Validate artifact bytes if provider is supplied
-            if artifact_bytes_provider:
-                art_bytes = artifact_bytes_provider(ev.evidence_id)
-                if art_bytes is not None:
-                    computed_art_digest = hashlib.sha256(art_bytes).hexdigest()
-                    if computed_art_digest.lower() != ev.artifact_digest.lower():
-                        rejected_reasons.append(
-                            f"Evidence '{ev.evidence_id}' artifact byte digest mismatch: computed '{computed_art_digest[:12]}...', declared '{ev.artifact_digest[:12]}...'"
-                        )
-                        continue
-
-            # Check 4: Validate evaluator signature if signature or evaluator_issuer is present
-            if ev.signature or ev.evaluator_issuer:
-                if not ev.signature:
-                    rejected_reasons.append(f"Evidence '{ev.evidence_id}' declares evaluator_issuer but has no signature")
-                    continue
-                if not self.principal_verifier:
-                    rejected_reasons.append(f"Evidence '{ev.evidence_id}' has evaluator signature but engine has no PrincipalVerifier")
-                    continue
-                if not ev.evaluator_issuer:
-                    rejected_reasons.append(f"Evidence '{ev.evidence_id}' has signature but missing evaluator_issuer")
-                    continue
-
-                trusted_pubkeys = getattr(self.principal_verifier, "_trusted_public_keys", {})
-                trusted_pubkey = trusted_pubkeys.get(ev.evaluator_issuer)
-                if not trusted_pubkey:
-                    rejected_reasons.append(f"Evidence '{ev.evidence_id}' untrusted evaluator issuer '{ev.evaluator_issuer}'")
-                    continue
-
-                try:
-                    sig_bytes = bytes.fromhex(ev.signature) if len(ev.signature) == 128 else base64.b64decode(ev.signature)
-                except Exception:
-                    rejected_reasons.append(f"Evidence '{ev.evidence_id}' malformed signature encoding")
-                    continue
-
-                payload = ev.compute_signature_payload()
-                if not verify_ed25519_signature(sig_bytes, payload, trusted_pubkey):
-                    rejected_reasons.append(f"Evidence '{ev.evidence_id}' cryptographic evaluator signature verification failed")
-                    continue
 
             satisfied_types.add(ev.evidence_type)
-            accepted_digests.append(ev.compute_evidence_digest())
+            accepted_digests.append(res.evidence_digest)
 
         missing = required_types - satisfied_types
         if missing:
@@ -164,7 +265,8 @@ class ReleaseGovernanceEngine:
         self,
         manifest: ReleaseManifest,
         approval: ReleaseApprovalRecord,
-        verified_evidence_records: Optional[List[VerificationEvidenceRecord]] = None,
+        evidence_records: List[VerificationEvidenceRecord],
+        artifact_bytes_provider: Optional[Callable[[str], Optional[bytes]]] = None,
         current_time: Optional[float] = None
     ) -> Tuple[bool, str]:
         """
@@ -176,7 +278,8 @@ class ReleaseGovernanceEngine:
         3. Expiration state.
         4. Approver principal authorization.
         5. Policy version binding between approval and manifest.
-        6. Approval evidence digest correspondence against verified evidence records.
+        6. Mandatory evidence verification: every referenced evidence digest must correspond to an
+           available record that passes verify_single_evidence (including artifact bytes & evaluator sigs).
         7. Asymmetric Ed25519 signature verification via PrincipalVerifier.
         8. Mandatory fail-closed audit event recording.
         """
@@ -238,18 +341,41 @@ class ReleaseGovernanceEngine:
                 })
                 return False, reason
 
-        # Check 6: Evidence correspondence
-        if verified_evidence_records is not None:
-            available_digests = {ev.compute_evidence_digest().lower() for ev in verified_evidence_records}
-            approval_digests = {d.lower() for d in approval.required_evidence_digests}
-            missing_in_records = approval_digests - available_digests
-            if missing_in_records:
-                reason = f"Release approval rejected: Approval references evidence digests not present in verified evidence records: {sorted(list(missing_in_records))}"
-                self._log_event(AuditLogLevel.HALT, "APPROVAL_EVIDENCE_UNRESOLVED", {
+        # Check 6: Mandatory evidence record verification at approval boundary
+        if not evidence_records or len(evidence_records) == 0:
+            reason = "Release approval rejected: Mandatory evidence records missing at approval boundary"
+            self._log_event(AuditLogLevel.HALT, "APPROVAL_EVIDENCE_MISSING", {
+                "reason": reason,
+                "approval_id": approval.approval_id
+            })
+            return False, reason
+
+        verified_digests_map: Dict[str, VerificationEvidenceRecord] = {}
+        for ev in evidence_records:
+            val_res = self.verify_single_evidence(
+                manifest_digest=manifest_digest,
+                evidence=ev,
+                artifact_bytes_provider=artifact_bytes_provider
+            )
+            if val_res.status != EvidenceValidationResultStatus.VERIFIED:
+                reason = f"Release approval rejected: Evidence record '{ev.evidence_id}' failed verification: {val_res.reason}"
+                self._log_event(AuditLogLevel.HALT, "APPROVAL_EVIDENCE_FAILED", {
                     "reason": reason,
-                    "missing_evidence_digests": sorted(list(missing_in_records))
+                    "evidence_id": ev.evidence_id
                 })
                 return False, reason
+            verified_digests_map[val_res.evidence_digest.lower()] = ev
+
+        # Ensure all digests in approval.required_evidence_digests correspond to verified records
+        approval_digests = {d.lower() for d in approval.required_evidence_digests}
+        unresolved_digests = approval_digests - set(verified_digests_map.keys())
+        if unresolved_digests:
+            reason = f"Release approval rejected: Approval references evidence digests not present in verified records: {sorted(list(unresolved_digests))}"
+            self._log_event(AuditLogLevel.HALT, "APPROVAL_EVIDENCE_UNRESOLVED", {
+                "reason": reason,
+                "missing_evidence_digests": sorted(list(unresolved_digests))
+            })
+            return False, reason
 
         # Check 7: Asymmetric Ed25519 cryptographic signature verification
         if not approval.signature or not isinstance(approval.signature, str):
@@ -260,7 +386,6 @@ class ReleaseGovernanceEngine:
             reason = "Release approval rejected: ReleaseGovernanceEngine has no configured PrincipalVerifier to verify signature"
             return False, reason
 
-        # Check if issuer is trusted by verifier
         trusted_pubkeys = getattr(self.principal_verifier, "_trusted_public_keys", {})
         trusted_pubkey = trusted_pubkeys.get(approval.approver_issuer)
         if not trusted_pubkey:

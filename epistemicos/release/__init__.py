@@ -26,7 +26,10 @@ from epistemicos.release.revocation import (
     RevocationRecord,
 )
 from epistemicos.release.engine import (
+    EvidenceValidationResult,
+    EvidenceValidationResultStatus,
     ReleaseGovernanceEngine,
+    ReleaseReadinessEvaluation,
 )
 
 __all__ = [
@@ -43,5 +46,8 @@ __all__ = [
     "EvidenceInvalidator",
     "ReleaseApprovalRevocationRegistry",
     "RevocationRecord",
+    "EvidenceValidationResult",
+    "EvidenceValidationResultStatus",
     "ReleaseGovernanceEngine",
+    "ReleaseReadinessEvaluation",
 ]
