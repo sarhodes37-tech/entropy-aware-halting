@@ -324,19 +324,19 @@ def normalize_target_scope(raw_target: str) -> str:
     Canonicalizes target resource string into a normalized scope identifier.
     Strips trailing slashes, resolves traversal dots and unquotes percent-encoded paths,
     and isolates hostname/port if present.
-    Rejects malformed inputs containing unencoded control characters, tabs, newlines,
-    or null bytes rather than silently stripping or repairing them.
+    Raises ValueError for malformed inputs containing unencoded control characters,
+    whitespace anomalies, or null bytes to prevent collision with valid root targets.
     """
     if not raw_target:
         return "target:/:/"
     str_raw = str(raw_target)
-    # Reject unencoded control characters and whitespace anomalies that cause parser differential
-    if any(c in str_raw for c in ('\r', '\n', '\t', '\x00', '\x0b', '\x0c')):
-        return "target:/:/"
-    str_target = str_raw.strip()
+    # Reject unencoded control characters and whitespace anomalies that cause parser differential or scope collision
+    if any(c.isspace() or c in ('\x00', '\x0b', '\x0c') for c in str_raw):
+        raise ValueError(f"Malformed target resource contains unencoded whitespace or control characters: {raw_target!r}")
+    str_target = str_raw
     if "://" in str_target:
         parsed = urlparse(str_target)
-        netloc = parsed.netloc.lower().strip() if parsed.netloc else ""
+        netloc = parsed.netloc.lower() if parsed.netloc else ""
         raw_path = parsed.path or "/"
     else:
         netloc = ""

@@ -7,7 +7,7 @@ name = "epistemicos"
 version = "0.1.0"
 description = "Production-grade AI governance, risk management, and deterministic execution engine."
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.11.4"
 license = {text = "MIT"}
 authors = [
     {name = "Steven Rhodes", email = "sarhodes37@gmail.com"}

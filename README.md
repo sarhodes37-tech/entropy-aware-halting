@@ -248,7 +248,7 @@ cat results/ablation_table.json
 ## 🚀 Quickstart & Requirements
 
 ### Package Requirements
-* **Python 3.11+**
+* **Python 3.11.4+**
 * **Core Dependencies:** `pydantic>=2.0.0`
 * **Optional Extras:** `.[ml,test]` for PyTorch, Transformers, and Pytest harnesses.
 

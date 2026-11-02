@@ -2,7 +2,7 @@
 # EpistemicOS - Runtime Dependencies
 # ==========================================
 # Core runtime dependencies (Pydantic).
-# Requires Python >= 3.11
+# Requires Python >= 3.11.4
 pydantic>=2.0.0
 
 # ==========================================

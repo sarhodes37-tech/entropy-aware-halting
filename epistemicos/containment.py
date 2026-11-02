@@ -127,6 +127,7 @@ def parse_url_authority_structure(target_url_or_host: str, default_protocol: str
     Unified authority and destination parser using urllib.parse.urlsplit.
     Extracts canonical scheme, normalized host, explicit/default port, and authority sanity status.
     Rejects authority strings containing userinfo with `#` or `%23` fragment tricks.
+    Rejects inputs with leading/trailing whitespace or unencoded control characters rather than silently repairing them.
     """
     if not isinstance(target_url_or_host, str):
         return {"scheme": default_protocol.lower(), "port": default_port, "normalized_host": "", "valid": False}
@@ -135,7 +136,11 @@ def parse_url_authority_structure(target_url_or_host: str, default_protocol: str
     if len(target_url_or_host) > MAX_URL_INPUT_LEN:
         return {"scheme": default_protocol.lower(), "port": default_port, "normalized_host": "", "valid": False}
 
-    raw = target_url_or_host.strip().replace('\\', '/')
+    # Reject leading or trailing whitespace rather than silently stripping or repairing it
+    if target_url_or_host != target_url_or_host.strip():
+        return {"scheme": default_protocol.lower(), "port": default_port, "normalized_host": "", "valid": False}
+
+    raw = target_url_or_host.replace('\\', '/')
     if not raw:
         return {"scheme": default_protocol.lower(), "port": default_port, "normalized_host": "", "valid": False}
 
@@ -228,8 +233,8 @@ def parse_url_authority_structure(target_url_or_host: str, default_protocol: str
             if alt_ip:
                 norm_host = str(alt_ip)
             else:
-                # DNS and IDNA bounds enforcement (RFC 1035 / RFC 5890 / CVE-2022-45061)
-                # Bounded host length and per-label length before IDNA conversion
+                # Defensive DNS and IDNA resource bounds (RFC 1035 / RFC 5890, related to CVE-2022-45061)
+                # Application-level bounded host length and per-label length before IDNA conversion
                 if len(host_clean) > MAX_DNS_HOSTNAME_LEN:
                     return {"scheme": scheme, "port": port, "normalized_host": "", "valid": False}
 
@@ -323,11 +328,11 @@ def parse_ip_numeric(host_str: str) -> Optional[ipaddress.IPv4Address]:
     if not isinstance(host_str, str):
         return None
 
-    # Disallow control characters, internal/external whitespace, signs, or embedded nulls in numeric IP parsing
-    if any(c in host_str for c in ('+', '-', ' ', '\t', '\n', '\r', '\x00', '\x0b', '\x0c')):
+    # Disallow any whitespace, control characters, signs, or embedded nulls in numeric IP parsing
+    if any(c.isspace() or c in ('+', '-', '\x00') for c in host_str):
         return None
 
-    clean = host_str.strip()
+    clean = host_str
     if not clean:
         return None
 
