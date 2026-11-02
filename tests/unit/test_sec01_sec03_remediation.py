@@ -464,6 +464,49 @@ def test_sec01_assertion_with_modified_fields_rejected():
     assert "signature verification failed" in r3.lower()
 
 
+def test_sec01_clock_skew_validation_rejects_invalid_values():
+    """
+    SEC-01: Validates that PrincipalVerifier rejects invalid clock-skew values
+    including negative numbers, NaN, infinity, and non-numeric types.
+    """
+    import math
+
+    # Non-negative finite values are accepted
+    v0 = PrincipalVerifier(clock_skew_seconds=0.0)
+    assert v0.clock_skew_seconds == 0.0
+
+    v5 = PrincipalVerifier(clock_skew_seconds=5)
+    assert v5.clock_skew_seconds == 5.0
+
+    # Negative numbers are rejected
+    with pytest.raises(ValueError) as exc_neg:
+        PrincipalVerifier(clock_skew_seconds=-1.0)
+    assert "must be a finite non-negative number" in str(exc_neg.value)
+
+    # NaN is rejected
+    with pytest.raises(ValueError) as exc_nan:
+        PrincipalVerifier(clock_skew_seconds=float("nan"))
+    assert "must be a finite non-negative number" in str(exc_nan.value)
+
+    # Positive and negative infinity are rejected
+    with pytest.raises(ValueError) as exc_inf:
+        PrincipalVerifier(clock_skew_seconds=float("inf"))
+    assert "must be a finite non-negative number" in str(exc_inf.value)
+
+    with pytest.raises(ValueError) as exc_ninf:
+        PrincipalVerifier(clock_skew_seconds=float("-inf"))
+    assert "must be a finite non-negative number" in str(exc_ninf.value)
+
+    # Booleans and non-numeric types are rejected
+    with pytest.raises(ValueError) as exc_bool:
+        PrincipalVerifier(clock_skew_seconds=True)
+    assert "must be a finite non-negative number" in str(exc_bool.value)
+
+    with pytest.raises(ValueError) as exc_str:
+        PrincipalVerifier(clock_skew_seconds="5.0")
+    assert "must be a finite non-negative number" in str(exc_str.value)
+
+
 def test_sec01_expired_and_future_dated_assertions_rejected():
     """
     SEC-01: Expired and future-dated assertions are rejected.

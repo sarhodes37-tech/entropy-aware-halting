@@ -1150,10 +1150,16 @@ class PrincipalVerifier:
     def __init__(
         self,
         trusted_public_keys: Optional[Dict[str, Union[bytes, str]]] = None,
-        clock_skew_seconds: float = 5.0
+        clock_skew_seconds: Union[int, float] = 5.0
     ):
+        if isinstance(clock_skew_seconds, bool) or not isinstance(clock_skew_seconds, (int, float)):
+            raise ValueError(f"clock_skew_seconds must be a finite non-negative number, got {type(clock_skew_seconds).__name__}")
+        clock_skew_val = float(clock_skew_seconds)
+        if not math.isfinite(clock_skew_val) or clock_skew_val < 0.0:
+            raise ValueError(f"clock_skew_seconds must be a finite non-negative number, got {clock_skew_seconds}")
+
         raw_keys: Dict[str, bytes] = {}
-        super().__setattr__("_clock_skew_seconds", float(clock_skew_seconds))
+        super().__setattr__("_clock_skew_seconds", clock_skew_val)
 
         keys_input = trusted_public_keys
         if keys_input is None:
