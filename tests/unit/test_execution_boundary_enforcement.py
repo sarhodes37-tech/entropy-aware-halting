@@ -1415,3 +1415,136 @@ def test_orchestrator_integration_concurrent_staging_during_outcome_unknown_no_a
     audit_ev = halt_events[0]
     assert "vector_cleanup" in audit_ev["metadata"]
     assert audit_ev["metadata"]["vector_cleanup"]["vectors_purged"] == res["vector_cleanup"]["vectors_purged"]
+
+
+def test_orchestrator_integration_late_concurrent_staging_during_outcome_unknown_accounting(tmp_path):
+    """
+    Validates P0 late-concurrency requirement:
+    Exercises the race where Batch B is staged AFTER the final revocation attempt in core.py.
+    Verifies that:
+    1. Top-level status is RECONCILIATION_REQUIRED.
+    2. commit_trajectory() is NEVER invoked to promote vectors from this trajectory.
+    3. Confirmed deletions are independently observable through mock delete.
+    4. Vectors not confirmed deleted (Batch B) remain discoverable in active staging.
+    5. vectors_pending accurately reflects the outstanding count without double counting.
+    6. cleanup_status is PENDING_RECONCILIATION (never CONFIRMED).
+    7. HALT audit event reports identical cleanup state to the response.
+    8. Synchronization is deterministic with safe try/finally thread termination.
+    """
+    import threading
+
+    in_final_revoke_event = threading.Event()
+    continue_final_revoke_event = threading.Event()
+
+    mock_db = MagicMock()
+    mock_db.delete = MagicMock(return_value=True)
+
+    orchestrator = EpistemicOrchestrator(
+        audit_log_path=str(tmp_path / "test_audit_late.jsonl"),
+        db_client=mock_db
+    )
+    perm_gate = PermissionGate(
+        trusted_scope={
+            "allowed_operations": ["execute_transfer"],
+            "allowed_resources": ["/accounts/primary"],
+        }
+    )
+    orchestrator.gates = [perm_gate]
+
+    raw_payload = {"policy_id": "POL-2026-LATE-STAGING", "primary_metric": 100.0}
+    corr_id = f"LATE-CORR-{uuid.uuid4()}"
+    traj_id = f"traj-late-{uuid.uuid4()}"
+
+    original_record = orchestrator.execution_boundary.store.record_event
+
+    def mock_record_event(event):
+        if getattr(event, "event_type", None) == ProvenanceEventType.EXECUTION_SUCCEEDED.value:
+            raise RuntimeError("Terminal provenance log write crash")
+        return original_record(event)
+
+    orchestrator.execution_boundary.store.record_event = MagicMock(side_effect=mock_record_event)
+
+    def worker_action():
+        orchestrator.vector_manager.stage_vectors(traj_id, ["vec_batch_A_1", "vec_batch_A_2"])
+        return {"status": "SUCCESS"}
+
+    context = {
+        "correlation_id": corr_id,
+        "proposed_actions": [{"action": {"op": "execute_transfer", "endpoint": "/accounts/primary"}}],
+        "actual_executable": worker_action,
+    }
+
+    # Spy on commit_trajectory
+    commit_invocations = []
+    real_commit = orchestrator.vector_manager.commit_trajectory
+
+    def spy_commit(trajectory_id):
+        result = real_commit(trajectory_id)
+        commit_invocations.append({"trajectory_id": trajectory_id, "committed_ids": list(result)})
+        return result
+
+    orchestrator.vector_manager.commit_trajectory = spy_commit
+
+    # Hook get_outstanding_vectors to stage Batch B precisely at the late boundary
+    real_get_outstanding = orchestrator.vector_manager.get_outstanding_vectors
+
+    def late_hook_outstanding(t_id):
+        in_final_revoke_event.set()
+        continue_final_revoke_event.wait(timeout=5)
+        return real_get_outstanding(t_id)
+
+    orchestrator.vector_manager.get_outstanding_vectors = late_hook_outstanding
+
+    orchestrator_result = []
+
+    def run_pipeline():
+        res = orchestrator.process_submission(raw_payload, context, trajectory_id=traj_id)
+        orchestrator_result.append(res)
+
+    pipeline_thread = threading.Thread(target=run_pipeline)
+    pipeline_thread.start()
+
+    try:
+        # Wait until orchestrator reaches get_outstanding_vectors (after all revoke calls)
+        assert in_final_revoke_event.wait(timeout=5) is True
+
+        # Late concurrent stage: another thread stages Batch B right before return
+        orchestrator.vector_manager.stage_vectors(traj_id, ["vec_late_B_1", "vec_late_B_2", "vec_late_B_3"])
+    finally:
+        continue_final_revoke_event.set()
+
+    pipeline_thread.join(timeout=5)
+    assert pipeline_thread.is_alive() is False
+
+    assert len(orchestrator_result) == 1
+    res = orchestrator_result[0]
+
+    # Invariants verification:
+    # 1. Top-level status is RECONCILIATION_REQUIRED
+    assert res["status"] == "RECONCILIATION_REQUIRED"
+
+    # 2. commit_trajectory was NEVER called
+    assert commit_invocations == []
+
+    # 3. Batch A was purged
+    assert "vec_batch_A_1" in mock_db.delete.call_args[1]["ids"]
+    assert "vec_batch_A_2" in mock_db.delete.call_args[1]["ids"]
+
+    # 4. Batch B remains in active staging (not committed!)
+    assert orchestrator.vector_manager.get_staged_count(traj_id) == 3
+    outstanding = orchestrator.vector_manager.get_outstanding_vectors(traj_id)
+    assert set(outstanding) == {"vec_late_B_1", "vec_late_B_2", "vec_late_B_3"}
+
+    # 5. vectors_pending accurately equals 3, and status is PENDING_RECONCILIATION (never CONFIRMED)
+    assert res["vector_cleanup"]["status"] == "PENDING_RECONCILIATION"
+    assert res["vector_cleanup"]["vectors_purged"] == 2
+    assert res["vector_cleanup"]["vectors_pending"] == 3
+
+    # 6. Audit event reports identical cleanup data
+    with open(orchestrator.audit_log_path, "r") as f:
+        audit_lines = [json.loads(line) for line in f if line.strip()]
+    halt_events = [e for e in audit_lines if e["event_type"] == "DETERMINISTIC_HALT" and "Execution boundary outcome unknown" in e["reason"]]
+    assert len(halt_events) == 1
+    audit_ev = halt_events[0]
+    assert audit_ev["metadata"]["vector_cleanup"]["status"] == "PENDING_RECONCILIATION"
+    assert audit_ev["metadata"]["vector_cleanup"]["vectors_pending"] == 3

@@ -84,6 +84,22 @@ class VectorHygieneManager:
                 return list(self._unpurged_vectors.get(trajectory_id, []))
             return {k: list(v) for k, v in self._unpurged_vectors.items()}
 
+    def get_outstanding_vectors(self, trajectory_id: str) -> List[Union[str, int]]:
+        """
+        Returns all outstanding vector IDs for a trajectory across both active staging
+        and unpurged quarantine, deduplicated without changing discovery order.
+        """
+        with self._lock:
+            active = self._active_trajectories.get(trajectory_id, [])
+            unpurged = self._unpurged_vectors.get(trajectory_id, [])
+            seen = set()
+            outstanding = []
+            for vid in active + unpurged:
+                if vid not in seen:
+                    seen.add(vid)
+                    outstanding.append(vid)
+            return outstanding
+
     def stage_vectors(self, trajectory_id: str, vector_ids: List[Union[str, int]]) -> None:
         """Stages new vector IDs into the quarantined trajectory scope."""
         if not vector_ids:

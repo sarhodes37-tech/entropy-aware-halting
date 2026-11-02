@@ -754,20 +754,20 @@ class EpistemicOrchestrator:
                                 revoked_ids = self.vector_manager.revoke_trajectory(traj_id)
                                 actual_revoked_count = len(revoked_ids)
 
-                                # If vectors were staged concurrently or failed to purge, ensure any remaining
-                                # active staged vectors are also revoked or quarantined rather than committed
+                                # If vectors were staged concurrently during backend purge, revoke them as well
                                 if self.vector_manager.get_staged_count(traj_id) > 0:
                                     concurrent_revoked = self.vector_manager.revoke_trajectory(traj_id)
                                     actual_revoked_count += len(concurrent_revoked)
 
-                                unpurged_ids = self.vector_manager.get_unpurged_vectors(traj_id)
-                                pending_count = len(unpurged_ids)
+                                # Determine outstanding vectors across both active staging and unpurged quarantine
+                                outstanding_ids = self.vector_manager.get_outstanding_vectors(traj_id)
+                                pending_count = len(outstanding_ids)
 
                                 if pending_count > 0:
                                     cleanup_status = "PENDING_RECONCILIATION"
                                 elif actual_revoked_count > 0:
                                     cleanup_status = "CONFIRMED"
-                                elif initial_staged == 0 and pending_count == 0:
+                                elif initial_staged == 0:
                                     cleanup_status = "NOT_REQUIRED"
                                 else:
                                     cleanup_status = "PENDING_RECONCILIATION"
