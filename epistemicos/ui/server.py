@@ -27,6 +27,14 @@ class ObservatoryRequestHandler(BaseHTTPRequestHandler):
     HTTP Handler serving read-only REST API endpoints and static assets.
     """
 
+    # Suppress runtime software version disclosure in Server response header
+    server_version: str = "EpistemicOS-Observatory"
+    sys_version: str = ""
+
+    def version_string(self) -> str:
+        """Return generic server token without disclosing underlying Python/BaseHTTP version."""
+        return self.server_version
+
     adapter: ObservatoryDataAdapter = ObservatoryDataAdapter()
     static_dir: Path = Path(__file__).parent / "static"
 
