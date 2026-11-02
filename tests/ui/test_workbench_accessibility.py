@@ -745,6 +745,123 @@ def test_live_region_announcements(a11y_comprehensive_server):
         assert announcer.text_content() == "Failed to update overview metrics."
         page.unroute("**/api/overview")
 
+        # 7. Investigative shortcuts on Overview with focus and announcements
+        page.wait_for_selector(".quick-entry-btn[data-jump-tab='traces'][data-filter='DENIED']")
+        page.evaluate("() => { document.getElementById('a11y-status-announcer').textContent = ''; }")
+        page.click(".quick-entry-btn[data-jump-tab='traces'][data-filter='DENIED']")
+        page.wait_for_function(
+            "() => document.getElementById('a11y-status-announcer').textContent.includes('Filtered: DENIED')"
+        )
+        assert "Filtered: DENIED" in announcer.text_content()
+        # Verify focus shifted to status filter
+        focused_id = page.evaluate("() => document.activeElement ? document.activeElement.id : ''")
+        assert focused_id in ["trace-status-filter", "trace-search"]
+
+        # 8. Deterministic clipboard announcements & state restoration tests
+        page.wait_for_selector("#trace-list .trace-item")
+        page.locator("#trace-list .trace-item").first.click()
+        page.wait_for_function(
+            "() => document.getElementById('a11y-status-announcer').textContent.includes('Selected execution trace')"
+        )
+        page.wait_for_selector(".copy-btn")
+        copy_btn = page.locator(".copy-btn").first
+        orig_text = copy_btn.text_content()
+        orig_aria = copy_btn.get_attribute("aria-label")
+        orig_title = copy_btn.get_attribute("title")
+
+        # 8.1. Success resolution mock
+        page.evaluate("""() => {
+            window.__orig_clipboard = navigator.clipboard;
+            Object.defineProperty(navigator, 'clipboard', {
+                value: { writeText: () => Promise.resolve() },
+                configurable: true,
+                writable: true
+            });
+            document.getElementById('a11y-status-announcer').textContent = '';
+        }""")
+        copy_btn.click()
+        page.wait_for_function(
+            "() => document.getElementById('a11y-status-announcer').textContent === 'Copied to clipboard.'"
+        )
+        assert announcer.text_content() == "Copied to clipboard."
+        assert copy_btn.text_content() == "✓ Copied!"
+        assert copy_btn.get_attribute("aria-label") == "Copied to clipboard!"
+        assert copy_btn.get_attribute("title") == "Copied to clipboard!"
+        assert "copied" in (copy_btn.get_attribute("class") or "")
+        # Wait for success state restoration (timeout: 1500ms)
+        page.wait_for_function(
+            "orig => document.querySelector('.copy-btn').textContent === orig",
+            arg=orig_text
+        )
+        assert copy_btn.text_content() == orig_text
+        assert copy_btn.get_attribute("aria-label") == orig_aria
+        assert copy_btn.get_attribute("title") == orig_title
+        assert "copied" not in (copy_btn.get_attribute("class") or "")
+
+        # 8.2. Rejection / failure mock
+        page.evaluate("""() => {
+            Object.defineProperty(navigator, 'clipboard', {
+                value: { writeText: () => Promise.reject(new Error('Permission denied')) },
+                configurable: true,
+                writable: true
+            });
+            document.getElementById('a11y-status-announcer').textContent = '';
+        }""")
+        copy_btn.click()
+        page.wait_for_function(
+            "() => document.getElementById('a11y-status-announcer').textContent === 'Failed to copy to clipboard.'"
+        )
+        assert announcer.text_content() == "Failed to copy to clipboard."
+        assert copy_btn.text_content() == "Copy Failed"
+        assert copy_btn.get_attribute("aria-label") == "Copy failed"
+        assert copy_btn.get_attribute("title") == "Copy action failed"
+        # Wait for failure state restoration (timeout: 2000ms)
+        page.wait_for_function(
+            "orig => document.querySelector('.copy-btn').textContent === orig",
+            arg=orig_text
+        )
+        assert copy_btn.text_content() == orig_text
+        assert copy_btn.get_attribute("aria-label") == orig_aria
+        assert copy_btn.get_attribute("title") == orig_title
+
+        # 8.3. Unavailable / missing clipboard API mock
+        page.evaluate("""() => {
+            Object.defineProperty(navigator, 'clipboard', {
+                value: undefined,
+                configurable: true,
+                writable: true
+            });
+            document.getElementById('a11y-status-announcer').textContent = '';
+        }""")
+        copy_btn.click()
+        page.wait_for_function(
+            "() => document.getElementById('a11y-status-announcer').textContent === 'Copy to clipboard unavailable.'"
+        )
+        assert announcer.text_content() == "Copy to clipboard unavailable."
+        assert copy_btn.text_content() == "Copy Unavailable"
+        assert copy_btn.get_attribute("aria-label") == "Copy unavailable"
+        assert copy_btn.get_attribute("title") == "Copy unavailable in this browser context"
+        # Wait for unavailable state restoration (timeout: 2000ms)
+        page.wait_for_function(
+            "orig => document.querySelector('.copy-btn').textContent === orig",
+            arg=orig_text
+        )
+        assert copy_btn.text_content() == orig_text
+        assert copy_btn.get_attribute("aria-label") == orig_aria
+        assert copy_btn.get_attribute("title") == orig_title
+
+        # 8.4. Clean up mock and restore original navigator.clipboard
+        page.evaluate("""() => {
+            if (window.__orig_clipboard !== undefined) {
+                Object.defineProperty(navigator, 'clipboard', {
+                    value: window.__orig_clipboard,
+                    configurable: true,
+                    writable: true
+                });
+                delete window.__orig_clipboard;
+            }
+        }""")
+
         browser.close()
 
 
