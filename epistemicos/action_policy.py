@@ -10,6 +10,7 @@ import time
 import uuid
 import hmac
 import hashlib
+import math
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
@@ -249,11 +250,32 @@ class SideEffectPolicyEngine:
     def __init__(
         self,
         registry: Optional[ActionRegistry] = None,
-        signing_secret: Optional[str] = None
+        signing_secret: Optional[Union[str, bytes, bytearray]] = None
     ):
         self.registry = registry or ActionRegistry()
-        self.signing_secret = signing_secret or os.getenv("EPISTEMICOS_APPROVAL_SECRET")
+        raw_secret = (
+            signing_secret
+            if signing_secret is not None
+            else os.getenv("EPISTEMICOS_APPROVAL_SECRET")
+        )
+        self.signing_secret: Optional[bytes] = self._normalize_signing_secret(raw_secret)
         self._violation_counts: Dict[str, int] = {}  # Map correlation_id / session_id to attempt count
+
+    @staticmethod
+    def _normalize_signing_secret(secret: Any) -> Optional[bytes]:
+        """Safely normalizes signing secret to non-empty bytes or None if absent/empty."""
+        if secret is None:
+            return None
+        if isinstance(secret, str):
+            try:
+                b = secret.encode("utf-8")
+            except UnicodeEncodeError:
+                return None
+        elif isinstance(secret, (bytes, bytearray)):
+            b = bytes(secret)
+        else:
+            return None
+        return b if len(b) > 0 else None
 
     def compute_canonical_digest(self, payload: Any) -> str:
         """
@@ -283,7 +305,7 @@ class SideEffectPolicyEngine:
             raise ValueError("No signing secret configured for approval signature computation")
         sig_data = ":".join(str(x) for x in record_data)
         return hmac.new(
-            self.signing_secret.encode("utf-8"),
+            self.signing_secret,
             sig_data.encode("utf-8"),
             hashlib.sha256
         ).hexdigest()
@@ -334,11 +356,46 @@ class SideEffectPolicyEngine:
         if record.policy_version != expected_policy_version:
             return False, f"Approval policy version mismatch: expected '{expected_policy_version}', got '{record.policy_version}'"
 
-        # Expiration check
+        # Validate effective clock without integer overflow
+        if current_time is not None:
+            if not isinstance(current_time, (int, float)) or isinstance(current_time, bool):
+                return False, "Invalid current_time clock override"
+            if isinstance(current_time, int):
+                if current_time.bit_length() > 64:
+                    return False, "Invalid current_time clock override: integer overflow"
+                now: Union[int, float] = current_time
+            else:
+                if not math.isfinite(current_time):
+                    return False, "Invalid current_time clock override: non-finite value"
+                now = current_time
+        else:
+            now = time.time()
+
+        # Expiration check: strictly require numeric finite int/float without coercion/overflow
         if record.expires_at is not None:
-            now = current_time if current_time is not None else time.time()
-            if now >= record.expires_at:
+            is_valid_num = isinstance(record.expires_at, (int, float)) and not isinstance(
+                record.expires_at, bool
+            )
+            if not is_valid_num:
+                return False, "Approval record expiration is malformed"
+            if isinstance(record.expires_at, int):
+                if record.expires_at.bit_length() > 64:
+                    return False, "Approval record expiration is non-finite or overflows"
+                exp_val: Union[int, float] = record.expires_at
+            else:
+                if not math.isfinite(record.expires_at):
+                    return False, "Approval record expiration is non-finite"
+                exp_val = record.expires_at
+
+            if now >= exp_val:
                 return False, "Approval record expired"
+
+        # Validate signature format: strictly exactly 64 ASCII hex characters
+        if not isinstance(record.signature, str) or len(record.signature) != 64:
+            return False, "Approval signature format invalid"
+        _HEX_CHARS = frozenset("0123456789abcdefABCDEF")
+        if any(c not in _HEX_CHARS for c in record.signature):
+            return False, "Approval signature is not valid hex"
 
         # Verify signature using HMAC-SHA256 and constant-time comparison
         if record.expires_at is not None:
@@ -364,12 +421,12 @@ class SideEffectPolicyEngine:
             )
         sig_data = ":".join(sig_tuple)
         expected_sig = hmac.new(
-            self.signing_secret.encode("utf-8"),
+            self.signing_secret,
             sig_data.encode("utf-8"),
             hashlib.sha256
         ).hexdigest()
 
-        if not isinstance(record.signature, str) or not hmac.compare_digest(record.signature, expected_sig):
+        if not hmac.compare_digest(record.signature.lower(), expected_sig.lower()):
             return False, "Approval signature verification failed"
 
         return True, "Approval record validated"

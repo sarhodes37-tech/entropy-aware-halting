@@ -427,3 +427,321 @@ class TestSideEffectPolicyEngineInvariants:
             fallback_digest = engine.compute_canonical_digest({"unserializable": True})
             assert isinstance(fallback_digest, str)
             assert len(fallback_digest) == 64
+
+    def test_bytes_and_bytearray_signing_secret_support(self):
+        """Validates that bytes/bytearray signing secrets are supported and verified properly."""
+        payload = {"cmd": "deploy"}
+        for secret in [b"my_bytes_secret", bytearray(b"my_bytearray_secret")]:
+            engine = SideEffectPolicyEngine(signing_secret=secret)
+            digest = engine.compute_canonical_digest(payload)
+            sig = engine.compute_approval_signature((
+                "APP-1", "package_publish", "https://example.com",
+                digest, "TASK-1", "1.0.0", "admin"
+            ))
+            record = TypedHumanApprovalRecord(
+                approval_id="APP-1",
+                operation_id="package_publish",
+                target_resource="https://example.com",
+                canonical_args_digest=digest,
+                task_id="TASK-1",
+                policy_version="1.0.0",
+                approved_by_principal="admin",
+                timestamp="2026-01-01T00:00:00Z",
+                signature=sig,
+            )
+            valid, msg = engine.verify_approval_record(
+                record=record,
+                expected_operation_id="package_publish",
+                expected_target="https://example.com",
+                expected_payload=payload,
+                expected_task_id="TASK-1",
+            )
+            assert valid is True
+            assert msg == "Approval record validated"
+
+    def test_empty_secret_fails_closed_without_exceptions(self):
+        """Validates that empty secret strings or byte sequences fail closed."""
+        payload = {"cmd": "deploy"}
+        for empty_secret in ["", b"", bytearray()]:
+            engine = SideEffectPolicyEngine(signing_secret=empty_secret)
+            assert engine.signing_secret is None
+
+            with pytest.raises(ValueError, match="No signing secret configured"):
+                engine.compute_approval_signature((
+                    "APP-1", "package_publish", "https://example.com",
+                    "digest", "TASK-1", "1.0.0", "admin"
+                ))
+
+            record = TypedHumanApprovalRecord(
+                approval_id="APP-1",
+                operation_id="package_publish",
+                target_resource="https://example.com",
+                canonical_args_digest=engine.compute_canonical_digest(payload),
+                task_id="TASK-1",
+                policy_version="1.0.0",
+                approved_by_principal="admin",
+                timestamp="2026-01-01T00:00:00Z",
+                signature="0" * 64,
+            )
+            valid, msg = engine.verify_approval_record(
+                record=record,
+                expected_operation_id="package_publish",
+                expected_target="https://example.com",
+                expected_payload=payload,
+                expected_task_id="TASK-1",
+            )
+            assert valid is False
+            assert "No signing secret configured" in msg
+
+    def test_malformed_signature_and_expiration_fail_closed(self):
+        """Validates that non-hex/wrong length signatures and non-finite expires_at fail closed."""
+        engine = SideEffectPolicyEngine(signing_secret="TEST_SECRET")
+        payload = {"action": "clean"}
+        digest = engine.compute_canonical_digest(payload)
+
+        # 1. Signature format invalid (unicode lookalikes, whitespace, sign, etc.)
+        for bad_sig in [
+            "short",
+            "0" * 63,
+            "0" * 65,
+            "z" * 64,
+            None,
+            12345,
+            " " * 64,
+            " " + "0" * 63,
+            "+" + "0" * 63,
+            "-\x00" * 32,
+            "\uff10" * 64,  # full-width unicode zero
+        ]:
+            record = TypedHumanApprovalRecord(
+                approval_id="APP-BAD-SIG",
+                operation_id="package_publish",
+                target_resource="https://example.com",
+                canonical_args_digest=digest,
+                task_id="TASK-1",
+                policy_version="1.0.0",
+                approved_by_principal="admin",
+                timestamp="2026-01-01T00:00:00Z",
+                signature=bad_sig,  # type: ignore
+            )
+            valid, msg = engine.verify_approval_record(
+                record=record,
+                expected_operation_id="package_publish",
+                expected_target="https://example.com",
+                expected_payload=payload,
+                expected_task_id="TASK-1",
+            )
+            assert valid is False
+            assert "Approval signature" in msg
+
+        # 2. Malformed expires_at (strings, booleans, NaN, Inf, -Inf)
+        bad_exp_list = [
+            "tomorrow",
+            "1234567890",
+            True,
+            False,
+            float("nan"),
+            float("inf"),
+            float("-inf"),
+        ]
+        for bad_exp in bad_exp_list:
+            record = TypedHumanApprovalRecord(
+                approval_id="APP-BAD-EXP",
+                operation_id="package_publish",
+                target_resource="https://example.com",
+                canonical_args_digest=digest,
+                task_id="TASK-1",
+                policy_version="1.0.0",
+                approved_by_principal="admin",
+                timestamp="2026-01-01T00:00:00Z",
+                signature="0" * 64,
+                expires_at=bad_exp,  # type: ignore
+            )
+            valid, msg = engine.verify_approval_record(
+                record=record,
+                expected_operation_id="package_publish",
+                expected_target="https://example.com",
+                expected_payload=payload,
+                expected_task_id="TASK-1",
+            )
+            assert valid is False
+            assert "Approval record expiration" in msg
+
+    def test_current_time_clock_override_validation(self):
+        """Validates that current_time override strictly rejects non-finite/malformed inputs."""
+        engine = SideEffectPolicyEngine(signing_secret="TEST_SECRET")
+        payload = {"action": "build"}
+        digest = engine.compute_canonical_digest(payload)
+        expires_at = 1000.0
+
+        sig = engine.compute_approval_signature((
+            "APP-CLOCK", "package_publish", "https://example.com",
+            digest, "TASK-1", "1.0.0", "admin", str(expires_at)
+        ))
+        record = TypedHumanApprovalRecord(
+            approval_id="APP-CLOCK",
+            operation_id="package_publish",
+            target_resource="https://example.com",
+            canonical_args_digest=digest,
+            task_id="TASK-1",
+            policy_version="1.0.0",
+            approved_by_principal="admin",
+            timestamp="2026-01-01T00:00:00Z",
+            signature=sig,
+            expires_at=expires_at,
+        )
+
+        # Genuinely expired under valid clock
+        valid, msg = engine.verify_approval_record(
+            record=record,
+            expected_operation_id="package_publish",
+            expected_target="https://example.com",
+            expected_payload=payload,
+            expected_task_id="TASK-1",
+            current_time=2000.0,
+        )
+        assert valid is False
+        assert "Approval record expired" in msg
+
+        # Valid non-expired under valid clock
+        valid, msg = engine.verify_approval_record(
+            record=record,
+            expected_operation_id="package_publish",
+            expected_target="https://example.com",
+            expected_payload=payload,
+            expected_task_id="TASK-1",
+            current_time=500.0,
+        )
+        assert valid is True
+        assert msg == "Approval record validated"
+
+        # Adversarial current_time inputs cannot bypass expiration
+        for bad_clock in [
+            float("nan"),
+            float("inf"),
+            float("-inf"),
+            True,
+            False,
+            "12345",
+            "now",
+            [12345],
+        ]:
+            valid, msg = engine.verify_approval_record(
+                record=record,
+                expected_operation_id="package_publish",
+                expected_target="https://example.com",
+                expected_payload=payload,
+                expected_task_id="TASK-1",
+                current_time=bad_clock,  # type: ignore
+            )
+            assert valid is False
+            assert "Invalid current_time clock override" in msg
+
+    def test_secret_normalization_surrogate_content_fails_closed(self):
+        """Validates that strings with unencodable surrogate code points fail closed."""
+        surrogate_str = "secret\ud800key"
+        engine = SideEffectPolicyEngine(signing_secret=surrogate_str)
+        assert engine.signing_secret is None
+
+    def test_integer_overflow_protection_in_verification(self):
+        """
+        Validates that arbitrarily large integers (e.g. 10**10000) do not cause OverflowError
+        and fail closed in verify_approval_record().
+        """
+        engine = SideEffectPolicyEngine(signing_secret="TEST_SECRET")
+        payload = {"action": "scale"}
+        digest = engine.compute_canonical_digest(payload)
+        expires_at_normal = 2000
+
+        sig = engine.compute_approval_signature((
+            "APP-OVERFLOW", "package_publish", "https://example.com",
+            digest, "TASK-1", "1.0.0", "admin", str(expires_at_normal)
+        ))
+        record = TypedHumanApprovalRecord(
+            approval_id="APP-OVERFLOW",
+            operation_id="package_publish",
+            target_resource="https://example.com",
+            canonical_args_digest=digest,
+            task_id="TASK-1",
+            policy_version="1.0.0",
+            approved_by_principal="admin",
+            timestamp="2026-01-01T00:00:00Z",
+            signature=sig,
+            expires_at=expires_at_normal,
+        )
+
+        # 1. Oversized integer current_time (10**10000)
+        valid, msg = engine.verify_approval_record(
+            record=record,
+            expected_operation_id="package_publish",
+            expected_target="https://example.com",
+            expected_payload=payload,
+            expected_task_id="TASK-1",
+            current_time=10**10000,
+        )
+        assert valid is False
+        assert "integer overflow" in msg
+
+        # 2. Oversized integer expires_at (10**10000)
+        record_huge_exp = TypedHumanApprovalRecord(
+            approval_id="APP-OVERFLOW-EXP",
+            operation_id="package_publish",
+            target_resource="https://example.com",
+            canonical_args_digest=digest,
+            task_id="TASK-1",
+            policy_version="1.0.0",
+            approved_by_principal="admin",
+            timestamp="2026-01-01T00:00:00Z",
+            signature="0" * 64,
+            expires_at=10**10000,
+        )
+        valid, msg = engine.verify_approval_record(
+            record=record_huge_exp,
+            expected_operation_id="package_publish",
+            expected_target="https://example.com",
+            expected_payload=payload,
+            expected_task_id="TASK-1",
+            current_time=1000,
+        )
+        assert valid is False
+        assert "overflows" in msg
+
+        # 3. Ordinary integer current_time and expires_at
+        valid, msg = engine.verify_approval_record(
+            record=record,
+            expected_operation_id="package_publish",
+            expected_target="https://example.com",
+            expected_payload=payload,
+            expected_task_id="TASK-1",
+            current_time=1000,
+        )
+        assert valid is True
+        assert msg == "Approval record validated"
+
+        # 4. Ordinary float current_time and expires_at
+        sig_float = engine.compute_approval_signature((
+            "APP-FLOAT", "package_publish", "https://example.com",
+            digest, "TASK-1", "1.0.0", "admin", "2000.5"
+        ))
+        record_float = TypedHumanApprovalRecord(
+            approval_id="APP-FLOAT",
+            operation_id="package_publish",
+            target_resource="https://example.com",
+            canonical_args_digest=digest,
+            task_id="TASK-1",
+            policy_version="1.0.0",
+            approved_by_principal="admin",
+            timestamp="2026-01-01T00:00:00Z",
+            signature=sig_float,
+            expires_at=2000.5,
+        )
+        valid, msg = engine.verify_approval_record(
+            record=record_float,
+            expected_operation_id="package_publish",
+            expected_target="https://example.com",
+            expected_payload=payload,
+            expected_task_id="TASK-1",
+            current_time=1000.5,
+        )
+        assert valid is True
+        assert msg == "Approval record validated"
