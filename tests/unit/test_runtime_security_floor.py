@@ -328,7 +328,9 @@ def test_malformed_target_fails_closed_in_authorization_and_fencing(tmp_path):
     1. Cannot match or reuse a capability issued for root scope.
     2. Fails capability issuance and verification closed without advancing fencing generations.
     3. Cannot bypass validation via precomputed scope keys.
-    4. Does not mutate storage, advance fencing tokens, or append journal records (in-memory & persistent).
+    4. Does not mutate storage, advance fencing tokens, or alter stored state
+       (in-memory store capability state remains unmodified; persistent store
+       journal file lines and content remain byte-for-byte identical).
     """
     import os
     from epistemicos.authorization import (
@@ -370,7 +372,7 @@ def test_malformed_target_fails_closed_in_authorization_and_fencing(tmp_path):
         assert root_cap.scope_key == root_scope
         assert store.get_scope_fencing_token(root_scope) == 1
 
-        # Capture journal baseline state immediately after issuing legitimate root capability
+        # Capture baseline state immediately after issuing legitimate root capability
         if isinstance(store, FileAuthorizationStore):
             with open(journal_path, "r", encoding="utf-8") as jf:
                 journal_lines_baseline = jf.readlines()
@@ -428,11 +430,12 @@ def test_malformed_target_fails_closed_in_authorization_and_fencing(tmp_path):
             assert ok is False
             assert "TARGET_MISMATCH" in v_reason
 
-        # Assert verification checks appended no journal records
+        # Assert verification checks appended no journal records and contents match baseline
         if isinstance(store, FileAuthorizationStore):
             with open(journal_path, "r", encoding="utf-8") as jf:
                 journal_lines_after_verify = jf.readlines()
             assert len(journal_lines_after_verify) == len(journal_lines_baseline)
+            assert journal_lines_after_verify == journal_lines_baseline
         else:
             assert len(store._capabilities) == in_mem_caps_baseline
 
@@ -455,12 +458,13 @@ def test_malformed_target_fails_closed_in_authorization_and_fencing(tmp_path):
         with pytest.raises(ValueError, match="scope_key mismatch|Malformed target"):
             registry.register_capability(spoofed_cap)
 
-        # Confirm store still has only root_cap, fencing generation remains 1, and journal is unmodified
+        # Confirm store still has only root_cap, fencing generation remains 1, and journal contents are identical
         assert store.get_scope_fencing_token(root_scope) == 1
         assert registry.get_capability("AUTH-FORGED-001") is None
         if isinstance(store, FileAuthorizationStore):
             with open(journal_path, "r", encoding="utf-8") as jf:
                 journal_lines_final = jf.readlines()
             assert len(journal_lines_final) == len(journal_lines_baseline)
+            assert journal_lines_final == journal_lines_baseline
         else:
             assert len(store._capabilities) == in_mem_caps_baseline
