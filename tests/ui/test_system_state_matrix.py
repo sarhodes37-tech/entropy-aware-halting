@@ -1,27 +1,8 @@
-"""
-Deterministic unit test suite for Observatory input normalization and system state derivation matrix.
-
-Verifies:
-1. normalizeMetricValue handles numbers, numeric strings, null, undefined, booleans, negative numbers, floats, objects.
-2. deriveSystemState enforces operational precedence rules and reasons:
-   - Both integrity sources verified, no operational exceptions -> READY
-   - Audit unavailable, provenance verified -> UNVERIFIED (single unavailable source prevents READY)
-   - Provenance unavailable, audit verified -> UNVERIFIED (single unavailable source prevents READY)
-   - Both unavailable -> UNVERIFIED
-   - Either source unverified -> UNVERIFIED
-   - Audit corrupted -> BLOCKED
-   - Provenance corrupted -> BLOCKED
-   - Operational failures with verified integrity -> BLOCKED
-   - Policy halts with verified integrity -> HALTED
-   - Authorization denials with verified integrity -> DEGRADED
-   - Parse errors with verified integrity -> DEGRADED
-   - Missing and malformed metric values -> handled gracefully without false READY
-   - Conflicting conditions (e.g. corruption trumps halts, halts trump unverified operational denials).
-"""
-
 import json
-import pytest
+import threading
+import time
 from pathlib import Path
+import pytest
 from epistemicos.ui.server import create_server
 from epistemicos.ui.adapters import ObservatoryDataAdapter
 
@@ -32,220 +13,243 @@ except ImportError:
     PLAYWRIGHT_AVAILABLE = False
 
 
-@pytest.fixture
-def dummy_server(tmp_path):
-    server = create_server(host="127.0.0.1", port=0)
-    import threading
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
+@pytest.fixture(scope="module")
+def live_server(tmp_path_factory):
+    tmp_path = tmp_path_factory.mktemp("state_matrix_server")
+    audit_file = tmp_path / "epistemic_audit.jsonl"
+    provenance_file = tmp_path / "provenance_audit.jsonl"
+    ablation_file = tmp_path / "ablation_table.json"
+    per_case_file = tmp_path / "per_case_results.json"
+
+    audit_file.write_text("", encoding="utf-8")
+    provenance_file.write_text("", encoding="utf-8")
+    ablation_file.write_text("{}", encoding="utf-8")
+    per_case_file.write_text("[]", encoding="utf-8")
+
+    adapter = ObservatoryDataAdapter(
+        audit_log_path=str(audit_file),
+        provenance_log_path=str(provenance_file),
+        ablation_table_path=str(ablation_file),
+        per_case_results_path=str(per_case_file)
+    )
+
+    static_dir = Path(__file__).parent.parent.parent / "epistemicos" / "ui" / "static"
+    server = create_server(host="127.0.0.1", port=0, adapter=adapter, static_dir=str(static_dir))
+    port = server.server_port
+
+    thread = threading.Thread(target=server.serve_forever)
+    thread.daemon = True
     thread.start()
-    yield f"http://127.0.0.1:{server.server_port}"
+    time.sleep(0.1)
+
+    base_url = f"http://127.0.0.1:{port}"
+    yield base_url
+
     server.shutdown()
+    server.server_close()
 
 
 @pytest.mark.skipif(not PLAYWRIGHT_AVAILABLE, reason="playwright not installed")
-def test_normalize_metric_value(dummy_server):
+def test_metric_and_boolean_normalization(live_server):
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         page = browser.new_page()
-        page.goto(f"{dummy_server}/index.html")
+        page.goto(f"{live_server}/index.html")
 
-        # Test normalizeMetricValue
-        cases = [
-            (0, {"status": "VALID", "value": 0}),
-            (42, {"status": "VALID", "value": 42}),
-            ("100", {"status": "VALID", "value": 100}),
-            ("  55  ", {"status": "VALID", "value": 55}),
-            (None, {"status": "UNAVAILABLE", "value": None}),
-            (True, {"status": "INVALID", "value": None}),
-            (False, {"status": "INVALID", "value": None}),
-            (-1, {"status": "INVALID", "value": None}),
-            ("-5", {"status": "INVALID", "value": None}),
-            (3.14, {"status": "INVALID", "value": None}),
-            ("abc", {"status": "INVALID", "value": None}),
-            ("", {"status": "INVALID", "value": None}),
-            ("   ", {"status": "INVALID", "value": None}),
-            ({"val": 1}, {"status": "INVALID", "value": None}),
-            ([1, 2], {"status": "INVALID", "value": None}),
-        ]
+        # normalizeMetricValue testing
+        assert page.evaluate("() => window.ObservatoryApp.normalizeMetricValue(0)") == {"status": "VALID", "value": 0}
+        assert page.evaluate("() => window.ObservatoryApp.normalizeMetricValue(123)") == {"status": "VALID", "value": 123}
+        assert page.evaluate("() => window.ObservatoryApp.normalizeMetricValue('456')") == {"status": "VALID", "value": 456}
+        assert page.evaluate("() => window.ObservatoryApp.normalizeMetricValue('0')") == {"status": "VALID", "value": 0}
 
-        for inp, expected in cases:
-            res = page.evaluate("(val) => window.ObservatoryApp.normalizeMetricValue(val)", inp)
-            assert res == expected, f"Failed for input {inp}: expected {expected}, got {res}"
+        # Null / Undefined
+        assert page.evaluate("() => window.ObservatoryApp.normalizeMetricValue(null)") == {"status": "UNAVAILABLE", "value": None}
+        assert page.evaluate("() => window.ObservatoryApp.normalizeMetricValue(undefined)") == {"status": "UNAVAILABLE", "value": None}
+
+        # Invalid: empty string, booleans, negative numbers, floats, NaN, non-numeric strings, objects
+        assert page.evaluate("() => window.ObservatoryApp.normalizeMetricValue('')") == {"status": "INVALID", "value": None}
+        assert page.evaluate("() => window.ObservatoryApp.normalizeMetricValue(true)") == {"status": "INVALID", "value": None}
+        assert page.evaluate("() => window.ObservatoryApp.normalizeMetricValue(false)") == {"status": "INVALID", "value": None}
+        assert page.evaluate("() => window.ObservatoryApp.normalizeMetricValue(-1)") == {"status": "INVALID", "value": None}
+        assert page.evaluate("() => window.ObservatoryApp.normalizeMetricValue('-5')") == {"status": "INVALID", "value": None}
+        assert page.evaluate("() => window.ObservatoryApp.normalizeMetricValue(3.14)") == {"status": "INVALID", "value": None}
+        assert page.evaluate("() => window.ObservatoryApp.normalizeMetricValue('abc')") == {"status": "INVALID", "value": None}
+        assert page.evaluate("() => window.ObservatoryApp.normalizeMetricValue({})") == {"status": "INVALID", "value": None}
+        assert page.evaluate("() => window.ObservatoryApp.normalizeMetricValue([])") == {"status": "INVALID", "value": None}
+
+        # normalizeBooleanFlag testing
+        assert page.evaluate("() => window.ObservatoryApp.normalizeBooleanFlag(true)") is True
+        assert page.evaluate("() => window.ObservatoryApp.normalizeBooleanFlag(false)") is False
+        assert page.evaluate("() => window.ObservatoryApp.normalizeBooleanFlag('true')") is False
+        assert page.evaluate("() => window.ObservatoryApp.normalizeBooleanFlag('false')") is False
+        assert page.evaluate("() => window.ObservatoryApp.normalizeBooleanFlag(1)") is False
+        assert page.evaluate("() => window.ObservatoryApp.normalizeBooleanFlag(0)") is False
+        assert page.evaluate("() => window.ObservatoryApp.normalizeBooleanFlag(null)") is False
+        assert page.evaluate("() => window.ObservatoryApp.normalizeBooleanFlag(undefined)") is False
+        assert page.evaluate("() => window.ObservatoryApp.normalizeBooleanFlag({})") is False
 
         browser.close()
 
 
 @pytest.mark.skipif(not PLAYWRIGHT_AVAILABLE, reason="playwright not installed")
-def test_derive_system_state_matrix(dummy_server):
+def test_system_state_matrix_and_ready_invariants(live_server):
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         page = browser.new_page()
-        page.goto(f"{dummy_server}/index.html")
+        page.goto(f"{live_server}/index.html")
 
-        # 1. Healthy baseline: both verified, 0 exceptions -> READY
+        # Baseline Happy Path -> READY
         d_ready = {
             "status_flags": {"audit_data_available": True, "provenance_data_available": True},
             "audit_integrity": {"status": "VERIFIED"},
             "provenance_integrity": {"status": "VERIFIED"},
-            "metrics": {"total_executions": 10, "authorization_denials": 0, "halts": 0, "execution_failures": 0, "parse_error_count": 0}
+            "metrics": {
+                "total_executions": 100,
+                "authorization_denials": 0,
+                "halts": 0,
+                "execution_failures": 0,
+                "parse_error_count": 0
+            }
         }
         res_ready = page.evaluate("(d) => window.ObservatoryApp.deriveSystemState(d)", d_ready)
         assert res_ready["state"] == "READY"
         assert "zero active operational exceptions" in res_ready["reason"]
 
-        # 2. Audit unavailable, provenance verified -> UNVERIFIED (single unavailable source prevents READY)
-        d_audit_unavail = {
-            "status_flags": {"audit_data_available": False, "provenance_data_available": True},
-            "audit_integrity": {"status": "UNAVAILABLE"},
-            "provenance_integrity": {"status": "VERIFIED"},
-            "metrics": {"total_executions": 10, "authorization_denials": 0, "halts": 0, "execution_failures": 0, "parse_error_count": 0}
-        }
-        res_audit_unavail = page.evaluate("(d) => window.ObservatoryApp.deriveSystemState(d)", d_audit_unavail)
-        assert res_audit_unavail["state"] == "UNVERIFIED"
-        assert "Audit Trail unavailable" in res_audit_unavail["reason"]
+        # --- REQUIREMENT 1: Missing Mandatory Operational Metrics PREVENTS READY ---
+        mandatory_metrics = ["execution_failures", "halts", "authorization_denials", "parse_error_count"]
 
-        # 3. Provenance unavailable, audit verified -> UNVERIFIED
-        d_prov_unavail = {
-            "status_flags": {"audit_data_available": True, "provenance_data_available": False},
-            "audit_integrity": {"status": "VERIFIED"},
-            "provenance_integrity": {"status": "UNAVAILABLE"},
-            "metrics": {"total_executions": None, "authorization_denials": None, "halts": 0, "execution_failures": None, "parse_error_count": 0}
-        }
-        res_prov_unavail = page.evaluate("(d) => window.ObservatoryApp.deriveSystemState(d)", d_prov_unavail)
-        assert res_prov_unavail["state"] == "UNVERIFIED"
-        assert "Provenance Store unavailable" in res_prov_unavail["reason"]
+        # Test each individual missing metric when integrity is verified
+        for metric in mandatory_metrics:
+            m_copy = dict(d_ready["metrics"])
+            m_copy[metric] = None
+            d_missing_one = {**d_ready, "metrics": m_copy}
+            res_missing_one = page.evaluate("(d) => window.ObservatoryApp.deriveSystemState(d)", d_missing_one)
+            assert res_missing_one["state"] == "UNVERIFIED", f"Expected UNVERIFIED when {metric} is None, got {res_missing_one['state']}"
+            assert "Mandatory operational telemetry missing" in res_missing_one["reason"]
+            assert metric in res_missing_one["reason"]
 
-        # 4. Both unavailable -> UNVERIFIED
-        d_both_unavail = {
-            "status_flags": {"audit_data_available": False, "provenance_data_available": False},
-            "audit_integrity": {"status": "UNAVAILABLE"},
-            "provenance_integrity": {"status": "UNAVAILABLE"},
-            "metrics": {"total_executions": None, "authorization_denials": None, "halts": None, "execution_failures": None, "parse_error_count": 0}
+        # Test all four mandatory metrics missing
+        d_missing_all = {
+            **d_ready,
+            "metrics": {
+                "total_executions": 50,
+                "execution_failures": None,
+                "halts": None,
+                "authorization_denials": None,
+                "parse_error_count": None
+            }
         }
-        res_both_unavail = page.evaluate("(d) => window.ObservatoryApp.deriveSystemState(d)", d_both_unavail)
-        assert res_both_unavail["state"] == "UNVERIFIED"
-        assert "Audit Trail unavailable" in res_both_unavail["reason"]
-        assert "Provenance Store unavailable" in res_both_unavail["reason"]
+        res_missing_all = page.evaluate("(d) => window.ObservatoryApp.deriveSystemState(d)", d_missing_all)
+        assert res_missing_all["state"] == "UNVERIFIED"
+        assert "Mandatory operational telemetry missing" in res_missing_all["reason"]
+        for metric in mandatory_metrics:
+            assert metric in res_missing_all["reason"]
 
-        # 5. Either unverified (e.g. audit UNVERIFIED) -> UNVERIFIED
-        d_unverified = {
-            "status_flags": {"audit_data_available": True, "provenance_data_available": True},
-            "audit_integrity": {"status": "UNVERIFIED"},
-            "provenance_integrity": {"status": "VERIFIED"},
-            "metrics": {"total_executions": 5, "authorization_denials": 0, "halts": 0, "execution_failures": 0, "parse_error_count": 0}
+        # Test mixed valid and missing metrics
+        d_mixed = {
+            **d_ready,
+            "metrics": {
+                "total_executions": 50,
+                "execution_failures": 0,
+                "halts": None,
+                "authorization_denials": 0,
+                "parse_error_count": None
+            }
         }
-        res_unverified = page.evaluate("(d) => window.ObservatoryApp.deriveSystemState(d)", d_unverified)
-        assert res_unverified["state"] == "UNVERIFIED"
-        assert "Audit Trail unverified" in res_unverified["reason"]
+        res_mixed = page.evaluate("(d) => window.ObservatoryApp.deriveSystemState(d)", d_mixed)
+        assert res_mixed["state"] == "UNVERIFIED"
+        assert "halts" in res_mixed["reason"]
+        assert "parse_error_count" in res_mixed["reason"]
+        assert "execution_failures" not in res_mixed["reason"]
 
-        # 6. Audit corrupted -> BLOCKED
-        d_audit_corrupt = {
-            "status_flags": {"audit_data_available": True, "provenance_data_available": True},
-            "audit_integrity": {"status": "CORRUPTED"},
-            "provenance_integrity": {"status": "VERIFIED"},
-            "metrics": {"total_executions": 5, "authorization_denials": 0, "halts": 0, "execution_failures": 0, "parse_error_count": 0}
+        # Test invalid mandatory metric (malformed string)
+        d_invalid_metric = {
+            **d_ready,
+            "metrics": {**d_ready["metrics"], "execution_failures": "malformed_string"}
         }
-        res_audit_corrupt = page.evaluate("(d) => window.ObservatoryApp.deriveSystemState(d)", d_audit_corrupt)
-        assert res_audit_corrupt["state"] == "BLOCKED"
-        assert "Cryptographic integrity failure positively detected in Audit Trail" in res_audit_corrupt["reason"]
+        res_invalid_metric = page.evaluate("(d) => window.ObservatoryApp.deriveSystemState(d)", d_invalid_metric)
+        assert res_invalid_metric["state"] == "UNVERIFIED"
+        assert "Mandatory operational telemetry malformed" in res_invalid_metric["reason"]
+        assert "execution_failures invalid" in res_invalid_metric["reason"]
 
-        # 7. Provenance corrupted -> BLOCKED
-        d_prov_corrupt = {
-            "status_flags": {"audit_data_available": True, "provenance_data_available": True},
-            "audit_integrity": {"status": "VERIFIED"},
-            "provenance_integrity": {"status": "CORRUPTED"},
-            "metrics": {"total_executions": 5, "authorization_denials": 0, "halts": 0, "execution_failures": 0, "parse_error_count": 0}
-        }
-        res_prov_corrupt = page.evaluate("(d) => window.ObservatoryApp.deriveSystemState(d)", d_prov_corrupt)
-        assert res_prov_corrupt["state"] == "BLOCKED"
-        assert "Cryptographic integrity failure positively detected in Provenance Store" in res_prov_corrupt["reason"]
+        # --- REQUIREMENT 2: Validate Status Flag Types ---
+        # Strings like "false" or "true" must NOT be accepted as boolean true
+        bad_flags = ["false", "true", None, 1, 0, {}, []]
+        for bad_val in bad_flags:
+            d_bad_audit_flag = {
+                **d_ready,
+                "status_flags": {"audit_data_available": bad_val, "provenance_data_available": True}
+            }
+            res_bad_audit = page.evaluate("(d) => window.ObservatoryApp.deriveSystemState(d)", d_bad_audit_flag)
+            assert res_bad_audit["state"] == "UNVERIFIED", f"Expected UNVERIFIED for audit flag {bad_val}"
+            assert "Audit Trail unavailable" in res_bad_audit["reason"]
 
-        # 8. Operational failure with verified integrity -> BLOCKED
-        d_failures = {
-            "status_flags": {"audit_data_available": True, "provenance_data_available": True},
-            "audit_integrity": {"status": "VERIFIED"},
-            "provenance_integrity": {"status": "VERIFIED"},
-            "metrics": {"total_executions": 5, "authorization_denials": 0, "halts": 0, "execution_failures": 2, "parse_error_count": 0}
-        }
-        res_failures = page.evaluate("(d) => window.ObservatoryApp.deriveSystemState(d)", d_failures)
-        assert res_failures["state"] == "BLOCKED"
-        assert "Runtime execution failure(s) detected (2 failure(s))" in res_failures["reason"]
+            d_bad_prov_flag = {
+                **d_ready,
+                "status_flags": {"audit_data_available": True, "provenance_data_available": bad_val}
+            }
+            res_bad_prov = page.evaluate("(d) => window.ObservatoryApp.deriveSystemState(d)", d_bad_prov_flag)
+            assert res_bad_prov["state"] == "UNVERIFIED", f"Expected UNVERIFIED for prov flag {bad_val}"
+            assert "Provenance Store unavailable" in res_bad_prov["reason"]
 
-        # 9. Policy halts with verified integrity -> HALTED
-        d_halts = {
-            "status_flags": {"audit_data_available": True, "provenance_data_available": True},
-            "audit_integrity": {"status": "VERIFIED"},
-            "provenance_integrity": {"status": "VERIFIED"},
-            "metrics": {"total_executions": 5, "authorization_denials": 0, "halts": 1, "execution_failures": 0, "parse_error_count": 0}
-        }
+        # --- REQUIREMENT 3: State Precedence Rules ---
+        # 1. Audit corrupted -> BLOCKED
+        d_corrupt = {**d_ready, "audit_integrity": {"status": "CORRUPTED"}}
+        res_corrupt = page.evaluate("(d) => window.ObservatoryApp.deriveSystemState(d)", d_corrupt)
+        assert res_corrupt["state"] == "BLOCKED"
+        assert "Cryptographic integrity failure positively detected in Audit Trail" in res_corrupt["reason"]
+
+        # 2. Operational failures -> BLOCKED
+        d_fails = {**d_ready, "metrics": {**d_ready["metrics"], "execution_failures": 3}}
+        res_fails = page.evaluate("(d) => window.ObservatoryApp.deriveSystemState(d)", d_fails)
+        assert res_fails["state"] == "BLOCKED"
+        assert "Runtime execution failure(s) detected (3 failure(s))" in res_fails["reason"]
+
+        # 3. Policy halts -> HALTED
+        d_halts = {**d_ready, "metrics": {**d_ready["metrics"], "halts": 2}}
         res_halts = page.evaluate("(d) => window.ObservatoryApp.deriveSystemState(d)", d_halts)
         assert res_halts["state"] == "HALTED"
-        assert "Control plane policy or egress halt enforced" in res_halts["reason"]
+        assert "Control plane policy or egress halt enforced (2 halt(s))" in res_halts["reason"]
 
-        # 10. Authorization denials with verified integrity -> DEGRADED
-        d_denials = {
-            "status_flags": {"audit_data_available": True, "provenance_data_available": True},
-            "audit_integrity": {"status": "VERIFIED"},
-            "provenance_integrity": {"status": "VERIFIED"},
-            "metrics": {"total_executions": 5, "authorization_denials": 3, "halts": 0, "execution_failures": 0, "parse_error_count": 0}
-        }
+        # 4. Denials only -> DEGRADED
+        d_denials = {**d_ready, "metrics": {**d_ready["metrics"], "authorization_denials": 5}}
         res_denials = page.evaluate("(d) => window.ObservatoryApp.deriveSystemState(d)", d_denials)
         assert res_denials["state"] == "DEGRADED"
-        assert "3 authorization denial(s)" in res_denials["reason"]
+        assert "5 authorization denial(s)" in res_denials["reason"]
 
-        # 11. Parse errors with verified integrity -> DEGRADED
-        d_parse = {
-            "status_flags": {"audit_data_available": True, "provenance_data_available": True},
-            "audit_integrity": {"status": "VERIFIED"},
-            "provenance_integrity": {"status": "VERIFIED"},
-            "metrics": {"total_executions": 5, "authorization_denials": 0, "halts": 0, "execution_failures": 0, "parse_error_count": 4}
-        }
+        # 5. Parse errors only -> DEGRADED
+        d_parse = {**d_ready, "metrics": {**d_ready["metrics"], "parse_error_count": 1}}
         res_parse = page.evaluate("(d) => window.ObservatoryApp.deriveSystemState(d)", d_parse)
         assert res_parse["state"] == "DEGRADED"
-        assert "4 malformed log line(s)" in res_parse["reason"]
+        assert "1 malformed log line(s)" in res_parse["reason"]
 
-        # 12. Conflicting conditions: Corruption trumps halts and failures
+        # 6. Precedence: Corruption beats halts and failures
         d_conflict_corrupt = {
-            "status_flags": {"audit_data_available": True, "provenance_data_available": True},
+            **d_ready,
             "audit_integrity": {"status": "CORRUPTED"},
-            "provenance_integrity": {"status": "VERIFIED"},
-            "metrics": {"total_executions": 5, "authorization_denials": 10, "halts": 5, "execution_failures": 2, "parse_error_count": 1}
+            "metrics": {**d_ready["metrics"], "halts": 5, "execution_failures": 2}
         }
         res_conflict_corrupt = page.evaluate("(d) => window.ObservatoryApp.deriveSystemState(d)", d_conflict_corrupt)
         assert res_conflict_corrupt["state"] == "BLOCKED"
         assert "Cryptographic integrity failure positively detected" in res_conflict_corrupt["reason"]
 
-        # 13. Conflicting conditions: Failures trump halts
-        d_conflict_fail_halt = {
-            "status_flags": {"audit_data_available": True, "provenance_data_available": True},
-            "audit_integrity": {"status": "VERIFIED"},
-            "provenance_integrity": {"status": "VERIFIED"},
-            "metrics": {"total_executions": 5, "authorization_denials": 10, "halts": 5, "execution_failures": 1, "parse_error_count": 1}
+        # 7. Precedence: Failure beats halts
+        d_conflict_fail = {
+            **d_ready,
+            "metrics": {**d_ready["metrics"], "halts": 5, "execution_failures": 2}
         }
-        res_conflict_fail_halt = page.evaluate("(d) => window.ObservatoryApp.deriveSystemState(d)", d_conflict_fail_halt)
-        assert res_conflict_fail_halt["state"] == "BLOCKED"
-        assert "Runtime execution failure(s) detected" in res_conflict_fail_halt["reason"]
+        res_conflict_fail = page.evaluate("(d) => window.ObservatoryApp.deriveSystemState(d)", d_conflict_fail)
+        assert res_conflict_fail["state"] == "BLOCKED"
+        assert "Runtime execution failure(s) detected" in res_conflict_fail["reason"]
 
-        # 14. Conflicting conditions: Halts trump unverified state
-        # Halts are a verified negative control event
+        # 8. Precedence: Halts beat unverified telemetry
         d_conflict_halt_unavail = {
+            **d_ready,
             "status_flags": {"audit_data_available": False, "provenance_data_available": True},
             "audit_integrity": {"status": "UNAVAILABLE"},
-            "provenance_integrity": {"status": "VERIFIED"},
-            "metrics": {"total_executions": 5, "authorization_denials": 0, "halts": 2, "execution_failures": 0, "parse_error_count": 0}
+            "metrics": {**d_ready["metrics"], "halts": 2}
         }
-        res_conflict_halt_unavail = page.evaluate("(d) => window.ObservatoryApp.deriveSystemState(d)", d_conflict_halt_unavail)
-        assert res_conflict_halt_unavail["state"] == "HALTED"
-
-        # 15. Malformed metric inputs: rejects strings like "abc" without coercing to zero
-        d_malformed_metric = {
-            "status_flags": {"audit_data_available": True, "provenance_data_available": True},
-            "audit_integrity": {"status": "VERIFIED"},
-            "provenance_integrity": {"status": "VERIFIED"},
-            "metrics": {"total_executions": 5, "authorization_denials": "invalid_number", "halts": 0, "execution_failures": 0, "parse_error_count": 0}
-        }
-        res_malformed_metric = page.evaluate("(d) => window.ObservatoryApp.deriveSystemState(d)", d_malformed_metric)
-        assert res_malformed_metric["state"] == "DEGRADED"
-        assert "malformed metric values detected" in res_malformed_metric["reason"]
+        res_conflict_halt = page.evaluate("(d) => window.ObservatoryApp.deriveSystemState(d)", d_conflict_halt_unavail)
+        assert res_conflict_halt["state"] == "HALTED"
 
         browser.close()

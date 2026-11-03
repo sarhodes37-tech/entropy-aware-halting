@@ -469,15 +469,34 @@ document.addEventListener('DOMContentLoaded', () => {
     },
 
     /**
+     * Normalizes a boolean status flag strictly.
+     * Only genuine boolean true is accepted as true.
+     * Strings like "false", numbers, null, undefined, or other objects are rejected as false.
+     */
+    normalizeBooleanFlag(val) {
+      return typeof val === 'boolean' ? val : false;
+    },
+
+    /**
      * Derives aggregate system operational state from overview telemetry.
+     *
+     * Mandatory operational metrics required to establish READY:
+     * - execution_failures
+     * - halts
+     * - authorization_denials
+     * - parse_error_count
      *
      * Precedence Rules:
      * 1. BLOCKED: Either required source is corrupted ('CORRUPTED'), or execution failures > 0.
      * 2. HALTED: Policy / egress halts > 0 (when not blocked).
      * 3. UNVERIFIED: Required telemetry is missing, unavailable, or unverified.
-     *    A single missing or unverified required source strictly prevents READY.
-     * 4. DEGRADED: Both sources are verified, but authorization denials > 0 or malformed lines > 0.
-     * 5. READY: Both sources verified, 0 halts, 0 failures, 0 denials, 0 parse errors.
+     *    - Either required integrity source is not explicitly VERIFIED or flag is not strictly true.
+     *    - Any mandatory operational metric is UNAVAILABLE or INVALID.
+     *    A single missing, unavailable, or unverified required source strictly prevents READY.
+     * 4. DEGRADED: Both sources verified, all metrics available and valid, but exceptions exist
+     *    (authorization denials > 0 or malformed lines > 0).
+     * 5. READY: Both sources strictly VERIFIED, availability flags strictly true,
+     *    all mandatory operational metrics available and valid, establishing zero exceptions.
      *
      * Returns: { state: string, reason: string, details: object }
      */
@@ -498,10 +517,18 @@ document.addEventListener('DOMContentLoaded', () => {
       const auditStatus = (ai.status || 'UNAVAILABLE').toUpperCase();
       const provStatus = (pi.status || 'UNAVAILABLE').toUpperCase();
 
-      const auditAvail = Boolean(sf.audit_data_available);
-      const provAvail = Boolean(sf.provenance_data_available);
+      // Strict boolean validation: string "false", numbers, null, etc. must NOT be interpreted as available
+      const auditAvail = this.normalizeBooleanFlag(sf.audit_data_available);
+      const provAvail = this.normalizeBooleanFlag(sf.provenance_data_available);
 
-      // Normalized metric inputs
+      // Mandatory operational metrics
+      const mandatoryMetricDefs = [
+        { key: 'execution_failures', label: 'execution_failures', val: m.execution_failures },
+        { key: 'halts', label: 'halts', val: m.halts },
+        { key: 'authorization_denials', label: 'authorization_denials', val: m.authorization_denials },
+        { key: 'parse_error_count', label: 'parse_error_count', val: m.parse_error_count }
+      ];
+
       const normFailures = this.normalizeMetricValue(m.execution_failures);
       const normHalts = this.normalizeMetricValue(m.halts);
       const normDenials = this.normalizeMetricValue(m.authorization_denials);
@@ -511,11 +538,6 @@ document.addEventListener('DOMContentLoaded', () => {
       const hasHalts = normHalts.status === 'VALID' && normHalts.value > 0;
       const hasDenials = normDenials.status === 'VALID' && normDenials.value > 0;
       const hasParseErrors = normParse.status === 'VALID' && normParse.value > 0;
-
-      const hasMalformedMetrics = normFailures.status === 'INVALID' ||
-                                  normHalts.status === 'INVALID' ||
-                                  normDenials.status === 'INVALID' ||
-                                  normParse.status === 'INVALID';
 
       // Rule 1: BLOCKED (Corrupted cryptographic integrity or runtime execution failures)
       if (auditStatus === 'CORRUPTED' || provStatus === 'CORRUPTED') {
@@ -546,19 +568,23 @@ document.addEventListener('DOMContentLoaded', () => {
         };
       }
 
-      // Rule 3: UNVERIFIED (Missing, unavailable, or unverified required integrity sources)
-      // A single unavailable or unverified source must strictly prevent READY!
+      // Rule 3: UNVERIFIED (Missing, unavailable, or unverified required integrity sources or metrics)
+      // Check integrity availability & verification
       const unverifiedSources = [];
       if (!auditAvail || auditStatus === 'UNAVAILABLE') {
         unverifiedSources.push('Audit Trail unavailable');
       } else if (auditStatus === 'UNVERIFIED') {
         unverifiedSources.push('Audit Trail unverified');
+      } else if (auditStatus !== 'VERIFIED') {
+        unverifiedSources.push(`Audit Trail status ${auditStatus}`);
       }
 
       if (!provAvail || provStatus === 'UNAVAILABLE') {
         unverifiedSources.push('Provenance Store unavailable');
       } else if (provStatus === 'UNVERIFIED') {
         unverifiedSources.push('Provenance Store unverified');
+      } else if (provStatus !== 'VERIFIED') {
+        unverifiedSources.push(`Provenance Store status ${provStatus}`);
       }
 
       if (unverifiedSources.length > 0) {
@@ -569,20 +595,48 @@ document.addEventListener('DOMContentLoaded', () => {
         };
       }
 
-      // If either required source is not explicitly VERIFIED
-      if (auditStatus !== 'VERIFIED' || provStatus !== 'VERIFIED') {
+      // Check mandatory operational metrics availability & validity
+      // Missing or malformed telemetry cannot establish zero exceptions!
+      const unavailableMetrics = [];
+      const invalidMetrics = [];
+
+      mandatoryMetricDefs.forEach(def => {
+        const norm = this.normalizeMetricValue(def.val);
+        if (norm.status === 'UNAVAILABLE') {
+          unavailableMetrics.push(def.label);
+        } else if (norm.status === 'INVALID') {
+          invalidMetrics.push(def.label);
+        }
+      });
+
+      if (unavailableMetrics.length > 0 && invalidMetrics.length > 0) {
         return {
           state: 'UNVERIFIED',
-          reason: `Integrity telemetry status not established (Audit: ${auditStatus}, Provenance: ${provStatus})`,
-          details: { auditStatus, provStatus }
+          reason: `Mandatory operational telemetry missing: ${unavailableMetrics.join(', ')} unavailable; ${invalidMetrics.join(', ')} invalid`,
+          details: { auditStatus, provStatus, unavailableMetrics, invalidMetrics }
         };
       }
 
-      // Rule 4: DEGRADED (Verified integrity, but operational anomalies, denials, or malformed lines exist)
+      if (unavailableMetrics.length > 0) {
+        return {
+          state: 'UNVERIFIED',
+          reason: `Mandatory operational telemetry missing: ${unavailableMetrics.join(', ')} unavailable`,
+          details: { auditStatus, provStatus, unavailableMetrics }
+        };
+      }
+
+      if (invalidMetrics.length > 0) {
+        return {
+          state: 'UNVERIFIED',
+          reason: `Mandatory operational telemetry malformed: ${invalidMetrics.join(', ')} invalid`,
+          details: { auditStatus, provStatus, invalidMetrics }
+        };
+      }
+
+      // Rule 4: DEGRADED (Verified integrity and full metrics, but exceptions present)
       const degradations = [];
       if (hasDenials) degradations.push(`${normDenials.value} authorization denial(s)`);
       if (hasParseErrors) degradations.push(`${normParse.value} malformed log line(s)`);
-      if (hasMalformedMetrics) degradations.push('malformed metric values detected');
 
       if (degradations.length > 0) {
         return {
@@ -592,7 +646,7 @@ document.addEventListener('DOMContentLoaded', () => {
         };
       }
 
-      // Rule 5: READY (Both required sources verified, 0 exceptions)
+      // Rule 5: READY (Both required sources verified, valid availability flags, all mandatory metrics verified 0)
       return {
         state: 'READY',
         reason: 'All required integrity sources verified with zero active operational exceptions',
@@ -771,7 +825,7 @@ document.addEventListener('DOMContentLoaded', () => {
       // Audit Data Availability Badge
       const auditAvailEl = document.getElementById('audit-data-availability');
       if (auditAvailEl) {
-        const isAvail = sf.audit_data_available;
+        const isAvail = this.normalizeBooleanFlag(sf.audit_data_available);
         auditAvailEl.className = isAvail ? 'status-badge status-badge-verified' : 'status-badge status-badge-unavailable';
         auditAvailEl.textContent = isAvail ? '✓ DATA AVAILABLE' : '⊘ DATA UNAVAILABLE';
       }
@@ -808,7 +862,7 @@ document.addEventListener('DOMContentLoaded', () => {
       // Provenance Data Availability Badge
       const provAvailEl = document.getElementById('provenance-data-availability');
       if (provAvailEl) {
-        const isAvail = sf.provenance_data_available;
+        const isAvail = this.normalizeBooleanFlag(sf.provenance_data_available);
         provAvailEl.className = isAvail ? 'status-badge status-badge-verified' : 'status-badge status-badge-unavailable';
         provAvailEl.textContent = isAvail ? '✓ DATA AVAILABLE' : '⊘ DATA UNAVAILABLE';
       }
