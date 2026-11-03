@@ -4,6 +4,8 @@ Unit and Adversarial Test Suite for Execution Provenance Subsystem.
 
 import json
 import uuid
+import hmac
+import hashlib
 import pytest
 import threading
 from dataclasses import asdict
@@ -985,6 +987,53 @@ def test_execute_protected_action_with_execution_context_keyword(tmp_path):
     events = store.get_events_for_correlation(corr_id)
     assert len(events) == 2
     assert events[0].authorization_token_id == cap.token_id
+
+
+def test_local_provenance_store_hmac_key_validation(tmp_path):
+    """Verifies fail-closed validation of hmac_key in LocalProvenanceStore."""
+    log_file = str(tmp_path / "prov_val.jsonl")
+
+    # Retain empty-key and invalid-type rejection tests
+    with pytest.raises(ValueError, match="hmac_key cannot be empty"):
+        LocalProvenanceStore(log_file, hmac_key=b"")
+
+    with pytest.raises(ValueError, match="hmac_key cannot be empty"):
+        LocalProvenanceStore(log_file, hmac_key=bytearray())
+
+    for invalid_key in ("secret_str", 12345, ["key"], {"k": "v"}):
+        with pytest.raises(TypeError, match="hmac_key must be bytes or bytearray"):
+            LocalProvenanceStore(log_file, hmac_key=invalid_key)
+
+    payload = {"action": "RUN", "target": "db", "step": 1}
+    prev_hash = "1" * 64
+    combined = f"{prev_hash}:{json.dumps(payload, sort_keys=True)}".encode("utf-8")
+    unkeyed_expected = hashlib.sha256(combined).hexdigest()
+
+    # Verify hmac_key=None preserves unkeyed SHA-256
+    store_none = LocalProvenanceStore(log_file, hmac_key=None)
+    assert store_none._compute_chain_hash(prev_hash, payload) == unkeyed_expected
+
+    # Verify valid bytes key computes exact HMAC-SHA256 and differs from unkeyed SHA-256
+    bytes_key = b"valid_provenance_secret_bytes"
+    store_bytes = LocalProvenanceStore(log_file, hmac_key=bytes_key)
+    expected_bytes_hash = hmac.new(bytes_key, combined, hashlib.sha256).hexdigest()
+    computed_bytes_hash = store_bytes._compute_chain_hash(prev_hash, payload)
+    assert computed_bytes_hash == expected_bytes_hash
+    assert computed_bytes_hash != unkeyed_expected
+
+    # Verify valid bytearray key computes exact HMAC-SHA256 and differs from unkeyed SHA-256
+    ba_key = bytearray(b"valid_provenance_secret_bytearray")
+    store_ba = LocalProvenanceStore(log_file, hmac_key=ba_key)
+    assert isinstance(store_ba.hmac_key, bytes)
+    expected_ba_hash = hmac.new(ba_key, combined, hashlib.sha256).hexdigest()
+    computed_ba_hash = store_ba._compute_chain_hash(prev_hash, payload)
+    assert computed_ba_hash == expected_ba_hash
+    assert computed_ba_hash != unkeyed_expected
+
+    # Mutate the original bytearray and verify the stored snapshot remains unaffected
+    ba_key[0] = ord(b"X")
+    assert store_ba._compute_chain_hash(prev_hash, payload) == expected_ba_hash
+    assert isinstance(store_ba.hmac_key, bytes)
 
 
 # =====================================================================

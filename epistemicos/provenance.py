@@ -191,9 +191,16 @@ class LocalProvenanceStore(ProvenanceStore):
         self.log_path = Path(log_path)
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
         self.fail_closed = fail_closed
-        self.hmac_key = hmac_key
+        if hmac_key is not None:
+            if not isinstance(hmac_key, (bytes, bytearray)):
+                raise TypeError(f"hmac_key must be bytes or bytearray, got {type(hmac_key).__name__}")
+            if len(hmac_key) == 0:
+                raise ValueError("hmac_key cannot be empty")
+            self.hmac_key: Optional[bytes] = bytes(hmac_key)
+        else:
+            self.hmac_key = None
         self._lock = threading.Lock()
-        if self.hmac_key:
+        if self.hmac_key is not None:
             self.genesis_hash = hmac.new(self.hmac_key, self.GENESIS_SEED, hashlib.sha256).hexdigest()
         else:
             self.genesis_hash = hashlib.sha256(self.GENESIS_SEED).hexdigest()
@@ -201,7 +208,7 @@ class LocalProvenanceStore(ProvenanceStore):
     def _compute_chain_hash(self, prev_hash: str, payload: Dict[str, Any]) -> str:
         serialized = json.dumps(payload, sort_keys=True)
         combined = f"{prev_hash}:{serialized}".encode("utf-8")
-        if self.hmac_key:
+        if self.hmac_key is not None:
             return hmac.new(self.hmac_key, combined, hashlib.sha256).hexdigest()
         return hashlib.sha256(combined).hexdigest()
 
