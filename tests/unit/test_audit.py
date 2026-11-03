@@ -168,6 +168,87 @@ def test_record_event_payload_too_large(temp_audit_file):
         audit.record_event(event)
 
 
+def test_receipt_empty_and_invalid_signing_keys():
+    """Validates that empty keys and invalid key types are rejected by minting and verification."""
+    rg = ReceiptGenerator()
+
+    # 1. Verification rejects empty bytes and empty bytearray
+    valid_hmac_receipt = ReceiptGenerator(signing_key=b"secret_key").mint_receipt(
+        "tx_hmac", True, {"g": 1.0}
+    )
+    assert ReceiptGenerator.verify_receipt(valid_hmac_receipt, signing_key=b"") is False
+    assert ReceiptGenerator.verify_receipt(valid_hmac_receipt, signing_key=bytearray()) is False
+
+    # 2. Verification rejects invalid key types without uncaught TypeError
+    for invalid_key in ("secret_str", 12345, ["secret"], {"key": "val"}, object()):
+        assert ReceiptGenerator.verify_receipt(valid_hmac_receipt, signing_key=invalid_key) is False
+
+    # 3. Minting rejects empty bytes and empty bytearray
+    with pytest.raises(ValueError, match="signing_key cannot be empty"):
+        rg.mint_receipt("tx1", True, {"g": 1.0}, signing_key=b"")
+    with pytest.raises(ValueError, match="signing_key cannot be empty"):
+        rg.mint_receipt("tx1", True, {"g": 1.0}, signing_key=bytearray())
+    with pytest.raises(ValueError, match="signing_key cannot be empty"):
+        ReceiptGenerator(signing_key=b"").mint_receipt("tx1", True, {"g": 1.0})
+
+    # 4. Minting rejects invalid key types
+    for invalid_key in ("secret_str", 12345, ["secret"], {"key": "val"}, object()):
+        with pytest.raises(TypeError, match="signing_key must be bytes or bytearray"):
+            rg.mint_receipt("tx1", True, {"g": 1.0}, signing_key=invalid_key)
+        with pytest.raises(TypeError, match="signing_key must be bytes or bytearray"):
+            ReceiptGenerator(signing_key=invalid_key).mint_receipt("tx1", True, {"g": 1.0})
+
+
+def test_receipt_forged_hmac_with_sha256_rejected():
+    """
+    Validates that a forged receipt declaring 'HMAC-SHA256' but signed with
+    plain SHA-256 digest is rejected across all key attempts (including b'', bytearray(), and None).
+    """
+    import json
+    import hashlib
+
+    # Craft forged receipt declaring HMAC-SHA256 with a plain SHA-256 signature
+    forged_receipt = {
+        "transaction_id": "tx-forged-hmac",
+        "status": "COMMITTED",
+        "gate_version": "1.0.0",
+        "config": {},
+        "confidence_matrix": {},
+        "event_log": [],
+        "signature_algorithm": "HMAC-SHA256"
+    }
+    check_bytes = json.dumps(forged_receipt, sort_keys=True).encode("utf-8")
+    forged_receipt["signature"] = hashlib.sha256(check_bytes).hexdigest()
+
+    # Must be rejected when verified with empty bytes or empty bytearray
+    assert ReceiptGenerator.verify_receipt(forged_receipt, signing_key=b"") is False
+    assert ReceiptGenerator.verify_receipt(forged_receipt, signing_key=bytearray()) is False
+
+    # Must be rejected when verified without key (None) due to algorithm mismatch
+    assert ReceiptGenerator.verify_receipt(forged_receipt, signing_key=None) is False
+
+    # Must be rejected when verified with any actual secret key
+    assert ReceiptGenerator.verify_receipt(forged_receipt, signing_key=b"legit_secret") is False
+
+
+def test_receipt_valid_bytearray_and_unsigned_roundtrip():
+    """Validates that bytearray keys and unsigned receipts roundtrip correctly."""
+    key_ba = bytearray(b"bytearray_secret_key")
+    rg_ba = ReceiptGenerator(signing_key=key_ba)
+    rec_ba = rg_ba.mint_receipt("tx_ba", True, {"confidence": 0.95})
+    assert rec_ba["signature_algorithm"] == "HMAC-SHA256"
+    assert ReceiptGenerator.verify_receipt(rec_ba, signing_key=key_ba) is True
+    assert ReceiptGenerator.verify_receipt(rec_ba, signing_key=bytes(key_ba)) is True
+
+    # Unsigned roundtrip
+    rg_none = ReceiptGenerator(signing_key=None)
+    rec_none = rg_none.mint_receipt("tx_none", False, {"confidence": 0.0})
+    assert rec_none["signature_algorithm"] == "SHA256"
+    assert ReceiptGenerator.verify_receipt(rec_none, signing_key=None) is True
+    # Algorithm metadata mismatch fails closed
+    assert ReceiptGenerator.verify_receipt(rec_none, signing_key=b"secret") is False
+
+
 # =====================================================================
 # AUDIT TRAIL ERROR PATHS & FALLBACKS
 # =====================================================================
