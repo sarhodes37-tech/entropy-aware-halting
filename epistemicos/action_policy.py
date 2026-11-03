@@ -356,26 +356,37 @@ class SideEffectPolicyEngine:
         if record.policy_version != expected_policy_version:
             return False, f"Approval policy version mismatch: expected '{expected_policy_version}', got '{record.policy_version}'"
 
-        # Validate effective clock
+        # Validate effective clock without integer overflow
         if current_time is not None:
             if not isinstance(current_time, (int, float)) or isinstance(current_time, bool):
                 return False, "Invalid current_time clock override"
-            if not math.isfinite(current_time):
-                return False, "Invalid current_time clock override: non-finite value"
-            now = float(current_time)
+            if isinstance(current_time, int):
+                if current_time.bit_length() > 64:
+                    return False, "Invalid current_time clock override: integer overflow"
+                now: Union[int, float] = current_time
+            else:
+                if not math.isfinite(current_time):
+                    return False, "Invalid current_time clock override: non-finite value"
+                now = current_time
         else:
             now = time.time()
 
-        # Expiration check: strictly require numeric finite int or float without string coercion
+        # Expiration check: strictly require numeric finite int/float without coercion/overflow
         if record.expires_at is not None:
-            is_valid_type = isinstance(record.expires_at, (int, float)) and not isinstance(
+            is_valid_num = isinstance(record.expires_at, (int, float)) and not isinstance(
                 record.expires_at, bool
             )
-            if not is_valid_type:
+            if not is_valid_num:
                 return False, "Approval record expiration is malformed"
-            exp_val = float(record.expires_at)
-            if not math.isfinite(exp_val):
-                return False, "Approval record expiration is non-finite"
+            if isinstance(record.expires_at, int):
+                if record.expires_at.bit_length() > 64:
+                    return False, "Approval record expiration is non-finite or overflows"
+                exp_val: Union[int, float] = record.expires_at
+            else:
+                if not math.isfinite(record.expires_at):
+                    return False, "Approval record expiration is non-finite"
+                exp_val = record.expires_at
+
             if now >= exp_val:
                 return False, "Approval record expired"
 

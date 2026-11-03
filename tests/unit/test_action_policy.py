@@ -642,3 +642,106 @@ class TestSideEffectPolicyEngineInvariants:
         surrogate_str = "secret\ud800key"
         engine = SideEffectPolicyEngine(signing_secret=surrogate_str)
         assert engine.signing_secret is None
+
+    def test_integer_overflow_protection_in_verification(self):
+        """
+        Validates that arbitrarily large integers (e.g. 10**10000) do not cause OverflowError
+        and fail closed in verify_approval_record().
+        """
+        engine = SideEffectPolicyEngine(signing_secret="TEST_SECRET")
+        payload = {"action": "scale"}
+        digest = engine.compute_canonical_digest(payload)
+        expires_at_normal = 2000
+
+        sig = engine.compute_approval_signature((
+            "APP-OVERFLOW", "package_publish", "https://example.com",
+            digest, "TASK-1", "1.0.0", "admin", str(expires_at_normal)
+        ))
+        record = TypedHumanApprovalRecord(
+            approval_id="APP-OVERFLOW",
+            operation_id="package_publish",
+            target_resource="https://example.com",
+            canonical_args_digest=digest,
+            task_id="TASK-1",
+            policy_version="1.0.0",
+            approved_by_principal="admin",
+            timestamp="2026-01-01T00:00:00Z",
+            signature=sig,
+            expires_at=expires_at_normal,
+        )
+
+        # 1. Oversized integer current_time (10**10000)
+        valid, msg = engine.verify_approval_record(
+            record=record,
+            expected_operation_id="package_publish",
+            expected_target="https://example.com",
+            expected_payload=payload,
+            expected_task_id="TASK-1",
+            current_time=10**10000,
+        )
+        assert valid is False
+        assert "integer overflow" in msg
+
+        # 2. Oversized integer expires_at (10**10000)
+        record_huge_exp = TypedHumanApprovalRecord(
+            approval_id="APP-OVERFLOW-EXP",
+            operation_id="package_publish",
+            target_resource="https://example.com",
+            canonical_args_digest=digest,
+            task_id="TASK-1",
+            policy_version="1.0.0",
+            approved_by_principal="admin",
+            timestamp="2026-01-01T00:00:00Z",
+            signature="0" * 64,
+            expires_at=10**10000,
+        )
+        valid, msg = engine.verify_approval_record(
+            record=record_huge_exp,
+            expected_operation_id="package_publish",
+            expected_target="https://example.com",
+            expected_payload=payload,
+            expected_task_id="TASK-1",
+            current_time=1000,
+        )
+        assert valid is False
+        assert "overflows" in msg
+
+        # 3. Ordinary integer current_time and expires_at
+        valid, msg = engine.verify_approval_record(
+            record=record,
+            expected_operation_id="package_publish",
+            expected_target="https://example.com",
+            expected_payload=payload,
+            expected_task_id="TASK-1",
+            current_time=1000,
+        )
+        assert valid is True
+        assert msg == "Approval record validated"
+
+        # 4. Ordinary float current_time and expires_at
+        sig_float = engine.compute_approval_signature((
+            "APP-FLOAT", "package_publish", "https://example.com",
+            digest, "TASK-1", "1.0.0", "admin", "2000.5"
+        ))
+        record_float = TypedHumanApprovalRecord(
+            approval_id="APP-FLOAT",
+            operation_id="package_publish",
+            target_resource="https://example.com",
+            canonical_args_digest=digest,
+            task_id="TASK-1",
+            policy_version="1.0.0",
+            approved_by_principal="admin",
+            timestamp="2026-01-01T00:00:00Z",
+            signature=sig_float,
+            expires_at=2000.5,
+        )
+        valid, msg = engine.verify_approval_record(
+            record=record_float,
+            expected_operation_id="package_publish",
+            expected_target="https://example.com",
+            expected_payload=payload,
+            expected_task_id="TASK-1",
+            current_time=1000.5,
+        )
+        assert valid is True
+        assert msg == "Approval record validated"
