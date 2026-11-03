@@ -444,15 +444,27 @@ document.addEventListener('DOMContentLoaded', () => {
       } else if (st === 'VERIFIED') {
         span.className = 'status-badge status-badge-verified';
         span.textContent = '✓ VERIFIED';
+      } else if (st === 'READY') {
+        span.className = 'status-badge status-badge-verified';
+        span.textContent = '● READY';
+      } else if (st === 'AUTHORIZED') {
+        span.className = 'status-badge status-badge-verified';
+        span.textContent = '✓ AUTHORIZED';
       } else if (st === 'RECORDED') {
         span.className = 'status-badge status-badge-not-established';
         span.textContent = '• RECORDED';
       } else if (st === 'FAILED' || st === 'FAIL') {
         span.className = 'status-badge status-badge-failed';
         span.textContent = '✗ FAILED';
+      } else if (st === 'BLOCKED') {
+        span.className = 'status-badge status-badge-failed';
+        span.textContent = '⛔ BLOCKED';
       } else if (st === 'HALTED') {
         span.className = 'status-badge status-badge-halted';
         span.textContent = '🛑 HALTED';
+      } else if (st === 'DEGRADED') {
+        span.className = 'status-badge status-badge-halted';
+        span.textContent = '⚠ DEGRADED';
       } else if (st === 'PENDING') {
         span.className = 'status-badge status-badge-pending';
         span.textContent = '⏳ PENDING';
@@ -471,6 +483,9 @@ document.addEventListener('DOMContentLoaded', () => {
       } else if (st === 'UNREADABLE') {
         span.className = 'status-badge status-badge-unreadable';
         span.textContent = '⊘ UNREADABLE';
+      } else if (st === 'UNVERIFIED') {
+        span.className = 'status-badge status-badge-unknown';
+        span.textContent = '? UNVERIFIED';
       } else if (st === 'NOT ESTABLISHED') {
         span.className = 'status-badge status-badge-not-established';
         span.textContent = '░ NOT ESTABLISHED';
@@ -538,13 +553,77 @@ document.addEventListener('DOMContentLoaded', () => {
       }
 
       const m = data.metrics || {};
+      const sf = data.status_flags || {};
+      const ai = data.audit_integrity || {};
+      const pi = data.provenance_integrity || {};
+
       this.setText('metric-total-executions', (m.total_executions !== null && m.total_executions !== undefined) ? m.total_executions : 'UNAVAILABLE');
       this.setText('metric-denials', (m.authorization_denials !== null && m.authorization_denials !== undefined) ? m.authorization_denials : 'UNAVAILABLE');
       this.setText('metric-halts', (m.halts !== null && m.halts !== undefined) ? m.halts : 'UNAVAILABLE');
       this.setText('metric-failures', (m.execution_failures !== null && m.execution_failures !== undefined) ? m.execution_failures : 'UNAVAILABLE');
       this.setText('metric-parse-errors', (m.parse_error_count !== null && m.parse_error_count !== undefined) ? m.parse_error_count : 'UNAVAILABLE');
 
-      const sf = data.status_flags || {};
+      // Calculate Active Anomalies / Incidents Count
+      let activeAnomalies = 0;
+      let hasAnomalyTelemetry = false;
+      if (m.authorization_denials !== null && m.authorization_denials !== undefined) {
+        activeAnomalies += m.authorization_denials;
+        hasAnomalyTelemetry = true;
+      }
+      if (m.halts !== null && m.halts !== undefined) {
+        activeAnomalies += m.halts;
+        hasAnomalyTelemetry = true;
+      }
+      if (m.execution_failures !== null && m.execution_failures !== undefined) {
+        activeAnomalies += m.execution_failures;
+        hasAnomalyTelemetry = true;
+      }
+      if (m.parse_error_count !== null && m.parse_error_count !== undefined) {
+        activeAnomalies += m.parse_error_count;
+        hasAnomalyTelemetry = true;
+      }
+
+      const incidentEl = document.getElementById('overview-incident-count');
+      if (incidentEl) {
+        if (!hasAnomalyTelemetry) {
+          incidentEl.textContent = 'UNAVAILABLE';
+          incidentEl.className = 'ops-indicator-val font-mono text-dim';
+        } else {
+          incidentEl.textContent = String(activeAnomalies);
+          incidentEl.className = activeAnomalies > 0 ? 'ops-indicator-val font-mono text-warning' : 'ops-indicator-val font-mono text-success';
+        }
+      }
+
+      // Determine Operational System State
+      // Consistent semantics: READY, DEGRADED, BLOCKED, HALTED, UNVERIFIED, AUTHORIZED
+      let systemState = 'READY';
+      const auditCorrupted = ai.status === 'CORRUPTED';
+      const provCorrupted = pi.status === 'CORRUPTED';
+      const auditUnverified = ai.status === 'UNVERIFIED';
+      const provUnverified = pi.status === 'UNVERIFIED';
+      const auditUnavailable = !sf.audit_data_available;
+      const provUnavailable = !sf.provenance_data_available;
+
+      if (auditCorrupted || provCorrupted || (m.execution_failures && m.execution_failures > 0)) {
+        systemState = 'BLOCKED';
+      } else if (m.halts && m.halts > 0) {
+        systemState = 'HALTED';
+      } else if ((m.authorization_denials && m.authorization_denials > 0) || (m.parse_error_count && m.parse_error_count > 0)) {
+        systemState = 'DEGRADED';
+      } else if (auditUnverified || provUnverified) {
+        systemState = 'UNVERIFIED';
+      } else if (auditUnavailable && provUnavailable) {
+        systemState = 'UNVERIFIED';
+      } else {
+        systemState = 'READY';
+      }
+
+      const sysStateEl = document.getElementById('overview-system-state');
+      if (sysStateEl) {
+        const badge = this.createStatusBadge(systemState);
+        sysStateEl.replaceWith(badge);
+        badge.id = 'overview-system-state';
+      }
 
       // Audit Data Availability Badge
       const auditAvailEl = document.getElementById('audit-data-availability');
@@ -558,32 +637,24 @@ document.addEventListener('DOMContentLoaded', () => {
       const auditContainer = document.getElementById('audit-integrity-status');
       if (auditContainer) {
         auditContainer.innerHTML = '';
-        const ai = data.audit_integrity || {};
 
         const headerDiv = document.createElement('div');
-        headerDiv.style.display = 'flex';
-        headerDiv.style.justifyContent = 'space-between';
-        headerDiv.style.alignItems = 'center';
-        headerDiv.style.marginBottom = '0.5rem';
+        headerDiv.className = 'ops-status-row';
 
         const labelSpan = document.createElement('span');
-        labelSpan.style.fontWeight = '600';
-        labelSpan.textContent = 'Integrity Verification: ';
+        labelSpan.className = 'ops-status-subheading';
+        labelSpan.textContent = 'Integrity Verification';
 
         const badge = this.createStatusBadge(ai.status || 'UNAVAILABLE');
         headerDiv.appendChild(labelSpan);
         headerDiv.appendChild(badge);
 
         const msgDiv = document.createElement('div');
-        msgDiv.className = 'text-muted';
-        msgDiv.style.fontSize = '0.8rem';
-        msgDiv.style.marginTop = '0.35rem';
-        msgDiv.textContent = `Verification Message: ${ai.message || 'No audit records verified.'}`;
+        msgDiv.className = 'text-muted ops-status-msg';
+        msgDiv.textContent = ai.message || 'No audit records verified.';
 
         const countDiv = document.createElement('div');
-        countDiv.className = 'text-muted font-mono';
-        countDiv.style.fontSize = '0.8rem';
-        countDiv.style.marginTop = '0.2rem';
+        countDiv.className = 'text-muted font-mono ops-status-meta';
         countDiv.textContent = `Verified Entries: ${ai.records_verified ?? 0}`;
 
         auditContainer.appendChild(headerDiv);
@@ -603,32 +674,24 @@ document.addEventListener('DOMContentLoaded', () => {
       const provContainer = document.getElementById('provenance-integrity-status');
       if (provContainer) {
         provContainer.innerHTML = '';
-        const pi = data.provenance_integrity || {};
 
         const headerDiv = document.createElement('div');
-        headerDiv.style.display = 'flex';
-        headerDiv.style.justifyContent = 'space-between';
-        headerDiv.style.alignItems = 'center';
-        headerDiv.style.marginBottom = '0.5rem';
+        headerDiv.className = 'ops-status-row';
 
         const labelSpan = document.createElement('span');
-        labelSpan.style.fontWeight = '600';
-        labelSpan.textContent = 'Integrity Verification: ';
+        labelSpan.className = 'ops-status-subheading';
+        labelSpan.textContent = 'Integrity Verification';
 
         const badge = this.createStatusBadge(pi.status || 'UNAVAILABLE');
         headerDiv.appendChild(labelSpan);
         headerDiv.appendChild(badge);
 
         const msgDiv = document.createElement('div');
-        msgDiv.className = 'text-muted';
-        msgDiv.style.fontSize = '0.8rem';
-        msgDiv.style.marginTop = '0.35rem';
-        msgDiv.textContent = `Verification Details: ${pi.message || 'No provenance events found.'}`;
+        msgDiv.className = 'text-muted ops-status-msg';
+        msgDiv.textContent = pi.message || 'No provenance events found.';
 
         const countDiv = document.createElement('div');
-        countDiv.className = 'text-muted font-mono';
-        countDiv.style.fontSize = '0.8rem';
-        countDiv.style.marginTop = '0.2rem';
+        countDiv.className = 'text-muted font-mono ops-status-meta';
         countDiv.textContent = `Verified Records: ${pi.records_verified ?? 0}`;
 
         provContainer.appendChild(headerDiv);
@@ -637,11 +700,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
         if (pi.last_hash) {
           const hashDiv = document.createElement('div');
-          hashDiv.className = 'font-mono text-dim';
-          hashDiv.style.fontSize = '0.75rem';
-          hashDiv.style.marginTop = '0.4rem';
-          hashDiv.style.wordBreak = 'break-all';
-          hashDiv.textContent = `Tail Hash: ${pi.last_hash}`;
+          hashDiv.className = 'font-mono text-dim ops-tail-hash';
+          const shortTail = pi.last_hash.length > 24 ? pi.last_hash.substring(0, 22) + '…' : pi.last_hash;
+          hashDiv.textContent = `Tail: ${shortTail}`;
+          hashDiv.title = pi.last_hash;
           provContainer.appendChild(hashDiv);
         }
       }
@@ -695,26 +757,28 @@ document.addEventListener('DOMContentLoaded', () => {
         });
 
         const tdCorr = document.createElement('td');
-        tdCorr.className = 'font-mono';
-        tdCorr.style.fontSize = '0.775rem';
-        tdCorr.textContent = (trace.correlation_id || '').length > 20 ? (trace.correlation_id || '').substring(0, 18) + '...' : (trace.correlation_id || 'UNKNOWN');
+        tdCorr.className = 'font-mono ops-cell-corr';
+        tdCorr.textContent = (trace.correlation_id || '').length > 20 ? (trace.correlation_id || '').substring(0, 18) + '…' : (trace.correlation_id || 'UNKNOWN');
         tdCorr.title = trace.correlation_id;
 
         const tdAction = document.createElement('td');
+        tdAction.className = 'ops-cell-action';
         tdAction.textContent = trace.action_name || 'N/A';
 
         const tdTarget = document.createElement('td');
+        tdTarget.className = 'font-mono ops-cell-target';
         tdTarget.textContent = trace.target || 'N/A';
+        tdTarget.title = trace.target;
 
         const tdStatus = document.createElement('td');
+        tdStatus.className = 'ops-cell-status';
         const badge = document.createElement('span');
         badge.className = `badge badge-${trace.status || 'OUTCOME_UNKNOWN'}`;
         badge.textContent = trace.status || 'UNKNOWN';
         tdStatus.appendChild(badge);
 
         const tdTime = document.createElement('td');
-        tdTime.className = 'font-mono';
-        tdTime.style.fontSize = '0.75rem';
+        tdTime.className = 'font-mono ops-cell-time';
         tdTime.textContent = trace.start_time || trace.timestamp || 'N/A';
 
         tr.appendChild(tdCorr);

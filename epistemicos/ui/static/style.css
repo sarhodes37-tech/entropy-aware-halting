@@ -1273,6 +1273,410 @@ button:focus-visible {
 }
 
 /* -------------------------------------------------------------------------
+ * Operational Intelligence Interface (Observatory Redesign)
+ * ------------------------------------------------------------------------- */
+.ops-system-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.65rem 0.85rem;
+  background-color: var(--bg-surface);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  margin-bottom: 0.85rem;
+  flex-wrap: wrap;
+  min-height: 48px;
+}
+
+.ops-header-main {
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+  flex-wrap: wrap;
+}
+
+.ops-title-cluster {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+}
+
+.ops-terminal-label {
+  font-family: var(--font-mono);
+  font-size: 0.625rem;
+  letter-spacing: 0.08em;
+  color: var(--accent-interactive);
+  font-weight: 700;
+  text-transform: uppercase;
+  line-height: 1;
+}
+
+.ops-view-heading {
+  font-size: 0.975rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--text-primary);
+  margin: 0;
+  line-height: 1.2;
+}
+
+.ops-state-strip {
+  display: flex;
+  align-items: center;
+  gap: 1.1rem;
+  flex-wrap: wrap;
+}
+
+.ops-state-indicator {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.ops-kicker {
+  font-family: var(--font-mono);
+  font-size: 0.625rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  text-transform: uppercase;
+}
+
+.ops-indicator-val {
+  font-size: 0.85rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+.ops-indicator-text {
+  font-size: 0.725rem;
+  color: var(--text-secondary);
+}
+
+.ops-header-telemetry {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.ops-telemetry-item {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.ops-btn-compact {
+  padding: 0.25rem 0.65rem;
+  font-size: 0.75rem;
+  min-height: 32px;
+  border-radius: var(--radius-sm);
+}
+
+/* Operational Metrics Strip */
+.ops-metrics-strip {
+  margin-bottom: 0.85rem;
+}
+
+.ops-metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 0.65rem;
+  margin-bottom: 0;
+}
+
+.ops-metric-item {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  padding: 0.65rem 0.8rem;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+}
+
+.ops-metric-item::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background-color: var(--border-default);
+}
+
+.ops-metric-meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 0.25rem;
+  margin-bottom: 0.2rem;
+}
+
+.ops-metric-item .metric-label {
+  font-size: 0.675rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  margin-bottom: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ops-metric-unit {
+  font-family: var(--font-mono);
+  font-size: 0.625rem;
+  color: var(--text-muted);
+  text-transform: uppercase;
+}
+
+.ops-metric-item .metric-value {
+  font-family: var(--font-mono);
+  font-size: 1.35rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  margin-bottom: 0.15rem;
+  line-height: 1.1;
+}
+
+.ops-metric-item .metric-subtext {
+  font-size: 0.65rem;
+  color: var(--text-muted);
+  line-height: 1.25;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Operational Panel Cards */
+.ops-panel-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  padding: 0.75rem 0.85rem;
+}
+
+.ops-section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-bottom: 1px solid var(--border-muted);
+  padding-bottom: 0.45rem;
+  margin-bottom: 0.6rem;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.ops-header-title-group {
+  display: flex;
+  align-items: baseline;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.ops-section-title {
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-primary);
+}
+
+.ops-source-label {
+  font-size: 0.675rem;
+  color: var(--text-muted);
+}
+
+.ops-filter-shortcuts {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+}
+
+.ops-shortcut-caption {
+  font-family: var(--font-mono);
+  font-size: 0.625rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  margin-right: 0.15rem;
+}
+
+.ops-chip {
+  padding: 0.2rem 0.5rem;
+  font-size: 0.725rem;
+  min-height: 28px;
+  border-radius: var(--radius-sm);
+  gap: 0.3rem;
+}
+
+.ops-chip .arrow {
+  font-size: 0.7rem;
+}
+
+/* Event Stream Table */
+.ops-stream-table-wrap {
+  border: 1px solid var(--border-muted);
+  border-radius: var(--radius-sm);
+  background: var(--bg-base);
+}
+
+.ops-data-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8rem;
+}
+
+.ops-data-table th {
+  padding: 0.45rem 0.65rem;
+  font-size: 0.675rem;
+  letter-spacing: 0.05em;
+  background-color: var(--bg-elevated);
+  border-bottom: 1px solid var(--border-default);
+  white-space: nowrap;
+}
+
+.ops-data-table td {
+  padding: 0.45rem 0.65rem;
+  border-bottom: 1px solid var(--border-muted);
+  vertical-align: middle;
+  line-height: 1.25;
+}
+
+.ops-data-table tr:last-child td {
+  border-bottom: none;
+}
+
+.ops-cell-corr {
+  font-size: 0.75rem;
+  color: var(--accent-interactive);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.ops-cell-action {
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.ops-cell-target {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ops-cell-status {
+  white-space: nowrap;
+}
+
+.ops-cell-time {
+  font-size: 0.725rem;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* Integrity Grid */
+.ops-integrity-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 0.75rem;
+  min-width: 0;
+}
+
+.ops-integrity-cell {
+  background-color: var(--bg-base);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  padding: 0.65rem 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.ops-cell-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.5rem;
+  padding-bottom: 0.35rem;
+  border-bottom: 1px solid var(--border-muted);
+  flex-wrap: wrap;
+}
+
+.ops-cell-title {
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-secondary);
+}
+
+.ops-status-block {
+  padding: 0.4rem 0.5rem;
+  border-radius: var(--radius-sm);
+  background-color: var(--bg-surface);
+  border: 1px solid var(--border-muted);
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.ops-status-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.ops-status-subheading {
+  font-size: 0.725rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.ops-status-msg {
+  font-size: 0.725rem;
+  line-height: 1.3;
+}
+
+.ops-status-meta {
+  font-size: 0.7rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.ops-tail-hash {
+  font-size: 0.675rem;
+  color: var(--text-muted);
+  word-break: break-all;
+  border-top: 1px dashed var(--border-muted);
+  padding-top: 0.25rem;
+}
+
+/* Desktop Responsive Layout Adjustments */
+@media (max-width: 1200px) {
+  .ops-metrics-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 800px) {
+  .ops-integrity-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* -------------------------------------------------------------------------
  * Responsive Breakpoints (360px, 390px, 430px, 768px, 1024px, 1440px)
  * ------------------------------------------------------------------------- */
 
