@@ -480,23 +480,24 @@ document.addEventListener('DOMContentLoaded', () => {
     /**
      * Derives aggregate system operational state from overview telemetry.
      *
-     * Mandatory operational metrics required to establish READY:
-     * - execution_failures
-     * - halts
-     * - authorization_denials
-     * - parse_error_count
+     * Epistemic Separation of Dimensions:
+     * A. Cryptographic Integrity: Are observed audit & provenance records cryptographically consistent?
+     * B. Historical Activity: Cumulative records of past executions, denials, halts, and failures.
+     *    Cumulative historical counters DO NOT constitute proof of current runtime blockage, halt, or degradation.
+     *    A past execution failure or authorization denial in logs does not mean the current runtime is BLOCKED or DEGRADED.
+     * C. Current Operational Health: Requires an authoritative live runtime health signal or active incident feed.
+     *    In the absence of a live runtime health signal, current operational health is NOT ESTABLISHED or UNVERIFIED.
+     * D. Evidence Completeness: Can the system establish that all relevant actions were captured?
      *
-     * Precedence Rules:
-     * 1. BLOCKED: Either required source is corrupted ('CORRUPTED'), or execution failures > 0.
-     * 2. HALTED: Policy / egress halts > 0 (when not blocked).
-     * 3. UNVERIFIED: Required telemetry is missing, unavailable, or unverified.
-     *    - Either required integrity source is not explicitly VERIFIED or flag is not strictly true.
-     *    - Any mandatory operational metric is UNAVAILABLE or INVALID.
-     *    A single missing, unavailable, or unverified required source strictly prevents READY.
-     * 4. DEGRADED: Both sources verified, all metrics available and valid, but exceptions exist
-     *    (authorization denials > 0 or malformed lines > 0).
-     * 5. READY: Both sources strictly VERIFIED, availability flags strictly true,
-     *    all mandatory operational metrics available and valid, establishing zero exceptions.
+     * State Evaluation Rules:
+     * 1. BLOCKED: Positive cryptographic integrity failure (CORRUPTED) detected in either required store.
+     * 2. UNVERIFIED / NOT ESTABLISHED:
+     *    - When cryptographic integrity is corrupted, system state is BLOCKED.
+     *    - When audit or provenance stores are unavailable, unverified, or unreadable -> UNVERIFIED.
+     *    - When both required integrity sources are VERIFIED, but no live runtime health signal is configured,
+     *      operational readiness is NOT ESTABLISHED (or UNVERIFIED) because historical logs alone cannot establish READY.
+     * 3. READY: Permitted ONLY if an authoritative live runtime health signal is present, valid, and healthy,
+     *    in addition to verified cryptographic integrity. Clean historical logs alone cannot assert READY.
      *
      * Returns: { state: string, reason: string, details: object }
      */
@@ -512,7 +513,7 @@ document.addEventListener('DOMContentLoaded', () => {
       const sf = data.status_flags || {};
       const ai = data.audit_integrity || {};
       const pi = data.provenance_integrity || {};
-      const m = data.metrics || {};
+      const liveHealth = data.live_runtime_health; // Optional authoritative live signal
 
       const auditStatus = (ai.status || 'UNAVAILABLE').toUpperCase();
       const provStatus = (pi.status || 'UNAVAILABLE').toUpperCase();
@@ -521,25 +522,7 @@ document.addEventListener('DOMContentLoaded', () => {
       const auditAvail = this.normalizeBooleanFlag(sf.audit_data_available);
       const provAvail = this.normalizeBooleanFlag(sf.provenance_data_available);
 
-      // Mandatory operational metrics
-      const mandatoryMetricDefs = [
-        { key: 'execution_failures', label: 'execution_failures', val: m.execution_failures },
-        { key: 'halts', label: 'halts', val: m.halts },
-        { key: 'authorization_denials', label: 'authorization_denials', val: m.authorization_denials },
-        { key: 'parse_error_count', label: 'parse_error_count', val: m.parse_error_count }
-      ];
-
-      const normFailures = this.normalizeMetricValue(m.execution_failures);
-      const normHalts = this.normalizeMetricValue(m.halts);
-      const normDenials = this.normalizeMetricValue(m.authorization_denials);
-      const normParse = this.normalizeMetricValue(m.parse_error_count);
-
-      const hasFailures = normFailures.status === 'VALID' && normFailures.value > 0;
-      const hasHalts = normHalts.status === 'VALID' && normHalts.value > 0;
-      const hasDenials = normDenials.status === 'VALID' && normDenials.value > 0;
-      const hasParseErrors = normParse.status === 'VALID' && normParse.value > 0;
-
-      // Rule 1: BLOCKED (Corrupted cryptographic integrity or runtime execution failures)
+      // Dimension A: Positive Cryptographic Integrity Failure -> BLOCKED
       if (auditStatus === 'CORRUPTED' || provStatus === 'CORRUPTED') {
         const corruptedSources = [];
         if (auditStatus === 'CORRUPTED') corruptedSources.push('Audit Trail');
@@ -547,29 +530,11 @@ document.addEventListener('DOMContentLoaded', () => {
         return {
           state: 'BLOCKED',
           reason: `Cryptographic integrity failure positively detected in ${corruptedSources.join(' and ')}`,
-          details: { auditStatus, provStatus, hasFailures, hasHalts }
+          details: { auditStatus, provStatus }
         };
       }
 
-      if (hasFailures) {
-        return {
-          state: 'BLOCKED',
-          reason: `Runtime execution failure(s) detected (${normFailures.value} failure(s))`,
-          details: { auditStatus, provStatus, failures: normFailures.value }
-        };
-      }
-
-      // Rule 2: HALTED (Deterministic gate or egress boundary halt enforced)
-      if (hasHalts) {
-        return {
-          state: 'HALTED',
-          reason: `Control plane policy or egress halt enforced (${normHalts.value} halt(s))`,
-          details: { auditStatus, provStatus, halts: normHalts.value }
-        };
-      }
-
-      // Rule 3: UNVERIFIED (Missing, unavailable, or unverified required integrity sources or metrics)
-      // Check integrity availability & verification
+      // Check integrity availability & verification status
       const unverifiedSources = [];
       if (!auditAvail || auditStatus === 'UNAVAILABLE') {
         unverifiedSources.push('Audit Trail unavailable');
@@ -595,62 +560,47 @@ document.addEventListener('DOMContentLoaded', () => {
         };
       }
 
-      // Check mandatory operational metrics availability & validity
-      // Missing or malformed telemetry cannot establish zero exceptions!
-      const unavailableMetrics = [];
-      const invalidMetrics = [];
-
-      mandatoryMetricDefs.forEach(def => {
-        const norm = this.normalizeMetricValue(def.val);
-        if (norm.status === 'UNAVAILABLE') {
-          unavailableMetrics.push(def.label);
-        } else if (norm.status === 'INVALID') {
-          invalidMetrics.push(def.label);
-        }
-      });
-
-      if (unavailableMetrics.length > 0 && invalidMetrics.length > 0) {
+      // Dimension C: Current Operational Health Evaluation
+      // Both integrity sources are VERIFIED. However, historical logs alone cannot establish live runtime readiness.
+      if (!liveHealth || typeof liveHealth !== 'object') {
         return {
-          state: 'UNVERIFIED',
-          reason: `Mandatory operational telemetry missing: ${unavailableMetrics.join(', ')} unavailable; ${invalidMetrics.join(', ')} invalid`,
-          details: { auditStatus, provStatus, unavailableMetrics, invalidMetrics }
+          state: 'NOT ESTABLISHED',
+          reason: 'Cryptographic integrity verified, but live runtime operational health signal is not established',
+          details: { auditStatus, provStatus, liveHealth: 'NOT_CONFIGURED' }
         };
       }
 
-      if (unavailableMetrics.length > 0) {
+      const liveStatus = (liveHealth.status || '').toUpperCase();
+      if (liveStatus === 'READY' || liveStatus === 'HEALTHY') {
         return {
-          state: 'UNVERIFIED',
-          reason: `Mandatory operational telemetry missing: ${unavailableMetrics.join(', ')} unavailable`,
-          details: { auditStatus, provStatus, unavailableMetrics }
+          state: 'READY',
+          reason: 'Cryptographic integrity verified and live runtime health confirmed',
+          details: { auditStatus, provStatus, liveHealth }
         };
-      }
-
-      if (invalidMetrics.length > 0) {
-        return {
-          state: 'UNVERIFIED',
-          reason: `Mandatory operational telemetry malformed: ${invalidMetrics.join(', ')} invalid`,
-          details: { auditStatus, provStatus, invalidMetrics }
-        };
-      }
-
-      // Rule 4: DEGRADED (Verified integrity and full metrics, but exceptions present)
-      const degradations = [];
-      if (hasDenials) degradations.push(`${normDenials.value} authorization denial(s)`);
-      if (hasParseErrors) degradations.push(`${normParse.value} malformed log line(s)`);
-
-      if (degradations.length > 0) {
+      } else if (liveStatus === 'DEGRADED') {
         return {
           state: 'DEGRADED',
-          reason: `Operational exceptions present: ${degradations.join('; ')}`,
-          details: { auditStatus, provStatus, degradations }
+          reason: liveHealth.reason || 'Live runtime health signal reports degraded condition',
+          details: { auditStatus, provStatus, liveHealth }
+        };
+      } else if (liveStatus === 'HALTED') {
+        return {
+          state: 'HALTED',
+          reason: liveHealth.reason || 'Live runtime health signal reports active halt',
+          details: { auditStatus, provStatus, liveHealth }
+        };
+      } else if (liveStatus === 'BLOCKED') {
+        return {
+          state: 'BLOCKED',
+          reason: liveHealth.reason || 'Live runtime health signal reports active blockage',
+          details: { auditStatus, provStatus, liveHealth }
         };
       }
 
-      // Rule 5: READY (Both required sources verified, valid availability flags, all mandatory metrics verified 0)
       return {
-        state: 'READY',
-        reason: 'All required integrity sources verified with zero active operational exceptions',
-        details: { auditStatus, provStatus }
+        state: 'UNVERIFIED',
+        reason: `Live runtime operational health unverified (status: ${liveStatus || 'UNKNOWN'})`,
+        details: { auditStatus, provStatus, liveHealth }
       };
     },
 

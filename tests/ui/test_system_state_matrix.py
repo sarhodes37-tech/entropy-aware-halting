@@ -92,14 +92,15 @@ def test_metric_and_boolean_normalization(live_server):
 
 
 @pytest.mark.skipif(not PLAYWRIGHT_AVAILABLE, reason="playwright not installed")
-def test_system_state_matrix_and_ready_invariants(live_server):
+def test_system_state_epistemic_separation_of_dimensions(live_server):
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         page = browser.new_page()
         page.goto(f"{live_server}/index.html")
 
-        # Baseline Happy Path -> READY
-        d_ready = {
+        # Baseline: Both required logs verified, but NO live runtime health signal configured
+        # Epistemic Rule: Historical verification does NOT independently establish live operational readiness!
+        d_verified_no_live = {
             "status_flags": {"audit_data_available": True, "provenance_data_available": True},
             "audit_integrity": {"status": "VERIFIED"},
             "provenance_integrity": {"status": "VERIFIED"},
@@ -111,145 +112,119 @@ def test_system_state_matrix_and_ready_invariants(live_server):
                 "parse_error_count": 0
             }
         }
-        res_ready = page.evaluate("(d) => window.ObservatoryApp.deriveSystemState(d)", d_ready)
-        assert res_ready["state"] == "READY"
-        assert "zero active operational exceptions" in res_ready["reason"]
+        res_no_live = page.evaluate("(d) => window.ObservatoryApp.deriveSystemState(d)", d_verified_no_live)
+        assert res_no_live["state"] == "NOT ESTABLISHED"
+        assert "live runtime operational health signal is not established" in res_no_live["reason"]
 
-        # --- REQUIREMENT 1: Missing Mandatory Operational Metrics PREVENTS READY ---
-        mandatory_metrics = ["execution_failures", "halts", "authorization_denials", "parse_error_count"]
-
-        # Test each individual missing metric when integrity is verified
-        for metric in mandatory_metrics:
-            m_copy = dict(d_ready["metrics"])
-            m_copy[metric] = None
-            d_missing_one = {**d_ready, "metrics": m_copy}
-            res_missing_one = page.evaluate("(d) => window.ObservatoryApp.deriveSystemState(d)", d_missing_one)
-            assert res_missing_one["state"] == "UNVERIFIED", f"Expected UNVERIFIED when {metric} is None, got {res_missing_one['state']}"
-            assert "Mandatory operational telemetry missing" in res_missing_one["reason"]
-            assert metric in res_missing_one["reason"]
-
-        # Test all four mandatory metrics missing
-        d_missing_all = {
-            **d_ready,
-            "metrics": {
-                "total_executions": 50,
-                "execution_failures": None,
-                "halts": None,
-                "authorization_denials": None,
-                "parse_error_count": None
-            }
+        # --- REQUIREMENT 1: Historical Counters Do Not Determine Current Operational State ---
+        # A historical failure in logs does NOT mean current runtime is BLOCKED
+        d_hist_failure = {
+            **d_verified_no_live,
+            "metrics": {**d_verified_no_live["metrics"], "execution_failures": 5}
         }
-        res_missing_all = page.evaluate("(d) => window.ObservatoryApp.deriveSystemState(d)", d_missing_all)
-        assert res_missing_all["state"] == "UNVERIFIED"
-        assert "Mandatory operational telemetry missing" in res_missing_all["reason"]
-        for metric in mandatory_metrics:
-            assert metric in res_missing_all["reason"]
+        res_hist_failure = page.evaluate("(d) => window.ObservatoryApp.deriveSystemState(d)", d_hist_failure)
+        assert res_hist_failure["state"] == "NOT ESTABLISHED"
+        assert "live runtime operational health signal is not established" in res_hist_failure["reason"]
 
-        # Test mixed valid and missing metrics
-        d_mixed = {
-            **d_ready,
-            "metrics": {
-                "total_executions": 50,
-                "execution_failures": 0,
-                "halts": None,
-                "authorization_denials": 0,
-                "parse_error_count": None
-            }
+        # A historical policy halt in logs does NOT mean current runtime is HALTED
+        d_hist_halt = {
+            **d_verified_no_live,
+            "metrics": {**d_verified_no_live["metrics"], "halts": 3}
         }
-        res_mixed = page.evaluate("(d) => window.ObservatoryApp.deriveSystemState(d)", d_mixed)
-        assert res_mixed["state"] == "UNVERIFIED"
-        assert "halts" in res_mixed["reason"]
-        assert "parse_error_count" in res_mixed["reason"]
-        assert "execution_failures" not in res_mixed["reason"]
+        res_hist_halt = page.evaluate("(d) => window.ObservatoryApp.deriveSystemState(d)", d_hist_halt)
+        assert res_hist_halt["state"] == "NOT ESTABLISHED"
 
-        # Test invalid mandatory metric (malformed string)
-        d_invalid_metric = {
-            **d_ready,
-            "metrics": {**d_ready["metrics"], "execution_failures": "malformed_string"}
+        # A historical authorization denial does NOT mean system is DEGRADED
+        d_hist_denial = {
+            **d_verified_no_live,
+            "metrics": {**d_verified_no_live["metrics"], "authorization_denials": 12}
         }
-        res_invalid_metric = page.evaluate("(d) => window.ObservatoryApp.deriveSystemState(d)", d_invalid_metric)
-        assert res_invalid_metric["state"] == "UNVERIFIED"
-        assert "Mandatory operational telemetry malformed" in res_invalid_metric["reason"]
-        assert "execution_failures invalid" in res_invalid_metric["reason"]
+        res_hist_denial = page.evaluate("(d) => window.ObservatoryApp.deriveSystemState(d)", d_hist_denial)
+        assert res_hist_denial["state"] == "NOT ESTABLISHED"
 
-        # --- REQUIREMENT 2: Validate Status Flag Types ---
-        # Strings like "false" or "true" must NOT be accepted as boolean true
-        bad_flags = ["false", "true", None, 1, 0, {}, []]
-        for bad_val in bad_flags:
-            d_bad_audit_flag = {
-                **d_ready,
-                "status_flags": {"audit_data_available": bad_val, "provenance_data_available": True}
-            }
-            res_bad_audit = page.evaluate("(d) => window.ObservatoryApp.deriveSystemState(d)", d_bad_audit_flag)
-            assert res_bad_audit["state"] == "UNVERIFIED", f"Expected UNVERIFIED for audit flag {bad_val}"
-            assert "Audit Trail unavailable" in res_bad_audit["reason"]
-
-            d_bad_prov_flag = {
-                **d_ready,
-                "status_flags": {"audit_data_available": True, "provenance_data_available": bad_val}
-            }
-            res_bad_prov = page.evaluate("(d) => window.ObservatoryApp.deriveSystemState(d)", d_bad_prov_flag)
-            assert res_bad_prov["state"] == "UNVERIFIED", f"Expected UNVERIFIED for prov flag {bad_val}"
-            assert "Provenance Store unavailable" in res_bad_prov["reason"]
-
-        # --- REQUIREMENT 3: State Precedence Rules ---
-        # 1. Audit corrupted -> BLOCKED
-        d_corrupt = {**d_ready, "audit_integrity": {"status": "CORRUPTED"}}
-        res_corrupt = page.evaluate("(d) => window.ObservatoryApp.deriveSystemState(d)", d_corrupt)
-        assert res_corrupt["state"] == "BLOCKED"
-        assert "Cryptographic integrity failure positively detected in Audit Trail" in res_corrupt["reason"]
-
-        # 2. Operational failures -> BLOCKED
-        d_fails = {**d_ready, "metrics": {**d_ready["metrics"], "execution_failures": 3}}
-        res_fails = page.evaluate("(d) => window.ObservatoryApp.deriveSystemState(d)", d_fails)
-        assert res_fails["state"] == "BLOCKED"
-        assert "Runtime execution failure(s) detected (3 failure(s))" in res_fails["reason"]
-
-        # 3. Policy halts -> HALTED
-        d_halts = {**d_ready, "metrics": {**d_ready["metrics"], "halts": 2}}
-        res_halts = page.evaluate("(d) => window.ObservatoryApp.deriveSystemState(d)", d_halts)
-        assert res_halts["state"] == "HALTED"
-        assert "Control plane policy or egress halt enforced (2 halt(s))" in res_halts["reason"]
-
-        # 4. Denials only -> DEGRADED
-        d_denials = {**d_ready, "metrics": {**d_ready["metrics"], "authorization_denials": 5}}
-        res_denials = page.evaluate("(d) => window.ObservatoryApp.deriveSystemState(d)", d_denials)
-        assert res_denials["state"] == "DEGRADED"
-        assert "5 authorization denial(s)" in res_denials["reason"]
-
-        # 5. Parse errors only -> DEGRADED
-        d_parse = {**d_ready, "metrics": {**d_ready["metrics"], "parse_error_count": 1}}
-        res_parse = page.evaluate("(d) => window.ObservatoryApp.deriveSystemState(d)", d_parse)
-        assert res_parse["state"] == "DEGRADED"
-        assert "1 malformed log line(s)" in res_parse["reason"]
-
-        # 6. Precedence: Corruption beats halts and failures
-        d_conflict_corrupt = {
-            **d_ready,
-            "audit_integrity": {"status": "CORRUPTED"},
-            "metrics": {**d_ready["metrics"], "halts": 5, "execution_failures": 2}
+        # --- REQUIREMENT 2: Cryptographic Integrity Corruption Produces BLOCKED ---
+        # Corrupted audit log
+        d_audit_corrupt = {
+            **d_verified_no_live,
+            "audit_integrity": {"status": "CORRUPTED"}
         }
-        res_conflict_corrupt = page.evaluate("(d) => window.ObservatoryApp.deriveSystemState(d)", d_conflict_corrupt)
-        assert res_conflict_corrupt["state"] == "BLOCKED"
-        assert "Cryptographic integrity failure positively detected" in res_conflict_corrupt["reason"]
+        res_audit_corrupt = page.evaluate("(d) => window.ObservatoryApp.deriveSystemState(d)", d_audit_corrupt)
+        assert res_audit_corrupt["state"] == "BLOCKED"
+        assert "Cryptographic integrity failure positively detected in Audit Trail" in res_audit_corrupt["reason"]
 
-        # 7. Precedence: Failure beats halts
-        d_conflict_fail = {
-            **d_ready,
-            "metrics": {**d_ready["metrics"], "halts": 5, "execution_failures": 2}
+        # Corrupted provenance log
+        d_prov_corrupt = {
+            **d_verified_no_live,
+            "provenance_integrity": {"status": "CORRUPTED"}
         }
-        res_conflict_fail = page.evaluate("(d) => window.ObservatoryApp.deriveSystemState(d)", d_conflict_fail)
-        assert res_conflict_fail["state"] == "BLOCKED"
-        assert "Runtime execution failure(s) detected" in res_conflict_fail["reason"]
+        res_prov_corrupt = page.evaluate("(d) => window.ObservatoryApp.deriveSystemState(d)", d_prov_corrupt)
+        assert res_prov_corrupt["state"] == "BLOCKED"
+        assert "Cryptographic integrity failure positively detected in Provenance Store" in res_prov_corrupt["reason"]
 
-        # 8. Precedence: Halts beat unverified telemetry
-        d_conflict_halt_unavail = {
-            **d_ready,
+        # --- REQUIREMENT 3: Missing/Unavailable Integrity Telemetry Produces UNVERIFIED ---
+        # Missing audit log
+        d_missing_audit = {
+            **d_verified_no_live,
             "status_flags": {"audit_data_available": False, "provenance_data_available": True},
-            "audit_integrity": {"status": "UNAVAILABLE"},
-            "metrics": {**d_ready["metrics"], "halts": 2}
+            "audit_integrity": {"status": "UNAVAILABLE"}
         }
-        res_conflict_halt = page.evaluate("(d) => window.ObservatoryApp.deriveSystemState(d)", d_conflict_halt_unavail)
-        assert res_conflict_halt["state"] == "HALTED"
+        res_missing_audit = page.evaluate("(d) => window.ObservatoryApp.deriveSystemState(d)", d_missing_audit)
+        assert res_missing_audit["state"] == "UNVERIFIED"
+        assert "Audit Trail unavailable" in res_missing_audit["reason"]
+
+        # Non-boolean flag (e.g. string "false") must be rejected as false -> UNVERIFIED
+        d_bad_flag = {
+            **d_verified_no_live,
+            "status_flags": {"audit_data_available": "false", "provenance_data_available": True}
+        }
+        res_bad_flag = page.evaluate("(d) => window.ObservatoryApp.deriveSystemState(d)", d_bad_flag)
+        assert res_bad_flag["state"] == "UNVERIFIED"
+        assert "Audit Trail unavailable" in res_bad_flag["reason"]
+
+        # --- REQUIREMENT 4: Live Runtime Health Assertions ---
+        # When live runtime health signal is present and HEALTHY/READY, and integrity is VERIFIED -> READY
+        d_live_healthy = {
+            **d_verified_no_live,
+            "live_runtime_health": {"status": "HEALTHY", "source": "heartbeat_daemon"}
+        }
+        res_live_healthy = page.evaluate("(d) => window.ObservatoryApp.deriveSystemState(d)", d_live_healthy)
+        assert res_live_healthy["state"] == "READY"
+        assert "Cryptographic integrity verified and live runtime health confirmed" in res_live_healthy["reason"]
+
+        # When live runtime signal reports DEGRADED -> DEGRADED
+        d_live_degraded = {
+            **d_verified_no_live,
+            "live_runtime_health": {"status": "DEGRADED", "reason": "Network latency anomaly"}
+        }
+        res_live_degraded = page.evaluate("(d) => window.ObservatoryApp.deriveSystemState(d)", d_live_degraded)
+        assert res_live_degraded["state"] == "DEGRADED"
+        assert "Network latency anomaly" in res_live_degraded["reason"]
+
+        # When live runtime signal reports HALTED -> HALTED
+        d_live_halted = {
+            **d_verified_no_live,
+            "live_runtime_health": {"status": "HALTED", "reason": "Egress boundary containment active"}
+        }
+        res_live_halted = page.evaluate("(d) => window.ObservatoryApp.deriveSystemState(d)", d_live_halted)
+        assert res_live_halted["state"] == "HALTED"
+        assert "Egress boundary containment active" in res_live_halted["reason"]
+
+        # When live runtime signal reports BLOCKED -> BLOCKED
+        d_live_blocked = {
+            **d_verified_no_live,
+            "live_runtime_health": {"status": "BLOCKED", "reason": "Runtime fault quarantined"}
+        }
+        res_live_blocked = page.evaluate("(d) => window.ObservatoryApp.deriveSystemState(d)", d_live_blocked)
+        assert res_live_blocked["state"] == "BLOCKED"
+        assert "Runtime fault quarantined" in res_live_blocked["reason"]
+
+        # Even if live health reports READY, if cryptographic integrity is corrupted, BLOCKED trumps READY
+        d_corrupt_with_live = {
+            **d_live_healthy,
+            "audit_integrity": {"status": "CORRUPTED"}
+        }
+        res_corrupt_live = page.evaluate("(d) => window.ObservatoryApp.deriveSystemState(d)", d_corrupt_with_live)
+        assert res_corrupt_live["state"] == "BLOCKED"
+        assert "Cryptographic integrity failure positively detected" in res_corrupt_live["reason"]
 
         browser.close()
