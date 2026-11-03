@@ -393,8 +393,15 @@ class ReceiptGenerator:
         Binds exact input hash, configuration, gate version, decision, outcome, and events
         into a canonical receipt, signed via SHA-256 or HMAC-SHA256.
         """
-        key = signing_key or self.signing_key
-        algo = "HMAC-SHA256" if key else "SHA256"
+        key = signing_key if signing_key is not None else self.signing_key
+        if key is not None:
+            if not isinstance(key, (bytes, bytearray)):
+                raise TypeError(f"signing_key must be bytes or bytearray, got {type(key).__name__}")
+            if len(key) == 0:
+                raise ValueError("signing_key cannot be empty")
+            algo = "HMAC-SHA256"
+        else:
+            algo = "SHA256"
 
         receipt: Dict[str, Any] = {
             "transaction_id": transaction_id,
@@ -419,7 +426,7 @@ class ReceiptGenerator:
 
         receipt_string = json.dumps(receipt, sort_keys=True).encode("utf-8")
 
-        if key:
+        if key is not None:
             receipt["signature"] = hmac.new(key, receipt_string, hashlib.sha256).hexdigest()
         else:
             receipt["signature"] = hashlib.sha256(receipt_string).hexdigest()
@@ -496,7 +503,10 @@ class ReceiptGenerator:
         recorded_algo = receipt["signature_algorithm"]
 
         # 4. Algorithm downgrade & key mismatch protection
+        # Enforce strict key validation: non-empty bytes/bytearray for HMAC, None for SHA256
         if signing_key is not None:
+            if not isinstance(signing_key, (bytes, bytearray)) or len(signing_key) == 0:
+                return False
             if recorded_algo != "HMAC-SHA256":
                 return False
         else:
@@ -507,7 +517,7 @@ class ReceiptGenerator:
         check_receipt = {k: v for k, v in receipt.items() if k != "signature"}
         receipt_bytes = json.dumps(check_receipt, sort_keys=True).encode("utf-8")
 
-        if signing_key:
+        if signing_key is not None:
             computed_signature = hmac.new(signing_key, receipt_bytes, hashlib.sha256).hexdigest()
         else:
             computed_signature = hashlib.sha256(receipt_bytes).hexdigest()
