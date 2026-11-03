@@ -17,7 +17,7 @@ sys.path.insert(0, str(REPO_ROOT))
 
 # Imports from epistemicos after sys.path configuration
 from epistemicos.containment import (  # noqa: E402
-    ContainmentGuard,
+    _DESTINATION_TRIGGER_CHARS,
     normalize_destination_host,
     _cached_normalize_destination_host,
     parse_url_authority_structure,
@@ -34,7 +34,16 @@ def get_git_commit_sha() -> str:
             text=True,
             check=True
         )
-        return res.stdout.strip()
+        base_sha = res.stdout.strip()
+        status_res = subprocess.run(
+            ["git", "status", "--porcelain"],
+            capture_output=True,
+            text=True,
+            check=True
+        )
+        if status_res.stdout.strip():
+            return f"{base_sha} (working-tree dirty with PR #343 commits/staged changes)"
+        return base_sha
     except Exception:
         return "UNKNOWN_SHA"
 
@@ -97,6 +106,53 @@ def _unoptimized_is_candidate_destination(curr: str, key_context: str = "") -> b
     return False
 
 
+def _isolated_optimized_is_candidate_destination(curr: str, key_context: str = "") -> bool:
+    """
+    Isolated trigger-character pre-filter evaluation:
+    Applies the trigger guard, but routes fallback checks to the SAME uncached
+    normalization function (_unoptimized_normalize_destination_host) to isolate
+    pre-filtering speedup from caching effects.
+    """
+    import ipaddress
+    import re
+    from epistemicos.containment import parse_ip_numeric
+
+    if not curr or not isinstance(curr, str):
+        return False
+    s = curr.strip()
+    if not s or not _DESTINATION_TRIGGER_CHARS.search(s):
+        return False
+
+    norm = _unoptimized_normalize_destination_host(s)
+    if not norm:
+        return False
+
+    if "://" in s or s.startswith("//") or s.startswith(("http://", "https://", "ftp://")):
+        return True
+
+    if "/" in s or ":" in s:
+        return True
+
+    try:
+        ipaddress.ip_address(norm)
+        return True
+    except ValueError:
+        pass
+
+    if parse_ip_numeric(s) is not None:
+        return True
+
+    if re.search(r"\.[a-zA-Z]{2,}$", norm):
+        ignored = (
+            ".py", ".txt", ".json", ".md", ".sh", ".csv",
+            ".log", ".yaml", ".yml", ".html", ".css", ".js", ".png", ".jpg", ".pdf"
+        )
+        if not norm.endswith(ignored):
+            return True
+
+    return False
+
+
 def compute_metrics(trials: List[float]) -> Dict[str, float]:
     sorted_trials = sorted(trials)
     n = len(sorted_trials)
@@ -114,7 +170,7 @@ def compute_metrics(trials: List[float]) -> Dict[str, float]:
 
 
 def run_candidate_benchmarks(repetitions: int = 30) -> Dict[str, Any]:
-    print(f"\n--- Part 1: Candidate Destination Inspection ({repetitions} trials) ---")
+    print(f"\n--- Part 1: Isolated Candidate Destination Pre-Filter ({repetitions} trials) ---")
 
     benign_items = [
         "policy_id", "POL-2026-BENIGN", "applicant", "Acme Logistics LLC", "fleet_size",
@@ -141,7 +197,7 @@ def run_candidate_benchmarks(repetitions: int = 30) -> Dict[str, Any]:
 
     for item in benign_items + destination_items:
         unopt_res = _unoptimized_is_candidate_destination(item)
-        opt_res = ContainmentGuard._is_candidate_destination(item)
+        opt_res = _isolated_optimized_is_candidate_destination(item)
         assert unopt_res == opt_res, f"Boolean mismatch on {item!r}: {unopt_res} != {opt_res}"
     print("✓ 100% Boolean equivalence confirmed across all candidate destination test inputs.")
 
@@ -162,13 +218,13 @@ def run_candidate_benchmarks(repetitions: int = 30) -> Dict[str, Any]:
 
                 t0 = time.perf_counter_ns()
                 for s in items:
-                    _ = ContainmentGuard._is_candidate_destination(s)
+                    _ = _isolated_optimized_is_candidate_destination(s)
                 t1 = time.perf_counter_ns()
                 opt_trials.append((t1 - t0) / 1e6)
             else:
                 t0 = time.perf_counter_ns()
                 for s in items:
-                    _ = ContainmentGuard._is_candidate_destination(s)
+                    _ = _isolated_optimized_is_candidate_destination(s)
                 t1 = time.perf_counter_ns()
                 opt_trials.append((t1 - t0) / 1e6)
 
@@ -185,12 +241,12 @@ def run_candidate_benchmarks(repetitions: int = 30) -> Dict[str, Any]:
         results[workload_name] = {
             "items_per_eval": len(items),
             "unoptimized": unopt_metrics,
-            "optimized": opt_metrics,
+            "optimized_isolated": opt_metrics,
             "speedup_ratio_median": round(speedup, 2),
         }
         print(
             f"  [{workload_name}] Base: p50={unopt_metrics['median_ms']}ms, "
-            f"p95={unopt_metrics['p95_ms']}ms | Opt: p50={opt_metrics['median_ms']}ms, "
+            f"p95={unopt_metrics['p95_ms']}ms | Isolated Opt: p50={opt_metrics['median_ms']}ms, "
             f"p95={opt_metrics['p95_ms']}ms | Speedup: {speedup:.2f}x"
         )
 
@@ -336,11 +392,11 @@ def run_normalization_cache_benchmarks(repetitions: int = 30) -> Dict[str, Any]:
         f"Hits: {cache_info_mixed.hits}, Misses: {cache_info_mixed.misses}"
     )
 
-    # 3. High-Cardinality Churn (6,000 distinct items exceeding 4,096 capacity)
+    # 3. High-Cardinality Churn (6,000 distinct items exceeding 4,096 capacity) across 30 trials
     _cached_normalize_destination_host.cache_clear()
     unopt_high = []
     opt_high = []
-    for rep in range(10):
+    for rep in range(repetitions):
         if rep % 2 == 0:
             t0 = time.perf_counter_ns()
             for s in high_card_inputs:
@@ -406,7 +462,7 @@ def main():
 
     final_results = {
         "environment": env_info,
-        "candidate_destination_inspection": candidate_results,
+        "candidate_destination_inspection_isolated": candidate_results,
         "normalization_cache": cache_results,
         "methodology": {
             "repetitions": 30,
