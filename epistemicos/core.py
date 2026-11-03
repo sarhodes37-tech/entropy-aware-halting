@@ -761,6 +761,11 @@ class EpistemicOrchestrator:
                             )
 
                         out_status = execution_outcome.get("status")
+                        if out_status not in ("SUCCESS", "UNVERIFIED_SUCCESS", "EXECUTION_OUTCOME_UNKNOWN"):
+                            raise ValueError(
+                                f"Invalid execution boundary response status: {out_status!r}"
+                            )
+
                         if out_status == "EXECUTION_OUTCOME_UNKNOWN":
                             execution_status = "EXECUTION_OUTCOME_UNKNOWN"
                             telemetry = profiler.get_telemetry()

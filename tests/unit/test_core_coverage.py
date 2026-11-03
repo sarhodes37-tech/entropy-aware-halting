@@ -404,8 +404,9 @@ class TestCoreCoverageOrchestratorEnforcement:
             assert denied_msg in res["reason"]
 
     def test_invalid_boundary_response_fails_closed(self):
-        """Tests that invalid boundary responses (string, None, int, list) fail closed
-        and never report ALLOWED or EXECUTED."""
+        """Tests that invalid boundary responses (non-dict, empty dict, missing status,
+        null status, unknown status, non-string status) fail closed and never report
+        ALLOWED or EXECUTED."""
         with tempfile.NamedTemporaryFile() as tf_audit, tempfile.NamedTemporaryFile() as tf_prov:
             store = LocalProvenanceStore(log_path=tf_prov.name)
             policy_star = Policy(
@@ -425,15 +426,15 @@ class TestCoreCoverageOrchestratorEnforcement:
             )
             orch.gates = []
 
-            invalid_outcomes = [
+            # 1. Non-dictionary responses
+            invalid_types = [
                 "raw_string_outcome",
                 None,
                 12345,
                 ["invalid", "list"],
                 True,
             ]
-
-            for invalid_val in invalid_outcomes:
+            for invalid_val in invalid_types:
                 boundary.execute_protected_action = lambda *args, **kwargs: invalid_val
                 ctx = {
                     "actual_executable": lambda: "ok",
@@ -450,3 +451,47 @@ class TestCoreCoverageOrchestratorEnforcement:
                 assert res["gate"] == "TrustedExecutionBoundary"
                 assert "Invalid execution boundary response type" in res["reason"]
                 assert res["vectors_revoked"] >= 1
+
+            # 2. Dictionary responses with invalid/missing/null/unknown/non-string status
+            invalid_dict_outcomes = [
+                {},
+                {"result": "ok"},  # missing status
+                {"status": None},  # null status
+                {"status": "GARBAGE"},  # unknown status
+                {"status": 123},  # non-string status
+                {"status": False},  # boolean status
+            ]
+            for invalid_dict in invalid_dict_outcomes:
+                boundary.execute_protected_action = lambda *args, **kwargs: invalid_dict
+                ctx = {
+                    "actual_executable": lambda: "ok",
+                    "action_name": "read_file",
+                    "target": "data.txt",
+                    "correlation_id": "corr-invalid-dict-status",
+                    "request_id": "req-invalid-dict-status",
+                }
+                res = orch.process_submission(
+                    raw_payload={"policy_id": "pol_star", "task": "read"}, context=ctx
+                )
+                assert res["status"] == "HALTED"
+                assert res["execution_status"] == "EXECUTION_FAILED"
+                assert res["gate"] == "TrustedExecutionBoundary"
+                assert "Invalid execution boundary response status" in res["reason"]
+                assert res["vectors_revoked"] >= 1
+
+            # 3. Positive control: genuine SUCCESS response succeeds
+            valid_success = {"status": "SUCCESS", "result": "computed_val"}
+            boundary.execute_protected_action = lambda *args, **kwargs: valid_success
+            ctx_success = {
+                "actual_executable": lambda: "ok",
+                "action_name": "read_file",
+                "target": "data.txt",
+                "correlation_id": "corr-valid-success",
+                "request_id": "req-valid-success",
+            }
+            res_success = orch.process_submission(
+                raw_payload={"policy_id": "pol_star", "task": "read"}, context=ctx_success
+            )
+            assert res_success["status"] == "ALLOWED"
+            assert res_success["execution_status"] == "EXECUTED"
+            assert res_success["execution_outcome"] == valid_success
