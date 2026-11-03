@@ -6,6 +6,8 @@ and hardware/OS fallback mechanisms.
 
 import os
 import json
+import hmac
+import hashlib
 import importlib
 import pytest
 from unittest.mock import patch
@@ -170,6 +172,7 @@ def test_record_event_payload_too_large(temp_audit_file):
 
 def test_tamper_evident_audit_trail_hmac_key_validation(temp_audit_file):
     """Verifies fail-closed validation of hmac_key in TamperEvidentAuditTrail."""
+    # Retain empty-key and invalid-type rejection tests
     with pytest.raises(ValueError, match="hmac_key cannot be empty"):
         TamperEvidentAuditTrail(temp_audit_file, hmac_key=b"")
 
@@ -180,10 +183,30 @@ def test_tamper_evident_audit_trail_hmac_key_validation(temp_audit_file):
         with pytest.raises(TypeError, match="hmac_key must be bytes or bytearray"):
             TamperEvidentAuditTrail(temp_audit_file, hmac_key=invalid_key)
 
-    audit_ba = TamperEvidentAuditTrail(temp_audit_file, hmac_key=bytearray(b"valid_secret_123"))
-    event = AuditEvent(AuditLogLevel.INFO, "gate", "reason", "model", "valid")
-    rec = audit_ba.record_event(event)
-    assert rec["entry_hash"] is not None
+    payload = {"k": "v", "num": 42}
+    prev_hash = "0" * 64
+    combined = f"{prev_hash}:{json.dumps(payload, sort_keys=True)}".encode("utf-8")
+    unkeyed_expected = hashlib.sha256(combined).hexdigest()
+
+    # Verify hmac_key=None preserves unkeyed SHA-256
+    audit_none = TamperEvidentAuditTrail(temp_audit_file, hmac_key=None)
+    assert audit_none._compute_hash(prev_hash, payload) == unkeyed_expected
+
+    # Verify valid bytes key computes exact HMAC-SHA256 and differs from unkeyed SHA-256
+    bytes_key = b"valid_audit_secret_bytes"
+    audit_bytes = TamperEvidentAuditTrail(temp_audit_file, hmac_key=bytes_key)
+    expected_bytes_hash = hmac.new(bytes_key, combined, hashlib.sha256).hexdigest()
+    computed_bytes_hash = audit_bytes._compute_hash(prev_hash, payload)
+    assert computed_bytes_hash == expected_bytes_hash
+    assert computed_bytes_hash != unkeyed_expected
+
+    # Verify valid bytearray key computes exact HMAC-SHA256 and differs from unkeyed SHA-256
+    ba_key = bytearray(b"valid_audit_secret_bytearray")
+    audit_ba = TamperEvidentAuditTrail(temp_audit_file, hmac_key=ba_key)
+    expected_ba_hash = hmac.new(ba_key, combined, hashlib.sha256).hexdigest()
+    computed_ba_hash = audit_ba._compute_hash(prev_hash, payload)
+    assert computed_ba_hash == expected_ba_hash
+    assert computed_ba_hash != unkeyed_expected
 
 
 def test_receipt_empty_and_invalid_signing_keys():
