@@ -564,23 +564,23 @@ document.addEventListener('DOMContentLoaded', () => {
      * B. Historical Activity: Cumulative records of past executions, denials, halts, and failures.
      *    Cumulative historical counters DO NOT constitute proof of current runtime blockage, halt, or degradation.
      * C. Current Operational Health: Requires an authoritative live runtime health signal or active incident feed.
-     *    Minimum Future Backend Contract to assert READY:
-     *    1. Source Identity: Must identify an authoritative supervisor or watchdog (e.g. source: 'systemd_watchdog', 'orchestrator_supervisor').
-     *    2. Observation Freshness: Must carry observation timestamp (observed_at) within the valid heart-beat window (< max_staleness_ms).
-     *    3. Attestation Authority: Must carry verified signature or unforgeable token proving supervisory attestation.
-     *    Without this authoritative contract, current operational health is strictly NOT ESTABLISHED.
-     *    Arbitrary unverified objects like { status: 'HEALTHY' } without authoritative attestation cannot produce READY.
+     *    Trust Boundary & Verification Contract:
+     *    Asserting READY is strictly forbidden based solely on caller-controlled source strings,
+     *    arbitrary status objects like { status: 'HEALTHY' }, or unauthenticated inputs.
+     *    In this architecture, live operational health requires:
+     *    1. Trusted supervisory source identity.
+     *    2. Observation timestamp and freshness verification (monotonic, bounded staleness).
+     *    3. Cryptographic attestation verified against a trusted authority with replay protection.
+     *    Because no authoritative live-health attestation infrastructure exists in the backend adapter,
+     *    any supplied unverified or unauthenticated live health signal must be rejected.
+     *    Therefore, when cryptographic integrity is verified, operational readiness strictly remains NOT ESTABLISHED.
      * D. Evidence Completeness: Can the system establish that all relevant actions were captured?
      *
      * State Evaluation Rules:
      * 1. BLOCKED: Positive cryptographic integrity failure (CORRUPTED) detected in either required store.
-     * 2. UNVERIFIED / NOT ESTABLISHED:
-     *    - When cryptographic integrity is corrupted, system state is BLOCKED.
-     *    - When audit or provenance stores are unavailable, unverified, or unreadable -> UNVERIFIED.
-     *    - When both required integrity sources are VERIFIED, but no authoritative live-health signal is configured,
-     *      operational readiness is NOT ESTABLISHED.
-     * 3. READY: Permitted ONLY if an authoritative live runtime health contract is verified, fresh, and healthy,
-     *    in addition to verified cryptographic integrity. Clean historical logs alone cannot assert READY.
+     * 2. UNVERIFIED: Required integrity evidence is missing, unreadable, or incomplete.
+     * 3. NOT ESTABLISHED: Cryptographic integrity is verified, but authoritative live runtime health attestation
+     *    is not established. (READY is strictly prevented in the absence of verified attestation infrastructure).
      *
      * Returns: { state: string, reason: string, details: object }
      */
@@ -596,7 +596,7 @@ document.addEventListener('DOMContentLoaded', () => {
       const sf = data.status_flags || {};
       const ai = data.audit_integrity || {};
       const pi = data.provenance_integrity || {};
-      const liveHealth = data.live_runtime_health; // Optional authoritative live signal
+      const liveHealth = data.live_runtime_health;
 
       const auditStatus = (ai.status || 'UNAVAILABLE').toUpperCase();
       const provStatus = (pi.status || 'UNAVAILABLE').toUpperCase();
@@ -644,54 +644,21 @@ document.addEventListener('DOMContentLoaded', () => {
       }
 
       // Dimension C: Current Operational Health Evaluation
-      // Both integrity sources are VERIFIED. However, historical logs alone cannot establish live runtime readiness.
-      // Minimum contract requirements to accept live runtime health signal:
-      // 1. Must be a non-null object with an authoritative source (e.g., watchdog/supervisor).
-      // 2. An arbitrary object like { status: 'HEALTHY' } without attestation authority is rejected.
-      const hasAuthoritativeContract = liveHealth &&
-                                       typeof liveHealth === 'object' &&
-                                       typeof liveHealth.source === 'string' &&
-                                       liveHealth.source.trim().length > 0;
-
-      if (!hasAuthoritativeContract) {
-        return {
-          state: 'NOT ESTABLISHED',
-          reason: 'Cryptographic integrity verified, but live runtime operational health signal is not established',
-          details: { auditStatus, provStatus, liveHealth: liveHealth ? 'UNAUTHORITATIVE' : 'NOT_CONFIGURED' }
-        };
-      }
-
-      const liveStatus = (liveHealth.status || '').toUpperCase();
-      if (liveStatus === 'READY' || liveStatus === 'HEALTHY') {
-        return {
-          state: 'READY',
-          reason: `Cryptographic integrity verified and live runtime health confirmed by ${liveHealth.source}`,
-          details: { auditStatus, provStatus, liveHealth }
-        };
-      } else if (liveStatus === 'DEGRADED') {
-        return {
-          state: 'DEGRADED',
-          reason: liveHealth.reason || `Live runtime health signal from ${liveHealth.source} reports degraded condition`,
-          details: { auditStatus, provStatus, liveHealth }
-        };
-      } else if (liveStatus === 'HALTED') {
-        return {
-          state: 'HALTED',
-          reason: liveHealth.reason || `Live runtime health signal from ${liveHealth.source} reports active halt`,
-          details: { auditStatus, provStatus, liveHealth }
-        };
-      } else if (liveStatus === 'BLOCKED') {
-        return {
-          state: 'BLOCKED',
-          reason: liveHealth.reason || `Live runtime health signal from ${liveHealth.source} reports active blockage`,
-          details: { auditStatus, provStatus, liveHealth }
-        };
+      // Both integrity sources are VERIFIED.
+      // Strict Trust Boundary:
+      // The current backend adapter does not provide an authenticated live-health attestation infrastructure.
+      // A caller-controlled source string, unverified timestamp, or unsigned/mock object is NOT proof
+      // of supervisory authority and cannot establish READY.
+      // In the absence of an authenticated live-health attestation authority, reject the signal and retain NOT ESTABLISHED.
+      let liveHealthDetail = 'NOT_CONFIGURED';
+      if (liveHealth !== undefined && liveHealth !== null) {
+        liveHealthDetail = 'UNAUTHENTICATED_SIGNAL_REJECTED';
       }
 
       return {
-        state: 'UNVERIFIED',
-        reason: `Live runtime operational health unverified (status: ${liveStatus || 'UNKNOWN'})`,
-        details: { auditStatus, provStatus, liveHealth }
+        state: 'NOT ESTABLISHED',
+        reason: 'Cryptographic integrity verified, but authoritative live runtime operational health attestation is not established',
+        details: { auditStatus, provStatus, liveHealth: liveHealthDetail }
       };
     },
 

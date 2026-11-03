@@ -177,31 +177,47 @@ def test_system_state_epistemic_separation_and_live_contract(live_server):
         }
         res_no_live = page.evaluate("(d) => window.ObservatoryApp.deriveSystemState(d)", d_verified_no_live)
         assert res_no_live["state"] == "NOT ESTABLISHED"
-        assert "live runtime operational health signal is not established" in res_no_live["reason"]
-
-        # Normal adapter/API response cannot produce READY in the absence of an authoritative source
+        assert "authoritative live runtime operational health attestation is not established" in res_no_live["reason"]
         assert res_no_live["state"] != "READY"
 
-        # Arbitrary object like {"status": "HEALTHY"} WITHOUT authoritative source is rejected -> NOT ESTABLISHED
-        d_unauthoritative = {
-            **d_verified_no_live,
-            "live_runtime_health": {"status": "HEALTHY"}  # Missing authoritative source
-        }
-        res_unauth = page.evaluate("(d) => window.ObservatoryApp.deriveSystemState(d)", d_unauthoritative)
-        assert res_unauth["state"] == "NOT ESTABLISHED"
-        assert res_unauth["state"] != "READY"
-        assert res_unauth["details"]["liveHealth"] == "UNAUTHORITATIVE"
-
-        # An authoritative live runtime health contract WITH verified source can assert READY
-        d_authoritative = {
+        # --- Negative Tests for Live Health Trust Boundary ---
+        # 1. A source string plus HEALTHY is insufficient to produce READY
+        d_source_string = {
             **d_verified_no_live,
             "live_runtime_health": {"status": "HEALTHY", "source": "systemd_watchdog_supervisor"}
         }
-        res_auth = page.evaluate("(d) => window.ObservatoryApp.deriveSystemState(d)", d_authoritative)
-        assert res_auth["state"] == "READY"
-        assert "systemd_watchdog_supervisor" in res_auth["reason"]
+        res_source = page.evaluate("(d) => window.ObservatoryApp.deriveSystemState(d)", d_source_string)
+        assert res_source["state"] == "NOT ESTABLISHED"
+        assert res_source["state"] != "READY"
+        assert res_source["details"]["liveHealth"] == "UNAUTHENTICATED_SIGNAL_REJECTED"
 
-        # Historical counters do NOT falsely induce BLOCKED, HALTED, or DEGRADED
+        # 2. A stale timestamp is insufficient to produce READY
+        d_stale = {
+            **d_verified_no_live,
+            "live_runtime_health": {
+                "status": "HEALTHY",
+                "source": "supervisor",
+                "observed_at": "2020-01-01T00:00:00Z"
+            }
+        }
+        res_stale = page.evaluate("(d) => window.ObservatoryApp.deriveSystemState(d)", d_stale)
+        assert res_stale["state"] == "NOT ESTABLISHED"
+        assert res_stale["state"] != "READY"
+
+        # 3. An unsigned or invalidly signed attestation is insufficient to produce READY
+        d_unsigned = {
+            **d_verified_no_live,
+            "live_runtime_health": {
+                "status": "HEALTHY",
+                "source": "supervisor",
+                "signature": "invalid_or_untrusted_signature"
+            }
+        }
+        res_unsigned = page.evaluate("(d) => window.ObservatoryApp.deriveSystemState(d)", d_unsigned)
+        assert res_unsigned["state"] == "NOT ESTABLISHED"
+        assert res_unsigned["state"] != "READY"
+
+        # 4. Historical counters do NOT falsely induce BLOCKED, HALTED, or DEGRADED
         d_hist_failure = {
             **d_verified_no_live,
             "metrics": {**d_verified_no_live["metrics"], "execution_failures": 5}
@@ -216,9 +232,9 @@ def test_system_state_epistemic_separation_and_live_contract(live_server):
         res_hist_halt = page.evaluate("(d) => window.ObservatoryApp.deriveSystemState(d)", d_hist_halt)
         assert res_hist_halt["state"] == "NOT ESTABLISHED"
 
-        # Cryptographic integrity corruption evaluates to BLOCKED
+        # 5. Cryptographic integrity corruption evaluates to BLOCKED
         d_corrupt = {
-            **d_authoritative,
+            **d_verified_no_live,
             "audit_integrity": {"status": "CORRUPTED"}
         }
         res_corrupt = page.evaluate("(d) => window.ObservatoryApp.deriveSystemState(d)", d_corrupt)
