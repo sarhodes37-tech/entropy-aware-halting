@@ -267,7 +267,10 @@ class SideEffectPolicyEngine:
         if secret is None:
             return None
         if isinstance(secret, str):
-            b = secret.encode("utf-8")
+            try:
+                b = secret.encode("utf-8")
+            except UnicodeEncodeError:
+                return None
         elif isinstance(secret, (bytes, bytearray)):
             b = bytes(secret)
         else:
@@ -353,29 +356,34 @@ class SideEffectPolicyEngine:
         if record.policy_version != expected_policy_version:
             return False, f"Approval policy version mismatch: expected '{expected_policy_version}', got '{record.policy_version}'"
 
-        # Expiration check: validate numeric finite expiration timestamp
-        if record.expires_at is not None:
-            if not isinstance(record.expires_at, (int, float)) or isinstance(record.expires_at, bool):
-                try:
-                    exp_val = float(record.expires_at)
-                except (ValueError, TypeError):
-                    return False, "Approval record expiration is malformed"
-            else:
-                exp_val = float(record.expires_at)
+        # Validate effective clock
+        if current_time is not None:
+            if not isinstance(current_time, (int, float)) or isinstance(current_time, bool):
+                return False, "Invalid current_time clock override"
+            if not math.isfinite(current_time):
+                return False, "Invalid current_time clock override: non-finite value"
+            now = float(current_time)
+        else:
+            now = time.time()
 
+        # Expiration check: strictly require numeric finite int or float without string coercion
+        if record.expires_at is not None:
+            is_valid_type = isinstance(record.expires_at, (int, float)) and not isinstance(
+                record.expires_at, bool
+            )
+            if not is_valid_type:
+                return False, "Approval record expiration is malformed"
+            exp_val = float(record.expires_at)
             if not math.isfinite(exp_val):
                 return False, "Approval record expiration is non-finite"
-
-            now = current_time if current_time is not None else time.time()
             if now >= exp_val:
                 return False, "Approval record expired"
 
-        # Validate signature format (64-character hexadecimal string)
-        if not record.signature or not isinstance(record.signature, str) or len(record.signature) != 64:
+        # Validate signature format: strictly exactly 64 ASCII hex characters
+        if not isinstance(record.signature, str) or len(record.signature) != 64:
             return False, "Approval signature format invalid"
-        try:
-            int(record.signature, 16)
-        except ValueError:
+        _HEX_CHARS = frozenset("0123456789abcdefABCDEF")
+        if any(c not in _HEX_CHARS for c in record.signature):
             return False, "Approval signature is not valid hex"
 
         # Verify signature using HMAC-SHA256 and constant-time comparison

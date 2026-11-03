@@ -499,8 +499,20 @@ class TestSideEffectPolicyEngineInvariants:
         payload = {"action": "clean"}
         digest = engine.compute_canonical_digest(payload)
 
-        # 1. Signature format invalid (too short, too long, non-hex, None)
-        for bad_sig in ["short", "0" * 63, "0" * 65, "z" * 64, None, 12345]:
+        # 1. Signature format invalid (unicode lookalikes, whitespace, sign, etc.)
+        for bad_sig in [
+            "short",
+            "0" * 63,
+            "0" * 65,
+            "z" * 64,
+            None,
+            12345,
+            " " * 64,
+            " " + "0" * 63,
+            "+" + "0" * 63,
+            "-\x00" * 32,
+            "\uff10" * 64,  # full-width unicode zero
+        ]:
             record = TypedHumanApprovalRecord(
                 approval_id="APP-BAD-SIG",
                 operation_id="package_publish",
@@ -522,8 +534,17 @@ class TestSideEffectPolicyEngineInvariants:
             assert valid is False
             assert "Approval signature" in msg
 
-        # 2. Malformed expires_at (string, NaN, Inf, -Inf)
-        for bad_exp in ["tomorrow", float("nan"), float("inf"), float("-inf")]:
+        # 2. Malformed expires_at (strings, booleans, NaN, Inf, -Inf)
+        bad_exp_list = [
+            "tomorrow",
+            "1234567890",
+            True,
+            False,
+            float("nan"),
+            float("inf"),
+            float("-inf"),
+        ]
+        for bad_exp in bad_exp_list:
             record = TypedHumanApprovalRecord(
                 approval_id="APP-BAD-EXP",
                 operation_id="package_publish",
@@ -545,3 +566,79 @@ class TestSideEffectPolicyEngineInvariants:
             )
             assert valid is False
             assert "Approval record expiration" in msg
+
+    def test_current_time_clock_override_validation(self):
+        """Validates that current_time override strictly rejects non-finite/malformed inputs."""
+        engine = SideEffectPolicyEngine(signing_secret="TEST_SECRET")
+        payload = {"action": "build"}
+        digest = engine.compute_canonical_digest(payload)
+        expires_at = 1000.0
+
+        sig = engine.compute_approval_signature((
+            "APP-CLOCK", "package_publish", "https://example.com",
+            digest, "TASK-1", "1.0.0", "admin", str(expires_at)
+        ))
+        record = TypedHumanApprovalRecord(
+            approval_id="APP-CLOCK",
+            operation_id="package_publish",
+            target_resource="https://example.com",
+            canonical_args_digest=digest,
+            task_id="TASK-1",
+            policy_version="1.0.0",
+            approved_by_principal="admin",
+            timestamp="2026-01-01T00:00:00Z",
+            signature=sig,
+            expires_at=expires_at,
+        )
+
+        # Genuinely expired under valid clock
+        valid, msg = engine.verify_approval_record(
+            record=record,
+            expected_operation_id="package_publish",
+            expected_target="https://example.com",
+            expected_payload=payload,
+            expected_task_id="TASK-1",
+            current_time=2000.0,
+        )
+        assert valid is False
+        assert "Approval record expired" in msg
+
+        # Valid non-expired under valid clock
+        valid, msg = engine.verify_approval_record(
+            record=record,
+            expected_operation_id="package_publish",
+            expected_target="https://example.com",
+            expected_payload=payload,
+            expected_task_id="TASK-1",
+            current_time=500.0,
+        )
+        assert valid is True
+        assert msg == "Approval record validated"
+
+        # Adversarial current_time inputs cannot bypass expiration
+        for bad_clock in [
+            float("nan"),
+            float("inf"),
+            float("-inf"),
+            True,
+            False,
+            "12345",
+            "now",
+            [12345],
+        ]:
+            valid, msg = engine.verify_approval_record(
+                record=record,
+                expected_operation_id="package_publish",
+                expected_target="https://example.com",
+                expected_payload=payload,
+                expected_task_id="TASK-1",
+                current_time=bad_clock,  # type: ignore
+            )
+            assert valid is False
+            assert "Invalid current_time clock override" in msg
+
+    def test_secret_normalization_surrogate_content_fails_closed(self):
+        """Validates that strings with unencodable surrogate code points fail closed."""
+        surrogate_str = "secret\ud800key"
+        engine = SideEffectPolicyEngine(signing_secret=surrogate_str)
+        assert engine.signing_secret is None
