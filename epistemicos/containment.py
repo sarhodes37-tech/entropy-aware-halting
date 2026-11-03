@@ -179,6 +179,11 @@ def parse_url_authority_structure(target_url_or_host: str, default_protocol: str
     if "#" in unquoted_netloc:
         return {"scheme": scheme, "port": eff_default_port, "normalized_host": "", "valid": False}
 
+    # Reject decoded whitespace and C0 control characters (e.g., %20, %09, %0A, %0D, %0B, %0C, %00)
+    # in the authority structure prior to any trimming or normalization.
+    if any(c.isspace() or ord(c) < 32 or ord(c) == 127 for c in unquoted_netloc):
+        return {"scheme": scheme, "port": eff_default_port, "normalized_host": "", "valid": False}
+
     if "@" in unquoted_netloc:
         host_port = unquoted_netloc.rsplit("@", 1)[1]
     else:
@@ -203,7 +208,11 @@ def parse_url_authority_structure(target_url_or_host: str, default_protocol: str
     else:
         host_part = host_port
 
-    host_clean = host_part.strip().lower()
+    # Disallow silent trimming/repairing via .strip() on host_part
+    if host_part != host_part.strip():
+        return {"scheme": scheme, "port": port, "normalized_host": "", "valid": False}
+
+    host_clean = host_part.lower()
     if host_clean.endswith(".") and len(host_clean) > 1:
         host_clean = host_clean[:-1]
 

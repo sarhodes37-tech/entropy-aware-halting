@@ -338,7 +338,12 @@ def normalize_target_scope(raw_target: str) -> str:
     str_target = str_raw
     if "://" in str_target:
         parsed = urlparse(str_target)
-        netloc = parsed.netloc.lower() if parsed.netloc else ""
+        raw_netloc = parsed.netloc or ""
+        unquoted_netloc = unquote(raw_netloc)
+        # Reject decoded whitespace and C0 control characters in authority
+        if any(c.isspace() or ord(c) < 32 or ord(c) == 127 for c in unquoted_netloc):
+            raise ValueError(f"Malformed target resource contains decoded whitespace or control characters in authority: {raw_target!r}")
+        netloc = unquoted_netloc.lower()
         raw_path = parsed.path or "/"
     else:
         netloc = ""

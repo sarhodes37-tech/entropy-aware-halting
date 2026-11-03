@@ -23,7 +23,6 @@ Covers:
 """
 
 import sys
-import unittest.mock
 from unittest.mock import patch
 import ipaddress
 import pytest
@@ -36,10 +35,7 @@ from epistemicos.containment import (
     EgressPolicy,
     ContainmentGuard,
     MAX_IPV4_NUMERIC_STR_LEN,
-    MAX_IPV4_PART_STR_LEN,
     MAX_URL_INPUT_LEN,
-    MAX_DNS_HOSTNAME_LEN,
-    MAX_DNS_LABEL_LEN,
 )
 from epistemicos.authorization import normalize_target_scope
 
@@ -279,12 +275,60 @@ def test_rejected_idna_hostname_cannot_pass_egress_policy_or_guard():
     "http://exa\nmple.com",
     "http://exa\rmple.com",
     "http://example.com:80\r\n/path",
+    # Percent-encoded whitespace and C0 control characters in authority
+    "http://%20example.com/api",
+    "http://example.com%20/api",
+    "http://example%20.com/api",
+    "http://%09example.com/api",
+    "http://example.com%09/api",
+    "http://%0Aexample.com/api",
+    "http://example.com%0A/api",
+    "http://%0Dexample.com/api",
+    "http://example.com%0D/api",
+    "http://%0Bexample.com/api",
+    "http://example.com%0B/api",
+    "http://%0Cexample.com/api",
+    "http://example.com%0C/api",
+    "http://%00example.com/api",
+    "http://example.com%00/api",
+    "http://exa%00mple.com/api",
 ])
 def test_parse_url_authority_structure_rejects_embedded_whitespace_and_control_chars(malformed_url):
-    """Verifies that URLs containing leading/trailing whitespace, control characters, tabs, or newlines are rejected."""
+    """Verifies that URLs containing raw or percent-encoded whitespace/C0 control characters in authority are rejected."""
     res = parse_url_authority_structure(malformed_url)
     assert res["valid"] is False
     assert res["normalized_host"] == ""
+
+
+@pytest.mark.parametrize("encoded_auth_url", [
+    "http://%20example.com/api",
+    "http://example.com%20/api",
+    "http://%09example.com/api",
+    "http://example.com%09/api",
+    "http://%0Aexample.com/api",
+    "http://example.com%0A/api",
+    "http://%0Dexample.com/api",
+    "http://example.com%0D/api",
+    "http://%0Bexample.com/api",
+    "http://example.com%0B/api",
+    "http://%0Cexample.com/api",
+    "http://example.com%0C/api",
+    "http://%00example.com/api",
+    "http://example.com%00/api",
+])
+def test_encoded_authority_whitespace_cannot_pass_egress_policy_or_guard(encoded_auth_url):
+    """Verifies that percent-encoded whitespace/control characters in authority produce no normalized host and fail closed in EgressPolicy and ContainmentGuard."""
+    assert normalize_destination_host(encoded_auth_url) == ""
+
+    policy = EgressPolicy(allowed_destinations={"example.com", "*"})
+    allowed, msg = policy.is_destination_allowed(encoded_auth_url)
+    assert allowed is False
+    assert "could not be normalized" in msg
+
+    guard = ContainmentGuard(allowed_egress_domains=["example.com", "*"])
+    receipt = guard.inspect_network_egress(encoded_auth_url)
+    assert receipt.passed is False
+    assert "Missing or invalid target hostname" in receipt.reason
 
 
 @pytest.mark.parametrize("malformed_target", [
@@ -332,7 +376,6 @@ def test_malformed_target_fails_closed_in_authorization_and_fencing(tmp_path):
        (in-memory store capability state remains unmodified; persistent store
        journal file lines and content remain byte-for-byte identical).
     """
-    import os
     from epistemicos.authorization import (
         canonicalize_fencing_scope,
         InMemoryAuthorizationStore,
@@ -378,8 +421,12 @@ def test_malformed_target_fails_closed_in_authorization_and_fencing(tmp_path):
                 journal_lines_baseline = jf.readlines()
             assert len(journal_lines_baseline) == 1
         else:
-            in_mem_caps_baseline = len(store._capabilities)
-            assert in_mem_caps_baseline == 1
+            in_mem_caps_baseline = {
+                k: v.to_dict() if hasattr(v, "to_dict") else dict(v)
+                for k, v in store._capabilities.items()
+            }
+            assert len(in_mem_caps_baseline) == 1
+            assert root_cap.token_id in in_mem_caps_baseline
 
         # 2. Attempt issuance using malformed targets (whitespace, control chars, percent-encoded controls, empty, non-string)
         for malformed in [
@@ -390,6 +437,9 @@ def test_malformed_target_fails_closed_in_authorization_and_fencing(tmp_path):
             "/root/%00malformed",
             "/root/%0Amalformed",
             "/root/%0Dmalformed",
+            "http://%20example.com/api",
+            "http://example.com%20/api",
+            "http://%00example.com/api",
             "",
             None,
             123,
@@ -405,20 +455,24 @@ def test_malformed_target_fails_closed_in_authorization_and_fencing(tmp_path):
             except ValueError:
                 pass  # Raising ValueError also correctly fails closed
 
-        # Assert that rejected operations appended no journal records
+        # Assert that rejected operations appended no journal records or mutated in-memory capabilities
         if isinstance(store, FileAuthorizationStore):
             with open(journal_path, "r", encoding="utf-8") as jf:
                 journal_lines_after_issuance = jf.readlines()
             assert len(journal_lines_after_issuance) == len(journal_lines_baseline)
             assert journal_lines_after_issuance == journal_lines_baseline
         else:
-            assert len(store._capabilities) == in_mem_caps_baseline
+            in_mem_caps_after_issuance = {
+                k: v.to_dict() if hasattr(v, "to_dict") else dict(v)
+                for k, v in store._capabilities.items()
+            }
+            assert in_mem_caps_after_issuance == in_mem_caps_baseline
 
         # 3. Assert root fencing generation did not advance and root scope token is still 1
         assert store.get_scope_fencing_token(root_scope) == 1
 
         # 4. Attempt verification using malformed targets against root capability -> must be rejected
-        for malformed in ["/\x00malformed", "/%00malformed", "/root\t"]:
+        for malformed in ["/\x00malformed", "/%00malformed", "/root\t", "http://%20example.com/api"]:
             ok, v_reason, cap_ret = authority.verify_capability(
                 token_id=root_cap.token_id,
                 action_name="read_root",
@@ -437,7 +491,11 @@ def test_malformed_target_fails_closed_in_authorization_and_fencing(tmp_path):
             assert len(journal_lines_after_verify) == len(journal_lines_baseline)
             assert journal_lines_after_verify == journal_lines_baseline
         else:
-            assert len(store._capabilities) == in_mem_caps_baseline
+            in_mem_caps_after_verify = {
+                k: v.to_dict() if hasattr(v, "to_dict") else dict(v)
+                for k, v in store._capabilities.items()
+            }
+            assert in_mem_caps_after_verify == in_mem_caps_baseline
 
         # 5. Precomputed scope key spoofing: attempting to register an external capability with spoofed root scope_key
         spoofed_cap = Capability(
@@ -467,4 +525,8 @@ def test_malformed_target_fails_closed_in_authorization_and_fencing(tmp_path):
             assert len(journal_lines_final) == len(journal_lines_baseline)
             assert journal_lines_final == journal_lines_baseline
         else:
-            assert len(store._capabilities) == in_mem_caps_baseline
+            in_mem_caps_final = {
+                k: v.to_dict() if hasattr(v, "to_dict") else dict(v)
+                for k, v in store._capabilities.items()
+            }
+            assert in_mem_caps_final == in_mem_caps_baseline
