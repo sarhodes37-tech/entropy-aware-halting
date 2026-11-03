@@ -1332,6 +1332,11 @@ document.addEventListener('DOMContentLoaded', () => {
           }
           this.switchTab('provenance');
           this.renderProvenanceRecordList();
+          this.announce(`Navigated to Provenance Explorer (Filtered: ${trace.correlation_id})`);
+          if (provSearchInput) {
+            provSearchInput.focus();
+            provSearchInput.select();
+          }
         });
         actionBtnGroup.appendChild(provBtn);
       }
