@@ -67,78 +67,125 @@
       <main id="main-content" class="main-content" tabindex="-1">
         <!-- View 1: Overview -->
         <section id="view-overview" class="view-panel active" role="tabpanel" aria-labelledby="tab-overview" tabindex="0">
-          <div class="panel-header">
-            <h2>System Executive Overview</h2>
-            <div class="header-actions">
-              <span id="overview-last-updated" class="last-updated-text" aria-live="polite"></span>
-              <button id="btn-refresh-overview" type="button" class="btn-refresh" aria-label="Refresh overview metrics" title="Refresh overview metrics"><span class="refresh-icon" aria-hidden="true">🔄</span> Refresh</button>
-            </div>
-          </div>
-
-          <!-- Execution Summary Metrics Grid -->
-          <div class="metrics-grid">
-            <div class="metric-card primary">
-              <div class="metric-label">Total Executions</div>
-              <div class="metric-value" id="metric-total-executions">--</div>
-              <div class="metric-subtext" id="subtext-total-executions">Source: LocalProvenanceStore • Window: Full Log History</div>
-            </div>
-            <div class="metric-card danger">
-              <div class="metric-label">Authorization Denials</div>
-              <div class="metric-value text-danger" id="metric-denials">--</div>
-              <div class="metric-subtext">Source: TamperEvidentAuditTrail • Scope: Access Rejections</div>
-            </div>
-            <div class="metric-card warning">
-              <div class="metric-label">Policy Halts</div>
-              <div class="metric-value text-warning" id="metric-halts">--</div>
-              <div class="metric-subtext">Source: TamperEvidentAuditTrail • Scope: Gate &amp; Egress Halts</div>
-            </div>
-            <div class="metric-card danger">
-              <div class="metric-label">Execution Failures</div>
-              <div class="metric-value text-danger" id="metric-failures">--</div>
-              <div class="metric-subtext">Source: TamperEvidentAuditTrail • Scope: Runtime Exceptions</div>
-            </div>
-            <div class="metric-card warning">
-              <div class="metric-label">Parse Errors</div>
-              <div class="metric-value text-warning" id="metric-parse-errors">--</div>
-              <div class="metric-subtext">Source: TamperEvidentAuditTrail • Scope: Malformed Payloads</div>
-            </div>
-          </div>
-
-          <!-- Evidence & Integrity Status -->
-          <div class="section-grid mb-1">
-            <div class="card">
-              <div class="card-header">
-                <span>Audit Trail Verification</span>
-                <span id="audit-data-availability" class="status-badge status-badge-unknown">AVAILABILITY: CHECKING</span>
+          <!-- A. Compact Operational Status Header -->
+          <header class="ops-system-header" aria-label="System Operational Status">
+            <div class="ops-header-main">
+              <div class="ops-title-cluster">
+                <span class="ops-terminal-label">OP-INTEL // CONTROL PLANE</span>
+                <h2 class="ops-view-heading">System Executive Overview</h2>
               </div>
-              <h3>Audit Log Health &amp; Chain Integrity</h3>
-              <div id="audit-integrity-status" class="status-block">Loading...</div>
-            </div>
-            <div class="card">
-              <div class="card-header">
-                <span>Provenance Verification</span>
-                <span id="provenance-data-availability" class="status-badge status-badge-unknown">AVAILABILITY: CHECKING</span>
+              <div class="ops-state-strip">
+                <div class="ops-state-indicator">
+                  <span class="ops-kicker">SYSTEM STATE</span>
+                  <span id="overview-system-state" class="status-badge status-badge-unknown">CHECKING...</span>
+                </div>
+                <div class="ops-state-indicator" title="Total cumulative exceptions recorded across all local logs (LocalProvenanceStore & TamperEvidentAuditTrail). Live active incidents are not tracked.">
+                  <span class="ops-kicker">CUMULATIVE EXCEPTIONS</span>
+                  <span id="overview-incident-count" class="ops-indicator-val font-mono" aria-label="Cumulative Exceptions">--</span>
+                </div>
+                <div class="ops-state-indicator desktop-telemetry-meta">
+                  <span class="ops-kicker">RUNTIME ENV</span>
+                  <span class="ops-indicator-text font-mono">POSIX / READ-ONLY</span>
+                </div>
               </div>
-              <h3>Provenance Store Chain Integrity</h3>
-              <div id="provenance-integrity-status" class="status-block">Loading...</div>
             </div>
-          </div>
+            <div class="ops-header-telemetry">
+              <div class="ops-telemetry-item">
+                <span class="ops-kicker">LAST TELEMETRY UPDATE</span>
+                <span id="overview-last-updated" class="last-updated-text font-mono" aria-live="polite">Updating...</span>
+              </div>
+              <button id="btn-refresh-overview" type="button" class="btn-refresh ops-btn-compact" aria-label="Refresh overview metrics" title="Refresh overview metrics">
+                <span class="refresh-icon" aria-hidden="true">🔄</span> Refresh
+              </button>
+            </div>
+          </header>
 
-          <!-- Recent Execution Traces -->
-          <div class="card mb-1">
-            <div class="card-header">
-              <span>Recent Execution Traces</span>
-              <span class="subtitle font-mono">Source: LocalProvenanceStore &amp; Audit Trail</span>
+          <!-- B. Key Operational Metrics Bar -->
+          <section class="ops-metrics-strip" aria-label="Key Operational Metrics">
+            <div class="metrics-grid ops-metrics-grid">
+              <div class="metric-card ops-metric-item primary">
+                <div class="ops-metric-meta">
+                  <span class="metric-label">Historical Executions</span>
+                  <span class="ops-metric-unit">execs</span>
+                </div>
+                <div class="metric-value" id="metric-total-executions">--</div>
+                <div class="metric-subtext" id="subtext-total-executions">LocalProvenanceStore • All History</div>
+              </div>
+
+              <div class="metric-card ops-metric-item danger">
+                <div class="ops-metric-meta">
+                  <span class="metric-label">Historical Denials</span>
+                  <span class="ops-metric-unit">denied</span>
+                </div>
+                <div class="metric-value text-danger" id="metric-denials">--</div>
+                <div class="metric-subtext">AuditTrail • Recorded Rejections</div>
+              </div>
+
+              <div class="metric-card ops-metric-item warning">
+                <div class="ops-metric-meta">
+                  <span class="metric-label">Historical Halts</span>
+                  <span class="ops-metric-unit">halts</span>
+                </div>
+                <div class="metric-value text-warning" id="metric-halts">--</div>
+                <div class="metric-subtext">AuditTrail • Recorded Boundary Halts</div>
+              </div>
+
+              <div class="metric-card ops-metric-item danger">
+                <div class="ops-metric-meta">
+                  <span class="metric-label">Historical Failures</span>
+                  <span class="ops-metric-unit">fails</span>
+                </div>
+                <div class="metric-value text-danger" id="metric-failures">--</div>
+                <div class="metric-subtext">AuditTrail • Recorded Failures</div>
+              </div>
+
+              <div class="metric-card ops-metric-item warning">
+                <div class="ops-metric-meta">
+                  <span class="metric-label">Log Parse Errors</span>
+                  <span class="ops-metric-unit">errs</span>
+                </div>
+                <div class="metric-value text-warning" id="metric-parse-errors">--</div>
+                <div class="metric-subtext">Audit &amp; Prov • Malformed Lines</div>
+              </div>
             </div>
-            <div id="overview-recent-traces-container" class="table-responsive" tabindex="0" role="region" aria-label="Recent Execution Traces table scrollable region">
-              <table class="data-table" aria-label="Recent Execution Traces">
+          </section>
+
+          <!-- C. Operational Event Stream (Recent Traces) -->
+          <section class="ops-panel-card mb-1" aria-label="Operational Event Stream">
+            <div class="card-header ops-section-header">
+              <div class="ops-header-title-group">
+                <span class="ops-section-title">Operational Event Stream</span>
+                <span class="ops-source-label font-mono">Source: LocalProvenanceStore &amp; Audit Trail</span>
+              </div>
+              <div class="ops-filter-shortcuts" aria-label="Investigation Filters">
+                <span class="ops-shortcut-caption">FILTER STREAM:</span>
+                <button type="button" class="quick-entry-btn ops-chip" data-jump-tab="traces" data-filter="DENIED" aria-label="View Denied Requests">
+                  <span>Denials</span>
+                  <span class="arrow" aria-hidden="true">➔</span>
+                </button>
+                <button type="button" class="quick-entry-btn ops-chip" data-jump-tab="traces" data-filter="HALTED" aria-label="View Policy Halts">
+                  <span>Halts</span>
+                  <span class="arrow" aria-hidden="true">➔</span>
+                </button>
+                <button type="button" class="quick-entry-btn ops-chip" data-jump-tab="traces" data-filter="FAILED" aria-label="View Execution Failures">
+                  <span>Failures</span>
+                  <span class="arrow" aria-hidden="true">➔</span>
+                </button>
+                <button type="button" class="quick-entry-btn ops-chip" data-jump-tab="traces" data-filter="OUTCOME_UNKNOWN" aria-label="View Unknown Outcomes">
+                  <span>Unknown</span>
+                  <span class="arrow" aria-hidden="true">➔</span>
+                </button>
+              </div>
+            </div>
+            <div id="overview-recent-traces-container" class="table-responsive ops-stream-table-wrap" tabindex="0" role="region" aria-label="Recent Execution Traces table scrollable region">
+              <table class="data-table ops-data-table" aria-label="Recent Execution Traces">
                 <thead>
                   <tr>
                     <th scope="col">Correlation ID</th>
                     <th scope="col">Action</th>
                     <th scope="col">Target</th>
                     <th scope="col">Status</th>
-                    <th scope="col">Start Time</th>
+                    <th scope="col">Timestamp</th>
                   </tr>
                 </thead>
                 <tbody id="overview-recent-traces">
@@ -148,33 +195,33 @@
                 </tbody>
               </table>
             </div>
-          </div>
+          </section>
 
-          <!-- Investigation Entry Points -->
-          <div class="card">
-            <div class="card-header">Investigative Shortcuts &amp; Entry Points</div>
-            <p class="text-muted" style="font-size: 0.85rem; margin-bottom: 0.75rem;">
-              Direct navigation to filtered execution traces based on security and operational outcome classification.
-            </p>
-            <div class="quick-entry-grid">
-              <button type="button" class="quick-entry-btn" data-jump-tab="traces" data-filter="DENIED" aria-label="View Denied Requests">
-                <span>Inspect Denials</span>
-                <span class="arrow" aria-hidden="true">➔</span>
-              </button>
-              <button type="button" class="quick-entry-btn" data-jump-tab="traces" data-filter="HALTED" aria-label="View Policy Halts">
-                <span>Inspect Policy Halts</span>
-                <span class="arrow" aria-hidden="true">➔</span>
-              </button>
-              <button type="button" class="quick-entry-btn" data-jump-tab="traces" data-filter="FAILED" aria-label="View Execution Failures">
-                <span>Inspect Failures</span>
-                <span class="arrow" aria-hidden="true">➔</span>
-              </button>
-              <button type="button" class="quick-entry-btn" data-jump-tab="traces" data-filter="OUTCOME_UNKNOWN" aria-label="View Unknown Outcomes">
-                <span>Inspect Unknown Outcomes</span>
-                <span class="arrow" aria-hidden="true">➔</span>
-              </button>
+          <!-- D. Evidence & Integrity Telemetry -->
+          <section class="ops-panel-card" aria-label="Chain Verification & Evidence Integrity">
+            <div class="card-header ops-section-header">
+              <div class="ops-header-title-group">
+                <span class="ops-section-title">Evidence &amp; Chain Integrity Telemetry</span>
+                <span class="ops-source-label font-mono">Continuous Cryptographic Verification</span>
+              </div>
             </div>
-          </div>
+            <div class="ops-integrity-grid">
+              <div class="ops-integrity-cell">
+                <div class="ops-cell-header">
+                  <span class="ops-cell-title">Audit Trail Verification</span>
+                  <span id="audit-data-availability" class="status-badge status-badge-unknown">AVAILABILITY: CHECKING</span>
+                </div>
+                <div id="audit-integrity-status" class="status-block ops-status-block">Loading...</div>
+              </div>
+              <div class="ops-integrity-cell">
+                <div class="ops-cell-header">
+                  <span class="ops-cell-title">Provenance Verification</span>
+                  <span id="provenance-data-availability" class="status-badge status-badge-unknown">AVAILABILITY: CHECKING</span>
+                </div>
+                <div id="provenance-integrity-status" class="status-block ops-status-block">Loading...</div>
+              </div>
+            </div>
+          </section>
         </section>
 
         <!-- View 2: Execution Trace Explorer -->

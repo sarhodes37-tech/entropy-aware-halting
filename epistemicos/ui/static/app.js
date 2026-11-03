@@ -433,6 +433,235 @@ document.addEventListener('DOMContentLoaded', () => {
       return 'UNAVAILABLE';
     },
 
+    // -------------------------------------------------------------------------
+    // Pure Telemetry Validation & State Derivation Functions
+    // -------------------------------------------------------------------------
+    /**
+     * Normalizes a metric value.
+     * Rejects booleans, NaN, Infinity, negative numbers, objects, arrays, and malformed strings.
+     * Returns: { status: 'VALID' | 'UNAVAILABLE' | 'INVALID', value: number | null }
+     */
+    normalizeMetricValue(rawVal) {
+      if (rawVal === null || rawVal === undefined) {
+        return { status: 'UNAVAILABLE', value: null };
+      }
+      if (typeof rawVal === 'boolean') {
+        return { status: 'INVALID', value: null };
+      }
+      if (typeof rawVal === 'number') {
+        if (!Number.isFinite(rawVal) || rawVal < 0 || !Number.isInteger(rawVal)) {
+          return { status: 'INVALID', value: null };
+        }
+        return { status: 'VALID', value: rawVal };
+      }
+      if (typeof rawVal === 'string') {
+        const trimmed = rawVal.trim();
+        if (trimmed === '' || !/^\d+$/.test(trimmed)) {
+          return { status: 'INVALID', value: null };
+        }
+        const num = Number(trimmed);
+        if (!Number.isSafeInteger(num) || num < 0) {
+          return { status: 'INVALID', value: null };
+        }
+        return { status: 'VALID', value: num };
+      }
+      return { status: 'INVALID', value: null };
+    },
+
+    /**
+     * Normalizes a boolean status flag strictly.
+     * Only genuine boolean true is accepted as true.
+     * Strings like "false", numbers, null, undefined, or other objects are rejected as false.
+     */
+    normalizeBooleanFlag(val) {
+      return typeof val === 'boolean' ? val : false;
+    },
+
+    /**
+     * Calculates cumulative exception telemetry with completeness verification.
+     *
+     * Invariants:
+     * - A partial sum CANNOT be presented as a complete cumulative total.
+     * - If all required counters are VALID, returns status: 'COMPLETE' and total sum.
+     * - If all counters are UNAVAILABLE, returns status: 'UNAVAILABLE'.
+     * - If some counters are valid and some are unavailable, returns status: 'PARTIAL'
+     *   and exposes which inputs are missing.
+     * - If any counter is INVALID, returns status: 'MALFORMED' and exposes which inputs are invalid.
+     * - Does NOT silently treat missing values as zero.
+     *
+     * @param {object} metrics
+     * @returns { status: 'COMPLETE'|'PARTIAL'|'UNAVAILABLE'|'MALFORMED', total: number|null, missing: string[], invalid: string[], details: object }
+     */
+    calculateCumulativeExceptions(metrics) {
+      const m = metrics || {};
+      const requiredCounters = [
+        { key: 'authorization_denials', label: 'Auth Denials', val: m.authorization_denials },
+        { key: 'halts', label: 'Policy Halts', val: m.halts },
+        { key: 'execution_failures', label: 'Execution Failures', val: m.execution_failures },
+        { key: 'parse_error_count', label: 'Parse Errors', val: m.parse_error_count }
+      ];
+
+      const missing = [];
+      const invalid = [];
+      let total = 0;
+
+      requiredCounters.forEach(c => {
+        const norm = this.normalizeMetricValue(c.val);
+        if (norm.status === 'INVALID') {
+          invalid.push(c.label);
+        } else if (norm.status === 'UNAVAILABLE') {
+          missing.push(c.label);
+        } else {
+          total += norm.value;
+        }
+      });
+
+      if (invalid.length > 0) {
+        return {
+          status: 'MALFORMED',
+          total: null,
+          missing,
+          invalid,
+          reason: `Malformed counter data detected in: ${invalid.join(', ')}`
+        };
+      }
+
+      if (missing.length === requiredCounters.length) {
+        return {
+          status: 'UNAVAILABLE',
+          total: null,
+          missing,
+          invalid: [],
+          reason: 'All cumulative exception counters unavailable'
+        };
+      }
+
+      if (missing.length > 0) {
+        return {
+          status: 'PARTIAL',
+          total: null,
+          partialSum: total,
+          missing,
+          invalid: [],
+          reason: `Partial exception telemetry: missing ${missing.join(', ')}`
+        };
+      }
+
+      return {
+        status: 'COMPLETE',
+        total,
+        missing: [],
+        invalid: [],
+        reason: `Complete cumulative exceptions: ${total}`
+      };
+    },
+
+    /**
+     * Derives aggregate system operational state from overview telemetry.
+     *
+     * Epistemic Separation of Dimensions:
+     * A. Cryptographic Integrity: Are observed audit & provenance records cryptographically consistent?
+     * B. Historical Activity: Cumulative records of past executions, denials, halts, and failures.
+     *    Cumulative historical counters DO NOT constitute proof of current runtime blockage, halt, or degradation.
+     * C. Current Operational Health: Requires an authoritative live runtime health signal or active incident feed.
+     *    Trust Boundary & Verification Contract:
+     *    Asserting READY is strictly forbidden based solely on caller-controlled source strings,
+     *    arbitrary status objects like { status: 'HEALTHY' }, or unauthenticated inputs.
+     *    In this architecture, live operational health requires:
+     *    1. Trusted supervisory source identity.
+     *    2. Observation timestamp and freshness verification (monotonic, bounded staleness).
+     *    3. Cryptographic attestation verified against a trusted authority with replay protection.
+     *    Because no authoritative live-health attestation infrastructure exists in the backend adapter,
+     *    any supplied unverified or unauthenticated live health signal must be rejected.
+     *    Therefore, when cryptographic integrity is verified, operational readiness strictly remains NOT ESTABLISHED.
+     * D. Evidence Completeness: Can the system establish that all relevant actions were captured?
+     *
+     * State Evaluation Rules:
+     * 1. BLOCKED: Positive cryptographic integrity failure (CORRUPTED) detected in either required store.
+     * 2. UNVERIFIED: Required integrity evidence is missing, unreadable, or incomplete.
+     * 3. NOT ESTABLISHED: Cryptographic integrity is verified, but authoritative live runtime health attestation
+     *    is not established. (READY is strictly prevented in the absence of verified attestation infrastructure).
+     *
+     * Returns: { state: string, reason: string, details: object }
+     */
+    deriveSystemState(data) {
+      if (!data || typeof data !== 'object') {
+        return {
+          state: 'UNVERIFIED',
+          reason: 'Overview telemetry payload unavailable or malformed',
+          details: { auditStatus: 'UNAVAILABLE', provStatus: 'UNAVAILABLE' }
+        };
+      }
+
+      const sf = data.status_flags || {};
+      const ai = data.audit_integrity || {};
+      const pi = data.provenance_integrity || {};
+      const liveHealth = data.live_runtime_health;
+
+      const auditStatus = (ai.status || 'UNAVAILABLE').toUpperCase();
+      const provStatus = (pi.status || 'UNAVAILABLE').toUpperCase();
+
+      // Strict boolean validation: string "false", numbers, null, etc. must NOT be interpreted as available
+      const auditAvail = this.normalizeBooleanFlag(sf.audit_data_available);
+      const provAvail = this.normalizeBooleanFlag(sf.provenance_data_available);
+
+      // Dimension A: Positive Cryptographic Integrity Failure -> BLOCKED
+      if (auditStatus === 'CORRUPTED' || provStatus === 'CORRUPTED') {
+        const corruptedSources = [];
+        if (auditStatus === 'CORRUPTED') corruptedSources.push('Audit Trail');
+        if (provStatus === 'CORRUPTED') corruptedSources.push('Provenance Store');
+        return {
+          state: 'BLOCKED',
+          reason: `Cryptographic integrity failure positively detected in ${corruptedSources.join(' and ')}`,
+          details: { auditStatus, provStatus }
+        };
+      }
+
+      // Check integrity availability & verification status
+      const unverifiedSources = [];
+      if (!auditAvail || auditStatus === 'UNAVAILABLE') {
+        unverifiedSources.push('Audit Trail unavailable');
+      } else if (auditStatus === 'UNVERIFIED') {
+        unverifiedSources.push('Audit Trail unverified');
+      } else if (auditStatus !== 'VERIFIED') {
+        unverifiedSources.push(`Audit Trail status ${auditStatus}`);
+      }
+
+      if (!provAvail || provStatus === 'UNAVAILABLE') {
+        unverifiedSources.push('Provenance Store unavailable');
+      } else if (provStatus === 'UNVERIFIED') {
+        unverifiedSources.push('Provenance Store unverified');
+      } else if (provStatus !== 'VERIFIED') {
+        unverifiedSources.push(`Provenance Store status ${provStatus}`);
+      }
+
+      if (unverifiedSources.length > 0) {
+        return {
+          state: 'UNVERIFIED',
+          reason: `Required integrity evidence incomplete: ${unverifiedSources.join('; ')}`,
+          details: { auditStatus, provStatus, unverifiedSources }
+        };
+      }
+
+      // Dimension C: Current Operational Health Evaluation
+      // Both integrity sources are VERIFIED.
+      // Strict Trust Boundary:
+      // The current backend adapter does not provide an authenticated live-health attestation infrastructure.
+      // A caller-controlled source string, unverified timestamp, or unsigned/mock object is NOT proof
+      // of supervisory authority and cannot establish READY.
+      // In the absence of an authenticated live-health attestation authority, reject the signal and retain NOT ESTABLISHED.
+      let liveHealthDetail = 'NOT_CONFIGURED';
+      if (liveHealth !== undefined && liveHealth !== null) {
+        liveHealthDetail = 'UNAUTHENTICATED_SIGNAL_REJECTED';
+      }
+
+      return {
+        state: 'NOT ESTABLISHED',
+        reason: 'Cryptographic integrity verified, but authoritative live runtime operational health attestation is not established',
+        details: { auditStatus, provStatus, liveHealth: liveHealthDetail }
+      };
+    },
+
     // Helper: Semantic Badge Creator
     createStatusBadge(statusText) {
       const span = document.createElement('span');
@@ -444,15 +673,27 @@ document.addEventListener('DOMContentLoaded', () => {
       } else if (st === 'VERIFIED') {
         span.className = 'status-badge status-badge-verified';
         span.textContent = '✓ VERIFIED';
+      } else if (st === 'READY') {
+        span.className = 'status-badge status-badge-verified';
+        span.textContent = '● READY';
+      } else if (st === 'AUTHORIZED') {
+        span.className = 'status-badge status-badge-verified';
+        span.textContent = '✓ AUTHORIZED';
       } else if (st === 'RECORDED') {
         span.className = 'status-badge status-badge-not-established';
         span.textContent = '• RECORDED';
       } else if (st === 'FAILED' || st === 'FAIL') {
         span.className = 'status-badge status-badge-failed';
         span.textContent = '✗ FAILED';
+      } else if (st === 'BLOCKED') {
+        span.className = 'status-badge status-badge-failed';
+        span.textContent = '⛔ BLOCKED';
       } else if (st === 'HALTED') {
         span.className = 'status-badge status-badge-halted';
         span.textContent = '🛑 HALTED';
+      } else if (st === 'DEGRADED') {
+        span.className = 'status-badge status-badge-halted';
+        span.textContent = '⚠ DEGRADED';
       } else if (st === 'PENDING') {
         span.className = 'status-badge status-badge-pending';
         span.textContent = '⏳ PENDING';
@@ -471,6 +712,9 @@ document.addEventListener('DOMContentLoaded', () => {
       } else if (st === 'UNREADABLE') {
         span.className = 'status-badge status-badge-unreadable';
         span.textContent = '⊘ UNREADABLE';
+      } else if (st === 'UNVERIFIED') {
+        span.className = 'status-badge status-badge-unknown';
+        span.textContent = '? UNVERIFIED';
       } else if (st === 'NOT ESTABLISHED') {
         span.className = 'status-badge status-badge-not-established';
         span.textContent = '░ NOT ESTABLISHED';
@@ -538,18 +782,51 @@ document.addEventListener('DOMContentLoaded', () => {
       }
 
       const m = data.metrics || {};
+      const sf = data.status_flags || {};
+      const ai = data.audit_integrity || {};
+      const pi = data.provenance_integrity || {};
+
       this.setText('metric-total-executions', (m.total_executions !== null && m.total_executions !== undefined) ? m.total_executions : 'UNAVAILABLE');
       this.setText('metric-denials', (m.authorization_denials !== null && m.authorization_denials !== undefined) ? m.authorization_denials : 'UNAVAILABLE');
       this.setText('metric-halts', (m.halts !== null && m.halts !== undefined) ? m.halts : 'UNAVAILABLE');
       this.setText('metric-failures', (m.execution_failures !== null && m.execution_failures !== undefined) ? m.execution_failures : 'UNAVAILABLE');
       this.setText('metric-parse-errors', (m.parse_error_count !== null && m.parse_error_count !== undefined) ? m.parse_error_count : 'UNAVAILABLE');
 
-      const sf = data.status_flags || {};
+      // Calculate Normalized Cumulative Exceptions with completeness verification
+      const exceptionResult = this.calculateCumulativeExceptions(m);
+      const incidentEl = document.getElementById('overview-incident-count');
+      if (incidentEl) {
+        incidentEl.title = exceptionResult.reason;
+        if (exceptionResult.status === 'MALFORMED') {
+          incidentEl.textContent = 'MALFORMED';
+          incidentEl.className = 'ops-indicator-val font-mono text-danger';
+        } else if (exceptionResult.status === 'UNAVAILABLE') {
+          incidentEl.textContent = 'UNAVAILABLE';
+          incidentEl.className = 'ops-indicator-val font-mono text-dim';
+        } else if (exceptionResult.status === 'PARTIAL') {
+          incidentEl.textContent = 'PARTIAL';
+          incidentEl.className = 'ops-indicator-val font-mono text-warning';
+        } else {
+          // COMPLETE
+          incidentEl.textContent = String(exceptionResult.total);
+          incidentEl.className = exceptionResult.total > 0 ? 'ops-indicator-val font-mono text-warning' : 'ops-indicator-val font-mono text-success';
+        }
+      }
+
+      // Determine Operational System State using pure derivation function
+      const stateResult = this.deriveSystemState(data);
+      const sysStateEl = document.getElementById('overview-system-state');
+      if (sysStateEl) {
+        const badge = this.createStatusBadge(stateResult.state);
+        badge.title = stateResult.reason;
+        sysStateEl.replaceWith(badge);
+        badge.id = 'overview-system-state';
+      }
 
       // Audit Data Availability Badge
       const auditAvailEl = document.getElementById('audit-data-availability');
       if (auditAvailEl) {
-        const isAvail = sf.audit_data_available;
+        const isAvail = this.normalizeBooleanFlag(sf.audit_data_available);
         auditAvailEl.className = isAvail ? 'status-badge status-badge-verified' : 'status-badge status-badge-unavailable';
         auditAvailEl.textContent = isAvail ? '✓ DATA AVAILABLE' : '⊘ DATA UNAVAILABLE';
       }
@@ -558,32 +835,24 @@ document.addEventListener('DOMContentLoaded', () => {
       const auditContainer = document.getElementById('audit-integrity-status');
       if (auditContainer) {
         auditContainer.innerHTML = '';
-        const ai = data.audit_integrity || {};
 
         const headerDiv = document.createElement('div');
-        headerDiv.style.display = 'flex';
-        headerDiv.style.justifyContent = 'space-between';
-        headerDiv.style.alignItems = 'center';
-        headerDiv.style.marginBottom = '0.5rem';
+        headerDiv.className = 'ops-status-row';
 
         const labelSpan = document.createElement('span');
-        labelSpan.style.fontWeight = '600';
-        labelSpan.textContent = 'Integrity Verification: ';
+        labelSpan.className = 'ops-status-subheading';
+        labelSpan.textContent = 'Integrity Verification';
 
         const badge = this.createStatusBadge(ai.status || 'UNAVAILABLE');
         headerDiv.appendChild(labelSpan);
         headerDiv.appendChild(badge);
 
         const msgDiv = document.createElement('div');
-        msgDiv.className = 'text-muted';
-        msgDiv.style.fontSize = '0.8rem';
-        msgDiv.style.marginTop = '0.35rem';
-        msgDiv.textContent = `Verification Message: ${ai.message || 'No audit records verified.'}`;
+        msgDiv.className = 'text-muted ops-status-msg';
+        msgDiv.textContent = ai.message || 'No audit records verified.';
 
         const countDiv = document.createElement('div');
-        countDiv.className = 'text-muted font-mono';
-        countDiv.style.fontSize = '0.8rem';
-        countDiv.style.marginTop = '0.2rem';
+        countDiv.className = 'text-muted font-mono ops-status-meta';
         countDiv.textContent = `Verified Entries: ${ai.records_verified ?? 0}`;
 
         auditContainer.appendChild(headerDiv);
@@ -594,7 +863,7 @@ document.addEventListener('DOMContentLoaded', () => {
       // Provenance Data Availability Badge
       const provAvailEl = document.getElementById('provenance-data-availability');
       if (provAvailEl) {
-        const isAvail = sf.provenance_data_available;
+        const isAvail = this.normalizeBooleanFlag(sf.provenance_data_available);
         provAvailEl.className = isAvail ? 'status-badge status-badge-verified' : 'status-badge status-badge-unavailable';
         provAvailEl.textContent = isAvail ? '✓ DATA AVAILABLE' : '⊘ DATA UNAVAILABLE';
       }
@@ -603,32 +872,24 @@ document.addEventListener('DOMContentLoaded', () => {
       const provContainer = document.getElementById('provenance-integrity-status');
       if (provContainer) {
         provContainer.innerHTML = '';
-        const pi = data.provenance_integrity || {};
 
         const headerDiv = document.createElement('div');
-        headerDiv.style.display = 'flex';
-        headerDiv.style.justifyContent = 'space-between';
-        headerDiv.style.alignItems = 'center';
-        headerDiv.style.marginBottom = '0.5rem';
+        headerDiv.className = 'ops-status-row';
 
         const labelSpan = document.createElement('span');
-        labelSpan.style.fontWeight = '600';
-        labelSpan.textContent = 'Integrity Verification: ';
+        labelSpan.className = 'ops-status-subheading';
+        labelSpan.textContent = 'Integrity Verification';
 
         const badge = this.createStatusBadge(pi.status || 'UNAVAILABLE');
         headerDiv.appendChild(labelSpan);
         headerDiv.appendChild(badge);
 
         const msgDiv = document.createElement('div');
-        msgDiv.className = 'text-muted';
-        msgDiv.style.fontSize = '0.8rem';
-        msgDiv.style.marginTop = '0.35rem';
-        msgDiv.textContent = `Verification Details: ${pi.message || 'No provenance events found.'}`;
+        msgDiv.className = 'text-muted ops-status-msg';
+        msgDiv.textContent = pi.message || 'No provenance events found.';
 
         const countDiv = document.createElement('div');
-        countDiv.className = 'text-muted font-mono';
-        countDiv.style.fontSize = '0.8rem';
-        countDiv.style.marginTop = '0.2rem';
+        countDiv.className = 'text-muted font-mono ops-status-meta';
         countDiv.textContent = `Verified Records: ${pi.records_verified ?? 0}`;
 
         provContainer.appendChild(headerDiv);
@@ -637,11 +898,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
         if (pi.last_hash) {
           const hashDiv = document.createElement('div');
-          hashDiv.className = 'font-mono text-dim';
-          hashDiv.style.fontSize = '0.75rem';
-          hashDiv.style.marginTop = '0.4rem';
-          hashDiv.style.wordBreak = 'break-all';
-          hashDiv.textContent = `Tail Hash: ${pi.last_hash}`;
+          hashDiv.className = 'font-mono text-dim ops-tail-hash';
+          const shortTail = pi.last_hash.length > 24 ? pi.last_hash.substring(0, 22) + '…' : pi.last_hash;
+          hashDiv.textContent = `Tail: ${shortTail}`;
+          hashDiv.title = pi.last_hash;
           provContainer.appendChild(hashDiv);
         }
       }
@@ -695,26 +955,28 @@ document.addEventListener('DOMContentLoaded', () => {
         });
 
         const tdCorr = document.createElement('td');
-        tdCorr.className = 'font-mono';
-        tdCorr.style.fontSize = '0.775rem';
-        tdCorr.textContent = (trace.correlation_id || '').length > 20 ? (trace.correlation_id || '').substring(0, 18) + '...' : (trace.correlation_id || 'UNKNOWN');
+        tdCorr.className = 'font-mono ops-cell-corr';
+        tdCorr.textContent = (trace.correlation_id || '').length > 20 ? (trace.correlation_id || '').substring(0, 18) + '…' : (trace.correlation_id || 'UNKNOWN');
         tdCorr.title = trace.correlation_id;
 
         const tdAction = document.createElement('td');
+        tdAction.className = 'ops-cell-action';
         tdAction.textContent = trace.action_name || 'N/A';
 
         const tdTarget = document.createElement('td');
+        tdTarget.className = 'font-mono ops-cell-target';
         tdTarget.textContent = trace.target || 'N/A';
+        tdTarget.title = trace.target;
 
         const tdStatus = document.createElement('td');
+        tdStatus.className = 'ops-cell-status';
         const badge = document.createElement('span');
         badge.className = `badge badge-${trace.status || 'OUTCOME_UNKNOWN'}`;
         badge.textContent = trace.status || 'UNKNOWN';
         tdStatus.appendChild(badge);
 
         const tdTime = document.createElement('td');
-        tdTime.className = 'font-mono';
-        tdTime.style.fontSize = '0.75rem';
+        tdTime.className = 'font-mono ops-cell-time';
         tdTime.textContent = trace.start_time || trace.timestamp || 'N/A';
 
         tr.appendChild(tdCorr);
