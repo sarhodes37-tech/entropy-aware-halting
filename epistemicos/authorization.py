@@ -319,17 +319,25 @@ class Policy:
         return executor_id in self.allowed_executors
 
 
+# Conservative maximum URL and authorization target input length bounded to 4096 characters to prevent DoS.
+MAX_TARGET_INPUT_LEN = 4096
+
+
 def normalize_target_scope(raw_target: str) -> str:
     """
     Canonicalizes target resource string into a normalized scope identifier.
     Strips trailing slashes, resolves traversal dots and unquotes percent-encoded paths,
     and isolates hostname/port if present.
-    Raises ValueError for missing, empty, non-string, or malformed inputs containing
+    Raises ValueError for missing, empty, non-string, oversized, or malformed inputs containing
     unencoded control characters, whitespace anomalies, or null bytes to prevent
-    collision with valid root targets.
+    collision with valid root targets and pre-empt parser DoS.
     """
     if not isinstance(raw_target, str) or not raw_target:
         raise ValueError(f"Target resource must be a non-empty string, got {type(raw_target).__name__}: {raw_target!r}")
+
+    # Strict resource bounds on target input length before urlparse or unquote
+    if len(raw_target) > MAX_TARGET_INPUT_LEN:
+        raise ValueError(f"Target resource exceeds maximum input length of {MAX_TARGET_INPUT_LEN} characters: length={len(raw_target)}")
 
     str_raw = raw_target
     # Reject unencoded control characters and whitespace anomalies that cause parser differential or scope collision

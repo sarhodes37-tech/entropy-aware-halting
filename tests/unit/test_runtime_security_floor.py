@@ -37,7 +37,7 @@ from epistemicos.containment import (
     MAX_IPV4_NUMERIC_STR_LEN,
     MAX_URL_INPUT_LEN,
 )
-from epistemicos.authorization import normalize_target_scope
+from epistemicos.authorization import normalize_target_scope, MAX_TARGET_INPUT_LEN
 
 
 # =========================================================================
@@ -355,6 +355,27 @@ def test_normalize_target_scope_raises_on_malformed_targets(malformed_target):
     """Verifies that normalize_target_scope raises ValueError for missing, empty, non-string, whitespace, control-char, and percent-encoded control anomalies."""
     with pytest.raises(ValueError):
         normalize_target_scope(malformed_target)
+
+
+def test_normalize_target_scope_input_length_bounds():
+    """Verifies that oversized target strings raise ValueError before urlparse/unquote, while boundary inputs are accepted."""
+    with patch("urllib.parse.urlparse") as mock_urlparse, patch("urllib.parse.unquote") as mock_unquote:
+        oversized = "/" + "a" * 4096  # Total length 4097 > 4096
+        with pytest.raises(ValueError, match="exceeds maximum input length of 4096"):
+            normalize_target_scope(oversized)
+        mock_urlparse.assert_not_called()
+        mock_unquote.assert_not_called()
+
+    # Exact boundary 4096 characters should pass length check
+    boundary_path = "/" + "a" * 4095  # Total length 4096 == MAX_TARGET_INPUT_LEN
+    assert len(boundary_path) == MAX_TARGET_INPUT_LEN
+    res = normalize_target_scope(boundary_path)
+    assert res == f"target::{boundary_path}"
+
+    # Oversized URL
+    oversized_url = "https://example.com/" + "b" * 4096
+    with pytest.raises(ValueError, match="exceeds maximum input length of 4096"):
+        normalize_target_scope(oversized_url)
 
 
 def test_normalize_target_scope_preserves_valid_percent_encoded_paths():
