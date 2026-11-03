@@ -1,5 +1,22 @@
 # epistemicos/__init__.py
 
+import sys
+
+# Runtime security-floor enforcement:
+# Python versions below 3.11.4 lack critical security updates and standard library DoS mitigations (e.g., CVE-2023-24329).
+# A minimum runtime of Python 3.11.4 is strictly required.
+MIN_SUPPORTED_PYTHON_VERSION = (3, 11, 4)
+if sys.version_info < MIN_SUPPORTED_PYTHON_VERSION:
+    curr_major = sys.version_info[0]
+    curr_minor = sys.version_info[1]
+    curr_micro = sys.version_info[2] if len(sys.version_info) > 2 else 0
+    raise RuntimeError(
+        f"Unsupported Python runtime: EpistemicOS requires Python {MIN_SUPPORTED_PYTHON_VERSION[0]}.{MIN_SUPPORTED_PYTHON_VERSION[1]}.{MIN_SUPPORTED_PYTHON_VERSION[2]}+ "
+        f"(current interpreter is Python {curr_major}.{curr_minor}.{curr_micro}). "
+        f"Python runtimes below 3.11.4 contain unpatched standard-library security exposures. "
+        f"Please upgrade to a supported Python runtime."
+    )
+
 from importlib import import_module
 from typing import Any, Optional, Tuple
 

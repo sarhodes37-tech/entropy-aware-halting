@@ -27,6 +27,24 @@ from epistemicos.gates import ControlPlaneGate, GateConfig, GateInput, GateOutco
 import errno
 import threading
 
+# Maximum bounds for URLs, hostnames, and numeric IPv4 input representations.
+# RFC 1035 / RFC 1123 / RFC 5890 specifications:
+# Hostname max length is 253 octets; individual label max length is 63 octets.
+# Conservative maximum URL input length bounded to 4096 characters to prevent DoS.
+MAX_URL_INPUT_LEN = 4096
+MAX_DNS_HOSTNAME_LEN = 253
+MAX_DNS_LABEL_LEN = 63
+
+# The longest canonical standard representation is dotted decimal ("255.255.255.255" = 15 chars).
+# Alternative encodings like dotted octal ("0377.0377.0377.0377" = 19 chars), dotted hex
+# ("0xff.0xff.0xff.0xff" = 19 chars), or 32-bit dwords ("037777777777" = 12 chars, "4294967295" = 10 chars,
+# "0xffffffff" = 10 chars) are all under 20 chars. Allowing a conservative bound of 32 characters total
+# and 16 characters per part for dotted formats (or 32 for single-dword integers) accommodates legitimate
+# zero-padding while strictly bounding parsing work and pre-empting oversized/pathological conversions
+# (e.g. CVE-2020-10735 DoS vectors).
+MAX_IPV4_NUMERIC_STR_LEN = 32
+MAX_IPV4_PART_STR_LEN = 16
+
 _boundary_lock = threading.Lock()
 _active_boundary_count = 0
 _orig_socket_connect = socket.socket.connect
@@ -109,12 +127,25 @@ def parse_url_authority_structure(target_url_or_host: str, default_protocol: str
     Unified authority and destination parser using urllib.parse.urlsplit.
     Extracts canonical scheme, normalized host, explicit/default port, and authority sanity status.
     Rejects authority strings containing userinfo with `#` or `%23` fragment tricks.
+    Rejects inputs with leading/trailing whitespace or unencoded control characters rather than silently repairing them.
     """
     if not isinstance(target_url_or_host, str):
         return {"scheme": default_protocol.lower(), "port": default_port, "normalized_host": "", "valid": False}
 
-    raw = target_url_or_host.strip().replace('\\', '/')
+    # Strict resource bounds on total URL length
+    if len(target_url_or_host) > MAX_URL_INPUT_LEN:
+        return {"scheme": default_protocol.lower(), "port": default_port, "normalized_host": "", "valid": False}
+
+    # Reject leading or trailing whitespace rather than silently stripping or repairing it
+    if target_url_or_host != target_url_or_host.strip():
+        return {"scheme": default_protocol.lower(), "port": default_port, "normalized_host": "", "valid": False}
+
+    raw = target_url_or_host.replace('\\', '/')
     if not raw:
+        return {"scheme": default_protocol.lower(), "port": default_port, "normalized_host": "", "valid": False}
+
+    # Reject unencoded control characters (CR, LF, TAB, null bytes, vertical tab, form feed)
+    if any(c in target_url_or_host for c in ('\r', '\n', '\t', '\x00', '\x0b', '\x0c')):
         return {"scheme": default_protocol.lower(), "port": default_port, "normalized_host": "", "valid": False}
 
     if "://" in raw:
@@ -148,6 +179,11 @@ def parse_url_authority_structure(target_url_or_host: str, default_protocol: str
     if "#" in unquoted_netloc:
         return {"scheme": scheme, "port": eff_default_port, "normalized_host": "", "valid": False}
 
+    # Reject decoded whitespace and C0 control characters (e.g., %20, %09, %0A, %0D, %0B, %0C, %00)
+    # in the authority structure prior to any trimming or normalization.
+    if any(c.isspace() or ord(c) < 32 or ord(c) == 127 for c in unquoted_netloc):
+        return {"scheme": scheme, "port": eff_default_port, "normalized_host": "", "valid": False}
+
     if "@" in unquoted_netloc:
         host_port = unquoted_netloc.rsplit("@", 1)[1]
     else:
@@ -172,7 +208,11 @@ def parse_url_authority_structure(target_url_or_host: str, default_protocol: str
     else:
         host_part = host_port
 
-    host_clean = host_part.strip().lower()
+    # Disallow silent trimming/repairing via .strip() on host_part
+    if host_part != host_part.strip():
+        return {"scheme": scheme, "port": port, "normalized_host": "", "valid": False}
+
+    host_clean = host_part.lower()
     if host_clean.endswith(".") and len(host_clean) > 1:
         host_clean = host_clean[:-1]
 
@@ -202,10 +242,28 @@ def parse_url_authority_structure(target_url_or_host: str, default_protocol: str
             if alt_ip:
                 norm_host = str(alt_ip)
             else:
+                # Defensive DNS and IDNA resource bounds (RFC 1035 / RFC 5890, related to CVE-2022-45061)
+                # Application-level bounded host length and per-label length before IDNA conversion
+                if len(host_clean) > MAX_DNS_HOSTNAME_LEN:
+                    return {"scheme": scheme, "port": port, "normalized_host": "", "valid": False}
+
+                raw_labels = host_clean.split(".")
+                if any(len(label) > MAX_DNS_LABEL_LEN or len(label) == 0 for label in raw_labels):
+                    return {"scheme": scheme, "port": port, "normalized_host": "", "valid": False}
+
                 try:
                     idna_host = host_clean.encode('idna').decode('ascii')
-                except Exception:
-                    idna_host = host_clean
+                except (UnicodeError, ValueError):
+                    return {"scheme": scheme, "port": port, "normalized_host": "", "valid": False}
+
+                # Validate encoded hostname and label lengths post-IDNA
+                if len(idna_host) > MAX_DNS_HOSTNAME_LEN:
+                    return {"scheme": scheme, "port": port, "normalized_host": "", "valid": False}
+
+                encoded_labels = idna_host.split(".")
+                if any(len(label) > MAX_DNS_LABEL_LEN or len(label) == 0 for label in encoded_labels):
+                    return {"scheme": scheme, "port": port, "normalized_host": "", "valid": False}
+
                 if re.match(r'^[a-z0-9\-\.]+$', idna_host):
                     norm_host = idna_host
 
@@ -273,14 +331,37 @@ def parse_ip_numeric(host_str: str) -> Optional[ipaddress.IPv4Address]:
     """
     Attempts to parse alternate numeric address encodings for IPv4
     (decimal integer, hex, octal, dotted octal, 1/2/3/4-part dword).
+    Enforces strict input length bounds prior to calling inet_aton or int()
+    to prevent DoS and unbounded conversion resource exhaustion.
     """
     if not isinstance(host_str, str):
         return None
-    clean = host_str.strip()
+
+    # Disallow any whitespace, control characters, signs, or embedded nulls in numeric IP parsing
+    if any(c.isspace() or c in ('+', '-', '\x00') for c in host_str):
+        return None
+
+    clean = host_str
     if not clean:
         return None
 
+    # Strict resource bounding: reject oversized strings before any conversion or parsing
+    if len(clean) > MAX_IPV4_NUMERIC_STR_LEN:
+        return None
+
     clean_no_dot = clean[:-1] if (clean.endswith('.') and len(clean) > 1 and not clean.startswith('.')) else clean
+
+    if len(clean_no_dot) > MAX_IPV4_NUMERIC_STR_LEN:
+        return None
+
+    # Check individual part lengths if dotted
+    parts = clean_no_dot.split(".")
+    if len(parts) > 4:
+        return None
+    if len(parts) > 1:
+        for p in parts:
+            if len(p) > MAX_IPV4_PART_STR_LEN:
+                return None
 
     # First try socket.inet_aton for standard C-library IPv4 representations
     try:
@@ -304,7 +385,6 @@ def parse_ip_numeric(host_str: str) -> Optional[ipaddress.IPv4Address]:
             pass
 
     # Dotted representations with non-standard base encodings (e.g., 0177.0.0.1)
-    parts = clean_no_dot.split(".")
     if 1 <= len(parts) <= 4:
         num_parts = []
         for p in parts:

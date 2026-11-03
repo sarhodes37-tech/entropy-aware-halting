@@ -303,14 +303,14 @@ def test_pinned_https_connection_socket_and_tls_sni():
 def _make_property1_test_certs(cert_dir):
     ca_key = os.path.join(cert_dir, "ca_key.pem")
     ca_cert = os.path.join(cert_dir, "ca_cert.pem")
-    subprocess.run(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-keyout", ca_key, "-out", ca_cert, "-days", "1", "-nodes", "-subj", "/CN=TestCA"], check=True, capture_output=True)
+    subprocess.run(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-keyout", ca_key, "-out", ca_cert, "-days", "1", "-nodes", "-subj", "/CN=TestCA", "-addext", "basicConstraints=critical,CA:TRUE", "-addext", "keyUsage=critical,keyCertSign,cRLSign"], check=True, capture_output=True)
 
     s1_key = os.path.join(cert_dir, "s1_key.pem")
     s1_csr = os.path.join(cert_dir, "s1_csr.pem")
     s1_cert = os.path.join(cert_dir, "s1_cert.pem")
     s1_ext = os.path.join(cert_dir, "s1_ext.ini")
     with open(s1_ext, "w") as f:
-        f.write("subjectAltName=DNS:good-hostname.com,IP:127.0.0.1\n")
+        f.write("basicConstraints=CA:FALSE\nkeyUsage=digitalSignature,keyEncipherment\nsubjectAltName=DNS:good-hostname.com,IP:127.0.0.1\n")
     subprocess.run(["openssl", "req", "-newkey", "rsa:2048", "-keyout", s1_key, "-out", s1_csr, "-nodes", "-subj", "/CN=good-hostname.com"], check=True, capture_output=True)
     subprocess.run(["openssl", "x509", "-req", "-in", s1_csr, "-CA", ca_cert, "-CAkey", ca_key, "-CAcreateserial", "-out", s1_cert, "-days", "1", "-extfile", s1_ext], check=True, capture_output=True)
 
@@ -319,7 +319,7 @@ def _make_property1_test_certs(cert_dir):
     s2_cert = os.path.join(cert_dir, "s2_cert.pem")
     s2_ext = os.path.join(cert_dir, "s2_ext.ini")
     with open(s2_ext, "w") as f:
-        f.write("subjectAltName=DNS:wrong-hostname.com,IP:127.0.0.1\n")
+        f.write("basicConstraints=CA:FALSE\nkeyUsage=digitalSignature,keyEncipherment\nsubjectAltName=DNS:wrong-hostname.com,IP:127.0.0.1\n")
     subprocess.run(["openssl", "req", "-newkey", "rsa:2048", "-keyout", s2_key, "-out", s2_csr, "-nodes", "-subj", "/CN=wrong-hostname.com"], check=True, capture_output=True)
     subprocess.run(["openssl", "x509", "-req", "-in", s2_csr, "-CA", ca_cert, "-CAkey", ca_key, "-CAcreateserial", "-out", s2_cert, "-days", "1", "-extfile", s2_ext], check=True, capture_output=True)
 
