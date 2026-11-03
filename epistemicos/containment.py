@@ -412,13 +412,30 @@ def parse_ip_numeric(host_str: str) -> Optional[ipaddress.IPv4Address]:
     return None
 
 
+# Fast trigger characters required by any candidate network destination
+# (URL scheme, path, host:port, IPv4, IPv6, numeric IP)
+_DESTINATION_TRIGGER_CHARS = re.compile(r"[/:\.]|\d")
+
+
+@lru_cache(maxsize=4096)
+def _cached_normalize_destination_host(target: str) -> str:
+    """Bounded memoization for canonical host normalization."""
+    res = parse_url_authority_structure(target)
+    return res["normalized_host"]
+
+
 def normalize_destination_host(target_url_or_host: str) -> str:
     """
-    Strictly normalizes a target host/URL string into a canonical host representation using unified parse_url_authority_structure.
-    Returns empty string if invalid or malformed authority.
+    Strictly normalizes a target host/URL string into a canonical host representation
+    using unified parse_url_authority_structure. Returns empty string if invalid or malformed.
+    Uses bounded LRU caching for string lengths <= 512 to eliminate repeated parsing overhead.
     """
-    res = parse_url_authority_structure(target_url_or_host)
-    return res["normalized_host"]
+    if not isinstance(target_url_or_host, str):
+        return ""
+    if len(target_url_or_host) > 512:
+        res = parse_url_authority_structure(target_url_or_host)
+        return res["normalized_host"]
+    return _cached_normalize_destination_host(target_url_or_host)
 
 
 class ContainmentGuard(ControlPlaneGate):
@@ -740,7 +757,9 @@ class ContainmentGuard(ControlPlaneGate):
         if not curr or not isinstance(curr, str):
             return False
         s = curr.strip()
-        if not s:
+        # Fast-path: Valid URLs, IPs, host:port, paths, or hostnames with TLDs strictly require
+        # at least one separator ('/', ':', '.') or digit. Short-circuit for clean text/labels.
+        if not s or not _DESTINATION_TRIGGER_CHARS.search(s):
             return False
 
         norm = normalize_destination_host(s)
