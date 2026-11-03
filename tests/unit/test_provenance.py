@@ -987,6 +987,24 @@ def test_execute_protected_action_with_execution_context_keyword(tmp_path):
     assert events[0].authorization_token_id == cap.token_id
 
 
+def test_local_provenance_store_hmac_key_validation(tmp_path):
+    """Verifies fail-closed validation of hmac_key in LocalProvenanceStore."""
+    log_file = str(tmp_path / "prov_val.jsonl")
+
+    with pytest.raises(ValueError, match="hmac_key cannot be empty"):
+        LocalProvenanceStore(log_file, hmac_key=b"")
+
+    with pytest.raises(ValueError, match="hmac_key cannot be empty"):
+        LocalProvenanceStore(log_file, hmac_key=bytearray())
+
+    for invalid_key in ("secret_str", 12345, ["key"], {"k": "v"}):
+        with pytest.raises(TypeError, match="hmac_key must be bytes or bytearray"):
+            LocalProvenanceStore(log_file, hmac_key=invalid_key)
+
+    store_ba = LocalProvenanceStore(log_file, hmac_key=bytearray(b"valid_secret_123"))
+    assert store_ba.genesis_hash is not None
+
+
 # =====================================================================
 # PROVENANCE EVENT DIGEST TESTS
 # =====================================================================

@@ -136,8 +136,13 @@ class TamperEvidentAuditTrail:
     def __init__(self, log_file_path: str = "logs/epistemic_audit.jsonl", hmac_key: Optional[bytes] = None):
         self.log_path = Path(log_file_path)
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
+        if hmac_key is not None:
+            if not isinstance(hmac_key, (bytes, bytearray)):
+                raise TypeError(f"hmac_key must be bytes or bytearray, got {type(hmac_key).__name__}")
+            if len(hmac_key) == 0:
+                raise ValueError("hmac_key cannot be empty")
         self.hmac_key = hmac_key
-        if self.hmac_key:
+        if self.hmac_key is not None:
             self.genesis_hash = hmac.new(self.hmac_key, self.GENESIS_SEED, hashlib.sha256).hexdigest()
         else:
             self.genesis_hash = hashlib.sha256(self.GENESIS_SEED).hexdigest()
@@ -213,7 +218,7 @@ class TamperEvidentAuditTrail:
         """Computes SHA-256 or HMAC-SHA256 over the canonical JSON representation of the entry + prev_hash."""
         serialized = json.dumps(payload_data, sort_keys=True)
         combined = f"{prev_hash}:{serialized}".encode("utf-8")
-        if getattr(self, "hmac_key", None):
+        if getattr(self, "hmac_key", None) is not None:
             return hmac.new(self.hmac_key, combined, hashlib.sha256).hexdigest()
         return hashlib.sha256(combined).hexdigest()
 

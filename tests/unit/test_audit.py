@@ -168,6 +168,24 @@ def test_record_event_payload_too_large(temp_audit_file):
         audit.record_event(event)
 
 
+def test_tamper_evident_audit_trail_hmac_key_validation(temp_audit_file):
+    """Verifies fail-closed validation of hmac_key in TamperEvidentAuditTrail."""
+    with pytest.raises(ValueError, match="hmac_key cannot be empty"):
+        TamperEvidentAuditTrail(temp_audit_file, hmac_key=b"")
+
+    with pytest.raises(ValueError, match="hmac_key cannot be empty"):
+        TamperEvidentAuditTrail(temp_audit_file, hmac_key=bytearray())
+
+    for invalid_key in ("secret_str", 12345, ["key"], {"k": "v"}):
+        with pytest.raises(TypeError, match="hmac_key must be bytes or bytearray"):
+            TamperEvidentAuditTrail(temp_audit_file, hmac_key=invalid_key)
+
+    audit_ba = TamperEvidentAuditTrail(temp_audit_file, hmac_key=bytearray(b"valid_secret_123"))
+    event = AuditEvent(AuditLogLevel.INFO, "gate", "reason", "model", "valid")
+    rec = audit_ba.record_event(event)
+    assert rec["entry_hash"] is not None
+
+
 def test_receipt_empty_and_invalid_signing_keys():
     """Validates that empty keys and invalid key types are rejected by minting and verification."""
     rg = ReceiptGenerator()
