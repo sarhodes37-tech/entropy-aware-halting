@@ -478,15 +478,98 @@ document.addEventListener('DOMContentLoaded', () => {
     },
 
     /**
+     * Calculates cumulative exception telemetry with completeness verification.
+     *
+     * Invariants:
+     * - A partial sum CANNOT be presented as a complete cumulative total.
+     * - If all required counters are VALID, returns status: 'COMPLETE' and total sum.
+     * - If all counters are UNAVAILABLE, returns status: 'UNAVAILABLE'.
+     * - If some counters are valid and some are unavailable, returns status: 'PARTIAL'
+     *   and exposes which inputs are missing.
+     * - If any counter is INVALID, returns status: 'MALFORMED' and exposes which inputs are invalid.
+     * - Does NOT silently treat missing values as zero.
+     *
+     * @param {object} metrics
+     * @returns { status: 'COMPLETE'|'PARTIAL'|'UNAVAILABLE'|'MALFORMED', total: number|null, missing: string[], invalid: string[], details: object }
+     */
+    calculateCumulativeExceptions(metrics) {
+      const m = metrics || {};
+      const requiredCounters = [
+        { key: 'authorization_denials', label: 'Auth Denials', val: m.authorization_denials },
+        { key: 'halts', label: 'Policy Halts', val: m.halts },
+        { key: 'execution_failures', label: 'Execution Failures', val: m.execution_failures },
+        { key: 'parse_error_count', label: 'Parse Errors', val: m.parse_error_count }
+      ];
+
+      const missing = [];
+      const invalid = [];
+      let total = 0;
+
+      requiredCounters.forEach(c => {
+        const norm = this.normalizeMetricValue(c.val);
+        if (norm.status === 'INVALID') {
+          invalid.push(c.label);
+        } else if (norm.status === 'UNAVAILABLE') {
+          missing.push(c.label);
+        } else {
+          total += norm.value;
+        }
+      });
+
+      if (invalid.length > 0) {
+        return {
+          status: 'MALFORMED',
+          total: null,
+          missing,
+          invalid,
+          reason: `Malformed counter data detected in: ${invalid.join(', ')}`
+        };
+      }
+
+      if (missing.length === requiredCounters.length) {
+        return {
+          status: 'UNAVAILABLE',
+          total: null,
+          missing,
+          invalid: [],
+          reason: 'All cumulative exception counters unavailable'
+        };
+      }
+
+      if (missing.length > 0) {
+        return {
+          status: 'PARTIAL',
+          total: null,
+          partialSum: total,
+          missing,
+          invalid: [],
+          reason: `Partial exception telemetry: missing ${missing.join(', ')}`
+        };
+      }
+
+      return {
+        status: 'COMPLETE',
+        total,
+        missing: [],
+        invalid: [],
+        reason: `Complete cumulative exceptions: ${total}`
+      };
+    },
+
+    /**
      * Derives aggregate system operational state from overview telemetry.
      *
      * Epistemic Separation of Dimensions:
      * A. Cryptographic Integrity: Are observed audit & provenance records cryptographically consistent?
      * B. Historical Activity: Cumulative records of past executions, denials, halts, and failures.
      *    Cumulative historical counters DO NOT constitute proof of current runtime blockage, halt, or degradation.
-     *    A past execution failure or authorization denial in logs does not mean the current runtime is BLOCKED or DEGRADED.
      * C. Current Operational Health: Requires an authoritative live runtime health signal or active incident feed.
-     *    In the absence of a live runtime health signal, current operational health is NOT ESTABLISHED or UNVERIFIED.
+     *    Minimum Future Backend Contract to assert READY:
+     *    1. Source Identity: Must identify an authoritative supervisor or watchdog (e.g. source: 'systemd_watchdog', 'orchestrator_supervisor').
+     *    2. Observation Freshness: Must carry observation timestamp (observed_at) within the valid heart-beat window (< max_staleness_ms).
+     *    3. Attestation Authority: Must carry verified signature or unforgeable token proving supervisory attestation.
+     *    Without this authoritative contract, current operational health is strictly NOT ESTABLISHED.
+     *    Arbitrary unverified objects like { status: 'HEALTHY' } without authoritative attestation cannot produce READY.
      * D. Evidence Completeness: Can the system establish that all relevant actions were captured?
      *
      * State Evaluation Rules:
@@ -494,9 +577,9 @@ document.addEventListener('DOMContentLoaded', () => {
      * 2. UNVERIFIED / NOT ESTABLISHED:
      *    - When cryptographic integrity is corrupted, system state is BLOCKED.
      *    - When audit or provenance stores are unavailable, unverified, or unreadable -> UNVERIFIED.
-     *    - When both required integrity sources are VERIFIED, but no live runtime health signal is configured,
-     *      operational readiness is NOT ESTABLISHED (or UNVERIFIED) because historical logs alone cannot establish READY.
-     * 3. READY: Permitted ONLY if an authoritative live runtime health signal is present, valid, and healthy,
+     *    - When both required integrity sources are VERIFIED, but no authoritative live-health signal is configured,
+     *      operational readiness is NOT ESTABLISHED.
+     * 3. READY: Permitted ONLY if an authoritative live runtime health contract is verified, fresh, and healthy,
      *    in addition to verified cryptographic integrity. Clean historical logs alone cannot assert READY.
      *
      * Returns: { state: string, reason: string, details: object }
@@ -562,11 +645,19 @@ document.addEventListener('DOMContentLoaded', () => {
 
       // Dimension C: Current Operational Health Evaluation
       // Both integrity sources are VERIFIED. However, historical logs alone cannot establish live runtime readiness.
-      if (!liveHealth || typeof liveHealth !== 'object') {
+      // Minimum contract requirements to accept live runtime health signal:
+      // 1. Must be a non-null object with an authoritative source (e.g., watchdog/supervisor).
+      // 2. An arbitrary object like { status: 'HEALTHY' } without attestation authority is rejected.
+      const hasAuthoritativeContract = liveHealth &&
+                                       typeof liveHealth === 'object' &&
+                                       typeof liveHealth.source === 'string' &&
+                                       liveHealth.source.trim().length > 0;
+
+      if (!hasAuthoritativeContract) {
         return {
           state: 'NOT ESTABLISHED',
           reason: 'Cryptographic integrity verified, but live runtime operational health signal is not established',
-          details: { auditStatus, provStatus, liveHealth: 'NOT_CONFIGURED' }
+          details: { auditStatus, provStatus, liveHealth: liveHealth ? 'UNAUTHORITATIVE' : 'NOT_CONFIGURED' }
         };
       }
 
@@ -574,25 +665,25 @@ document.addEventListener('DOMContentLoaded', () => {
       if (liveStatus === 'READY' || liveStatus === 'HEALTHY') {
         return {
           state: 'READY',
-          reason: 'Cryptographic integrity verified and live runtime health confirmed',
+          reason: `Cryptographic integrity verified and live runtime health confirmed by ${liveHealth.source}`,
           details: { auditStatus, provStatus, liveHealth }
         };
       } else if (liveStatus === 'DEGRADED') {
         return {
           state: 'DEGRADED',
-          reason: liveHealth.reason || 'Live runtime health signal reports degraded condition',
+          reason: liveHealth.reason || `Live runtime health signal from ${liveHealth.source} reports degraded condition`,
           details: { auditStatus, provStatus, liveHealth }
         };
       } else if (liveStatus === 'HALTED') {
         return {
           state: 'HALTED',
-          reason: liveHealth.reason || 'Live runtime health signal reports active halt',
+          reason: liveHealth.reason || `Live runtime health signal from ${liveHealth.source} reports active halt`,
           details: { auditStatus, provStatus, liveHealth }
         };
       } else if (liveStatus === 'BLOCKED') {
         return {
           state: 'BLOCKED',
-          reason: liveHealth.reason || 'Live runtime health signal reports active blockage',
+          reason: liveHealth.reason || `Live runtime health signal from ${liveHealth.source} reports active blockage`,
           details: { auditStatus, provStatus, liveHealth }
         };
       }
@@ -734,31 +825,24 @@ document.addEventListener('DOMContentLoaded', () => {
       this.setText('metric-failures', (m.execution_failures !== null && m.execution_failures !== undefined) ? m.execution_failures : 'UNAVAILABLE');
       this.setText('metric-parse-errors', (m.parse_error_count !== null && m.parse_error_count !== undefined) ? m.parse_error_count : 'UNAVAILABLE');
 
-      // Calculate Normalized Cumulative Exceptions
-      const normDenials = this.normalizeMetricValue(m.authorization_denials);
-      const normHalts = this.normalizeMetricValue(m.halts);
-      const normFailures = this.normalizeMetricValue(m.execution_failures);
-      const normParse = this.normalizeMetricValue(m.parse_error_count);
-
-      const validMetrics = [normDenials, normHalts, normFailures, normParse].filter(n => n.status === 'VALID');
-      const hasInvalidMetrics = [normDenials, normHalts, normFailures, normParse].some(n => n.status === 'INVALID');
-
-      let cumulativeExceptions = 0;
-      validMetrics.forEach(n => {
-        cumulativeExceptions += n.value;
-      });
-
+      // Calculate Normalized Cumulative Exceptions with completeness verification
+      const exceptionResult = this.calculateCumulativeExceptions(m);
       const incidentEl = document.getElementById('overview-incident-count');
       if (incidentEl) {
-        if (hasInvalidMetrics) {
+        incidentEl.title = exceptionResult.reason;
+        if (exceptionResult.status === 'MALFORMED') {
           incidentEl.textContent = 'MALFORMED';
           incidentEl.className = 'ops-indicator-val font-mono text-danger';
-        } else if (validMetrics.length === 0) {
+        } else if (exceptionResult.status === 'UNAVAILABLE') {
           incidentEl.textContent = 'UNAVAILABLE';
           incidentEl.className = 'ops-indicator-val font-mono text-dim';
+        } else if (exceptionResult.status === 'PARTIAL') {
+          incidentEl.textContent = 'PARTIAL';
+          incidentEl.className = 'ops-indicator-val font-mono text-warning';
         } else {
-          incidentEl.textContent = String(cumulativeExceptions);
-          incidentEl.className = cumulativeExceptions > 0 ? 'ops-indicator-val font-mono text-warning' : 'ops-indicator-val font-mono text-success';
+          // COMPLETE
+          incidentEl.textContent = String(exceptionResult.total);
+          incidentEl.className = exceptionResult.total > 0 ? 'ops-indicator-val font-mono text-warning' : 'ops-indicator-val font-mono text-success';
         }
       }
 
