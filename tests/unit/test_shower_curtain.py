@@ -805,3 +805,100 @@ def test_transformer_exception_fails_closed_and_blocks_egress():
     with pytest.raises(RuntimeError) as exc_info:
         engine.transform_request({"phone": "Call 555-867-5309"}, session_id="sess_failing_trans")
     assert "Transformer internal failure" in str(exc_info.value)
+
+
+# ------------------------------------------------------------------------------
+# Targeted Guard Boundary Regression Tests for SensitiveDataDetector
+# ------------------------------------------------------------------------------
+def test_detector_fast_path_guard_boundaries():
+    from benchmarks.benchmark_detector_optimizations import (
+        BaselineUncachedSensitiveDataDetector
+    )
+
+    detector = SensitiveDataDetector()
+    baseline = BaselineUncachedSensitiveDataDetector()
+
+    # 1. Unicode digits trigger digit-guarded detection paths
+    # E.g. Arabic-Indic and Fullwidth digits recognized by regex engine (\d)
+    unicode_phone_text = "Phone Arabic: ٥٦٧-١٢٣-٤٥٦٧ and Fullwidth: １２３-４５６-７８９０"
+    res_opt_unicode = detector.detect(unicode_phone_text)
+    res_base_unicode = baseline.detect(unicode_phone_text)
+
+    # Prove output equivalence against pre-optimization baseline
+    assert len(res_opt_unicode) == len(res_base_unicode) == 2
+    for opt_d, base_d in zip(res_opt_unicode, res_base_unicode):
+        assert opt_d.category == base_d.category == SensitivityCategory.PHONE
+        assert opt_d.value == base_d.value
+        assert opt_d.span == base_d.span
+        assert opt_d.confidence == base_d.confidence
+        assert opt_d.detector_type == base_d.detector_type == "pattern"
+        assert opt_d.suggested_treatment == base_d.suggested_treatment
+        assert opt_d.metadata == base_d.metadata
+
+    # Unicode digit without phone format (superscript ²³¹) activates guard and matches baseline
+    unicode_superscript = "Area measure x²³¹ meters."
+    assert detector.detect(unicode_superscript) == baseline.detect(unicode_superscript) == []
+
+    # Standard ASCII digit detection verification
+    ascii_digit_text = "Call 555-123-4567 or visit 192.168.1.1"
+    res_ascii = detector.detect(ascii_digit_text)
+    assert res_ascii == baseline.detect(ascii_digit_text)
+    categories = [r.category for r in res_ascii]
+    assert SensitivityCategory.PHONE in categories
+    assert SensitivityCategory.IP_ADDRESS in categories
+
+    # 2. Mixed-case "Bearer" prefixes remain detectable
+    mixed_bearer = "Token bEaReR aBcDeF12345678901234567890"
+    res_bearer = detector.detect(mixed_bearer)
+    assert res_bearer == baseline.detect(mixed_bearer)
+    assert len(res_bearer) == 1
+    assert res_bearer[0].category == SensitivityCategory.CREDENTIAL
+    assert res_bearer[0].metadata.get("subtype") == "bearer_token"
+    assert res_bearer[0].value == "bEaReR aBcDeF12345678901234567890"
+
+    # 3. Valid private-key headers trigger private-key detection
+    priv_key = (
+        "-----BEGIN RSA PRIVATE KEY-----\n"
+        "MIIEowIBAAKCAQEA0...\n"
+        "-----END RSA PRIVATE KEY-----"
+    )
+    res_priv = detector.detect(priv_key)
+    assert res_priv == baseline.detect(priv_key)
+    assert len(res_priv) == 1
+    assert res_priv[0].category == SensitivityCategory.CREDENTIAL
+    assert res_priv[0].metadata.get("subtype") == "private_key"
+    assert res_priv[0].value == priv_key
+
+    # 4. Negative controls: spy wrappers prove guarded regexes are skipped
+    class RegexSpy:
+        def __init__(self, pattern):
+            self.pattern = pattern
+            self.call_count = 0
+
+        def finditer(self, text):
+            self.call_count += 1
+            return self.pattern.finditer(text)
+
+    spy_detector = SensitiveDataDetector()
+    spy_email = RegexSpy(spy_detector.email_regex)
+    spy_phone = RegexSpy(spy_detector.phone_regex)
+    spy_bearer = RegexSpy(spy_detector.bearer_regex)
+    spy_priv = RegexSpy(spy_detector.private_key_regex)
+    spy_path = RegexSpy(spy_detector.file_path_regex)
+
+    spy_detector.email_regex = spy_email
+    spy_detector.phone_regex = spy_phone
+    spy_detector.bearer_regex = spy_bearer
+    spy_detector.private_key_regex = spy_priv
+    spy_detector.file_path_regex = spy_path
+
+    clean_prose = "The quick brown fox jumps over the lazy dog."
+    res_clean = spy_detector.detect(clean_prose)
+    assert res_clean == []
+
+    # Prove guarded regexes were completely skipped (0 invocations)
+    assert spy_email.call_count == 0
+    assert spy_phone.call_count == 0
+    assert spy_bearer.call_count == 0
+    assert spy_priv.call_count == 0
+    assert spy_path.call_count == 0
