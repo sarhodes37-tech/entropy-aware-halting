@@ -203,10 +203,16 @@ def test_tamper_evident_audit_trail_hmac_key_validation(temp_audit_file):
     # Verify valid bytearray key computes exact HMAC-SHA256 and differs from unkeyed SHA-256
     ba_key = bytearray(b"valid_audit_secret_bytearray")
     audit_ba = TamperEvidentAuditTrail(temp_audit_file, hmac_key=ba_key)
+    assert isinstance(audit_ba.hmac_key, bytes)
     expected_ba_hash = hmac.new(ba_key, combined, hashlib.sha256).hexdigest()
     computed_ba_hash = audit_ba._compute_hash(prev_hash, payload)
     assert computed_ba_hash == expected_ba_hash
     assert computed_ba_hash != unkeyed_expected
+
+    # Mutate the original bytearray and verify the stored snapshot remains unaffected
+    ba_key[0] = ord(b"X")
+    assert audit_ba._compute_hash(prev_hash, payload) == expected_ba_hash
+    assert isinstance(audit_ba.hmac_key, bytes)
 
 
 def test_receipt_empty_and_invalid_signing_keys():

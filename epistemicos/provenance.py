@@ -196,7 +196,9 @@ class LocalProvenanceStore(ProvenanceStore):
                 raise TypeError(f"hmac_key must be bytes or bytearray, got {type(hmac_key).__name__}")
             if len(hmac_key) == 0:
                 raise ValueError("hmac_key cannot be empty")
-        self.hmac_key = hmac_key
+            self.hmac_key: Optional[bytes] = bytes(hmac_key)
+        else:
+            self.hmac_key = None
         self._lock = threading.Lock()
         if self.hmac_key is not None:
             self.genesis_hash = hmac.new(self.hmac_key, self.GENESIS_SEED, hashlib.sha256).hexdigest()

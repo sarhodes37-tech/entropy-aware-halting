@@ -1024,10 +1024,16 @@ def test_local_provenance_store_hmac_key_validation(tmp_path):
     # Verify valid bytearray key computes exact HMAC-SHA256 and differs from unkeyed SHA-256
     ba_key = bytearray(b"valid_provenance_secret_bytearray")
     store_ba = LocalProvenanceStore(log_file, hmac_key=ba_key)
+    assert isinstance(store_ba.hmac_key, bytes)
     expected_ba_hash = hmac.new(ba_key, combined, hashlib.sha256).hexdigest()
     computed_ba_hash = store_ba._compute_chain_hash(prev_hash, payload)
     assert computed_ba_hash == expected_ba_hash
     assert computed_ba_hash != unkeyed_expected
+
+    # Mutate the original bytearray and verify the stored snapshot remains unaffected
+    ba_key[0] = ord(b"X")
+    assert store_ba._compute_chain_hash(prev_hash, payload) == expected_ba_hash
+    assert isinstance(store_ba.hmac_key, bytes)
 
 
 # =====================================================================
