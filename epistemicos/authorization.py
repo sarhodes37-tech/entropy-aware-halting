@@ -347,6 +347,9 @@ def normalize_target_scope(raw_target: str) -> str:
             parsed = urlparse("http://localhost" + raw_path)
             raw_path = parsed.path or "/"
     clean_path = unquote(raw_path).replace("\\", "/")
+    # Reject decoded NUL and control characters (CR, LF, TAB, vertical tab, form feed, NUL) after percent-decoding
+    if any(c in clean_path for c in ('\x00', '\r', '\n', '\t', '\x0b', '\x0c')):
+        raise ValueError(f"Malformed target resource contains decoded control characters or NUL: {raw_target!r}")
     norm_path = os.path.normpath(clean_path)
     if norm_path in (".", "", "/"):
         norm_path = "/"

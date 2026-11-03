@@ -294,14 +294,32 @@ def test_parse_url_authority_structure_rejects_embedded_whitespace_and_control_c
     "/api/\nusers",
     "/api/\rusers",
     "/api/\x00users",
+    "/api/%00users",
+    "/api/%0Ausers",
+    "/api/%0Dusers",
+    "/api/%09users",
     "http://example.com/api/\tusers",
     "http://example.com/api/\nusers",
+    "http://example.com/api/%00users",
+    "http://example.com/api/%0ausers",
     " http://example.com/api",
+    "",
+    None,
+    12345,
 ])
 def test_normalize_target_scope_raises_on_malformed_targets(malformed_target):
-    """Verifies that normalize_target_scope raises ValueError for whitespace/control-char anomalies rather than colliding with root."""
-    with pytest.raises(ValueError, match="Malformed target resource contains unencoded whitespace or control characters"):
+    """Verifies that normalize_target_scope raises ValueError for missing, empty, non-string, whitespace, control-char, and percent-encoded control anomalies."""
+    with pytest.raises(ValueError):
         normalize_target_scope(malformed_target)
+
+
+def test_normalize_target_scope_preserves_valid_percent_encoded_paths():
+    """Verifies that legitimate percent-encoded paths (e.g., spaces, utf-8, symbols) normalize cleanly."""
+    res_space = normalize_target_scope("/api/my%20documents")
+    assert res_space == "target::/api/my documents"
+
+    res_url = normalize_target_scope("https://example.com/api/%E2%9C%93/status")
+    assert res_url == "target:example.com:/api/✓/status"
 
 
 def test_malformed_target_fails_closed_in_authorization_and_fencing(tmp_path):
@@ -352,8 +370,28 @@ def test_malformed_target_fails_closed_in_authorization_and_fencing(tmp_path):
         assert root_cap.scope_key == root_scope
         assert store.get_scope_fencing_token(root_scope) == 1
 
-        # 2. Attempt issuance using malformed targets (whitespace, control chars, empty, non-string)
-        for malformed in ["/\x00malformed", " /root", "/root\t", "/root\n", "", None, 123]:
+        # Capture journal baseline state immediately after issuing legitimate root capability
+        if isinstance(store, FileAuthorizationStore):
+            with open(journal_path, "r", encoding="utf-8") as jf:
+                journal_lines_baseline = jf.readlines()
+            assert len(journal_lines_baseline) == 1
+        else:
+            in_mem_caps_baseline = len(store._capabilities)
+            assert in_mem_caps_baseline == 1
+
+        # 2. Attempt issuance using malformed targets (whitespace, control chars, percent-encoded controls, empty, non-string)
+        for malformed in [
+            "/\x00malformed",
+            " /root",
+            "/root\t",
+            "/root\n",
+            "/root/%00malformed",
+            "/root/%0Amalformed",
+            "/root/%0Dmalformed",
+            "",
+            None,
+            123,
+        ]:
             try:
                 bad_cap, bad_reason = authority.evaluate_and_issue_capability(
                     action_name="read_root",
@@ -365,20 +403,38 @@ def test_malformed_target_fails_closed_in_authorization_and_fencing(tmp_path):
             except ValueError:
                 pass  # Raising ValueError also correctly fails closed
 
+        # Assert that rejected operations appended no journal records
+        if isinstance(store, FileAuthorizationStore):
+            with open(journal_path, "r", encoding="utf-8") as jf:
+                journal_lines_after_issuance = jf.readlines()
+            assert len(journal_lines_after_issuance) == len(journal_lines_baseline)
+            assert journal_lines_after_issuance == journal_lines_baseline
+        else:
+            assert len(store._capabilities) == in_mem_caps_baseline
+
         # 3. Assert root fencing generation did not advance and root scope token is still 1
         assert store.get_scope_fencing_token(root_scope) == 1
 
-        # 4. Attempt verification using malformed target against root capability -> must be rejected
-        ok, v_reason, cap_ret = authority.verify_capability(
-            token_id=root_cap.token_id,
-            action_name="read_root",
-            target="/\x00malformed",
-            canonical_request_digest="digest_root_001",
-            executor_id="default_executor",
-            task_id="task_1",
-        )
-        assert ok is False
-        assert "TARGET_MISMATCH" in v_reason
+        # 4. Attempt verification using malformed targets against root capability -> must be rejected
+        for malformed in ["/\x00malformed", "/%00malformed", "/root\t"]:
+            ok, v_reason, cap_ret = authority.verify_capability(
+                token_id=root_cap.token_id,
+                action_name="read_root",
+                target=malformed,
+                canonical_request_digest="digest_root_001",
+                executor_id="default_executor",
+                task_id="task_1",
+            )
+            assert ok is False
+            assert "TARGET_MISMATCH" in v_reason
+
+        # Assert verification checks appended no journal records
+        if isinstance(store, FileAuthorizationStore):
+            with open(journal_path, "r", encoding="utf-8") as jf:
+                journal_lines_after_verify = jf.readlines()
+            assert len(journal_lines_after_verify) == len(journal_lines_baseline)
+        else:
+            assert len(store._capabilities) == in_mem_caps_baseline
 
         # 5. Precomputed scope key spoofing: attempting to register an external capability with spoofed root scope_key
         spoofed_cap = Capability(
@@ -399,6 +455,12 @@ def test_malformed_target_fails_closed_in_authorization_and_fencing(tmp_path):
         with pytest.raises(ValueError, match="scope_key mismatch|Malformed target"):
             registry.register_capability(spoofed_cap)
 
-        # Confirm store still has only root_cap and fencing generation remains 1
+        # Confirm store still has only root_cap, fencing generation remains 1, and journal is unmodified
         assert store.get_scope_fencing_token(root_scope) == 1
         assert registry.get_capability("AUTH-FORGED-001") is None
+        if isinstance(store, FileAuthorizationStore):
+            with open(journal_path, "r", encoding="utf-8") as jf:
+                journal_lines_final = jf.readlines()
+            assert len(journal_lines_final) == len(journal_lines_baseline)
+        else:
+            assert len(store._capabilities) == in_mem_caps_baseline
