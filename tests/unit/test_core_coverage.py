@@ -367,9 +367,8 @@ class TestCoreCoverageOrchestratorEnforcement:
             assert res["vector_cleanup"]["vectors_purged"] == 0
             assert res["vector_cleanup"]["vectors_pending"] == 0
 
-    def test_restricted_principals_and_non_dict_execution_outcome(self):
-        """Tests lines 577 and 851: Claimed requestor_id with restricted policy principals,
-        and non-dict execution outcome handling."""
+    def test_restricted_principals_validation(self):
+        """Tests line 577: Claimed requestor_id with restricted policy principals."""
         with tempfile.NamedTemporaryFile() as tf_audit, tempfile.NamedTemporaryFile() as tf_prov:
             store = LocalProvenanceStore(log_path=tf_prov.name)
             policy = Policy(
@@ -389,9 +388,8 @@ class TestCoreCoverageOrchestratorEnforcement:
             )
             orch.gates = []
 
-            # 1. Line 577: claimed_req_id with policy.allowed_principals != {'*'}
             payload = {"policy_id": "pol", "task": "read"}
-            ctx1 = {
+            ctx = {
                 "actual_executable": lambda: "ok",
                 "action_name": "read_file",
                 "target": "data.txt",
@@ -399,31 +397,56 @@ class TestCoreCoverageOrchestratorEnforcement:
                 "request_id": "r1",
                 "requestor_id": "admin",
             }
-            res1 = orch.process_submission(raw_payload=payload, context=ctx1)
-            assert res1["status"] == "HALTED"
-            assert res1["execution_status"] == "DENIED"
+            res = orch.process_submission(raw_payload=payload, context=ctx)
+            assert res["status"] == "HALTED"
+            assert res["execution_status"] == "DENIED"
             denied_msg = "AUTHORIZATION_DENIED_AUTHENTICATED_PRINCIPAL_REQUIRED"
-            assert denied_msg in res1["reason"]
+            assert denied_msg in res["reason"]
 
-            # 2. Line 851: execute_protected_action returns non-dict execution_outcome
-            boundary.execute_protected_action = lambda *args, **kwargs: "raw_string_outcome"
-            ctx2 = {
-                "actual_executable": lambda: "ok",
-                "action_name": "read_file",
-                "target": "data.txt",
-                "correlation_id": "c2",
-                "request_id": "r2",
-            }
+    def test_invalid_boundary_response_fails_closed(self):
+        """Tests that invalid boundary responses (string, None, int, list) fail closed
+        and never report ALLOWED or EXECUTED."""
+        with tempfile.NamedTemporaryFile() as tf_audit, tempfile.NamedTemporaryFile() as tf_prov:
+            store = LocalProvenanceStore(log_path=tf_prov.name)
             policy_star = Policy(
-                policy_id="pol2",
+                policy_id="pol_star",
                 allowed_operations={"read_file"},
                 allowed_resources={"data.txt"},
                 allowed_principals={"*"},
             )
-            orch.authority.default_policy = policy_star
-            res2 = orch.process_submission(
-                raw_payload={"policy_id": "pol2", "task": "read"}, context=ctx2
+            authority = AuthorizationAuthority(default_policy=policy_star)
+            boundary = TrustedExecutionBoundary(
+                provenance_store=store, authority=authority
             )
-            assert res2["status"] == "ALLOWED"
-            assert res2["execution_status"] == "EXECUTED"
-            assert res2["execution_outcome"] == "raw_string_outcome"
+            orch = EpistemicOrchestrator(
+                audit_log_path=tf_audit.name,
+                execution_boundary=boundary,
+                authority=authority,
+            )
+            orch.gates = []
+
+            invalid_outcomes = [
+                "raw_string_outcome",
+                None,
+                12345,
+                ["invalid", "list"],
+                True,
+            ]
+
+            for invalid_val in invalid_outcomes:
+                boundary.execute_protected_action = lambda *args, **kwargs: invalid_val
+                ctx = {
+                    "actual_executable": lambda: "ok",
+                    "action_name": "read_file",
+                    "target": "data.txt",
+                    "correlation_id": "corr-invalid-boundary",
+                    "request_id": "req-invalid-boundary",
+                }
+                res = orch.process_submission(
+                    raw_payload={"policy_id": "pol_star", "task": "read"}, context=ctx
+                )
+                assert res["status"] == "HALTED"
+                assert res["execution_status"] == "EXECUTION_FAILED"
+                assert res["gate"] == "TrustedExecutionBoundary"
+                assert "Invalid execution boundary response type" in res["reason"]
+                assert res["vectors_revoked"] >= 1
