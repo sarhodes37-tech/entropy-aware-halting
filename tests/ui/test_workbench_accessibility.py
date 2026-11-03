@@ -581,6 +581,19 @@ def test_keyboard_navigation_and_focus_management_workflows(a11y_comprehensive_s
         page.wait_for_selector("#trace-detail-content:not(.hidden)")
         assert page.locator("#trace-detail-content").is_visible()
 
+        # 4b. Trace to Provenance Navigation Focus Shift & Announcement
+        prov_shortcut_btn = page.locator(
+            "#trace-detail-content button:has-text('View in Provenance')"
+        ).first
+        if prov_shortcut_btn.is_visible():
+            prov_shortcut_btn.click()
+            page.wait_for_function(
+                "() => document.getElementById('a11y-status-announcer')"
+                ".textContent.includes('Provenance Explorer')"
+            )
+            assert page.evaluate("() => document.activeElement.id") == "provenance-search"
+            assert page.evaluate("() => window.ObservatoryApp.state.currentTab") == "provenance"
+
         # 5. Keyboard Navigation in Provenance Listbox
         page.click("#tab-provenance")
         page.wait_for_selector("#provenance-record-list .trace-item")
