@@ -10,6 +10,7 @@ import time
 import uuid
 import hmac
 import hashlib
+import math
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
@@ -249,11 +250,29 @@ class SideEffectPolicyEngine:
     def __init__(
         self,
         registry: Optional[ActionRegistry] = None,
-        signing_secret: Optional[str] = None
+        signing_secret: Optional[Union[str, bytes, bytearray]] = None
     ):
         self.registry = registry or ActionRegistry()
-        self.signing_secret = signing_secret or os.getenv("EPISTEMICOS_APPROVAL_SECRET")
+        raw_secret = (
+            signing_secret
+            if signing_secret is not None
+            else os.getenv("EPISTEMICOS_APPROVAL_SECRET")
+        )
+        self.signing_secret: Optional[bytes] = self._normalize_signing_secret(raw_secret)
         self._violation_counts: Dict[str, int] = {}  # Map correlation_id / session_id to attempt count
+
+    @staticmethod
+    def _normalize_signing_secret(secret: Any) -> Optional[bytes]:
+        """Safely normalizes signing secret to non-empty bytes or None if absent/empty."""
+        if secret is None:
+            return None
+        if isinstance(secret, str):
+            b = secret.encode("utf-8")
+        elif isinstance(secret, (bytes, bytearray)):
+            b = bytes(secret)
+        else:
+            return None
+        return b if len(b) > 0 else None
 
     def compute_canonical_digest(self, payload: Any) -> str:
         """
@@ -283,7 +302,7 @@ class SideEffectPolicyEngine:
             raise ValueError("No signing secret configured for approval signature computation")
         sig_data = ":".join(str(x) for x in record_data)
         return hmac.new(
-            self.signing_secret.encode("utf-8"),
+            self.signing_secret,
             sig_data.encode("utf-8"),
             hashlib.sha256
         ).hexdigest()
@@ -334,11 +353,30 @@ class SideEffectPolicyEngine:
         if record.policy_version != expected_policy_version:
             return False, f"Approval policy version mismatch: expected '{expected_policy_version}', got '{record.policy_version}'"
 
-        # Expiration check
+        # Expiration check: validate numeric finite expiration timestamp
         if record.expires_at is not None:
+            if not isinstance(record.expires_at, (int, float)) or isinstance(record.expires_at, bool):
+                try:
+                    exp_val = float(record.expires_at)
+                except (ValueError, TypeError):
+                    return False, "Approval record expiration is malformed"
+            else:
+                exp_val = float(record.expires_at)
+
+            if not math.isfinite(exp_val):
+                return False, "Approval record expiration is non-finite"
+
             now = current_time if current_time is not None else time.time()
-            if now >= record.expires_at:
+            if now >= exp_val:
                 return False, "Approval record expired"
+
+        # Validate signature format (64-character hexadecimal string)
+        if not record.signature or not isinstance(record.signature, str) or len(record.signature) != 64:
+            return False, "Approval signature format invalid"
+        try:
+            int(record.signature, 16)
+        except ValueError:
+            return False, "Approval signature is not valid hex"
 
         # Verify signature using HMAC-SHA256 and constant-time comparison
         if record.expires_at is not None:
@@ -364,12 +402,12 @@ class SideEffectPolicyEngine:
             )
         sig_data = ":".join(sig_tuple)
         expected_sig = hmac.new(
-            self.signing_secret.encode("utf-8"),
+            self.signing_secret,
             sig_data.encode("utf-8"),
             hashlib.sha256
         ).hexdigest()
 
-        if not isinstance(record.signature, str) or not hmac.compare_digest(record.signature, expected_sig):
+        if not hmac.compare_digest(record.signature.lower(), expected_sig.lower()):
             return False, "Approval signature verification failed"
 
         return True, "Approval record validated"
