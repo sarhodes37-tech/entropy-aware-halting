@@ -582,17 +582,28 @@ def test_keyboard_navigation_and_focus_management_workflows(a11y_comprehensive_s
         assert page.locator("#trace-detail-content").is_visible()
 
         # 4b. Trace to Provenance Navigation Focus Shift & Announcement
+        selected_corr = page.evaluate("() => window.ObservatoryApp.state.selectedTraceId")
         prov_shortcut_btn = page.locator(
             "#trace-detail-content button:has-text('View in Provenance')"
         ).first
-        if prov_shortcut_btn.is_visible():
-            prov_shortcut_btn.click()
-            page.wait_for_function(
-                "() => document.getElementById('a11y-status-announcer')"
-                ".textContent.includes('Provenance Explorer')"
-            )
-            assert page.evaluate("() => document.activeElement.id") == "provenance-search"
-            assert page.evaluate("() => window.ObservatoryApp.state.currentTab") == "provenance"
+        assert prov_shortcut_btn.is_visible()
+
+        # Test keyboard activation of shortcut button
+        prov_shortcut_btn.focus()
+        page.keyboard.press("Enter")
+        page.wait_for_function(
+            f"() => document.getElementById('a11y-status-announcer')"
+            f".textContent.includes('Filtered: {selected_corr}')"
+        )
+        assert page.evaluate("() => window.ObservatoryApp.state.currentTab") == "provenance"
+        assert page.evaluate("() => document.activeElement.id") == "provenance-search"
+        search_val = page.locator("#provenance-search").input_value()
+        assert search_val == selected_corr
+        # Verify text selection inside the input
+        sel_range = page.evaluate(
+            "() => [document.activeElement.selectionStart, document.activeElement.selectionEnd]"
+        )
+        assert sel_range == [0, len(selected_corr)]
 
         # 5. Keyboard Navigation in Provenance Listbox
         page.click("#tab-provenance")
