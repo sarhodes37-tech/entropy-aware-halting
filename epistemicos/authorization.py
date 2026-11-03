@@ -60,12 +60,22 @@ class HumanApprovalRecord:
         return f"{self.approval_id}:{self.approver_id}:{self.action_name}:{self.target}:{self.action_digest}:{self.request_id}:{self.policy_version}:{self.expires_at}:{self.task_id or ''}"
 
     def sign(self, signing_secret: bytes) -> str:
+        if not isinstance(signing_secret, (bytes, bytearray)):
+            raise TypeError(f"signing_secret must be bytes or bytearray, got {type(signing_secret).__name__}")
+        if len(signing_secret) == 0:
+            raise ValueError("signing_secret cannot be empty")
         payload = self.compute_signature_payload()
         self.signature = hmac.new(signing_secret, payload.encode("utf-8"), hashlib.sha256).hexdigest()
         return self.signature
 
     def verify_signature(self, signing_secret: bytes, current_time: Optional[float] = None) -> bool:
-        if not self.signature or not isinstance(self.signature, str):
+        if not isinstance(signing_secret, (bytes, bytearray)) or len(signing_secret) == 0:
+            return False
+        if not self.signature or not isinstance(self.signature, str) or len(self.signature) != 64:
+            return False
+        try:
+            int(self.signature, 16)
+        except ValueError:
             return False
 
         now = current_time if current_time is not None else time.time()
@@ -82,7 +92,7 @@ class HumanApprovalRecord:
                 return False
 
         expected_sig = hmac.new(signing_secret, self.compute_signature_payload().encode("utf-8"), hashlib.sha256).hexdigest()
-        return hmac.compare_digest(self.signature, expected_sig)
+        return hmac.compare_digest(self.signature.lower(), expected_sig.lower())
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -181,12 +191,22 @@ class TrustedTaskContract:
         return hashlib.sha256(serialized).hexdigest()
 
     def sign(self, signing_secret: bytes) -> str:
+        if not isinstance(signing_secret, (bytes, bytearray)):
+            raise TypeError(f"signing_secret must be bytes or bytearray, got {type(signing_secret).__name__}")
+        if len(signing_secret) == 0:
+            raise ValueError("signing_secret cannot be empty")
         digest = self.compute_contract_digest()
         self.signature = hmac.new(signing_secret, digest.encode("utf-8"), hashlib.sha256).hexdigest()
         return self.signature
 
     def verify_signature(self, signing_secret: bytes, current_time: Optional[float] = None) -> bool:
-        if not self.signature or not isinstance(self.signature, str):
+        if not isinstance(signing_secret, (bytes, bytearray)) or len(signing_secret) == 0:
+            return False
+        if not self.signature or not isinstance(self.signature, str) or len(self.signature) != 64:
+            return False
+        try:
+            int(self.signature, 16)
+        except ValueError:
             return False
 
         if self.is_expired(current_time=current_time):
@@ -194,7 +214,7 @@ class TrustedTaskContract:
 
         digest = self.compute_contract_digest()
         expected_sig = hmac.new(signing_secret, digest.encode("utf-8"), hashlib.sha256).hexdigest()
-        return hmac.compare_digest(self.signature, expected_sig)
+        return hmac.compare_digest(self.signature.lower(), expected_sig.lower())
 
     def is_expired(self, current_time: Optional[float] = None) -> bool:
         if self.expires_at is None:

@@ -136,6 +136,50 @@ class TestHumanApprovalAndContractInvariants:
         rec_nan.expires_at = "not-a-number"
         assert rec_nan.verify_signature(secret) is False
 
+    def test_human_approval_signing_secret_and_signature_security(self):
+        rec = HumanApprovalRecord(
+            approval_id="app-sec-1",
+            approver_id="admin",
+            action_name="deploy",
+            target="prod",
+            action_digest="abc",
+            request_id="req-sec-1",
+        )
+        # 1. sign() rejects non-bytes or empty signing secret
+        with pytest.raises(TypeError, match="signing_secret must be bytes or bytearray"):
+            rec.sign(None)
+        with pytest.raises(TypeError, match="signing_secret must be bytes or bytearray"):
+            rec.sign("string-secret")
+        with pytest.raises(ValueError, match="signing_secret cannot be empty"):
+            rec.sign(b"")
+        with pytest.raises(ValueError, match="signing_secret cannot be empty"):
+            rec.sign(bytearray())
+
+        valid_secret = b"valid-secret-key-32-bytes-long!"
+        rec.sign(valid_secret)
+        assert rec.verify_signature(valid_secret) is True
+
+        # 2. verify_signature() fails closed on empty or non-bytes keys
+        assert rec.verify_signature(b"") is False
+        assert rec.verify_signature(bytearray()) is False
+        assert rec.verify_signature(None) is False
+        assert rec.verify_signature("string-secret") is False
+        assert rec.verify_signature(12345) is False
+
+        # 3. verify_signature() fails closed on invalid signature formats
+        rec_tampered = copy.deepcopy(rec)
+        rec_tampered.signature = "x" * 64  # non-hex
+        assert rec_tampered.verify_signature(valid_secret) is False
+
+        rec_tampered.signature = "abc"  # too short
+        assert rec_tampered.verify_signature(valid_secret) is False
+
+        rec_tampered.signature = ""  # empty
+        assert rec_tampered.verify_signature(valid_secret) is False
+
+        rec_tampered.signature = None  # None
+        assert rec_tampered.verify_signature(valid_secret) is False
+
     def test_human_approval_from_input_validation(self):
         data_missing = {
             "approval_id": "app-1",
@@ -200,6 +244,47 @@ class TestHumanApprovalAndContractInvariants:
 
         assert contract.is_action_prohibited("read", "db://cluster-1/users") is True
         assert contract.is_action_permitted("read", "db://cluster-1/users") is False
+
+    def test_trusted_task_contract_signing_secret_and_signature_security(self):
+        contract = TrustedTaskContract(
+            task_id="task-sec-1",
+            permitted_actions={"read"},
+            resource_scope={"target-1"},
+        )
+        # 1. sign() rejects non-bytes or empty signing secret
+        with pytest.raises(TypeError, match="signing_secret must be bytes or bytearray"):
+            contract.sign(None)
+        with pytest.raises(TypeError, match="signing_secret must be bytes or bytearray"):
+            contract.sign("string-secret")
+        with pytest.raises(ValueError, match="signing_secret cannot be empty"):
+            contract.sign(b"")
+        with pytest.raises(ValueError, match="signing_secret cannot be empty"):
+            contract.sign(bytearray())
+
+        valid_secret = b"valid-contract-secret-key-32b!!"
+        contract.sign(valid_secret)
+        assert contract.verify_signature(valid_secret) is True
+
+        # 2. verify_signature() fails closed on empty or non-bytes keys
+        assert contract.verify_signature(b"") is False
+        assert contract.verify_signature(bytearray()) is False
+        assert contract.verify_signature(None) is False
+        assert contract.verify_signature("string-secret") is False
+        assert contract.verify_signature(99999) is False
+
+        # 3. verify_signature() fails closed on invalid signature formats
+        contract_tampered = copy.deepcopy(contract)
+        contract_tampered.signature = "y" * 64  # non-hex
+        assert contract_tampered.verify_signature(valid_secret) is False
+
+        contract_tampered.signature = "deadbeef"  # too short
+        assert contract_tampered.verify_signature(valid_secret) is False
+
+        contract_tampered.signature = ""
+        assert contract_tampered.verify_signature(valid_secret) is False
+
+        contract_tampered.signature = None
+        assert contract_tampered.verify_signature(valid_secret) is False
 
         contract_scoped = TrustedTaskContract(
             task_id="task-2",
