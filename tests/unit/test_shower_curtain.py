@@ -805,3 +805,55 @@ def test_transformer_exception_fails_closed_and_blocks_egress():
     with pytest.raises(RuntimeError) as exc_info:
         engine.transform_request({"phone": "Call 555-867-5309"}, session_id="sess_failing_trans")
     assert "Transformer internal failure" in str(exc_info.value)
+
+
+# ------------------------------------------------------------------------------
+# Targeted Guard Boundary Regression Tests for SensitiveDataDetector
+# ------------------------------------------------------------------------------
+def test_detector_fast_path_guard_boundaries():
+    detector = SensitiveDataDetector()
+
+    # 1. Unicode digits trigger digit-guarded detection paths
+    # E.g. Arabic-Indic digits: \u0665\u0666\u0667
+    unicode_digit_text = "Phone numbers with unicode digits: ٥٥٥-١٢٣-٤٥٦٧"
+    res_unicode = detector.detect(unicode_digit_text)
+    # Confirm digit guard passed and evaluated without error
+    assert isinstance(res_unicode, list)
+
+    # Standard ASCII digit detection verification
+    ascii_digit_text = "Call 555-123-4567 or visit 192.168.1.1"
+    res_ascii = detector.detect(ascii_digit_text)
+    categories = [r.category for r in res_ascii]
+    assert SensitivityCategory.PHONE in categories
+    assert SensitivityCategory.IP_ADDRESS in categories
+
+    # 2. Mixed-case "Bearer" prefixes remain detectable
+    mixed_bearer = "Token bEaReR aBcDeF12345678901234567890"
+    res_bearer = detector.detect(mixed_bearer)
+    assert len(res_bearer) == 1
+    assert res_bearer[0].category == SensitivityCategory.CREDENTIAL
+    assert res_bearer[0].metadata.get("subtype") == "bearer_token"
+    assert res_bearer[0].value == "bEaReR aBcDeF12345678901234567890"
+
+    # 3. Valid private-key headers trigger private-key detection
+    priv_key = (
+        "-----BEGIN RSA PRIVATE KEY-----\n"
+        "MIIEowIBAAKCAQEA0...\n"
+        "-----END RSA PRIVATE KEY-----"
+    )
+    res_priv = detector.detect(priv_key)
+    assert len(res_priv) == 1
+    assert res_priv[0].category == SensitivityCategory.CREDENTIAL
+    assert res_priv[0].metadata.get("subtype") == "private_key"
+    assert res_priv[0].value == priv_key
+
+    # 4. Negative cases: ordinary text without required triggers
+    clean_prose = "The quick brown fox jumps over the lazy dog."
+    res_clean = detector.detect(clean_prose)
+    assert res_clean == []
+
+    clean_no_digits = (
+        "No numbers, no at-symbols, no paths, no bearer tokens here."
+    )
+    res_no_digits = detector.detect(clean_no_digits)
+    assert res_no_digits == []
