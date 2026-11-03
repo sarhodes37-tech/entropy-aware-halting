@@ -10,9 +10,10 @@ import bisect
 import functools
 import math
 import re
+from collections import Counter
 from enum import Enum
 from dataclasses import dataclass, field
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional, Tuple, Set
 
 
 class SensitivityCategory(Enum):
@@ -69,15 +70,11 @@ def _luhn_check(card_number: str) -> bool:
 
 
 def _shannon_entropy(s: str) -> float:
-    """Calculates Shannon entropy of string in bits per character.
-    Optimized: builds a local frequency dictionary to avoid Counter class instantiation overhead.
-    """
+    """Calculates Shannon entropy of string in bits per character."""
     if not s:
         return 0.0
     length = len(s)
-    counts = {}
-    for c in s:
-        counts[c] = counts.get(c, 0) + 1
+    counts = Counter(s)
     return -sum((count / length) * math.log2(count / length) for count in counts.values())
 
 
