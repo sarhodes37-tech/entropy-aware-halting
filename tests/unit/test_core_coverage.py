@@ -453,6 +453,10 @@ class TestCoreCoverageOrchestratorEnforcement:
                 assert res["vectors_revoked"] >= 1
 
             # 2. Dictionary responses with invalid/missing/null/unknown/non-string status
+            class HostileEqualsSuccess:
+                def __eq__(self, other):
+                    return True
+
             invalid_dict_outcomes = [
                 {},
                 {"result": "ok"},  # missing status
@@ -460,6 +464,7 @@ class TestCoreCoverageOrchestratorEnforcement:
                 {"status": "GARBAGE"},  # unknown status
                 {"status": 123},  # non-string status
                 {"status": False},  # boolean status
+                {"status": HostileEqualsSuccess()},  # hostile equality duck-typing
             ]
             for invalid_dict in invalid_dict_outcomes:
                 boundary.execute_protected_action = lambda *args, **kwargs: invalid_dict
@@ -495,3 +500,26 @@ class TestCoreCoverageOrchestratorEnforcement:
             assert res_success["status"] == "ALLOWED"
             assert res_success["execution_status"] == "EXECUTED"
             assert res_success["execution_outcome"] == valid_success
+
+            # 4. Positive control: genuine UNVERIFIED_SUCCESS response halts with evidence failure
+            valid_unverified = {
+                "status": "UNVERIFIED_SUCCESS",
+                "reason": "Missing required signature evidence",
+            }
+            boundary.execute_protected_action = lambda *args, **kwargs: valid_unverified
+            ctx_unverified = {
+                "actual_executable": lambda: "ok",
+                "action_name": "read_file",
+                "target": "data.txt",
+                "correlation_id": "corr-valid-unverified",
+                "request_id": "req-valid-unverified",
+            }
+            res_unverified = orch.process_submission(
+                raw_payload={"policy_id": "pol_star", "task": "read"}, context=ctx_unverified
+            )
+            assert res_unverified["status"] == "HALTED"
+            assert res_unverified["execution_status"] == "UNVERIFIED_SUCCESS"
+            assert res_unverified["gate"] == "TrustedExecutionBoundary"
+            assert "Execution boundary verification failed" in res_unverified["reason"]
+            assert res_unverified["execution_outcome"] == valid_unverified
+            assert res_unverified["vectors_revoked"] >= 0

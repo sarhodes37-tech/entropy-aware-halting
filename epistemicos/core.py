@@ -761,7 +761,11 @@ class EpistemicOrchestrator:
                             )
 
                         out_status = execution_outcome.get("status")
-                        if out_status not in ("SUCCESS", "UNVERIFIED_SUCCESS", "EXECUTION_OUTCOME_UNKNOWN"):
+                        if type(out_status) is not str or out_status not in (
+                            "SUCCESS",
+                            "UNVERIFIED_SUCCESS",
+                            "EXECUTION_OUTCOME_UNKNOWN",
+                        ):
                             raise ValueError(
                                 f"Invalid execution boundary response status: {out_status!r}"
                             )
