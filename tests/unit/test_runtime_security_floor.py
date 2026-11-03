@@ -359,7 +359,7 @@ def test_normalize_target_scope_raises_on_malformed_targets(malformed_target):
 
 def test_normalize_target_scope_input_length_bounds():
     """Verifies that oversized target strings raise ValueError before urlparse/unquote, while boundary inputs are accepted."""
-    with patch("urllib.parse.urlparse") as mock_urlparse, patch("urllib.parse.unquote") as mock_unquote:
+    with patch("epistemicos.authorization.urlparse") as mock_urlparse, patch("epistemicos.authorization.unquote") as mock_unquote:
         oversized = "/" + "a" * 4096  # Total length 4097 > 4096
         with pytest.raises(ValueError, match="exceeds maximum input length of 4096"):
             normalize_target_scope(oversized)
