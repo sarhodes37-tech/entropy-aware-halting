@@ -324,12 +324,14 @@ def normalize_target_scope(raw_target: str) -> str:
     Canonicalizes target resource string into a normalized scope identifier.
     Strips trailing slashes, resolves traversal dots and unquotes percent-encoded paths,
     and isolates hostname/port if present.
-    Raises ValueError for malformed inputs containing unencoded control characters,
-    whitespace anomalies, or null bytes to prevent collision with valid root targets.
+    Raises ValueError for missing, empty, non-string, or malformed inputs containing
+    unencoded control characters, whitespace anomalies, or null bytes to prevent
+    collision with valid root targets.
     """
-    if not raw_target:
-        return "target:/:/"
-    str_raw = str(raw_target)
+    if not isinstance(raw_target, str) or not raw_target:
+        raise ValueError(f"Target resource must be a non-empty string, got {type(raw_target).__name__}: {raw_target!r}")
+
+    str_raw = raw_target
     # Reject unencoded control characters and whitespace anomalies that cause parser differential or scope collision
     if any(c.isspace() or c in ('\x00', '\x0b', '\x0c') for c in str_raw):
         raise ValueError(f"Malformed target resource contains unencoded whitespace or control characters: {raw_target!r}")
@@ -455,7 +457,10 @@ class InMemoryAuthorizationStore(AuthorizationStore):
 
     def issue_and_register_capability(self, cap: Any, signing_func: Any) -> Any:
         with self._lock:
-            scope_key = getattr(cap, "scope_key", None) or canonicalize_fencing_scope(cap.task_id, cap.target)
+            canonical_scope = canonicalize_fencing_scope(cap.task_id, cap.target)
+            if getattr(cap, "scope_key", None) and cap.scope_key != canonical_scope:
+                raise ValueError(f"Capability scope_key mismatch: {cap.scope_key!r} != {canonical_scope!r}")
+            scope_key = canonical_scope
             cap.scope_key = scope_key
             cur_fence = self._scope_fencing_generations.get(scope_key, 0)
             new_fence = cur_fence + 1
@@ -469,7 +474,12 @@ class InMemoryAuthorizationStore(AuthorizationStore):
 
     def register_capability(self, cap: Any) -> None:
         with self._lock:
-            scope_key = getattr(cap, "scope_key", None) or canonicalize_fencing_scope(getattr(cap, "task_id", None), getattr(cap, "target", ""))
+            target_val = getattr(cap, "target", "")
+            task_id_val = getattr(cap, "task_id", None)
+            canonical_scope = canonicalize_fencing_scope(task_id_val, target_val)
+            if getattr(cap, "scope_key", None) and cap.scope_key != canonical_scope:
+                raise ValueError(f"Capability scope_key mismatch: {cap.scope_key!r} != {canonical_scope!r}")
+            scope_key = canonical_scope
             cap.scope_key = scope_key
             fence_val = getattr(cap, "fencing_token", 1) or 1
             cur_fence = self._scope_fencing_generations.get(scope_key, 0)
@@ -747,7 +757,10 @@ class FileAuthorizationStore(AuthorizationStore):
             self._acquire_flock()
             try:
                 self._sync_from_disk(acquire_lock=False)
-                scope_key = getattr(cap, "scope_key", None) or canonicalize_fencing_scope(cap.task_id, cap.target)
+                canonical_scope = canonicalize_fencing_scope(cap.task_id, cap.target)
+                if getattr(cap, "scope_key", None) and cap.scope_key != canonical_scope:
+                    raise ValueError(f"Capability scope_key mismatch: {cap.scope_key!r} != {canonical_scope!r}")
+                scope_key = canonical_scope
                 cap.scope_key = scope_key
                 cur_fence = self._scope_fencing_generations.get(scope_key, 0)
                 new_fence = cur_fence + 1
@@ -778,7 +791,12 @@ class FileAuthorizationStore(AuthorizationStore):
             self._acquire_flock()
             try:
                 self._sync_from_disk(acquire_lock=False)
-                scope_key = getattr(cap, "scope_key", None) or canonicalize_fencing_scope(getattr(cap, "task_id", None), getattr(cap, "target", ""))
+                target_val = getattr(cap, "target", "")
+                task_id_val = getattr(cap, "task_id", None)
+                canonical_scope = canonicalize_fencing_scope(task_id_val, target_val)
+                if getattr(cap, "scope_key", None) and cap.scope_key != canonical_scope:
+                    raise ValueError(f"Capability scope_key mismatch: {cap.scope_key!r} != {canonical_scope!r}")
+                scope_key = canonical_scope
                 cap.scope_key = scope_key
                 fence_val = getattr(cap, "fencing_token", 1) or 1
                 cur_fence = self._scope_fencing_generations.get(scope_key, 0)

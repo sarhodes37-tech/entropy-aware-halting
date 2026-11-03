@@ -304,26 +304,101 @@ def test_normalize_target_scope_raises_on_malformed_targets(malformed_target):
         normalize_target_scope(malformed_target)
 
 
-def test_malformed_target_fails_closed_in_authorization_and_fencing():
+def test_malformed_target_fails_closed_in_authorization_and_fencing(tmp_path):
     """
     Verifies that a malformed target with whitespace or control characters:
-    1. Cannot match a capability issued for root scope.
-    2. Raises ValueError during canonicalize_fencing_scope and does not mutate or advance fencing state.
+    1. Cannot match or reuse a capability issued for root scope.
+    2. Fails capability issuance and verification closed without advancing fencing generations.
+    3. Cannot bypass validation via precomputed scope keys.
+    4. Does not mutate storage, advance fencing tokens, or append journal records (in-memory & persistent).
     """
+    import os
     from epistemicos.authorization import (
         canonicalize_fencing_scope,
         InMemoryAuthorizationStore,
+        FileAuthorizationStore,
+        CapabilityRegistry,
+        AuthorizationAuthority,
+        Policy,
         Capability,
     )
 
-    malformed_target = "/\x00critical_db"
-    with pytest.raises(ValueError):
-        canonicalize_fencing_scope("task_1", malformed_target)
+    policy = Policy(
+        policy_id="test_policy_001",
+        version="1.0.0",
+        allowed_operations={"read_root", "read_file"},
+        allowed_resources={"/", "/valid"},
+        allowed_principals={"*"},
+        allowed_executors={"*"},
+    )
 
-    # Legitimate root target produces standard scope
-    root_scope = canonicalize_fencing_scope("task_1", "/")
-    assert root_scope == "task:task_1|target::/"
+    # Test across both InMemoryAuthorizationStore and FileAuthorizationStore
+    journal_path = str(tmp_path / "auth_journal.jsonl")
+    for store in [InMemoryAuthorizationStore(), FileAuthorizationStore(store_path=journal_path)]:
+        registry = CapabilityRegistry(storage_backend=store)
+        authority = AuthorizationAuthority(default_policy=policy, registry=registry)
 
-    # Store state is not mutated
-    store = InMemoryAuthorizationStore()
-    assert store.get_scope_fencing_token(root_scope) == 0
+        # 1. Issue and register a legitimate capability for root scope "/"
+        root_cap, reason = authority.evaluate_and_issue_capability(
+            action_name="read_root",
+            target="/",
+            canonical_request_digest="digest_root_001",
+            task_id="task_1",
+        )
+        assert root_cap is not None
+        assert reason == "AUTHORIZATION_GRANTED"
+        assert root_cap.fencing_token == 1
+        root_scope = canonicalize_fencing_scope("task_1", "/")
+        assert root_cap.scope_key == root_scope
+        assert store.get_scope_fencing_token(root_scope) == 1
+
+        # 2. Attempt issuance using malformed targets (whitespace, control chars, empty, non-string)
+        for malformed in ["/\x00malformed", " /root", "/root\t", "/root\n", "", None, 123]:
+            try:
+                bad_cap, bad_reason = authority.evaluate_and_issue_capability(
+                    action_name="read_root",
+                    target=malformed,
+                    canonical_request_digest="digest_bad",
+                    task_id="task_1",
+                )
+                assert bad_cap is None, f"Expected None cap for malformed target {malformed!r}"
+            except ValueError:
+                pass  # Raising ValueError also correctly fails closed
+
+        # 3. Assert root fencing generation did not advance and root scope token is still 1
+        assert store.get_scope_fencing_token(root_scope) == 1
+
+        # 4. Attempt verification using malformed target against root capability -> must be rejected
+        ok, v_reason, cap_ret = authority.verify_capability(
+            token_id=root_cap.token_id,
+            action_name="read_root",
+            target="/\x00malformed",
+            canonical_request_digest="digest_root_001",
+            executor_id="default_executor",
+            task_id="task_1",
+        )
+        assert ok is False
+        assert "TARGET_MISMATCH" in v_reason
+
+        # 5. Precomputed scope key spoofing: attempting to register an external capability with spoofed root scope_key
+        spoofed_cap = Capability(
+            token_id="AUTH-FORGED-001",
+            principal_id="agent_default",
+            correlation_id="corr_1",
+            request_id="req_1",
+            action_name="read_root",
+            target="/\x00malformed",
+            canonical_request_digest="digest_spoofed",
+            executor_id="default_executor",
+            policy_version="1.0.0",
+            created_at=100.0,
+            expires_at=200.0,
+            task_id="task_1",
+            scope_key=root_scope,  # Spoofed root scope key for a malformed target
+        )
+        with pytest.raises(ValueError, match="scope_key mismatch|Malformed target"):
+            registry.register_capability(spoofed_cap)
+
+        # Confirm store still has only root_cap and fencing generation remains 1
+        assert store.get_scope_fencing_token(root_scope) == 1
+        assert registry.get_capability("AUTH-FORGED-001") is None
