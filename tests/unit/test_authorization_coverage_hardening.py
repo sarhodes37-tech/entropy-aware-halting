@@ -577,7 +577,42 @@ class TestAuthorizationStoresInvariants:
 
 
 class TestEd25519PureVerificationFallback:
+    def test_ed25519_rfc8032_known_answer_test_vectors(self):
+        """Verifies published RFC 8032 known-answer test vectors (Section 7.1)."""
+        # RFC 8032 Test Vector 1:
+        # pk: d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a
+        # msg: "" (empty message)
+        pk1 = bytes.fromhex("d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a")
+        msg1 = b""
+        sig1 = bytes.fromhex(
+            "e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e06522490155"
+            "5fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b"
+        )
+        assert _ed25519_verify_pure(sig1, msg1, pk1) is True
+        assert verify_ed25519_signature(sig1, msg1, pk1) is True
+
+        # Tampered message / signature rejection on published vector
+        assert _ed25519_verify_pure(sig1, b"tampered_payload", pk1) is False
+        assert verify_ed25519_signature(sig1, b"tampered_payload", pk1) is False
+        bad_sig1 = bytearray(sig1)
+        bad_sig1[0] ^= 0x01
+        assert _ed25519_verify_pure(bytes(bad_sig1), msg1, pk1) is False
+        assert verify_ed25519_signature(bytes(bad_sig1), msg1, pk1) is False
+
+        # RFC 8032 Test Vector 2:
+        # pk: 3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c
+        # msg: 0x72 (single byte 0x72, ASCII 'r')
+        pk2 = bytes.fromhex("3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c")
+        msg2 = bytes.fromhex("72")
+        sig2 = bytes.fromhex(
+            "92a009a9f0d4cab8720e820b5f642540a2b27b5416503f8fb3762223ebdb69da"
+            "085ac1e43e15996e458f3613d0f11d8c387b2eaeb4302aeeb00d291612bb0c00"
+        )
+        assert _ed25519_verify_pure(sig2, msg2, pk2) is True
+        assert verify_ed25519_signature(sig2, msg2, pk2) is True
+
     def test_ed25519_pure_and_fallback_dispatch(self):
+        """Verifies pure-Python and libcrypto fallback with locally generated signatures."""
         idp = ExternalTestIdentityAuthority()
         msg_bytes = b"authoritative test message"
         pk_bytes = idp.public_key
@@ -760,15 +795,12 @@ class TestCapabilityRegistryPersistenceAndDenialInvariants:
         assert ok is False
         assert msg == "Invalid or missing reauthorization record"
 
-    def test_capability_registry_internal_properties_and_persistence_failures(self, tmp_path):
+    def test_capability_registry_persistence_failures_in_clear_denial(self, tmp_path):
+        """Verifies fail-open persistence failure handling in clear_denial_with_approval."""
         log_path = tmp_path / "denial_readonly.log"
         log_path.write_text("", encoding="utf-8")
 
         reg = CapabilityRegistry(denial_log_path=str(log_path), fail_closed_persistence=False)
-        assert isinstance(reg._capabilities, dict)
-        assert isinstance(reg._consumed_tokens, set)
-        assert isinstance(reg._revoked_tokens, set)
-        assert isinstance(reg._consumed_approvals, set)
 
         app_rec = HumanApprovalRecord(
             approval_id="app-clear-1",
