@@ -15,7 +15,7 @@ import uuid
 import functools
 from pathlib import Path
 import hmac
-from typing import Tuple, Optional, Dict, Any, List
+from typing import Tuple, Optional, Dict, Any, List, Set
 from enum import Enum
 from dataclasses import dataclass
 
@@ -150,20 +150,59 @@ class TamperEvidentAuditTrail:
             self.genesis_hash = hashlib.sha256(self.GENESIS_SEED).hexdigest()
         self.last_hash = None
 
+        # Incremental health verification state
+        self._verified_offset: int = 0
+        self._verified_last_hash: str = self.genesis_hash
+        self._verified_seen_ids: Set[str] = set()
+        self._verified_ino: Optional[int] = None
+
     def inspect_log_health(self) -> Tuple[bool, Optional[str], Optional[str]]:
         """
         Inspects the audit log health from Genesis to tail.
         Separates health/integrity status from recovering the last valid entry hash.
+        Employs incremental byte-offset verification to eliminate redundant linear
+        scanning of historical records (O(N^2) cumulative append overhead).
         Returns: (is_healthy, last_valid_entry_hash, error_message)
         """
-        if not self.log_path.exists() or self.log_path.stat().st_size == 0:
+        try:
+            st = self.log_path.stat()
+        except (FileNotFoundError, OSError):
+            self._verified_offset = 0
+            self._verified_last_hash = self.genesis_hash
+            self._verified_seen_ids = set()
+            self._verified_ino = None
             return True, self.genesis_hash, None
 
-        expected_prev_hash = self.genesis_hash
-        last_valid_hash = self.genesis_hash
-        seen_event_ids = set()
+        if st.st_size == 0:
+            self._verified_offset = 0
+            self._verified_last_hash = self.genesis_hash
+            self._verified_seen_ids = set()
+            self._verified_ino = st.st_ino
+            return True, self.genesis_hash, None
+
+        # Inode change or file shrinkage indicates truncation, rotation, or replacement:
+        # Reset state to 0 and re-verify from genesis.
+        if (
+            self._verified_ino != st.st_ino
+            or st.st_size < self._verified_offset
+        ):
+            self._verified_offset = 0
+            self._verified_last_hash = self.genesis_hash
+            self._verified_seen_ids = set()
+            self._verified_ino = st.st_ino
+
+        # If file size unchanged from verified byte offset, return verified state immediately in O(1)
+        if st.st_size == self._verified_offset:
+            return True, self._verified_last_hash, None
+
+        expected_prev_hash = self._verified_last_hash
+        last_valid_hash = self._verified_last_hash
+        seen_event_ids = set(self._verified_seen_ids)
 
         with open(self.log_path, "r", encoding="utf-8") as f:
+            if self._verified_offset > 0:
+                f.seek(self._verified_offset)
+
             for line_idx, line in enumerate(f, 1):
                 line_str = line.strip()
                 if not line_str:
@@ -202,6 +241,14 @@ class TamperEvidentAuditTrail:
 
                 expected_prev_hash = recorded_hash
                 last_valid_hash = recorded_hash
+
+            new_offset = f.tell()
+
+        # Update cached state on successful validation
+        self._verified_offset = new_offset
+        self._verified_last_hash = last_valid_hash
+        self._verified_seen_ids = seen_event_ids
+        self._verified_ino = st.st_ino
 
         return True, last_valid_hash, None
 

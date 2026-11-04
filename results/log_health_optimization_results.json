@@ -1,0 +1,371 @@
+{
+  "timestamp": "2026-11-04T11:06:04Z",
+  "log_scaling_benchmarks": {
+    "10": {
+      "inspect_health": {
+        "baseline": {
+          "mean": 0.4667,
+          "median": 0.4597,
+          "p95": 0.5426,
+          "stddev": 0.055
+        },
+        "optimized": {
+          "mean": 0.0213,
+          "median": 0.0108,
+          "p95": 0.1155,
+          "stddev": 0.0331
+        },
+        "paired_stats": {
+          "n": 10,
+          "mean_diff": -0.4454,
+          "std_diff": 0.0469,
+          "se": 0.0148,
+          "t_stat": -30.0136,
+          "pct_improvement": 95.43
+        }
+      },
+      "record_event": {
+        "baseline": {
+          "mean": 1.9914,
+          "median": 1.9558,
+          "p95": 2.3343,
+          "stddev": 0.1793
+        },
+        "optimized": {
+          "mean": 1.3778,
+          "median": 1.3894,
+          "p95": 1.6775,
+          "stddev": 0.1585
+        },
+        "paired_stats": {
+          "n": 10,
+          "mean_diff": -0.6136,
+          "std_diff": 0.1346,
+          "se": 0.0426,
+          "t_stat": -14.4179,
+          "pct_improvement": 30.81
+        }
+      }
+    },
+    "50": {
+      "inspect_health": {
+        "baseline": {
+          "mean": 1.9672,
+          "median": 1.9638,
+          "p95": 2.0192,
+          "stddev": 0.0353
+        },
+        "optimized": {
+          "mean": 0.0259,
+          "median": 0.0147,
+          "p95": 0.1225,
+          "stddev": 0.034
+        },
+        "paired_stats": {
+          "n": 10,
+          "mean_diff": -1.9413,
+          "std_diff": 0.0407,
+          "se": 0.0129,
+          "t_stat": -150.666,
+          "pct_improvement": 98.68
+        }
+      },
+      "record_event": {
+        "baseline": {
+          "mean": 3.653,
+          "median": 3.6279,
+          "p95": 4.0553,
+          "stddev": 0.2351
+        },
+        "optimized": {
+          "mean": 1.4584,
+          "median": 1.4883,
+          "p95": 1.5851,
+          "stddev": 0.1152
+        },
+        "paired_stats": {
+          "n": 10,
+          "mean_diff": -2.1945,
+          "std_diff": 0.1829,
+          "se": 0.0578,
+          "t_stat": -37.9503,
+          "pct_improvement": 60.08
+        }
+      }
+    },
+    "100": {
+      "inspect_health": {
+        "baseline": {
+          "mean": 4.0699,
+          "median": 4.0444,
+          "p95": 4.3316,
+          "stddev": 0.1357
+        },
+        "optimized": {
+          "mean": 0.0513,
+          "median": 0.0214,
+          "p95": 0.2442,
+          "stddev": 0.07
+        },
+        "paired_stats": {
+          "n": 10,
+          "mean_diff": -4.0187,
+          "std_diff": 0.1471,
+          "se": 0.0465,
+          "t_stat": -86.3642,
+          "pct_improvement": 98.74
+        }
+      },
+      "record_event": {
+        "baseline": {
+          "mean": 5.6447,
+          "median": 5.5415,
+          "p95": 6.1437,
+          "stddev": 0.2672
+        },
+        "optimized": {
+          "mean": 1.4247,
+          "median": 1.3916,
+          "p95": 1.7499,
+          "stddev": 0.1541
+        },
+        "paired_stats": {
+          "n": 10,
+          "mean_diff": -4.22,
+          "std_diff": 0.3025,
+          "se": 0.0957,
+          "t_stat": -44.113,
+          "pct_improvement": 74.76
+        }
+      }
+    },
+    "250": {
+      "inspect_health": {
+        "baseline": {
+          "mean": 9.5627,
+          "median": 9.5548,
+          "p95": 9.7898,
+          "stddev": 0.1225
+        },
+        "optimized": {
+          "mean": 0.0421,
+          "median": 0.0281,
+          "p95": 0.1671,
+          "stddev": 0.0439
+        },
+        "paired_stats": {
+          "n": 10,
+          "mean_diff": -9.5205,
+          "std_diff": 0.1353,
+          "se": 0.0428,
+          "t_stat": -222.4711,
+          "pct_improvement": 99.56
+        }
+      },
+      "record_event": {
+        "baseline": {
+          "mean": 11.2637,
+          "median": 11.2713,
+          "p95": 11.5915,
+          "stddev": 0.1616
+        },
+        "optimized": {
+          "mean": 1.4885,
+          "median": 1.4577,
+          "p95": 1.7052,
+          "stddev": 0.12
+        },
+        "paired_stats": {
+          "n": 10,
+          "mean_diff": -9.7751,
+          "std_diff": 0.1724,
+          "se": 0.0545,
+          "t_stat": -179.2978,
+          "pct_improvement": 86.78
+        }
+      }
+    },
+    "500": {
+      "inspect_health": {
+        "baseline": {
+          "mean": 19.7642,
+          "median": 19.1495,
+          "p95": 22.4286,
+          "stddev": 1.2893
+        },
+        "optimized": {
+          "mean": 0.0767,
+          "median": 0.05,
+          "p95": 0.2065,
+          "stddev": 0.0539
+        },
+        "paired_stats": {
+          "n": 10,
+          "mean_diff": -19.6875,
+          "std_diff": 1.2891,
+          "se": 0.4076,
+          "t_stat": -48.2954,
+          "pct_improvement": 99.61
+        }
+      },
+      "record_event": {
+        "baseline": {
+          "mean": 21.4465,
+          "median": 20.8456,
+          "p95": 24.2137,
+          "stddev": 1.3777
+        },
+        "optimized": {
+          "mean": 1.4929,
+          "median": 1.4808,
+          "p95": 1.7029,
+          "stddev": 0.1151
+        },
+        "paired_stats": {
+          "n": 10,
+          "mean_diff": -19.9535,
+          "std_diff": 1.4237,
+          "se": 0.4502,
+          "t_stat": -44.3203,
+          "pct_improvement": 93.04
+        }
+      }
+    },
+    "1000": {
+      "inspect_health": {
+        "baseline": {
+          "mean": 37.7122,
+          "median": 37.6618,
+          "p95": 38.3089,
+          "stddev": 0.273
+        },
+        "optimized": {
+          "mean": 0.084,
+          "median": 0.0621,
+          "p95": 0.2856,
+          "stddev": 0.0709
+        },
+        "paired_stats": {
+          "n": 10,
+          "mean_diff": -37.6282,
+          "std_diff": 0.2768,
+          "se": 0.0875,
+          "t_stat": -429.8331,
+          "pct_improvement": 99.78
+        }
+      },
+      "record_event": {
+        "baseline": {
+          "mean": 39.3797,
+          "median": 39.316,
+          "p95": 39.903,
+          "stddev": 0.3065
+        },
+        "optimized": {
+          "mean": 1.5014,
+          "median": 1.4523,
+          "p95": 1.7224,
+          "stddev": 0.154
+        },
+        "paired_stats": {
+          "n": 10,
+          "mean_diff": -37.8783,
+          "std_diff": 0.2957,
+          "se": 0.0935,
+          "t_stat": -405.0122,
+          "pct_improvement": 96.19
+        }
+      }
+    }
+  },
+  "end_to_end_pipeline_benchmarks": {
+    "benign": {
+      "baseline": {
+        "mean": 83.3475,
+        "median": 83.319,
+        "p95": 87.1803,
+        "stddev": 1.8832
+      },
+      "optimized": {
+        "mean": 6.3563,
+        "median": 6.3546,
+        "p95": 6.9756,
+        "stddev": 0.605
+      },
+      "paired_stats": {
+        "n": 20,
+        "mean_diff": -76.9912,
+        "std_diff": 2.0559,
+        "se": 0.4597,
+        "t_stat": -167.4749,
+        "pct_improvement": 92.37
+      }
+    },
+    "adversarial": {
+      "baseline": {
+        "mean": 86.8478,
+        "median": 86.6991,
+        "p95": 90.0891,
+        "stddev": 1.9783
+      },
+      "optimized": {
+        "mean": 6.2276,
+        "median": 6.3713,
+        "p95": 6.7077,
+        "stddev": 0.6202
+      },
+      "paired_stats": {
+        "n": 20,
+        "mean_diff": -80.6202,
+        "std_diff": 2.0629,
+        "se": 0.4613,
+        "t_stat": -174.7731,
+        "pct_improvement": 92.83
+      }
+    },
+    "malformed": {
+      "baseline": {
+        "mean": 1.538,
+        "median": 1.5545,
+        "p95": 1.8062,
+        "stddev": 0.1711
+      },
+      "optimized": {
+        "mean": 1.6068,
+        "median": 1.5862,
+        "p95": 1.8669,
+        "stddev": 0.1481
+      },
+      "paired_stats": {
+        "n": 20,
+        "mean_diff": 0.0687,
+        "std_diff": 0.1827,
+        "se": 0.0409,
+        "t_stat": 1.6824,
+        "pct_improvement": -4.47
+      }
+    },
+    "high_volume": {
+      "baseline": {
+        "mean": 93.8035,
+        "median": 93.5153,
+        "p95": 98.837,
+        "stddev": 2.8535
+      },
+      "optimized": {
+        "mean": 7.7666,
+        "median": 7.7301,
+        "p95": 8.4705,
+        "stddev": 0.5539
+      },
+      "paired_stats": {
+        "n": 20,
+        "mean_diff": -86.0369,
+        "std_diff": 2.7597,
+        "se": 0.6171,
+        "t_stat": -139.4244,
+        "pct_improvement": 91.72
+      }
+    }
+  }
+}

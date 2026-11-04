@@ -205,6 +205,13 @@ class LocalProvenanceStore(ProvenanceStore):
         else:
             self.genesis_hash = hashlib.sha256(self.GENESIS_SEED).hexdigest()
 
+        # Incremental health verification state (tracked under self._lock)
+        self._verified_offset: int = 0
+        self._verified_last_hash: str = self.genesis_hash
+        self._verified_count: int = 0
+        self._verified_seen_ids: Set[str] = set()
+        self._verified_ino: Optional[int] = None
+
     def _compute_chain_hash(self, prev_hash: str, payload: Dict[str, Any]) -> str:
         serialized = json.dumps(payload, sort_keys=True)
         combined = f"{prev_hash}:{serialized}".encode("utf-8")
@@ -257,15 +264,54 @@ class LocalProvenanceStore(ProvenanceStore):
                 return {}
 
     def _inspect_health(self) -> Tuple[bool, str, int, Set[str]]:
-        if not self.log_path.exists() or self.log_path.stat().st_size == 0:
+        """
+        Inspects provenance log health from genesis to tail.
+        Employs incremental byte-offset verification under lock to eliminate redundant
+        linear scanning of historical records (O(N^2) cumulative append overhead).
+        """
+        try:
+            st = self.log_path.stat()
+        except (FileNotFoundError, OSError):
+            self._verified_offset = 0
+            self._verified_last_hash = self.genesis_hash
+            self._verified_count = 0
+            self._verified_seen_ids = set()
+            self._verified_ino = None
             return True, self.genesis_hash, 0, set()
 
-        expected_prev = self.genesis_hash
-        seen_ids = set()
-        count = 0
+        if st.st_size == 0:
+            self._verified_offset = 0
+            self._verified_last_hash = self.genesis_hash
+            self._verified_count = 0
+            self._verified_seen_ids = set()
+            self._verified_ino = st.st_ino
+            return True, self.genesis_hash, 0, set()
+
+        # Inode change or file shrinkage indicates truncation, rotation, or replacement:
+        # Reset state to 0 and re-verify from genesis.
+        if (
+            self._verified_ino != st.st_ino
+            or st.st_size < self._verified_offset
+        ):
+            self._verified_offset = 0
+            self._verified_last_hash = self.genesis_hash
+            self._verified_count = 0
+            self._verified_seen_ids = set()
+            self._verified_ino = st.st_ino
+
+        # If file size unchanged from verified byte offset, return verified state immediately in O(1)
+        if st.st_size == self._verified_offset:
+            return True, self._verified_last_hash, self._verified_count, set(self._verified_seen_ids)
+
+        expected_prev = self._verified_last_hash
+        seen_ids = set(self._verified_seen_ids)
+        count = self._verified_count
 
         with open(self.log_path, "r", encoding="utf-8") as f:
-            for line_idx, line in enumerate(f, 1):
+            if self._verified_offset > 0:
+                f.seek(self._verified_offset)
+
+            for line in f:
                 line_str = line.strip()
                 if not line_str:
                     continue
@@ -294,7 +340,16 @@ class LocalProvenanceStore(ProvenanceStore):
                 expected_prev = recorded_hash
                 count += 1
 
-        return True, expected_prev, count, seen_ids
+            new_offset = f.tell()
+
+        # Update cached state on successful validation
+        self._verified_offset = new_offset
+        self._verified_last_hash = expected_prev
+        self._verified_count = count
+        self._verified_seen_ids = seen_ids
+        self._verified_ino = st.st_ino
+
+        return True, expected_prev, count, set(seen_ids)
 
     def get_events_for_correlation(self, correlation_id: str) -> List[ProvenanceEvent]:
         """
