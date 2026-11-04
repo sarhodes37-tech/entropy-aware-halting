@@ -902,13 +902,15 @@ class EgressTransportBroker:
         resolver_func: Optional[Callable[[str], List[str]]] = None,
         provenance_store: Optional[Any] = None,
         require_infrastructure_enforcement: bool = False,
-        infrastructure_enforced: bool = False
+        infrastructure_enforced: bool = False,
+        transfer_policy: Optional[Any] = None
     ):
         self.policy = policy or EgressPolicy()
         self.resolver_func = resolver_func or self._default_resolver
         self.provenance_store = provenance_store
         self.require_infrastructure_enforcement = require_infrastructure_enforcement
         self.infrastructure_enforced = infrastructure_enforced
+        self.transfer_policy = transfer_policy
         self.connection_history: List[EgressConnectionRecord] = []
 
         if self.require_infrastructure_enforcement and not self.infrastructure_enforced:
@@ -945,7 +947,8 @@ class EgressTransportBroker:
         normalized_host: str,
         resolved_ip: Optional[str],
         allowed: bool,
-        reason: str
+        reason: str,
+        transfer_context: Optional[Any] = None
     ) -> None:
         rec = EgressConnectionRecord(
             connection_id=str(uuid.uuid4()),
@@ -958,25 +961,76 @@ class EgressTransportBroker:
         )
         self.connection_history.append(rec)
 
-        if not allowed and self.provenance_store is not None:
-            from epistemicos.provenance import ProvenanceEvent, ProvenanceEventType, ProvenanceSource
-            event = ProvenanceEvent(
-                schema_version="1.0.0",
-                event_id=str(uuid.uuid4()),
-                event_type=ProvenanceEventType.EGRESS_BLOCKED.value,
-                provenance_source=ProvenanceSource.EGRESS_GATE.value,
-                correlation_id=correlation_id,
-                request_id=request_id,
-                action_name=action_name,
-                target=target_url,
-                canonical_request_digest=hashlib.sha256(target_url.encode("utf-8")).hexdigest(),
-                timestamp=rec.timestamp,
-                outcome={"status": "EGRESS_BLOCKED", "reason": reason, "normalized_host": normalized_host, "resolved_ip": resolved_ip}
+        if self.provenance_store is not None:
+            from epistemicos.provenance import (
+                ProvenanceEvent,
+                ProvenanceEventType,
+                ProvenanceSource,
             )
-            try:
-                self.provenance_store.record_event(event)
-            except Exception:
-                pass
+
+            event_type = (
+                ProvenanceEventType.EGRESS_BLOCKED.value
+                if not allowed
+                else ProvenanceEventType.DATA_TRANSFER_RECORD.value
+            )
+
+            outcome_dict = {
+                "status": "ALLOWED" if allowed else "EGRESS_BLOCKED",
+                "reason": reason,
+                "normalized_host": normalized_host,
+                "resolved_ip": resolved_ip,
+            }
+
+            if transfer_context is not None:
+                dest = getattr(transfer_context, "destination", None)
+                outcome_dict["transfer_context"] = {
+                    "initiating_principal": getattr(transfer_context, "initiating_principal", None),
+                    "destination_service": getattr(dest, "service", None) if dest else None,
+                    "destination_tenant": getattr(dest, "tenant_id", None) if dest else None,
+                    "destination_account": getattr(dest, "account_id", None) if dest else None,
+                    "destination_host": getattr(dest, "host", None) if dest else normalized_host,
+                    "classification": (
+                        transfer_context.classification.value
+                        if hasattr(transfer_context, "classification")
+                        and hasattr(transfer_context.classification, "value")
+                        else str(getattr(transfer_context, "classification", ""))
+                    ),
+                    "direction": (
+                        transfer_context.direction.value
+                        if hasattr(transfer_context, "direction")
+                        and hasattr(transfer_context.direction, "value")
+                        else str(getattr(transfer_context, "direction", ""))
+                    ),
+                    "operation": (
+                        transfer_context.operation.value
+                        if hasattr(transfer_context, "operation")
+                        and hasattr(transfer_context.operation, "value")
+                        else str(getattr(transfer_context, "operation", ""))
+                    ),
+                    "declared_bytes": getattr(transfer_context, "declared_bytes", None),
+                    "observed_bytes": getattr(transfer_context, "observed_bytes", 0),
+                    "capability_token_id": getattr(transfer_context, "capability_token_id", None),
+                    "task_id": getattr(transfer_context, "task_id", None),
+                }
+
+            if not allowed or transfer_context is not None:
+                event = ProvenanceEvent(
+                    schema_version="1.0.0",
+                    event_id=str(uuid.uuid4()),
+                    event_type=event_type,
+                    provenance_source=ProvenanceSource.EGRESS_GATE.value,
+                    correlation_id=correlation_id,
+                    request_id=request_id,
+                    action_name=action_name,
+                    target=target_url,
+                    canonical_request_digest=hashlib.sha256(target_url.encode("utf-8")).hexdigest(),
+                    timestamp=rec.timestamp,
+                    outcome=outcome_dict
+                )
+                try:
+                    self.provenance_store.record_event(event)
+                except Exception:
+                    pass
 
     def establish_connection(
         self,
@@ -984,7 +1038,9 @@ class EgressTransportBroker:
         action_name: str = "network_request",
         correlation_id: str = "DEFAULT-CORR",
         request_id: str = "DEFAULT-REQ",
-        category: Optional[ActionCategory] = None
+        category: Optional[ActionCategory] = None,
+        transfer_context: Optional[Any] = None,
+        capability: Optional[Any] = None
     ) -> Tuple[bool, str, Optional[str]]:
         """
         Validates egress policy at connection time:
@@ -1050,9 +1106,40 @@ class EgressTransportBroker:
             self._record_egress_event(correlation_id, request_id, action_name, target_url, norm_host, valid_ips[0], False, pol_reason)
             return False, pol_reason, None
 
+        # Evaluate Data Transfer Policy if configured or if transfer_context is provided
+        eff_transfer_policy = self.transfer_policy
+        if transfer_context is not None or eff_transfer_policy is not None:
+            if eff_transfer_policy is not None:
+                if transfer_context is None:
+                    pol_reason = (
+                        "Egress blocked: Mandatory DataTransferContext "
+                        "missing under active DataTransferPolicy."
+                    )
+                    self._record_egress_event(
+                        correlation_id, request_id, action_name,
+                        target_url, norm_host, valid_ips[0], False, pol_reason,
+                        transfer_context=None
+                    )
+                    return False, pol_reason, None
+
+                decision = eff_transfer_policy.evaluate_transfer(
+                    transfer_context, capability=capability
+                )
+                if not decision.allowed:
+                    self._record_egress_event(
+                        correlation_id, request_id, action_name,
+                        target_url, norm_host, valid_ips[0], False, decision.reason,
+                        transfer_context=transfer_context
+                    )
+                    return False, decision.reason, None
+
         # Pin first valid IP for connection
         pinned_ip = valid_ips[0]
-        self._record_egress_event(correlation_id, request_id, action_name, target_url, norm_host, pinned_ip, True, pol_reason)
+        self._record_egress_event(
+            correlation_id, request_id, action_name,
+            target_url, norm_host, pinned_ip, True, pol_reason,
+            transfer_context=transfer_context
+        )
         return True, pol_reason, pinned_ip
 
     def revalidate_redirect(
@@ -1062,7 +1149,9 @@ class EgressTransportBroker:
         action_name: str = "network_redirect",
         correlation_id: str = "DEFAULT-CORR",
         request_id: str = "DEFAULT-REQ",
-        category: Optional[ActionCategory] = None
+        category: Optional[ActionCategory] = None,
+        transfer_context: Optional[Any] = None,
+        capability: Optional[Any] = None
     ) -> Tuple[bool, str, Optional[str]]:
         """Re-validates a redirect target URL strictly before the redirected request is made."""
         return self.establish_connection(
@@ -1070,7 +1159,9 @@ class EgressTransportBroker:
             action_name=f"{action_name}_redirect",
             correlation_id=correlation_id,
             request_id=request_id,
-            category=category
+            category=category,
+            transfer_context=transfer_context,
+            capability=capability
         )
 
     def wrap_callable(self, func: Callable[..., Any]) -> Callable[..., Any]:
@@ -1266,7 +1357,9 @@ class ControlledEgressTransport:
         request_id: str = "DEFAULT-REQ",
         category: Optional[ActionCategory] = None,
         max_redirects: int = 5,
-        redirect_handler: Optional[Callable[[str], Dict[str, Any]]] = None
+        redirect_handler: Optional[Callable[[str], Dict[str, Any]]] = None,
+        transfer_context: Optional[Any] = None,
+        capability: Optional[Any] = None
     ) -> Dict[str, Any]:
         """
         Executes an outbound HTTP request through transport-boundary policy enforcement.
@@ -1284,13 +1377,91 @@ class ControlledEgressTransport:
         current_headers = dict(headers or {})
         redirect_count = 0
 
+        encoded_body = body.encode("utf-8") if isinstance(body, str) else body
+        actual_bytes = len(encoded_body) if encoded_body is not None else 0
+
+        # If transfer_context is provided, update observed_bytes and pre-flight check actual volume
+        reservation_id = None
+        tracker_key = None
+        if transfer_context is not None:
+            transfer_context.observed_bytes = actual_bytes
+            if self.broker.transfer_policy is not None:
+                # Re-check transfer policy against actual observed bytes
+                decision = self.broker.transfer_policy.evaluate_transfer(
+                    transfer_context, capability=capability
+                )
+                if not decision.allowed:
+                    raise PermissionError(
+                        f"Egress transport blocked request to '{current_url}': {decision.reason}"
+                    )
+
+                # Atomically reserve bytes for the duration of the request
+                tracker_key = (
+                    transfer_context.task_id
+                    or f"{transfer_context.initiating_principal}:{transfer_context.destination.host}"
+                )
+                reservation_id = str(uuid.uuid4())
+                if not self.broker.transfer_policy.reserve_bytes(
+                    tracker_key, actual_bytes, reservation_id
+                ):
+                    raise PermissionError(
+                        f"Egress transport blocked request to '{current_url}': "
+                        f"Failed to atomically reserve {actual_bytes} bytes for task scope '{tracker_key}'."
+                    )
+
+        try:
+            return self._execute_request_loop(
+                current_url=current_url,
+                current_method=current_method,
+                current_headers=current_headers,
+                encoded_body=encoded_body,
+                eff_timeout=eff_timeout,
+                correlation_id=correlation_id,
+                request_id=request_id,
+                category=category,
+                max_redirects=max_redirects,
+                redirect_handler=redirect_handler,
+                transfer_context=transfer_context,
+                capability=capability,
+                reservation_id=reservation_id,
+                tracker_key=tracker_key,
+                actual_bytes=actual_bytes
+            )
+        except Exception:
+            if reservation_id and self.broker.transfer_policy is not None:
+                self.broker.transfer_policy.refund_reservation(reservation_id)
+            raise
+
+    def _execute_request_loop(
+        self,
+        current_url: str,
+        current_method: str,
+        current_headers: Dict[str, str],
+        encoded_body: Optional[bytes],
+        eff_timeout: float,
+        correlation_id: str,
+        request_id: str,
+        category: Optional[ActionCategory],
+        max_redirects: int,
+        redirect_handler: Optional[Callable[[str], Dict[str, Any]]],
+        transfer_context: Optional[Any],
+        capability: Optional[Any],
+        reservation_id: Optional[str],
+        tracker_key: Optional[str],
+        actual_bytes: int
+    ) -> Dict[str, Any]:
+        from urllib.parse import urlsplit, urljoin
+        redirect_count = 0
+
         while True:
             allowed, reason, pinned_ip = self.broker.establish_connection(
                 target_url=current_url,
                 action_name=f"http_{current_method.lower()}",
                 correlation_id=correlation_id,
                 request_id=request_id,
-                category=category
+                category=category,
+                transfer_context=transfer_context,
+                capability=capability
             )
             if not allowed:
                 raise PermissionError(f"Egress transport blocked request to '{current_url}': {reason}")
@@ -1325,12 +1496,26 @@ class ControlledEgressTransport:
                             port=eff_port,
                             timeout=eff_timeout
                         )
-                    encoded_body = body.encode("utf-8") if isinstance(body, str) else body
                     conn.request(current_method, path_and_query, body=encoded_body, headers=req_headers)
                     resp = conn.getresponse()
                     resp_data = resp.read()
                     resp_headers = {k: v for k, v in resp.getheaders()}
                     conn.close()
+
+                    # Account for received bytes if operation is download/read
+                    if transfer_context is not None:
+                        total_observed = actual_bytes + len(resp_data)
+                        transfer_context.observed_bytes = total_observed
+                        if self.broker.transfer_policy is not None:
+                            if reservation_id:
+                                self.broker.transfer_policy.commit_reservation(
+                                    reservation_id, total_observed
+                                )
+                                reservation_id = None
+                            elif tracker_key:
+                                self.broker.transfer_policy.record_observed_bytes(
+                                    tracker_key, total_observed
+                                )
 
                     res = {
                         "status": resp.status,
@@ -1355,7 +1540,9 @@ class ControlledEgressTransport:
                     redirect_url=next_url,
                     correlation_id=correlation_id,
                     request_id=request_id,
-                    category=category
+                    category=category,
+                    transfer_context=transfer_context,
+                    capability=capability
                 )
                 if not redir_allowed:
                     raise PermissionError(f"Egress transport blocked redirect to '{next_url}': {redir_reason}")
