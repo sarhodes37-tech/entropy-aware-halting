@@ -1155,6 +1155,8 @@ class TestAuthorizationAuthorityIssuanceAndVerificationInvariants:
 
     def test_authority_human_approval_digest_and_request_mismatches(self):
         secret = b"test-approval-secret-key-32b!!"
+        idp = ExternalTestIdentityAuthority(issuer_id="CoverageTestIdP")
+        verifier = PrincipalVerifier(trusted_public_keys={"CoverageTestIdP": idp.public_key})
         authority = AuthorizationAuthority(
             default_policy=Policy(
                 policy_id="p1",
@@ -1163,6 +1165,7 @@ class TestAuthorizationAuthorityIssuanceAndVerificationInvariants:
                 required_human_approval_operations={"drop_table"},
             ),
             approval_signing_secret=secret,
+            principal_provider=verifier,
         )
         contract = TrustedTaskContract(
             task_id="t1",
@@ -1172,6 +1175,7 @@ class TestAuthorizationAuthorityIssuanceAndVerificationInvariants:
         )
         contract.sign(authority.contract_signing_secret)
 
+        assertion = idp.issue_principal("sec-admin")
         approval_record = HumanApprovalRecord(
             approval_id="app-1",
             approver_id="sec-admin",
@@ -1179,7 +1183,10 @@ class TestAuthorizationAuthorityIssuanceAndVerificationInvariants:
             target="/db/tbl",
             action_digest="correct_digest",
             request_id="req-expected",
+            task_id="t1",
+            requesting_principal="agent1",
             policy_version="1.0.0",
+            approver_assertion=assertion,
         )
         approval_record.sign(secret)
 

@@ -32,8 +32,17 @@ from epistemicos.authorization import (
     Policy,
     Capability,
     HumanApprovalRecord,
+    PrincipalVerifier,
+    AuthenticatedPrincipal,
     get_callable_identity
 )
+from tests.unit.test_sec01_sec03_remediation import ExternalTestIdentityAuthority
+
+_PHASE1_TEST_IDP = ExternalTestIdentityAuthority(issuer_id="Phase1TestIdP")
+_PHASE1_VERIFIER = PrincipalVerifier(
+    trusted_public_keys={"Phase1TestIdP": _PHASE1_TEST_IDP.public_key}
+)
+
 from epistemicos.provenance import (
     TrustedExecutionBoundary,
     LocalProvenanceStore,
@@ -565,7 +574,7 @@ def test_scenario_13_generic_continuation_text_cannot_issue_authorization(tmp_pa
         allowed_resources={"silo_1"},
         required_human_approval_operations={"nuclear_launch"}
     )
-    authority = AuthorizationAuthority(default_policy=policy)
+    authority = AuthorizationAuthority(default_policy=policy, principal_provider=_PHASE1_VERIFIER)
     orchestrator = EpistemicOrchestrator(
         audit_log_path=str(tmp_path / "audit.jsonl"),
         authority=authority
@@ -605,13 +614,16 @@ def test_scenario_13_generic_continuation_text_cannot_issue_authorization(tmp_pa
         assert callback.call_count == 0
 
     req_id = str(uuid.uuid4())
+    approver_assertion = _PHASE1_TEST_IDP.issue_principal("SEC_OFFICER_BOB")
     typed_record = HumanApprovalRecord(
         approval_id="APP-999",
         approver_id="SEC_OFFICER_BOB",
         action_name="nuclear_launch",
         target="silo_1",
         action_digest=payload_digest,
-        request_id=req_id
+        request_id=req_id,
+        requesting_principal="agent_default",
+        approver_assertion=approver_assertion
     )
     typed_record.sign(authority.approval_signing_secret)
 
@@ -885,7 +897,7 @@ def test_human_approval_signature_and_binding_validations():
         allowed_resources={"resource_1"},
         required_human_approval_operations={"critical_action"}
     )
-    authority = AuthorizationAuthority(default_policy=policy)
+    authority = AuthorizationAuthority(default_policy=policy, principal_provider=_PHASE1_VERIFIER)
     digest = "d" * 64
     req_id = "req-123"
 
@@ -970,13 +982,16 @@ def test_human_approval_signature_and_binding_validations():
     assert reason_mismatched == "AUTHORIZATION_DENIED_HUMAN_APPROVAL_BINDING_MISMATCH"
 
     # 5. Valid, correctly signed approval
+    valid_assertion = _PHASE1_TEST_IDP.issue_principal("approver_alice")
     valid_record = HumanApprovalRecord(
         approval_id="app-5",
         approver_id="approver_alice",
         action_name="critical_action",
         target="resource_1",
         action_digest=digest,
-        request_id=req_id
+        request_id=req_id,
+        requesting_principal="agent_default",
+        approver_assertion=valid_assertion
     )
     valid_record.sign(authority.approval_signing_secret)
     cap_valid, reason_valid = authority.evaluate_and_issue_capability(
@@ -1394,8 +1409,8 @@ def test_phase1_sequential_consumption_two_capabilities_sharing_approval(tmp_pat
     First consumption succeeds; second consumption fails due to approval replay.
     """
     store = LocalProvenanceStore(log_path=str(tmp_path / "prov_seq.jsonl"))
-    boundary = TrustedExecutionBoundary(provenance_store=store)
-    authority = boundary.authority
+    authority = AuthorizationAuthority(principal_provider=_PHASE1_VERIFIER)
+    boundary = TrustedExecutionBoundary(provenance_store=store, authority=authority)
 
     policy = Policy(
         policy_id="pol-seq",
@@ -1410,13 +1425,16 @@ def test_phase1_sequential_consumption_two_capabilities_sharing_approval(tmp_pat
     exec_func = lambda: "SUCCESS"
     authority.register_executor("exec_seq", exec_func)
 
+    seq_assertion = _PHASE1_TEST_IDP.issue_principal("approver_alice")
     approval = HumanApprovalRecord(
         approval_id="APP-SEQ-001",
         approver_id="approver_alice",
         action_name="CRITICAL_ACTION",
         target="server_1",
         action_digest=digest,
-        request_id="req-seq"
+        request_id="req-seq",
+        requesting_principal="agent_default",
+        approver_assertion=seq_assertion
     )
     approval.sign(authority.approval_signing_secret)
 
@@ -1478,18 +1496,21 @@ def test_phase1_verification_rejection_after_approval_consumed(tmp_path):
         allowed_resources={"account_vault"},
         required_human_approval_operations={"TRANSFER"}
     )
-    authority = AuthorizationAuthority(default_policy=policy)
+    authority = AuthorizationAuthority(default_policy=policy, principal_provider=_PHASE1_VERIFIER)
     digest = "e" * 64
     exec_func = lambda: "TRANSFERRED"
     authority.register_executor("exec_verify", exec_func)
 
+    bob_assertion = _PHASE1_TEST_IDP.issue_principal("approver_bob")
     approval = HumanApprovalRecord(
         approval_id="APP-VERIFY-001",
         approver_id="approver_bob",
         action_name="TRANSFER",
         target="account_vault",
         action_digest=digest,
-        request_id="req-verify"
+        request_id="req-verify",
+        requesting_principal="agent_default",
+        approver_assertion=bob_assertion
     )
     approval.sign(authority.approval_signing_secret)
 
@@ -1516,7 +1537,9 @@ def test_phase1_verification_rejection_after_approval_consumed(tmp_path):
         policy_version=policy.version,
         created_at=time.time(),
         expires_at=time.time() + 300,
-        human_approval=approval
+        human_approval=approval,
+        approver_principal="approver_bob",
+        approver_provenance=cap1.approver_provenance
     )
     authority.registry.register_capability(cap2)
 
@@ -1748,8 +1771,8 @@ def test_phase1_execution_boundary_integration_executor_invoked_exactly_once(tmp
     """
     callback = MagicMock(return_value={"status": "ORDER_PROCESSED"})
     store = LocalProvenanceStore(log_path=str(tmp_path / "prov_boundary.jsonl"))
-    boundary = TrustedExecutionBoundary(provenance_store=store)
-    authority = boundary.authority
+    authority = AuthorizationAuthority(principal_provider=_PHASE1_VERIFIER)
+    boundary = TrustedExecutionBoundary(provenance_store=store, authority=authority)
 
     policy = Policy(
         policy_id="pol-exec-boundary",
@@ -1762,13 +1785,16 @@ def test_phase1_execution_boundary_integration_executor_invoked_exactly_once(tmp
     payload = {"account": "acc_100", "amount": 500}
     digest = boundary.compute_canonical_digest(payload)
 
+    fin_assertion = _PHASE1_TEST_IDP.issue_principal("finance_lead")
     approval = HumanApprovalRecord(
         approval_id="APP-EXEC-BOUNDARY-001",
         approver_id="finance_lead",
         action_name="SUBMIT_PAYMENT",
         target="payment_gateway",
         action_digest=digest,
-        request_id="req-pay-1"
+        request_id="req-pay-1",
+        requesting_principal="agent_default",
+        approver_assertion=fin_assertion
     )
     approval.sign(authority.approval_signing_secret)
 
@@ -2312,7 +2338,7 @@ def test_phase1_public_issuance_same_approval_cross_target_replay_and_fencing():
     Scenario C: When two capabilities sharing an approval are both issued, consuming one capability
     strictly invalidates the other via verification rejection and consumption rejection.
     """
-    authority = AuthorizationAuthority()
+    authority = AuthorizationAuthority(principal_provider=_PHASE1_VERIFIER)
     policy = Policy(
         policy_id="pol-pub-fencing",
         allowed_operations={"API_WRITE"},
@@ -2326,13 +2352,16 @@ def test_phase1_public_issuance_same_approval_cross_target_replay_and_fencing():
     digest = "c" * 64
 
     # 1. Target binding check: an approval bound to endpoint_a CANNOT issue a capability for endpoint_b
+    pub_assertion = _PHASE1_TEST_IDP.issue_principal("approver_pub")
     approval_a = HumanApprovalRecord(
         approval_id="APP-PUB-001",
         approver_id="approver_pub",
         action_name="API_WRITE",
         target="endpoint_a",
         action_digest=digest,
-        request_id="req-pub-1"
+        request_id="req-pub-1",
+        requesting_principal="agent_default",
+        approver_assertion=pub_assertion
     )
     approval_a.sign(authority.approval_signing_secret)
 

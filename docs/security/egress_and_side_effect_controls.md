@@ -67,11 +67,20 @@ Operations are classified by their real-world consequences, ignoring model self-
 9. `DESTRUCTIVE_COMMAND`: Destructive shell or filesystem operations.
 10. `STATE_MUTATION`: Persistent financial or account state-changing operations.
 
-### 4.2 Typed Human Approval Requirements (`TypedHumanApprovalRecord`)
-Externally consequential side effects require explicit typed human approval:
-- **Binding Contract**: Approvals strictly bind `approval_id`, `operation_id`, `target_resource`, `canonical_args_digest`, `task_id`, `policy_version`, `approved_by_principal`, `timestamp`, and HMAC-SHA256 signature.
+### 4.2 Typed Human Approval Requirements (`HumanApprovalRecord` & `TypedHumanApprovalRecord`)
+Externally consequential side effects and approval-required operations require explicit typed human approval with independent principal authority verification:
+- **Binding Contract**: Approvals strictly bind `approval_id`, `approver_id`, `action_name`, `target`, `action_digest`, `request_id`, `policy_version`, `requesting_principal`, `approver_assertion`, `task_id`, and HMAC-SHA256 signature.
 - **Generic Responses Rejected**: Generic prompts ("continue", "proceed", "best judgement") or automated LLM worker messages cannot authorize side effects.
-- **Capability Invalidation**: Target or operation changes after grant issuance immediately invalidate the capability token.
+- **Cryptographic Approval Record Integrity vs. Principal Authority**:
+  - *Cryptographic Signature Validity*: A valid HMAC signature demonstrates possession of the signing secret and payload tamper resistance. It does *not* prove that `approver_id` represents an authenticated human with genuine authority.
+  - *Independent Principal Authentication*: The approving principal's identity must be independently proven through `PrincipalVerifier` via an asymmetric cryptographic assertion (`AuthenticatedPrincipal`) issued by a trusted identity authority (e.g. Ed25519-signed identity token).
+  - *Approver Authorization under Applicable Policy*: Even if authenticated, the verified approver principal must be explicitly permitted under `policy.allowed_approvers`.
+  - *Exact Context and Scope Binding*: The approval must strictly bind to the exact requesting principal (`effective_principal`), task ID, action, canonical target, request ID, and canonical request digest. Self-approval (`approver == requesting_principal`) is unconditionally rejected.
+  - *Downstream Capability Verification*: The issued `Capability` carries verified approver identity and provenance. `AuthorizationAuthority.verify_capability()` independently re-validates the carried approver provenance against `PrincipalVerifier` and verifies exact field consistency prior to execution.
+- **Fundamental Threat Limitation (Social Engineering & Coercion)**:
+  - *Middleware Verification Boundary*: EpistemicOS authorization middleware can mathematically and cryptographically verify the authenticity and integrity of identity and approval assertions supplied by trusted identity providers.
+  - *Threat Model Limitation*: Cryptographic and provenance checks *cannot* independently verify whether an authorized human was deceived by social engineering, phishing, coercion, or pretexting. Identity verification guarantees *who* approved the operation, not that the approver exercised flawless human judgment.
+- **Capability Invalidation**: Target, action, digest, requester, or task substitutions after grant issuance immediately invalidate capability verification.
 
 ### 4.3 Route Change & Alternate Route Violation Tracking
 Exhausting in-scope routes does not expand the egress allowlist. Every alternate route or discovered target requires its own authorization check.

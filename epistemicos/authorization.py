@@ -38,6 +38,172 @@ GENERIC_CONTINUATION_PATTERNS = frozenset({
 })
 
 
+
+_ED25519_Q = 2**255 - 19
+_ED25519_L = 2**252 + 27742317777372353535851937790883648493
+
+
+def _ed_H(m: bytes) -> bytes:
+    return hashlib.sha512(m).digest()
+
+
+def _ed_expmod(b: int, e: int, m: int) -> int:
+    return pow(b, e, m)
+
+
+def _ed_inv(x: int) -> int:
+    return _ed_expmod(x, _ED25519_Q - 2, _ED25519_Q)
+
+
+_ed_d = -121665 * _ed_inv(121666)
+_ed_I = _ed_expmod(2, (_ED25519_Q - 1) // 4, _ED25519_Q)
+
+
+def _ed_xrecover(y: int) -> int:
+    xx = (y * y - 1) * _ed_inv(_ed_d * y * y + 1)
+    x = _ed_expmod(xx, (_ED25519_Q + 3) // 8, _ED25519_Q)
+    if (x * x - xx) % _ED25519_Q != 0:
+        x = (x * _ed_I) % _ED25519_Q
+    if x % 2 != 0:
+        x = _ED25519_Q - x
+    return x
+
+
+_ed_By = 4 * _ed_inv(5)
+_ed_Bx = _ed_xrecover(_ed_By)
+_ed_B = [_ed_Bx % _ED25519_Q, _ed_By % _ED25519_Q]
+
+
+def _ed_edwards(P: List[int], Q: List[int]) -> List[int]:
+    x1, y1 = P[0], P[1]
+    x2, y2 = Q[0], Q[1]
+    x3 = (x1 * y2 + x2 * y1) * _ed_inv(1 + _ed_d * x1 * x2 * y1 * y2)
+    y3 = (y1 * y2 + x1 * x2) * _ed_inv(1 - _ed_d * x1 * x2 * y1 * y2)
+    return [x3 % _ED25519_Q, y3 % _ED25519_Q]
+
+
+def _ed_scalarmult(P: List[int], e: int) -> List[int]:
+    if e == 0:
+        return [0, 1]
+    Q = _ed_scalarmult(P, e // 2)
+    Q = _ed_edwards(Q, Q)
+    if e & 1:
+        Q = _ed_edwards(Q, P)
+    return Q
+
+
+def _ed_decodeint(s: bytes) -> int:
+    return int.from_bytes(s, "little")
+
+
+def _ed_decodepoint(s: bytes) -> List[int]:
+    y = int.from_bytes(s, "little") & ((1 << 255) - 1)
+    x = _ed_xrecover(y)
+    if bool(x & 1) != bool(s[31] & 0x80):
+        x = _ED25519_Q - x
+    P = [x, y]
+    if not ((-x * x + y * y - 1 - _ed_d * x * x * y * y) % _ED25519_Q == 0):
+        raise ValueError("decoding point that is not on curve")
+    return P
+
+
+def _ed25519_verify_pure(sig_bytes: bytes, msg_bytes: bytes, pubkey_bytes: bytes) -> bool:
+    try:
+        if len(sig_bytes) != 64 or len(pubkey_bytes) != 32:
+            return False
+        R = _ed_decodepoint(sig_bytes[:32])
+        A = _ed_decodepoint(pubkey_bytes)
+        S = _ed_decodeint(sig_bytes[32:])
+        if S >= _ED25519_L:
+            return False
+        h = _ed_decodeint(_ed_H(sig_bytes[:32] + pubkey_bytes + msg_bytes))
+        v1 = _ed_scalarmult(_ed_B, S)
+        v2 = _ed_edwards(R, _ed_scalarmult(A, h))
+        return v1 == v2
+    except Exception:
+        return False
+
+
+try:
+    import ctypes
+    import ctypes.util
+    _libcrypto_path = ctypes.util.find_library("crypto")
+    if _libcrypto_path:
+        _libcrypto = ctypes.CDLL(_libcrypto_path)
+        _EVP_PKEY_ED25519 = 1087
+        _libcrypto.EVP_MD_CTX_new.restype = ctypes.c_void_p
+        _libcrypto.EVP_MD_CTX_free.argtypes = [ctypes.c_void_p]
+        _libcrypto.EVP_PKEY_new_raw_public_key.restype = ctypes.c_void_p
+        _libcrypto.EVP_PKEY_new_raw_public_key.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_char_p, ctypes.c_size_t]
+        _libcrypto.EVP_PKEY_free.argtypes = [ctypes.c_void_p]
+        _libcrypto.EVP_DigestVerifyInit.restype = ctypes.c_int
+        _libcrypto.EVP_DigestVerifyInit.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p), ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
+        _libcrypto.EVP_DigestVerify.restype = ctypes.c_int
+        _libcrypto.EVP_DigestVerify.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_size_t, ctypes.c_char_p, ctypes.c_size_t]
+        _HAS_LIBCRYPTO = True
+    else:
+        _HAS_LIBCRYPTO = False
+except Exception:
+    _HAS_LIBCRYPTO = False
+
+
+def verify_ed25519_signature(sig_bytes: bytes, msg_bytes: bytes, pubkey_bytes: bytes) -> bool:
+    """Verifies an Ed25519 signature (RFC 8032) using libcrypto when available or pure Python."""
+    if len(sig_bytes) != 64 or len(pubkey_bytes) != 32:
+        return False
+    if _HAS_LIBCRYPTO:
+        try:
+            pkey = _libcrypto.EVP_PKEY_new_raw_public_key(_EVP_PKEY_ED25519, None, pubkey_bytes, len(pubkey_bytes))
+            if not pkey:
+                return _ed25519_verify_pure(sig_bytes, msg_bytes, pubkey_bytes)
+            ctx = _libcrypto.EVP_MD_CTX_new()
+            if not ctx:
+                _libcrypto.EVP_PKEY_free(pkey)
+                return _ed25519_verify_pure(sig_bytes, msg_bytes, pubkey_bytes)
+            try:
+                init_res = _libcrypto.EVP_DigestVerifyInit(ctx, None, None, None, pkey)
+                if init_res != 1:
+                    return False
+                res = _libcrypto.EVP_DigestVerify(ctx, sig_bytes, len(sig_bytes), msg_bytes, len(msg_bytes))
+                return res == 1
+            finally:
+                _libcrypto.EVP_MD_CTX_free(ctx)
+                _libcrypto.EVP_PKEY_free(pkey)
+        except Exception:
+            return _ed25519_verify_pure(sig_bytes, msg_bytes, pubkey_bytes)
+    return _ed25519_verify_pure(sig_bytes, msg_bytes, pubkey_bytes)
+
+
+@dataclass(frozen=True)
+class AuthenticatedPrincipal:
+    """
+    Cryptographically and authoritatively verified identity assertion representing
+    an authenticated principal.
+    A caller-supplied string, dictionary, or manually constructed object without
+    a valid asymmetric cryptographic signature from an independently trusted external Identity Provider
+    is strictly rejected.
+    """
+    principal_id: str
+    issuer_id: str
+    timestamp: float
+    signature: str
+    expires_at: Optional[float] = None
+    key_id: Optional[str] = None
+
+    def __post_init__(self):
+        if not self.principal_id or not isinstance(self.principal_id, str) or not self.principal_id.strip():
+            raise ValueError("AuthenticatedPrincipal: principal_id must be a non-empty string")
+        if not self.issuer_id or not isinstance(self.issuer_id, str) or not self.issuer_id.strip():
+            raise ValueError("AuthenticatedPrincipal: issuer_id must be a non-empty string")
+        if not self.signature or not isinstance(self.signature, str) or not self.signature.strip():
+            raise ValueError("AuthenticatedPrincipal: signature must be a non-empty string")
+
+    def compute_signature_payload(self) -> bytes:
+        exp_str = f"{self.expires_at:.6f}" if self.expires_at is not None else ""
+        kid_str = self.key_id or ""
+        payload = f"{self.principal_id}:{self.issuer_id}:{self.timestamp:.6f}:{exp_str}:{kid_str}"
+        return payload.encode("utf-8")
+
 @dataclass
 class HumanApprovalRecord:
     """
@@ -55,10 +221,33 @@ class HumanApprovalRecord:
     timestamp: str = field(default_factory=lambda: time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
     expires_at: Optional[float] = None
     task_id: Optional[str] = None
+    requesting_principal: Optional[str] = None
+    approver_assertion: Optional[Union[AuthenticatedPrincipal, Dict[str, Any]]] = None
     signature: Optional[str] = None
 
+    def compute_assertion_digest(self) -> str:
+        """
+        Computes a deterministic canonical digest of approver_assertion if present.
+        If no assertion is attached, returns empty string.
+        """
+        if not self.approver_assertion:
+            return ""
+        if hasattr(self.approver_assertion, "compute_signature_payload"):
+            payload_bytes = self.approver_assertion.compute_signature_payload()
+            sig = getattr(self.approver_assertion, "signature", "")
+            return hashlib.sha256(payload_bytes + b":" + sig.encode("utf-8")).hexdigest()
+        elif isinstance(self.approver_assertion, dict):
+            canonical_json = json.dumps(self.approver_assertion, sort_keys=True, separators=(",", ":"))
+            return hashlib.sha256(canonical_json.encode("utf-8")).hexdigest()
+        return hashlib.sha256(str(self.approver_assertion).encode("utf-8")).hexdigest()
+
     def compute_signature_payload(self) -> str:
-        return f"{self.approval_id}:{self.approver_id}:{self.action_name}:{self.target}:{self.action_digest}:{self.request_id}:{self.policy_version}:{self.expires_at}:{self.task_id or ''}"
+        base_payload = f"{self.approval_id}:{self.approver_id}:{self.action_name}:{self.target}:{self.action_digest}:{self.request_id}:{self.policy_version}:{self.expires_at}:{self.task_id or ''}"
+        if self.requesting_principal is not None or self.approver_assertion is not None:
+            req_p = self.requesting_principal or ""
+            ast_dig = self.compute_assertion_digest()
+            return f"{base_payload}:{req_p}:{ast_dig}"
+        return base_payload
 
     def sign(self, signing_secret: bytes) -> str:
         if not isinstance(signing_secret, (bytes, bytearray)):
@@ -136,6 +325,24 @@ class HumanApprovalRecord:
                 except (ValueError, TypeError):
                     return None
 
+            raw_assertion = val.get("approver_assertion") or val.get("assertion")
+            parsed_assertion = None
+            if raw_assertion is not None:
+                if isinstance(raw_assertion, AuthenticatedPrincipal):
+                    parsed_assertion = raw_assertion
+                elif isinstance(raw_assertion, dict):
+                    try:
+                        parsed_assertion = AuthenticatedPrincipal(
+                            principal_id=str(raw_assertion.get("principal_id", "")),
+                            issuer_id=str(raw_assertion.get("issuer_id", "")),
+                            timestamp=float(raw_assertion.get("timestamp", 0.0)),
+                            signature=str(raw_assertion.get("signature", "")),
+                            expires_at=float(raw_assertion["expires_at"]) if raw_assertion.get("expires_at") is not None else None,
+                            key_id=str(raw_assertion["key_id"]) if raw_assertion.get("key_id") is not None else None
+                        )
+                    except Exception:
+                        parsed_assertion = raw_assertion
+
             return cls(
                 approval_id=str(approval_id),
                 approver_id=str(approver_id),
@@ -147,6 +354,8 @@ class HumanApprovalRecord:
                 timestamp=str(val.get("timestamp", time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))),
                 expires_at=exp_val,
                 task_id=str(val["task_id"]) if val.get("task_id") is not None else None,
+                requesting_principal=str(val["requesting_principal"]) if val.get("requesting_principal") is not None else None,
+                approver_assertion=parsed_assertion,
                 signature=val.get("signature")
             )
 
@@ -918,6 +1127,8 @@ class FileAuthorizationStore(AuthorizationStore):
                         contract_digest=cap_data.get("contract_digest"),
                         required_success_evidence=set(cap_data.get("required_success_evidence") or []),
                         human_approval=app_record,
+                        approver_principal=cap_data.get("approver_principal"),
+                        approver_provenance=cap_data.get("approver_provenance"),
                         issuer_id=cap_data.get("issuer_id", "TrustedAuthorizationAuthority"),
                         signature=cap_data.get("signature"),
                         fencing_token=int(cap_data.get("fencing_token", 1)),
@@ -1057,170 +1268,6 @@ import base64
 
 # RFC 8032 pure-python Ed25519 verification with optional libcrypto acceleration
 _ED25519_B = 256
-_ED25519_Q = 2**255 - 19
-_ED25519_L = 2**252 + 27742317777372353535851937790883648493
-
-
-def _ed_H(m: bytes) -> bytes:
-    return hashlib.sha512(m).digest()
-
-
-def _ed_expmod(b: int, e: int, m: int) -> int:
-    return pow(b, e, m)
-
-
-def _ed_inv(x: int) -> int:
-    return _ed_expmod(x, _ED25519_Q - 2, _ED25519_Q)
-
-
-_ed_d = -121665 * _ed_inv(121666)
-_ed_I = _ed_expmod(2, (_ED25519_Q - 1) // 4, _ED25519_Q)
-
-
-def _ed_xrecover(y: int) -> int:
-    xx = (y * y - 1) * _ed_inv(_ed_d * y * y + 1)
-    x = _ed_expmod(xx, (_ED25519_Q + 3) // 8, _ED25519_Q)
-    if (x * x - xx) % _ED25519_Q != 0:
-        x = (x * _ed_I) % _ED25519_Q
-    if x % 2 != 0:
-        x = _ED25519_Q - x
-    return x
-
-
-_ed_By = 4 * _ed_inv(5)
-_ed_Bx = _ed_xrecover(_ed_By)
-_ed_B = [_ed_Bx % _ED25519_Q, _ed_By % _ED25519_Q]
-
-
-def _ed_edwards(P: List[int], Q: List[int]) -> List[int]:
-    x1, y1 = P[0], P[1]
-    x2, y2 = Q[0], Q[1]
-    x3 = (x1 * y2 + x2 * y1) * _ed_inv(1 + _ed_d * x1 * x2 * y1 * y2)
-    y3 = (y1 * y2 + x1 * x2) * _ed_inv(1 - _ed_d * x1 * x2 * y1 * y2)
-    return [x3 % _ED25519_Q, y3 % _ED25519_Q]
-
-
-def _ed_scalarmult(P: List[int], e: int) -> List[int]:
-    if e == 0:
-        return [0, 1]
-    Q = _ed_scalarmult(P, e // 2)
-    Q = _ed_edwards(Q, Q)
-    if e & 1:
-        Q = _ed_edwards(Q, P)
-    return Q
-
-
-def _ed_decodeint(s: bytes) -> int:
-    return int.from_bytes(s, "little")
-
-
-def _ed_decodepoint(s: bytes) -> List[int]:
-    y = int.from_bytes(s, "little") & ((1 << 255) - 1)
-    x = _ed_xrecover(y)
-    if bool(x & 1) != bool(s[31] & 0x80):
-        x = _ED25519_Q - x
-    P = [x, y]
-    if not ((-x * x + y * y - 1 - _ed_d * x * x * y * y) % _ED25519_Q == 0):
-        raise ValueError("decoding point that is not on curve")
-    return P
-
-
-def _ed25519_verify_pure(sig_bytes: bytes, msg_bytes: bytes, pubkey_bytes: bytes) -> bool:
-    try:
-        if len(sig_bytes) != 64 or len(pubkey_bytes) != 32:
-            return False
-        R = _ed_decodepoint(sig_bytes[:32])
-        A = _ed_decodepoint(pubkey_bytes)
-        S = _ed_decodeint(sig_bytes[32:])
-        if S >= _ED25519_L:
-            return False
-        h = _ed_decodeint(_ed_H(sig_bytes[:32] + pubkey_bytes + msg_bytes))
-        v1 = _ed_scalarmult(_ed_B, S)
-        v2 = _ed_edwards(R, _ed_scalarmult(A, h))
-        return v1 == v2
-    except Exception:
-        return False
-
-
-try:
-    import ctypes
-    import ctypes.util
-    _libcrypto_path = ctypes.util.find_library("crypto")
-    if _libcrypto_path:
-        _libcrypto = ctypes.CDLL(_libcrypto_path)
-        _EVP_PKEY_ED25519 = 1087
-        _libcrypto.EVP_MD_CTX_new.restype = ctypes.c_void_p
-        _libcrypto.EVP_MD_CTX_free.argtypes = [ctypes.c_void_p]
-        _libcrypto.EVP_PKEY_new_raw_public_key.restype = ctypes.c_void_p
-        _libcrypto.EVP_PKEY_new_raw_public_key.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_char_p, ctypes.c_size_t]
-        _libcrypto.EVP_PKEY_free.argtypes = [ctypes.c_void_p]
-        _libcrypto.EVP_DigestVerifyInit.restype = ctypes.c_int
-        _libcrypto.EVP_DigestVerifyInit.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p), ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
-        _libcrypto.EVP_DigestVerify.restype = ctypes.c_int
-        _libcrypto.EVP_DigestVerify.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_size_t, ctypes.c_char_p, ctypes.c_size_t]
-        _HAS_LIBCRYPTO = True
-    else:
-        _HAS_LIBCRYPTO = False
-except Exception:
-    _HAS_LIBCRYPTO = False
-
-
-def verify_ed25519_signature(sig_bytes: bytes, msg_bytes: bytes, pubkey_bytes: bytes) -> bool:
-    """Verifies an Ed25519 signature (RFC 8032) using libcrypto when available or pure Python."""
-    if len(sig_bytes) != 64 or len(pubkey_bytes) != 32:
-        return False
-    if _HAS_LIBCRYPTO:
-        try:
-            pkey = _libcrypto.EVP_PKEY_new_raw_public_key(_EVP_PKEY_ED25519, None, pubkey_bytes, len(pubkey_bytes))
-            if not pkey:
-                return _ed25519_verify_pure(sig_bytes, msg_bytes, pubkey_bytes)
-            ctx = _libcrypto.EVP_MD_CTX_new()
-            if not ctx:
-                _libcrypto.EVP_PKEY_free(pkey)
-                return _ed25519_verify_pure(sig_bytes, msg_bytes, pubkey_bytes)
-            try:
-                init_res = _libcrypto.EVP_DigestVerifyInit(ctx, None, None, None, pkey)
-                if init_res != 1:
-                    return False
-                res = _libcrypto.EVP_DigestVerify(ctx, sig_bytes, len(sig_bytes), msg_bytes, len(msg_bytes))
-                return res == 1
-            finally:
-                _libcrypto.EVP_MD_CTX_free(ctx)
-                _libcrypto.EVP_PKEY_free(pkey)
-        except Exception:
-            return _ed25519_verify_pure(sig_bytes, msg_bytes, pubkey_bytes)
-    return _ed25519_verify_pure(sig_bytes, msg_bytes, pubkey_bytes)
-
-
-@dataclass(frozen=True)
-class AuthenticatedPrincipal:
-    """
-    Cryptographically and authoritatively verified identity assertion representing
-    an authenticated principal.
-    A caller-supplied string, dictionary, or manually constructed object without
-    a valid asymmetric cryptographic signature from an independently trusted external Identity Provider
-    is strictly rejected.
-    """
-    principal_id: str
-    issuer_id: str
-    timestamp: float
-    signature: str
-    expires_at: Optional[float] = None
-    key_id: Optional[str] = None
-
-    def __post_init__(self):
-        if not self.principal_id or not isinstance(self.principal_id, str) or not self.principal_id.strip():
-            raise ValueError("AuthenticatedPrincipal: principal_id must be a non-empty string")
-        if not self.issuer_id or not isinstance(self.issuer_id, str) or not self.issuer_id.strip():
-            raise ValueError("AuthenticatedPrincipal: issuer_id must be a non-empty string")
-        if not self.signature or not isinstance(self.signature, str) or not self.signature.strip():
-            raise ValueError("AuthenticatedPrincipal: signature must be a non-empty string")
-
-    def compute_signature_payload(self) -> bytes:
-        exp_str = f"{self.expires_at:.6f}" if self.expires_at is not None else ""
-        kid_str = self.key_id or ""
-        payload = f"{self.principal_id}:{self.issuer_id}:{self.timestamp:.6f}:{exp_str}:{kid_str}"
-        return payload.encode("utf-8")
 
 
 import types
@@ -1390,6 +1437,8 @@ class Capability:
     contract_digest: Optional[str] = None
     required_success_evidence: Set[str] = field(default_factory=set)
     human_approval: Optional[HumanApprovalRecord] = None
+    approver_principal: Optional[str] = None
+    approver_provenance: Optional[Dict[str, Any]] = None
     issuer_id: str = "TrustedAuthorizationAuthority"
     signature: Optional[str] = None
     fencing_token: int = 1
@@ -1583,7 +1632,38 @@ class CapabilityRegistry:
     def sign_capability(self, cap: Capability) -> str:
         effective_scope = getattr(cap, "scope_key", None) or canonicalize_fencing_scope(cap.task_id, cap.target)
         effective_fence = getattr(cap, "fencing_token", 1)
-        payload = f"{cap.token_id}:{cap.principal_id}:{cap.correlation_id}:{cap.request_id}:{cap.action_name}:{cap.target}:{cap.canonical_request_digest}:{cap.executor_id}:{cap.policy_version}:{cap.task_id or ''}:{cap.contract_version or ''}:{cap.contract_digest or ''}:{cap.expires_at}:{effective_fence}:{effective_scope}"
+
+        # Cryptographically bind approval record and approver provenance into the capability HMAC payload
+        approval_binding_digest = ""
+        human_app = getattr(cap, "human_approval", None)
+        if human_app:
+            app_dict = human_app.to_dict() if hasattr(human_app, "to_dict") else dict(human_app)
+            if "approver_assertion" in app_dict and app_dict["approver_assertion"]:
+                raw_ast = app_dict["approver_assertion"]
+                if hasattr(raw_ast, "to_dict"):
+                    ast_dict = raw_ast.to_dict()
+                elif isinstance(raw_ast, dict):
+                    ast_dict = raw_ast
+                else:
+                    ast_dict = raw_ast.__dict__
+                app_dict["approver_assertion"] = ast_dict
+            prov_data = getattr(cap, "approver_provenance", None)
+            prov_dict = prov_data.copy() if isinstance(prov_data, dict) else {}
+            app_bound_obj = {
+                "approval_record": app_dict,
+                "approver_principal": str(getattr(cap, "approver_principal", "") or ""),
+                "approver_provenance": prov_dict
+            }
+            canon_json = json.dumps(app_bound_obj, sort_keys=True, separators=(",", ":"))
+            approval_binding_digest = hashlib.sha256(canon_json.encode("utf-8")).hexdigest()
+
+        payload = (
+            f"{cap.token_id}:{cap.principal_id}:{cap.correlation_id}:{cap.request_id}:"
+            f"{cap.action_name}:{cap.target}:{cap.canonical_request_digest}:{cap.executor_id}:"
+            f"{cap.policy_version}:{cap.task_id or ''}:{cap.contract_version or ''}:"
+            f"{cap.contract_digest or ''}:{cap.expires_at}:{effective_fence}:{effective_scope}:"
+            f"{approval_binding_digest}"
+        )
         return hmac.new(self.signing_secret, payload.encode("utf-8"), hashlib.sha256).hexdigest()
 
     def _record_denial_unlocked(
@@ -2421,20 +2501,15 @@ class AuthorizationAuthority:
             # Check human approval requirement from policy OR task contract
             requires_approval = active_policy.requires_human_approval(action_name) or (contract_obj.requires_human_approval(action_name) if contract_obj else False)
             approval_record = None
+            verified_approver_principal: Optional[str] = None
+            approver_provenance_data: Optional[Dict[str, Any]] = None
+
             if requires_approval:
                 approval_record = HumanApprovalRecord.from_input(human_approval_input)
                 if not approval_record:
                     return None, "STOP_AND_ESCALATE_HUMAN_APPROVAL_REQUIRED"
 
-                # Validate untrusted approver ID against policy allowed_approvers
-                if active_policy.allowed_approvers is not None and "*" not in active_policy.allowed_approvers:
-                    if approval_record.approver_id not in active_policy.allowed_approvers:
-                        return None, f"AUTHORIZATION_DENIED_HUMAN_APPROVAL_UNTRUSTED_APPROVER:{approval_record.approver_id}"
-
-                # Validate human approval binding
-                if approval_record.approver_id == principal_id:
-                    return None, "AUTHORIZATION_DENIED_HUMAN_APPROVAL_SELF_APPROVAL_REJECTED"
-
+                # 1. Structural Binding Validations
                 if approval_record.action_name != action_name or approval_record.target != target:
                     return None, "AUTHORIZATION_DENIED_HUMAN_APPROVAL_BINDING_MISMATCH"
 
@@ -2444,15 +2519,76 @@ class AuthorizationAuthority:
                 if approval_record.request_id != req_id:
                     return None, "AUTHORIZATION_DENIED_HUMAN_APPROVAL_REQUEST_ID_MISMATCH"
 
-                # Mandatory signature verification against trusted approval signing key
+                # 2. Cryptographic Approval Record Integrity & Freshness (HMAC)
                 if not approval_record.signature:
                     return None, "AUTHORIZATION_DENIED_HUMAN_APPROVAL_MISSING_SIGNATURE"
 
                 if not approval_record.verify_signature(self.approval_signing_secret, current_time=current_time):
                     return None, "AUTHORIZATION_DENIED_HUMAN_APPROVAL_AUTHENTICATION_FAILED"
 
+                # 3. Replay Protection
                 if self.registry.is_approval_consumed(approval_record.approval_id):
                     return None, "AUTHORIZATION_DENIED_HUMAN_APPROVAL_REPLAYED"
+
+                # 4. Immediate Self-Approval & Raw Approver Allowlist Check
+                if approval_record.approver_id == effective_principal or approval_record.approver_id == principal_id:
+                    return None, "AUTHORIZATION_DENIED_HUMAN_APPROVAL_SELF_APPROVAL_REJECTED"
+
+                if active_policy.allowed_approvers is not None and "*" not in active_policy.allowed_approvers:
+                    if approval_record.approver_id not in active_policy.allowed_approvers:
+                        return None, f"AUTHORIZATION_DENIED_HUMAN_APPROVAL_UNTRUSTED_APPROVER:{approval_record.approver_id}"
+
+                # 5. Independent Approver Identity Verification
+                if not self.principal_provider:
+                    return None, "AUTHORIZATION_DENIED_HUMAN_APPROVAL_NO_IDENTITY_PROVIDER_CONFIGURED"
+
+                if not approval_record.approver_assertion:
+                    return None, "AUTHORIZATION_DENIED_HUMAN_APPROVAL_MISSING_APPROVER_ASSERTION"
+
+                appr_valid, appr_reason, verified_pid = self.principal_provider.verify_principal(
+                    approval_record.approver_assertion,
+                    current_time=current_time
+                )
+                if not appr_valid or not verified_pid:
+                    return None, f"AUTHORIZATION_DENIED_HUMAN_APPROVAL_APPROVER_AUTHENTICATION_FAILED: {appr_reason}"
+
+                verified_approver_principal = verified_pid
+
+                # Assert that verified approver identity matches approver_id
+                if approval_record.approver_id != verified_approver_principal:
+                    return None, f"AUTHORIZATION_DENIED_HUMAN_APPROVAL_APPROVER_ID_MISMATCH: claimed '{approval_record.approver_id}', verified '{verified_approver_principal}'"
+
+                # 6. Approver Authorization under Applicable Policy
+                if active_policy.allowed_approvers is not None and "*" not in active_policy.allowed_approvers:
+                    if verified_approver_principal not in active_policy.allowed_approvers:
+                        return None, f"AUTHORIZATION_DENIED_HUMAN_APPROVAL_UNAUTHORIZED_APPROVER:{verified_approver_principal}"
+
+                # 7. Requesting Principal and Task Context Binding (Mandatory)
+                # Prevent self-approval (approver cannot be the requesting principal)
+                if verified_approver_principal == effective_principal:
+                    return None, "AUTHORIZATION_DENIED_HUMAN_APPROVAL_SELF_APPROVAL_REJECTED"
+
+                if not approval_record.requesting_principal or not str(approval_record.requesting_principal).strip():
+                    return None, "AUTHORIZATION_DENIED_HUMAN_APPROVAL_MISSING_REQUESTING_PRINCIPAL"
+
+                if str(approval_record.requesting_principal).strip() != effective_principal:
+                    return None, f"AUTHORIZATION_DENIED_HUMAN_APPROVAL_REQUESTING_PRINCIPAL_MISMATCH: bound '{approval_record.requesting_principal}', requested '{effective_principal}'"
+
+                if effective_task_id:
+                    if not approval_record.task_id or not str(approval_record.task_id).strip():
+                        return None, "AUTHORIZATION_DENIED_HUMAN_APPROVAL_MISSING_TASK_ID"
+                    if str(approval_record.task_id).strip() != str(effective_task_id).strip():
+                        return None, f"AUTHORIZATION_DENIED_HUMAN_APPROVAL_TASK_ID_MISMATCH: bound '{approval_record.task_id}', requested '{effective_task_id}'"
+
+                # Record provenance evidence of the independent verification decision
+                assertion_obj = approval_record.approver_assertion
+                approver_provenance_data = {
+                    "approver_id": verified_approver_principal,
+                    "issuer_id": getattr(assertion_obj, "issuer_id", "") if hasattr(assertion_obj, "issuer_id") else assertion_obj.get("issuer_id", "") if isinstance(assertion_obj, dict) else "",
+                    "assertion_timestamp": getattr(assertion_obj, "timestamp", 0.0) if hasattr(assertion_obj, "timestamp") else assertion_obj.get("timestamp", 0.0) if isinstance(assertion_obj, dict) else 0.0,
+                    "verified_at": current_time if current_time is not None else time.time(),
+                    "approval_id": approval_record.approval_id
+                }
 
             now = current_time if current_time is not None else time.time()
             token_id = f"AUTH-CAP-{uuid.uuid4()}"
@@ -2489,6 +2625,8 @@ class AuthorizationAuthority:
                 contract_digest=contract_obj.compute_contract_digest() if contract_obj else None,
                 required_success_evidence=set(contract_obj.success_evidence_requirements) if contract_obj else set(),
                 human_approval=approval_record,
+                approver_principal=verified_approver_principal,
+                approver_provenance=approver_provenance_data,
                 scope_key=canonical_scope
             )
 
@@ -2600,5 +2738,98 @@ class AuthorizationAuthority:
                 return False, f"CAPABILITY_VERIFICATION_FAILED_STALE_FENCING_TOKEN: token generation {cap_fencing_gen} < authoritative scope generation {auth_fencing_gen}", cap
             else:
                 return False, f"CAPABILITY_VERIFICATION_FAILED_FUTURE_FENCING_TOKEN: token generation {cap_fencing_gen} > authoritative scope generation {auth_fencing_gen}", cap
+
+        # Downstream Human Approval Provenance & Integrity Verification
+        if human_app:
+            # 1. Verify approval record HMAC integrity against authority approval secret
+            if not human_app.verify_signature(self.approval_signing_secret, current_time=current_time):
+                return False, "CAPABILITY_VERIFICATION_FAILED_HUMAN_APPROVAL_SIGNATURE_INVALID", cap
+
+            # 2. Verify approver provenance and identity consistency
+            approver_principal = getattr(cap, "approver_principal", None)
+            approver_prov = getattr(cap, "approver_provenance", None)
+            if not approver_principal or not approver_prov:
+                return False, "CAPABILITY_VERIFICATION_FAILED_HUMAN_APPROVAL_PROVENANCE_MISSING", cap
+
+            if approver_principal != human_app.approver_id:
+                return False, f"CAPABILITY_VERIFICATION_FAILED_HUMAN_APPROVAL_APPROVER_MISMATCH: capability approver '{approver_principal}' != record approver '{human_app.approver_id}'", cap
+
+            # 3. Verify that approver assertion remains verifiable via configured PrincipalVerifier
+            if not human_app.approver_assertion:
+                return False, "CAPABILITY_VERIFICATION_FAILED_HUMAN_APPROVAL_ASSERTION_MISSING", cap
+
+            if not self.principal_provider:
+                return False, "CAPABILITY_VERIFICATION_FAILED_HUMAN_APPROVAL_NO_IDENTITY_PROVIDER", cap
+
+            appr_valid, appr_reason, verified_appr_pid = self.principal_provider.verify_principal(
+                human_app.approver_assertion,
+                current_time=current_time
+            )
+            if not appr_valid or verified_appr_pid != approver_principal:
+                return False, f"CAPABILITY_VERIFICATION_FAILED_HUMAN_APPROVAL_APPROVER_VERIFICATION_FAILED: {appr_reason}", cap
+
+            # Explicitly validate the provenance dictionary against the independently verified assertion
+            ast_obj = human_app.approver_assertion
+            if hasattr(ast_obj, "to_dict"):
+                ast_dict = ast_obj.to_dict()
+            elif isinstance(ast_obj, dict):
+                ast_dict = ast_obj
+            else:
+                ast_dict = ast_obj.__dict__
+            expected_issuer = str(ast_dict.get("issuer_id") or "")
+            expected_ts = float(ast_dict.get("timestamp") or 0.0)
+
+            if not isinstance(approver_prov, dict):
+                return False, "CAPABILITY_VERIFICATION_FAILED_HUMAN_APPROVAL_PROVENANCE_MALFORMED", cap
+
+            if approver_prov.get("approver_id") != verified_appr_pid:
+                return False, f"CAPABILITY_VERIFICATION_FAILED_HUMAN_APPROVAL_PROVENANCE_APPROVER_MISMATCH: provenance approver '{approver_prov.get('approver_id')}' != verified '{verified_appr_pid}'", cap
+
+            if approver_prov.get("issuer_id") != expected_issuer:
+                return False, f"CAPABILITY_VERIFICATION_FAILED_HUMAN_APPROVAL_PROVENANCE_ISSUER_MISMATCH: provenance issuer '{approver_prov.get('issuer_id')}' != assertion issuer '{expected_issuer}'", cap
+
+            ast_ts_val = approver_prov.get("assertion_timestamp")
+            if (
+                ast_ts_val is None
+                or isinstance(ast_ts_val, bool)
+                or not isinstance(ast_ts_val, (int, float))
+                or not math.isfinite(float(ast_ts_val))
+            ):
+                return False, "CAPABILITY_VERIFICATION_FAILED_HUMAN_APPROVAL_PROVENANCE_INVALID_ASSERTION_TIMESTAMP", cap
+
+            if abs(float(ast_ts_val) - expected_ts) > 1e-4:
+                return False, f"CAPABILITY_VERIFICATION_FAILED_HUMAN_APPROVAL_PROVENANCE_TIMESTAMP_MISMATCH: provenance ts '{ast_ts_val}' != assertion ts '{expected_ts}'", cap
+
+            if approver_prov.get("approval_id") != human_app.approval_id:
+                return False, f"CAPABILITY_VERIFICATION_FAILED_HUMAN_APPROVAL_PROVENANCE_APPROVAL_ID_MISMATCH: provenance approval_id '{approver_prov.get('approval_id')}' != record '{human_app.approval_id}'", cap
+
+            verified_at_val = approver_prov.get("verified_at")
+            if verified_at_val is None or isinstance(verified_at_val, bool) or not isinstance(verified_at_val, (int, float)) or not math.isfinite(float(verified_at_val)):
+                return False, "CAPABILITY_VERIFICATION_FAILED_HUMAN_APPROVAL_PROVENANCE_INVALID_VERIFIED_AT", cap
+
+            # 4. Verify bindings between approval record and capability fields
+            if human_app.action_name != cap.action_name:
+                return False, f"CAPABILITY_VERIFICATION_FAILED_HUMAN_APPROVAL_ACTION_MISMATCH: approval '{human_app.action_name}' != capability '{cap.action_name}'", cap
+
+            if human_app.target != cap.target:
+                return False, f"CAPABILITY_VERIFICATION_FAILED_HUMAN_APPROVAL_TARGET_MISMATCH: approval '{human_app.target}' != capability '{cap.target}'", cap
+
+            if human_app.action_digest != cap.canonical_request_digest:
+                return False, f"CAPABILITY_VERIFICATION_FAILED_HUMAN_APPROVAL_DIGEST_MISMATCH: approval '{human_app.action_digest}' != capability '{cap.canonical_request_digest}'", cap
+
+            if not human_app.requesting_principal or not str(human_app.requesting_principal).strip():
+                return False, "CAPABILITY_VERIFICATION_FAILED_HUMAN_APPROVAL_MISSING_REQUESTING_PRINCIPAL", cap
+
+            if str(human_app.requesting_principal).strip() != cap.principal_id:
+                return False, f"CAPABILITY_VERIFICATION_FAILED_HUMAN_APPROVAL_REQUESTING_PRINCIPAL_MISMATCH: approval '{human_app.requesting_principal}' != capability '{cap.principal_id}'", cap
+
+            if cap.task_id:
+                if not human_app.task_id or not str(human_app.task_id).strip():
+                    return False, "CAPABILITY_VERIFICATION_FAILED_HUMAN_APPROVAL_MISSING_TASK_ID", cap
+                if str(human_app.task_id).strip() != str(cap.task_id).strip():
+                    return False, f"CAPABILITY_VERIFICATION_FAILED_HUMAN_APPROVAL_TASK_ID_MISMATCH: approval '{human_app.task_id}' != capability '{cap.task_id}'", cap
+
+            if human_app.request_id != cap.request_id:
+                return False, f"CAPABILITY_VERIFICATION_FAILED_HUMAN_APPROVAL_REQUEST_ID_MISMATCH: approval '{human_app.request_id}' != capability '{cap.request_id}'", cap
 
         return True, "CAPABILITY_VERIFIED", cap
