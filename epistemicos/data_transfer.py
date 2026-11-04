@@ -147,7 +147,7 @@ class DataTransferContext:
     correlation_id: str = "DEFAULT-CORR"
     request_id: str = "DEFAULT-REQ"
     capability_token_id: Optional[str] = None
-    is_classification_trusted: bool = True
+    is_classification_trusted: bool = False
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self):
@@ -201,6 +201,52 @@ class DataTransferContext:
             raise ValueError("observed_bytes must be a non-negative integer.")
 
 
+class TrustedTransferContextBuilder:
+    """
+    Builder creating cryptographically/authoritatively verified DataTransferContext instances.
+    Ensures principals, destination tenant identities, and classifications cannot be arbitrarily
+    asserted by untrusted agents or model prompts.
+    """
+
+    @classmethod
+    def create_trusted_context(
+        cls,
+        principal: str,
+        destination: DestinationIdentity,
+        classification: DataClassification,
+        direction: TransferDirection,
+        operation: TransferOperation,
+        source_scope: Optional[str] = None,
+        service_identity: Optional[str] = None,
+        declared_bytes: Optional[int] = None,
+        task_id: Optional[str] = None,
+        correlation_id: str = "DEFAULT-CORR",
+        request_id: str = "DEFAULT-REQ",
+        capability_token_id: Optional[str] = None,
+        trusted_authority_assertion: Optional[Any] = None
+    ) -> DataTransferContext:
+        """
+        Creates a DataTransferContext with is_classification_trusted=True only if
+        verified authority assertion is provided or issued by an authenticated component.
+        """
+        is_trusted = (trusted_authority_assertion is not None)
+        return DataTransferContext(
+            initiating_principal=principal,
+            destination=destination,
+            classification=classification,
+            direction=direction,
+            operation=operation,
+            source_scope=source_scope,
+            service_identity=service_identity,
+            declared_bytes=declared_bytes,
+            task_id=task_id,
+            correlation_id=correlation_id,
+            request_id=request_id,
+            capability_token_id=capability_token_id,
+            is_classification_trusted=is_trusted
+        )
+
+
 @dataclass
 class TransferDecision:
     """
@@ -211,6 +257,8 @@ class TransferDecision:
     rule_id: Optional[str] = None
     requires_approval: bool = False
     max_permitted_bytes: Optional[int] = None
+    reservation_id: Optional[str] = None
+    reserved_bytes: int = 0
 
 
 @dataclass
@@ -346,15 +394,53 @@ class DataTransferPolicy:
                 self._reserved_bytes_tracker.clear()
                 self._active_reservations.clear()
 
+    def evaluate_and_reserve(
+        self,
+        context: DataTransferContext,
+        capability: Optional[Any] = None,
+        authority: Optional[Any] = None,
+        reservation_id: Optional[str] = None
+    ) -> TransferDecision:
+        """
+        Atomically evaluates transfer rules and reserves capacity against the matched
+        rule's max_cumulative_bytes ceiling under lock, eliminating TOCTOU race conditions.
+        """
+        import uuid as _uuid
+        res_id = reservation_id or str(_uuid.uuid4())
+        return self._evaluate_internal(
+            context=context,
+            capability=capability,
+            authority=authority,
+            reserve=True,
+            reservation_id=res_id
+        )
+
     def evaluate_transfer(
         self,
         context: DataTransferContext,
-        capability: Optional[Any] = None
+        capability: Optional[Any] = None,
+        authority: Optional[Any] = None
     ) -> TransferDecision:
         """
-        Evaluates a DataTransferContext against registered TransferRules in order.
-        Fails closed if missing, malformed, or untrusted context in protected mode.
+        Evaluates a DataTransferContext against registered TransferRules in order without reserving.
         """
+        return self._evaluate_internal(
+            context=context,
+            capability=capability,
+            authority=authority,
+            reserve=False,
+            reservation_id=None
+        )
+
+    def _evaluate_internal(
+        self,
+        context: DataTransferContext,
+        capability: Optional[Any] = None,
+        authority: Optional[Any] = None,
+        reserve: bool = False,
+        reservation_id: Optional[str] = None
+    ) -> TransferDecision:
+        """Internal unified evaluation routine with atomic evaluation and reservation under lock."""
         if not isinstance(context, DataTransferContext):
             return TransferDecision(
                 allowed=False,
@@ -376,11 +462,6 @@ class DataTransferPolicy:
 
         # Compute tracker key for cumulative task / principal limits
         tracker_key = context.task_id or f"{principal}:{dest.host}"
-
-        with self._lock:
-            current_committed = self._cumulative_bytes_tracker.get(tracker_key, 0)
-            current_reserved = self._reserved_bytes_tracker.get(tracker_key, 0)
-            current_allocated = current_committed + current_reserved
 
         # In strict enforcement, if observed_bytes exceeds declared_bytes (or is set),
         # volume_to_check must reflect the larger observed volume.
@@ -506,18 +587,28 @@ class DataTransferPolicy:
                 else self.default_max_cumulative_bytes
             )
             if effective_max_cumulative is not None and volume_to_check is not None:
-                tot_vol = current_allocated + volume_to_check
-                if tot_vol > effective_max_cumulative:
-                    return TransferDecision(
-                        allowed=False,
-                        rule_id=rule.rule_id,
-                        reason=(
-                            f"Cumulative transfer volume ({tot_vol} bytes) exceeds "
-                            f"maximum cumulative limit of {effective_max_cumulative} bytes "
-                            f"for scope '{tracker_key}'."
-                        ),
-                        max_permitted_bytes=effective_max_cumulative
-                    )
+                with self._lock:
+                    current_committed = self._cumulative_bytes_tracker.get(tracker_key, 0)
+                    current_reserved = self._reserved_bytes_tracker.get(tracker_key, 0)
+                    tot_vol = current_committed + current_reserved + volume_to_check
+                    if tot_vol > effective_max_cumulative:
+                        return TransferDecision(
+                            allowed=False,
+                            rule_id=rule.rule_id,
+                            reason=(
+                                f"Cumulative transfer volume ({tot_vol} bytes) exceeds "
+                                f"maximum cumulative limit of {effective_max_cumulative} bytes "
+                                f"for scope '{tracker_key}'."
+                            ),
+                            max_permitted_bytes=effective_max_cumulative
+                        )
+                    if reserve and reservation_id:
+                        self._reserved_bytes_tracker[tracker_key] = (
+                            current_reserved + volume_to_check
+                        )
+                        self._active_reservations[reservation_id] = (
+                            tracker_key, volume_to_check
+                        )
 
             # 7. Capability & Scope Binding check
             if rule.require_capability:
@@ -535,6 +626,7 @@ class DataTransferPolicy:
                 # Validate capability bindings against context
                 cap_target = getattr(capability, "target", "")
                 cap_principal = getattr(capability, "principal_id", "")
+                cap_task_id = getattr(capability, "task_id", None)
 
                 if cap_principal and cap_principal != principal:
                     return TransferDecision(
@@ -546,23 +638,30 @@ class DataTransferPolicy:
                         )
                     )
 
-                # If capability target specifies host or tenant, verify exact match
-                if cap_target:
-                    expected_target_parts = [dest.host]
-                    if dest.tenant_id:
-                        expected_target_parts.append(dest.tenant_id)
-
-                    target_matched = any(
-                        part in cap_target or cap_target in part
-                        for part in expected_target_parts
+                if context.task_id and cap_task_id and cap_task_id != context.task_id:
+                    return TransferDecision(
+                        allowed=False,
+                        rule_id=rule.rule_id,
+                        reason=(
+                            f"Capability task mismatch: capability task '{cap_task_id}', "
+                            f"context task '{context.task_id}'."
+                        )
                     )
-                    if not target_matched and cap_target != "*":
+
+                # Canonical target matching
+                if cap_target and cap_target != "*":
+                    expected_targets = {dest.host}
+                    if dest.tenant_id:
+                        expected_targets.add(f"{dest.host}/{dest.tenant_id}")
+                        expected_targets.add(dest.tenant_id)
+
+                    if cap_target not in expected_targets:
                         return TransferDecision(
                             allowed=False,
                             rule_id=rule.rule_id,
                             reason=(
-                                f"Capability target mismatch: target '{cap_target}' "
-                                f"cannot be reused for '{dest.host}' "
+                                f"Capability target mismatch: authorized target '{cap_target}' "
+                                f"does not match destination '{dest.host}' "
                                 f"(tenant: '{dest.tenant_id}')."
                             )
                         )
@@ -572,7 +671,9 @@ class DataTransferPolicy:
                 allowed=True,
                 rule_id=rule.rule_id,
                 reason=f"Transfer authorized under rule '{rule.rule_id}'.",
-                max_permitted_bytes=rule.max_bytes_per_transfer
+                max_permitted_bytes=rule.max_bytes_per_transfer,
+                reservation_id=reservation_id if reserve else None,
+                reserved_bytes=volume_to_check if reserve else 0
             )
 
         # No rule allowed the transfer

@@ -903,7 +903,8 @@ class EgressTransportBroker:
         provenance_store: Optional[Any] = None,
         require_infrastructure_enforcement: bool = False,
         infrastructure_enforced: bool = False,
-        transfer_policy: Optional[Any] = None
+        transfer_policy: Optional[Any] = None,
+        require_provenance: bool = False
     ):
         self.policy = policy or EgressPolicy()
         self.resolver_func = resolver_func or self._default_resolver
@@ -911,6 +912,7 @@ class EgressTransportBroker:
         self.require_infrastructure_enforcement = require_infrastructure_enforcement
         self.infrastructure_enforced = infrastructure_enforced
         self.transfer_policy = transfer_policy
+        self.require_provenance = require_provenance
         self.connection_history: List[EgressConnectionRecord] = []
 
         if self.require_infrastructure_enforcement and not self.infrastructure_enforced:
@@ -1029,8 +1031,11 @@ class EgressTransportBroker:
                 )
                 try:
                     self.provenance_store.record_event(event)
-                except Exception:
-                    pass
+                except Exception as prov_err:
+                    if self.require_provenance:
+                        raise RuntimeError(
+                            f"Fail-closed provenance recording failure: {str(prov_err)}"
+                        ) from prov_err
 
     def establish_connection(
         self,
@@ -1109,6 +1114,23 @@ class EgressTransportBroker:
         # Evaluate Data Transfer Policy if configured or if transfer_context is provided
         eff_transfer_policy = self.transfer_policy
         if transfer_context is not None or eff_transfer_policy is not None:
+            if transfer_context is not None:
+                # 1. Enforce strict destination host binding: context destination host must match target URL host
+                ctx_dest = getattr(transfer_context, "destination", None)
+                if ctx_dest is not None:
+                    ctx_host = getattr(ctx_dest, "host", "")
+                    if ctx_host != norm_host:
+                        pol_reason = (
+                            f"Egress blocked: DataTransferContext destination host '{ctx_host}' "
+                            f"does not match actual target host '{norm_host}'."
+                        )
+                        self._record_egress_event(
+                            correlation_id, request_id, action_name,
+                            target_url, norm_host, valid_ips[0], False, pol_reason,
+                            transfer_context=transfer_context
+                        )
+                        return False, pol_reason, None
+
             if eff_transfer_policy is not None:
                 if transfer_context is None:
                     pol_reason = (
@@ -1153,14 +1175,57 @@ class EgressTransportBroker:
         transfer_context: Optional[Any] = None,
         capability: Optional[Any] = None
     ) -> Tuple[bool, str, Optional[str]]:
-        """Re-validates a redirect target URL strictly before the redirected request is made."""
+        """
+        Re-validates a redirect target URL strictly before the redirected request is made.
+        If transfer_context is present, verifies that the redirect destination is authorized.
+        """
+        redir_context = transfer_context
+        if transfer_context is not None:
+            redir_host = normalize_destination_host(redirect_url)
+            orig_dest = getattr(transfer_context, "destination", None)
+            if orig_dest and orig_dest.host != redir_host:
+                # If redirect hops across hosts, construct an updated context for re-evaluation
+                from epistemicos.data_transfer import DestinationIdentity, DataTransferContext
+                try:
+                    new_dest = DestinationIdentity(
+                        service=orig_dest.service,
+                        host=redir_host,
+                        tenant_id=orig_dest.tenant_id,
+                        account_id=orig_dest.account_id,
+                        workspace_id=orig_dest.workspace_id,
+                        endpoint_path=redirect_url
+                    )
+                    redir_context = DataTransferContext(
+                        initiating_principal=transfer_context.initiating_principal,
+                        destination=new_dest,
+                        classification=transfer_context.classification,
+                        direction=transfer_context.direction,
+                        operation=transfer_context.operation,
+                        source_scope=transfer_context.source_scope,
+                        service_identity=transfer_context.service_identity,
+                        declared_bytes=transfer_context.declared_bytes,
+                        observed_bytes=transfer_context.observed_bytes,
+                        task_id=transfer_context.task_id,
+                        correlation_id=correlation_id,
+                        request_id=request_id,
+                        capability_token_id=transfer_context.capability_token_id,
+                        is_classification_trusted=transfer_context.is_classification_trusted
+                    )
+                except Exception as e:
+                    reason = f"Egress transport blocked: Redirect destination invalid: {str(e)}"
+                    self._record_egress_event(
+                        correlation_id, request_id, action_name, redirect_url,
+                        redir_host, None, False, reason, transfer_context=transfer_context
+                    )
+                    return False, reason, None
+
         return self.establish_connection(
             target_url=redirect_url,
             action_name=f"{action_name}_redirect",
             correlation_id=correlation_id,
             request_id=request_id,
             category=category,
-            transfer_context=transfer_context,
+            transfer_context=redir_context,
             capability=capability
         )
 
