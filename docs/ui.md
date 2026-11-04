@@ -80,3 +80,41 @@ PYTHONPATH=/home/jules/.pyenv/versions/3.12.13/lib/python3.12/site-packages:. /h
 - **Local Hash Chain Scope**: Valid local cryptographic hash chain integrity verifies append-only sequence chaining, but does NOT prove external source authenticity, non-repudiation, or trace completeness.
 - **Path Sanitization**: The HTTP server enforces strict path validation preventing directory traversal (`..` blocking) and restricts static asset delivery to `epistemicos/ui/static/`.
 - **Security Headers**: All HTTP responses set `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, and strict `Content-Security-Policy` headers.
+
+## State-First Operational Intelligence Interface
+
+### Epistemic Constraints & State Grammar
+
+The Observatory Overview implements a State-First Operational Intelligence Interface. The primary design mandate is that the interface must never claim more certainty than the underlying system can substantiate.
+
+#### 1. Primary System State Hierarchy
+
+1. **Primary Operational State Banner** (`#overview-primary-state-card`):
+   - **Prominent Textual State**: Renders explicit states (`READY`, `AUTHORIZED`, `BLOCKED`, `FAILED`, `HALTED`, `DEGRADED`, `UNVERIFIED`, `NOT ESTABLISHED`).
+   - **Establishment Status**: Explicitly communicates whether the condition is `ESTABLISHED` or `NOT ESTABLISHED`.
+   - **Epistemic Rationale**: Clear textual statement explaining the evidentiary basis for the state.
+   - **Metadata Context**: Binds runtime execution mode, cryptographic anchor, and cumulative exception summaries.
+
+#### 2. Four Independent Epistemic Dimensions
+
+The Overview refuses to collapse disparate telemetry signals into a single misleading health score. Four dimensions are strictly separated:
+
+1. **Dimension 01: Cryptographic Integrity**
+   - Scope: Evaluates SHA-256 sequence hash chains across `TamperEvidentAuditTrail` and `LocalProvenanceStore`.
+   - Failure condition: Positive corruption halts to `BLOCKED`. Absence of logs evaluates to `UNVERIFIED`.
+2. **Dimension 02: Historical Activity**
+   - Scope: Retrospective aggregation of recorded executions, denials, policy halts, and execution failures.
+   - Epistemic Rule: Historical counts never determine current operational health. Past failures do not degrade a currently clean, idle system.
+3. **Dimension 03: Operational Health**
+   - Scope: Live runtime supervisory attestation.
+   - Epistemic Rule: Clean historical logs do NOT establish `READY`. `READY` strictly requires live authenticated supervisory health attestation. In its absence, operational health remains `NOT ESTABLISHED`.
+4. **Dimension 04: Evidence Completeness**
+   - Scope: Physical presence and readability of local append logs.
+   - Epistemic Rule: Local log file availability confirms local appendability, but internal chaining does not prove source authenticity.
+
+#### 3. Visual System Tokens & Contrast
+
+- Surface Foundation: Deep obsidian graphite (`#0B0F17`), slate charcoal (`#111827`), cool slate (`#1F2937`).
+- Typography: Off-white primary (`#F8FAFC`), slate secondary (`#CBD5E1`), muted slate (`#94A3B8`).
+- Operational Accents: Muted teal (`#2DD4BF`) for verified/authorized states, amber (`#FBBF24`) for policy halts, coral red (`#FF83B8`) for positive corruption/failure, slate neutral for unverified/not established conditions.
+- Contrast Compliance: All foreground text tokens achieve >= 4.5:1 WCAG 2.2 AA contrast across all solid and gradient surfaces.
