@@ -1393,3 +1393,30 @@ class TestAuthorizationConcurrencyAndDeterminism:
         assert len(successes) == 1
         assert len(failures) == num_threads - 1
         assert all("ALREADY_CONSUMED" in r[1] for r in failures)
+
+    def test_capability_registry_signing_secret_validation_and_env_loading(self, monkeypatch):
+        # 1. Non-bytes/bytearray key raises TypeError
+        with pytest.raises(TypeError, match="signing_secret must be bytes or bytearray"):
+            CapabilityRegistry(signing_secret="string-key")
+
+        with pytest.raises(TypeError, match="signing_secret must be bytes or bytearray"):
+            CapabilityRegistry(signing_secret=12345)
+
+        # 2. Empty bytes/bytearray key raises ValueError
+        with pytest.raises(ValueError, match="signing_secret cannot be empty"):
+            CapabilityRegistry(signing_secret=b"")
+
+        with pytest.raises(ValueError, match="signing_secret cannot be empty"):
+            CapabilityRegistry(signing_secret=bytearray())
+
+        # 3. Valid bytearray converts to immutable bytes
+        sec_ba = bytearray(b"secure_test_key_32_bytes_long_ok")
+        reg_ba = CapabilityRegistry(signing_secret=sec_ba)
+        assert reg_ba.signing_secret == b"secure_test_key_32_bytes_long_ok"
+        sec_ba[0] = ord(b"X")
+        assert reg_ba.signing_secret == b"secure_test_key_32_bytes_long_ok"
+
+        # 4. Loading from EPISTEMICOS_CAP_SECRET env var
+        monkeypatch.setenv("EPISTEMICOS_CAP_SECRET", "custom_env_cap_secret")
+        reg_env = CapabilityRegistry()
+        assert reg_env.signing_secret == b"custom_env_cap_secret"
