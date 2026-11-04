@@ -132,7 +132,10 @@ Data movement decisions are evaluated against a typed, validated contract:
 ### 6.3 In-Process vs. Deployment Enforcement Boundaries
 - **In-Process Python Boundary**:
   - `ControlledEgressTransport` and `EgressTransportBroker` enforce pre-flight and in-flight payload byte inspection, destination tenant validation, and capability binding for managed Python HTTP/HTTPS connections.
-  - Declared sizes are validated against actual observed payload lengths; transfers are aborted before or during transmission if limits are breached.
+  - **Atomic Rule-Level Capacity Reservations**: Cumulative budgets are reserved atomically via `evaluate_and_reserve()` under rule-level locks, preventing TOCTOU concurrency race conditions where parallel threads could over-consume the budget.
+  - **In-Flight Chunked Streaming Termination**: Responses and downloads are read in discrete streaming chunks (8192 bytes); if the cumulative or per-transfer byte limit is breached while bytes are arriving, the socket connection is immediately closed and a `PermissionError` is raised before reading the full response.
+  - **Strict Host Binding & Redirects**: Every request strictly enforces that `transfer_context.destination.host` matches the canonical normalized host extracted from `target_url`. Cross-host redirects are strictly rejected to prevent destination identity or authorization inheritance across different hosts.
+  - **Fail-Closed Audit/Provenance**: In required provenance mode (`require_provenance=True`), failures to persist `DATA_TRANSFER_RECORD` or `EGRESS_BLOCKED` events fail closed and abort the transfer.
 - **Deployment-Level Boundary (Residual Gap)**:
   - Application-level Python middleware cannot inspect or terminate unmanaged native binaries, subprocesses (e.g. standalone CLI `rclone` or `winscp` invocations outside Python tool wrappers), or raw C-extensions bypassing Python socket boundaries.
   - OS-level network isolation (iptables/nftables, network namespaces `netns`, or mandatory egress proxying with TLS interception and tenant-header enforcement) remains mandatory in untrusted execution environments.
