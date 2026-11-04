@@ -4,13 +4,16 @@ and TamperEvidentAuditTrail.
 
 Verifies:
 1. Decision, hash, and counter equivalence between full-scan and incremental verification.
-2. Immediate detection of corrupted JSON in newly appended suffix.
-3. Immediate detection of broken chain links in newly appended suffix.
-4. Immediate detection of duplicate event IDs across incremental appends.
-5. Inode change / file replacement triggers full re-verification from genesis.
-6. File truncation (size shrinkage) triggers full re-verification from genesis.
-7. Empty and non-existent file handling.
-8. HMAC-keyed verification equivalence across increments.
+2. Immediate detection of same-size in-place record modification in previously verified prefix.
+3. Modification of an earlier record followed by a valid-looking appended suffix fails closed.
+4. Immediate detection of corrupted JSON in newly appended suffix.
+5. Immediate detection of broken chain links in newly appended suffix.
+6. Immediate detection of duplicate event IDs across incremental appends and boundary.
+7. Same-inode rewrite and full file replacement trigger full re-verification from genesis.
+8. File truncation (size shrinkage) triggers full re-verification from genesis.
+9. Empty and non-existent file handling.
+10. Repeated inspections after a failed verification fail closed.
+11. HMAC-keyed verification equivalence across increments.
 """
 
 import json
@@ -117,6 +120,110 @@ def test_audit_incremental_equivalence_and_scaling(tmp_path: Path):
     assert ref2_hash == inc2_hash
     assert ref2_err is None
     assert inc2_err is None
+
+
+def test_provenance_same_size_in_place_tampering_detection(tmp_path: Path):
+    """Verifies that tampering with a previously verified record in-place fails closed."""
+    log_file = str(tmp_path / "test_prov_inplace.jsonl")
+    store = LocalProvenanceStore(log_path=log_file)
+
+    for i in range(5):
+        store.record_event(ProvenanceEvent(
+            schema_version="1.0.0",
+            event_id=f"evt_{i:04d}",
+            event_type="ACTION_PROPOSED",
+            provenance_source="AGENT_ADAPTER",
+            correlation_id="c1",
+            request_id=f"r_{i}",
+            action_name="act",
+            target="tgt",
+            canonical_request_digest="d",
+            timestamp="2026-01-01T00:00:00Z"
+        ))
+
+    healthy, _, count, _ = store._inspect_health()
+    assert healthy is True
+    assert count == 5
+
+    # Tamper with the last record in-place, keeping exact same length
+    with open(log_file, "r", encoding="utf-8") as f:
+        lines = f.readlines()
+
+    last_record = json.loads(lines[-1].strip())
+    # Modify entry_hash to invalid hex string of identical length
+    last_record["entry_hash"] = "f" * 64
+    tampered_line = json.dumps(last_record) + "\n"
+
+    # Pad or slice to ensure identical byte length
+    diff_len = len(lines[-1]) - len(tampered_line)
+    if diff_len > 0:
+        last_record["canonical_request_digest"] = "d" + "x" * diff_len
+        tampered_line = json.dumps(last_record) + "\n"
+
+    lines[-1] = tampered_line
+    with open(log_file, "w", encoding="utf-8") as f:
+        f.writelines(lines)
+
+    # Store must detect tail anchor mismatch and fail closed
+    healthy_after, _, _, _ = store._inspect_health()
+    fresh_healthy, _, _, _ = LocalProvenanceStore(log_path=log_file)._inspect_health()
+    assert healthy_after is False
+    assert fresh_healthy is False
+
+
+def test_audit_same_size_in_place_tampering_detection(tmp_path: Path):
+    """Verifies that in-place tampering with an audit record fails closed."""
+    log_file = str(tmp_path / "test_audit_inplace.jsonl")
+    trail = TamperEvidentAuditTrail(log_file_path=log_file)
+
+    trail.record_event(AuditEvent(AuditLogLevel.INFO, "GateA", "r1", "m1", "s1"))
+    trail.record_event(AuditEvent(AuditLogLevel.INFO, "GateA", "r2", "m2", "s2"))
+
+    healthy, _, _ = trail.inspect_log_health()
+    assert healthy is True
+
+    # Tamper with the first record in-place, keeping file size identical
+    with open(log_file, "r", encoding="utf-8") as f:
+        lines = f.readlines()
+
+    rec0 = json.loads(lines[0].strip())
+    rec0["entry_hash"] = "0" * 64
+    lines[0] = json.dumps(rec0) + "\n"
+
+    with open(log_file, "w", encoding="utf-8") as f:
+        f.writelines(lines)
+
+    healthy_after, _, err = trail.inspect_log_health()
+    fresh_trail = TamperEvidentAuditTrail(log_file_path=log_file)
+    fresh_healthy, _, fresh_err = fresh_trail.inspect_log_health()
+    assert healthy_after is False
+    assert fresh_healthy is False
+    assert err is not None
+    assert fresh_err is not None
+
+
+def test_earlier_record_modification_followed_by_append(tmp_path: Path):
+    """Tampering with an earlier record breaks downstream hash chaining on subsequent appends."""
+    log_file = str(tmp_path / "test_audit_early_mod.jsonl")
+    trail = TamperEvidentAuditTrail(log_file_path=log_file)
+
+    for i in range(3):
+        trail.record_event(AuditEvent(AuditLogLevel.INFO, "GateA", f"r_{i}", "m1", "s1"))
+
+    assert trail.inspect_log_health()[0] is True
+
+    # Tamper with record 0
+    with open(log_file, "r", encoding="utf-8") as f:
+        lines = f.readlines()
+    rec0 = json.loads(lines[0].strip())
+    rec0["reason"] = "tampered"
+    lines[0] = json.dumps(rec0) + "\n"
+    with open(log_file, "w", encoding="utf-8") as f:
+        f.writelines(lines)
+
+    # Subsequent record_event must fail closed because chain from record 0 is broken
+    with pytest.raises(RuntimeError, match="Cannot write to audit trail: Log corruption detected"):
+        trail.record_event(AuditEvent(AuditLogLevel.INFO, "GateA", "new_event", "m1", "s1"))
 
 
 def test_provenance_incremental_detects_suffix_corruption(tmp_path: Path):
@@ -236,6 +343,33 @@ def test_provenance_incremental_detects_duplicate_event_id(tmp_path: Path):
             canonical_request_digest="d",
             timestamp="2026-01-01T00:00:00Z"
         ))
+
+
+def test_repeated_inspections_after_failure_remain_failed(tmp_path: Path):
+    """Verifies that once verification fails, cached state does not mask subsequent calls."""
+    log_file = str(tmp_path / "test_repeated_fail.jsonl")
+    store = LocalProvenanceStore(log_path=log_file)
+
+    store.record_event(ProvenanceEvent(
+        schema_version="1.0.0",
+        event_id="e1",
+        event_type="ACTION_PROPOSED",
+        provenance_source="AGENT_ADAPTER",
+        correlation_id="c1",
+        request_id="r1",
+        action_name="a",
+        target="t",
+        canonical_request_digest="d",
+        timestamp="2026-01-01T00:00:00Z"
+    ))
+
+    with open(log_file, "a", encoding="utf-8") as f:
+        f.write("{invalid_json\n")
+
+    # Call inspect 3 times: all must return False
+    for _ in range(3):
+        healthy, _, _, _ = store._inspect_health()
+        assert healthy is False
 
 
 def test_file_truncation_resets_incremental_verification(tmp_path: Path):
