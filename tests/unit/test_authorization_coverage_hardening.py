@@ -1416,7 +1416,31 @@ class TestAuthorizationConcurrencyAndDeterminism:
         sec_ba[0] = ord(b"X")
         assert reg_ba.signing_secret == b"secure_test_key_32_bytes_long_ok"
 
-        # 4. Loading from EPISTEMICOS_CAP_SECRET env var
+        # 4. Environment variable handling:
+        # 4a. Unset env var -> falls back to generating random ephemeral 32-byte key
+        monkeypatch.delenv("EPISTEMICOS_CAP_SECRET", raising=False)
+        reg_unset = CapabilityRegistry()
+        assert isinstance(reg_unset.signing_secret, bytes)
+        assert len(reg_unset.signing_secret) == 32
+
+        # 4b. Explicit empty string env var -> raises ValueError
+        monkeypatch.setenv("EPISTEMICOS_CAP_SECRET", "")
+        with pytest.raises(ValueError, match="signing_secret cannot be empty"):
+            CapabilityRegistry()
+
+        # 4c. Valid env var -> loads correctly
         monkeypatch.setenv("EPISTEMICOS_CAP_SECRET", "custom_env_cap_secret")
         reg_env = CapabilityRegistry()
         assert reg_env.signing_secret == b"custom_env_cap_secret"
+
+        # 4d. Explicit constructor arg takes precedence over env var
+        reg_override = CapabilityRegistry(signing_secret=b"override_secret_val")
+        assert reg_override.signing_secret == b"override_secret_val"
+
+        # 5. Neither provided (arg=None, env=unset) -> random key generation backwards-compatible
+        monkeypatch.delenv("EPISTEMICOS_CAP_SECRET", raising=False)
+        reg_rand1 = CapabilityRegistry(signing_secret=None)
+        reg_rand2 = CapabilityRegistry(signing_secret=None)
+        assert isinstance(reg_rand1.signing_secret, bytes) and len(reg_rand1.signing_secret) == 32
+        assert isinstance(reg_rand2.signing_secret, bytes) and len(reg_rand2.signing_secret) == 32
+        assert reg_rand1.signing_secret != reg_rand2.signing_secret

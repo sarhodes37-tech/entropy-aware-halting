@@ -1486,7 +1486,7 @@ class CapabilityRegistry:
 
     def __init__(
         self,
-        signing_secret: Optional[bytes] = None,
+        signing_secret: Optional[Union[bytes, bytearray]] = None,
         denial_log_path: str = "logs/denial_registry.jsonl",
         fail_closed_persistence: bool = True,
         storage_backend: Optional[AuthorizationStore] = None
@@ -1508,7 +1508,7 @@ class CapabilityRegistry:
         import os
         if signing_secret is None:
             env_cap_sec = os.getenv("EPISTEMICOS_CAP_SECRET")
-            if env_cap_sec:
+            if env_cap_sec is not None:
                 signing_secret = env_cap_sec.encode("utf-8")
 
         if signing_secret is not None:
