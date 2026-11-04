@@ -240,32 +240,55 @@ def run_benchmark() -> Dict[str, Any]:
             # 1. Provenance health inspection trials
             p_base_lats = []
             p_opt_lats = []
-            for _ in range(trials):
-                t0 = time.perf_counter_ns()
-                rb = store_base._inspect_health()
-                t1 = time.perf_counter_ns()
-                p_base_lats.append((t1 - t0) / 1e6)
+            for idx in range(trials):
+                # Alternate execution order to eliminate order bias
+                if idx % 2 == 0:
+                    t0 = time.perf_counter_ns()
+                    rb = store_base._inspect_health()
+                    t1 = time.perf_counter_ns()
+                    p_base_lats.append((t1 - t0) / 1e6)
 
-                t0 = time.perf_counter_ns()
-                ro = store_opt._inspect_health()
-                t1 = time.perf_counter_ns()
-                p_opt_lats.append((t1 - t0) / 1e6)
+                    t0 = time.perf_counter_ns()
+                    ro = store_opt._inspect_health()
+                    t1 = time.perf_counter_ns()
+                    p_opt_lats.append((t1 - t0) / 1e6)
+                else:
+                    t0 = time.perf_counter_ns()
+                    ro = store_opt._inspect_health()
+                    t1 = time.perf_counter_ns()
+                    p_opt_lats.append((t1 - t0) / 1e6)
+
+                    t0 = time.perf_counter_ns()
+                    rb = store_base._inspect_health()
+                    t1 = time.perf_counter_ns()
+                    p_base_lats.append((t1 - t0) / 1e6)
 
                 assert rb[0] == ro[0] and rb[1] == ro[1] and rb[2] == ro[2]
 
             # 2. Audit trail health inspection trials
             a_base_lats = []
             a_opt_lats = []
-            for _ in range(trials):
-                t0 = time.perf_counter_ns()
-                arb = audit_base.inspect_log_health()
-                t1 = time.perf_counter_ns()
-                a_base_lats.append((t1 - t0) / 1e6)
+            for idx in range(trials):
+                if idx % 2 == 0:
+                    t0 = time.perf_counter_ns()
+                    arb = audit_base.inspect_log_health()
+                    t1 = time.perf_counter_ns()
+                    a_base_lats.append((t1 - t0) / 1e6)
 
-                t0 = time.perf_counter_ns()
-                aro = audit_opt.inspect_log_health()
-                t1 = time.perf_counter_ns()
-                a_opt_lats.append((t1 - t0) / 1e6)
+                    t0 = time.perf_counter_ns()
+                    aro = audit_opt.inspect_log_health()
+                    t1 = time.perf_counter_ns()
+                    a_opt_lats.append((t1 - t0) / 1e6)
+                else:
+                    t0 = time.perf_counter_ns()
+                    aro = audit_opt.inspect_log_health()
+                    t1 = time.perf_counter_ns()
+                    a_opt_lats.append((t1 - t0) / 1e6)
+
+                    t0 = time.perf_counter_ns()
+                    arb = audit_base.inspect_log_health()
+                    t1 = time.perf_counter_ns()
+                    a_base_lats.append((t1 - t0) / 1e6)
 
                 assert arb[0] == aro[0] and arb[1] == aro[1]
 
@@ -428,16 +451,27 @@ def run_benchmark() -> Dict[str, Any]:
             full_opt_times = []
             N_SUB = 15
 
-            for _ in range(N_SUB):
-                t0 = time.perf_counter_ns()
-                rb = orch_full_base.process_submission(w["payload"], w["context"])
-                t1 = time.perf_counter_ns()
-                full_base_times.append((t1 - t0) / 1e6)
+            for sub_idx in range(N_SUB):
+                if sub_idx % 2 == 0:
+                    t0 = time.perf_counter_ns()
+                    rb = orch_full_base.process_submission(w["payload"], w["context"])
+                    t1 = time.perf_counter_ns()
+                    full_base_times.append((t1 - t0) / 1e6)
 
-                t0 = time.perf_counter_ns()
-                ro = orch_full_opt.process_submission(w["payload"], w["context"])
-                t1 = time.perf_counter_ns()
-                full_opt_times.append((t1 - t0) / 1e6)
+                    t0 = time.perf_counter_ns()
+                    ro = orch_full_opt.process_submission(w["payload"], w["context"])
+                    t1 = time.perf_counter_ns()
+                    full_opt_times.append((t1 - t0) / 1e6)
+                else:
+                    t0 = time.perf_counter_ns()
+                    ro = orch_full_opt.process_submission(w["payload"], w["context"])
+                    t1 = time.perf_counter_ns()
+                    full_opt_times.append((t1 - t0) / 1e6)
+
+                    t0 = time.perf_counter_ns()
+                    rb = orch_full_base.process_submission(w["payload"], w["context"])
+                    t1 = time.perf_counter_ns()
+                    full_base_times.append((t1 - t0) / 1e6)
 
                 assert rb["status"] == ro["status"], f"Status divergence on {w_name}"
                 assert rb.get("reason") == ro.get("reason"), f"Reason divergence on {w_name}"
@@ -486,10 +520,12 @@ def generate_markdown_report(results: Dict[str, Any]):
         ),
         "",
         (
-            "By implementing **incremental byte-offset verification** with raw byte prefix "
-            "digest verification under existing thread and file locks, historical entries are "
-            "verified once and subsequent checks operate in $O(1)$ time for unchanged offsets and "
-            "$O(\\Delta)$ time for newly appended bytes, while immediately detecting same-size "
+            "By implementing **accelerated prefix integrity verification** with raw byte "
+            "streaming SHA-256 validation under existing thread and file locks, historical "
+            "entries avoid repetitive Python JSON deserialization, string allocations, and "
+            "per-record HMAC calculations. The prefix is validated via fast C-level bulk SHA-256 "
+            "byte hashing ($O(N)$ in bytes with small constants) and newly appended suffix records "
+            "undergo cryptographic chain validation, while immediately detecting same-size "
             "in-place modifications, truncations, and file replacements."
         ),
         "",

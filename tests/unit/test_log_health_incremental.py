@@ -14,6 +14,7 @@ Verifies:
 9. Empty and non-existent file handling.
 10. Repeated inspections after a failed verification fail closed.
 11. HMAC-keyed verification equivalence across increments.
+12. Intervening modification before cache state commitment fails closed and never becomes trusted.
 """
 
 import json
@@ -41,7 +42,7 @@ def test_provenance_incremental_equivalence_and_scaling(tmp_path: Path):
             action_name=f"action_{i}",
             target=f"target_{i}",
             canonical_request_digest="d",
-            timestamp="2026-01-01T00:00:00Z"
+            timestamp="2026-01-01T00:00:00Z",
         )
         events.append(evt)
 
@@ -83,13 +84,15 @@ def test_audit_incremental_equivalence_and_scaling(tmp_path: Path):
     trail = TamperEvidentAuditTrail(log_file_path=log_file)
 
     for i in range(25):
-        trail.record_event(AuditEvent(
-            event_type=AuditLogLevel.INFO,
-            gate_name="GateA",
-            reason=f"Reason {i}",
-            model_id="m1",
-            payload_snippet=json.dumps({"idx": i})
-        ))
+        trail.record_event(
+            AuditEvent(
+                event_type=AuditLogLevel.INFO,
+                gate_name="GateA",
+                reason=f"Reason {i}",
+                model_id="m1",
+                payload_snippet=json.dumps({"idx": i}),
+            )
+        )
 
     ref_trail = TamperEvidentAuditTrail(log_file_path=log_file)
     ref_healthy, ref_hash, ref_err = ref_trail.inspect_log_health()
@@ -103,13 +106,15 @@ def test_audit_incremental_equivalence_and_scaling(tmp_path: Path):
 
     # Record more events
     for i in range(25, 50):
-        trail.record_event(AuditEvent(
-            event_type=AuditLogLevel.INFO,
-            gate_name="GateB",
-            reason=f"Reason {i}",
-            model_id="m1",
-            payload_snippet=json.dumps({"idx": i})
-        ))
+        trail.record_event(
+            AuditEvent(
+                event_type=AuditLogLevel.INFO,
+                gate_name="GateB",
+                reason=f"Reason {i}",
+                model_id="m1",
+                payload_snippet=json.dumps({"idx": i}),
+            )
+        )
 
     ref_trail2 = TamperEvidentAuditTrail(log_file_path=log_file)
     ref2_healthy, ref2_hash, ref2_err = ref_trail2.inspect_log_health()
@@ -128,18 +133,20 @@ def test_provenance_same_size_in_place_tampering_detection(tmp_path: Path):
     store = LocalProvenanceStore(log_path=log_file)
 
     for i in range(5):
-        store.record_event(ProvenanceEvent(
-            schema_version="1.0.0",
-            event_id=f"evt_{i:04d}",
-            event_type="ACTION_PROPOSED",
-            provenance_source="AGENT_ADAPTER",
-            correlation_id="c1",
-            request_id=f"r_{i}",
-            action_name="act",
-            target="tgt",
-            canonical_request_digest="d",
-            timestamp="2026-01-01T00:00:00Z"
-        ))
+        store.record_event(
+            ProvenanceEvent(
+                schema_version="1.0.0",
+                event_id=f"evt_{i:04d}",
+                event_type="ACTION_PROPOSED",
+                provenance_source="AGENT_ADAPTER",
+                correlation_id="c1",
+                request_id=f"r_{i}",
+                action_name="act",
+                target="tgt",
+                canonical_request_digest="d",
+                timestamp="2026-01-01T00:00:00Z",
+            )
+        )
 
     healthy, _, count, _ = store._inspect_health()
     assert healthy is True
@@ -164,7 +171,7 @@ def test_provenance_same_size_in_place_tampering_detection(tmp_path: Path):
     with open(log_file, "w", encoding="utf-8") as f:
         f.writelines(lines)
 
-    # Store must detect tail anchor mismatch and fail closed
+    # Store must detect prefix digest mismatch and fail closed
     healthy_after, _, _, _ = store._inspect_health()
     fresh_healthy, _, _, _ = LocalProvenanceStore(log_path=log_file)._inspect_health()
     assert healthy_after is False
@@ -231,18 +238,20 @@ def test_provenance_incremental_detects_suffix_corruption(tmp_path: Path):
     store = LocalProvenanceStore(log_path=log_file)
 
     for i in range(5):
-        store.record_event(ProvenanceEvent(
-            schema_version="1.0.0",
-            event_id=str(uuid.uuid4()),
-            event_type="ACTION_PROPOSED",
-            provenance_source="AGENT_ADAPTER",
-            correlation_id="c1",
-            request_id=f"r_{i}",
-            action_name="act",
-            target="tgt",
-            canonical_request_digest="d",
-            timestamp="2026-01-01T00:00:00Z"
-        ))
+        store.record_event(
+            ProvenanceEvent(
+                schema_version="1.0.0",
+                event_id=str(uuid.uuid4()),
+                event_type="ACTION_PROPOSED",
+                provenance_source="AGENT_ADAPTER",
+                correlation_id="c1",
+                request_id=f"r_{i}",
+                action_name="act",
+                target="tgt",
+                canonical_request_digest="d",
+                timestamp="2026-01-01T00:00:00Z",
+            )
+        )
 
     healthy, _, count, _ = store._inspect_health()
     assert healthy is True
@@ -257,18 +266,20 @@ def test_provenance_incremental_detects_suffix_corruption(tmp_path: Path):
 
     # record_event should now fail closed
     with pytest.raises(RuntimeError, match="Provenance log corruption detected"):
-        store.record_event(ProvenanceEvent(
-            schema_version="1.0.0",
-            event_id=str(uuid.uuid4()),
-            event_type="ACTION_PROPOSED",
-            provenance_source="AGENT_ADAPTER",
-            correlation_id="c1",
-            request_id="r_new",
-            action_name="act",
-            target="tgt",
-            canonical_request_digest="d",
-            timestamp="2026-01-01T00:00:00Z"
-        ))
+        store.record_event(
+            ProvenanceEvent(
+                schema_version="1.0.0",
+                event_id=str(uuid.uuid4()),
+                event_type="ACTION_PROPOSED",
+                provenance_source="AGENT_ADAPTER",
+                correlation_id="c1",
+                request_id="r_new",
+                action_name="act",
+                target="tgt",
+                canonical_request_digest="d",
+                timestamp="2026-01-01T00:00:00Z",
+            )
+        )
 
 
 def test_audit_incremental_detects_suffix_corruption(tmp_path: Path):
@@ -276,13 +287,15 @@ def test_audit_incremental_detects_suffix_corruption(tmp_path: Path):
     trail = TamperEvidentAuditTrail(log_file_path=log_file)
 
     for i in range(5):
-        trail.record_event(AuditEvent(
-            event_type=AuditLogLevel.INFO,
-            gate_name="GateA",
-            reason="ok",
-            model_id="m1",
-            payload_snippet="{}"
-        ))
+        trail.record_event(
+            AuditEvent(
+                event_type=AuditLogLevel.INFO,
+                gate_name="GateA",
+                reason="ok",
+                model_id="m1",
+                payload_snippet="{}",
+            )
+        )
 
     healthy, _, err = trail.inspect_log_health()
     assert healthy is True
@@ -293,7 +306,7 @@ def test_audit_incremental_detects_suffix_corruption(tmp_path: Path):
         tampered_entry = {
             "event_id": str(uuid.uuid4()),
             "prev_hash": "bad_hash",
-            "entry_hash": "forged_entry_hash"
+            "entry_hash": "forged_entry_hash",
         }
         f.write(json.dumps(tampered_entry) + "\n")
 
@@ -301,14 +314,18 @@ def test_audit_incremental_detects_suffix_corruption(tmp_path: Path):
     assert healthy is False
     assert err is not None
 
-    with pytest.raises(RuntimeError, match="Cannot write to audit trail: Log corruption detected"):
-        trail.record_event(AuditEvent(
-            event_type=AuditLogLevel.INFO,
-            gate_name="GateB",
-            reason="fail",
-            model_id="m1",
-            payload_snippet="{}"
-        ))
+    with pytest.raises(
+        RuntimeError, match="Cannot write to audit trail: Log corruption detected"
+    ):
+        trail.record_event(
+            AuditEvent(
+                event_type=AuditLogLevel.INFO,
+                gate_name="GateB",
+                reason="fail",
+                model_id="m1",
+                payload_snippet="{}",
+            )
+        )
 
 
 def test_provenance_incremental_detects_duplicate_event_id(tmp_path: Path):
@@ -316,33 +333,37 @@ def test_provenance_incremental_detects_duplicate_event_id(tmp_path: Path):
     store = LocalProvenanceStore(log_path=log_file)
 
     fixed_id = str(uuid.uuid4())
-    store.record_event(ProvenanceEvent(
-        schema_version="1.0.0",
-        event_id=fixed_id,
-        event_type="ACTION_PROPOSED",
-        provenance_source="AGENT_ADAPTER",
-        correlation_id="c1",
-        request_id="r1",
-        action_name="act",
-        target="tgt",
-        canonical_request_digest="d",
-        timestamp="2026-01-01T00:00:00Z"
-    ))
-
-    # Second record with identical event_id
-    with pytest.raises(RuntimeError, match="Duplicate event_id"):
-        store.record_event(ProvenanceEvent(
+    store.record_event(
+        ProvenanceEvent(
             schema_version="1.0.0",
             event_id=fixed_id,
             event_type="ACTION_PROPOSED",
             provenance_source="AGENT_ADAPTER",
             correlation_id="c1",
-            request_id="r2",
+            request_id="r1",
             action_name="act",
             target="tgt",
             canonical_request_digest="d",
-            timestamp="2026-01-01T00:00:00Z"
-        ))
+            timestamp="2026-01-01T00:00:00Z",
+        )
+    )
+
+    # Second record with identical event_id
+    with pytest.raises(RuntimeError, match="Duplicate event_id"):
+        store.record_event(
+            ProvenanceEvent(
+                schema_version="1.0.0",
+                event_id=fixed_id,
+                event_type="ACTION_PROPOSED",
+                provenance_source="AGENT_ADAPTER",
+                correlation_id="c1",
+                request_id="r2",
+                action_name="act",
+                target="tgt",
+                canonical_request_digest="d",
+                timestamp="2026-01-01T00:00:00Z",
+            )
+        )
 
 
 def test_repeated_inspections_after_failure_remain_failed(tmp_path: Path):
@@ -350,18 +371,20 @@ def test_repeated_inspections_after_failure_remain_failed(tmp_path: Path):
     log_file = str(tmp_path / "test_repeated_fail.jsonl")
     store = LocalProvenanceStore(log_path=log_file)
 
-    store.record_event(ProvenanceEvent(
-        schema_version="1.0.0",
-        event_id="e1",
-        event_type="ACTION_PROPOSED",
-        provenance_source="AGENT_ADAPTER",
-        correlation_id="c1",
-        request_id="r1",
-        action_name="a",
-        target="t",
-        canonical_request_digest="d",
-        timestamp="2026-01-01T00:00:00Z"
-    ))
+    store.record_event(
+        ProvenanceEvent(
+            schema_version="1.0.0",
+            event_id="e1",
+            event_type="ACTION_PROPOSED",
+            provenance_source="AGENT_ADAPTER",
+            correlation_id="c1",
+            request_id="r1",
+            action_name="a",
+            target="t",
+            canonical_request_digest="d",
+            timestamp="2026-01-01T00:00:00Z",
+        )
+    )
 
     with open(log_file, "a", encoding="utf-8") as f:
         f.write("{invalid_json\n")
@@ -377,18 +400,20 @@ def test_file_truncation_resets_incremental_verification(tmp_path: Path):
     store = LocalProvenanceStore(log_path=log_file)
 
     for i in range(10):
-        store.record_event(ProvenanceEvent(
-            schema_version="1.0.0",
-            event_id=str(uuid.uuid4()),
-            event_type="ACTION_PROPOSED",
-            provenance_source="AGENT_ADAPTER",
-            correlation_id="c",
-            request_id=f"r_{i}",
-            action_name="a",
-            target="t",
-            canonical_request_digest="d",
-            timestamp="2026-01-01T00:00:00Z"
-        ))
+        store.record_event(
+            ProvenanceEvent(
+                schema_version="1.0.0",
+                event_id=str(uuid.uuid4()),
+                event_type="ACTION_PROPOSED",
+                provenance_source="AGENT_ADAPTER",
+                correlation_id="c",
+                request_id=f"r_{i}",
+                action_name="a",
+                target="t",
+                canonical_request_digest="d",
+                timestamp="2026-01-01T00:00:00Z",
+            )
+        )
 
     healthy, hash1, count1, _ = store._inspect_health()
     assert healthy is True
@@ -412,18 +437,20 @@ def test_inode_change_file_replacement_resets_verification(tmp_path: Path):
     store = LocalProvenanceStore(log_path=str(log_file))
 
     for i in range(5):
-        store.record_event(ProvenanceEvent(
-            schema_version="1.0.0",
-            event_id=str(uuid.uuid4()),
-            event_type="ACTION_PROPOSED",
-            provenance_source="AGENT_ADAPTER",
-            correlation_id="c",
-            request_id=f"r_{i}",
-            action_name="a",
-            target="t",
-            canonical_request_digest="d",
-            timestamp="2026-01-01T00:00:00Z"
-        ))
+        store.record_event(
+            ProvenanceEvent(
+                schema_version="1.0.0",
+                event_id=str(uuid.uuid4()),
+                event_type="ACTION_PROPOSED",
+                provenance_source="AGENT_ADAPTER",
+                correlation_id="c",
+                request_id=f"r_{i}",
+                action_name="a",
+                target="t",
+                canonical_request_digest="d",
+                timestamp="2026-01-01T00:00:00Z",
+            )
+        )
 
     healthy, _, count1, _ = store._inspect_health()
     assert healthy is True
@@ -433,18 +460,20 @@ def test_inode_change_file_replacement_resets_verification(tmp_path: Path):
     log_file.unlink()
     new_store = LocalProvenanceStore(log_path=str(log_file))
     for i in range(2):
-        new_store.record_event(ProvenanceEvent(
-            schema_version="1.0.0",
-            event_id=str(uuid.uuid4()),
-            event_type="ACTION_PROPOSED",
-            provenance_source="AGENT_ADAPTER",
-            correlation_id="c",
-            request_id=f"new_{i}",
-            action_name="a",
-            target="t",
-            canonical_request_digest="d",
-            timestamp="2026-01-01T00:00:00Z"
-        ))
+        new_store.record_event(
+            ProvenanceEvent(
+                schema_version="1.0.0",
+                event_id=str(uuid.uuid4()),
+                event_type="ACTION_PROPOSED",
+                provenance_source="AGENT_ADAPTER",
+                correlation_id="c",
+                request_id=f"new_{i}",
+                action_name="a",
+                target="t",
+                canonical_request_digest="d",
+                timestamp="2026-01-01T00:00:00Z",
+            )
+        )
 
     # Old store instance inspecting the replaced path detects inode change
     healthy, _, count2, _ = store._inspect_health()
@@ -458,18 +487,20 @@ def test_hmac_keyed_incremental_verification(tmp_path: Path):
     store = LocalProvenanceStore(log_path=log_file, hmac_key=key)
 
     for i in range(10):
-        store.record_event(ProvenanceEvent(
-            schema_version="1.0.0",
-            event_id=str(uuid.uuid4()),
-            event_type="ACTION_PROPOSED",
-            provenance_source="AGENT_ADAPTER",
-            correlation_id="c",
-            request_id=f"r_{i}",
-            action_name="a",
-            target="t",
-            canonical_request_digest="d",
-            timestamp="2026-01-01T00:00:00Z"
-        ))
+        store.record_event(
+            ProvenanceEvent(
+                schema_version="1.0.0",
+                event_id=str(uuid.uuid4()),
+                event_type="ACTION_PROPOSED",
+                provenance_source="AGENT_ADAPTER",
+                correlation_id="c",
+                request_id=f"r_{i}",
+                action_name="a",
+                target="t",
+                canonical_request_digest="d",
+                timestamp="2026-01-01T00:00:00Z",
+            )
+        )
 
     healthy, hash1, count1, _ = store._inspect_health()
     assert healthy is True
@@ -479,3 +510,70 @@ def test_hmac_keyed_incremental_verification(tmp_path: Path):
     wrong_key_store = LocalProvenanceStore(log_path=log_file, hmac_key=b"wrong_key_67890")
     healthy_wrong, _, _, _ = wrong_key_store._inspect_health()
     assert healthy_wrong is False
+
+
+def test_intervening_historical_modification_during_inspection_fails_closed(tmp_path: Path):
+    """
+    Verifies that if historical content is modified while or between inspections,
+    the modified history is detected via prefix digest check and never becomes trusted.
+    """
+    log_file = str(tmp_path / "test_race_tamper.jsonl")
+    trail = TamperEvidentAuditTrail(log_file_path=log_file)
+
+    trail.record_event(AuditEvent(AuditLogLevel.INFO, "G1", "r1", "m1", "s1"))
+    trail.record_event(AuditEvent(AuditLogLevel.INFO, "G2", "r2", "m2", "s2"))
+
+    assert trail.inspect_log_health()[0] is True
+
+    # Simulate an intervening same-size modification of historical record 0
+    with open(log_file, "r", encoding="utf-8") as f:
+        lines = f.readlines()
+    rec0 = json.loads(lines[0].strip())
+    rec0["entry_hash"] = "9" * 64
+    lines[0] = json.dumps(rec0) + "\n"
+    with open(log_file, "w", encoding="utf-8") as f:
+        f.writelines(lines)
+
+    # Next inspection must fail closed because prefix digest validation detects alteration
+    healthy, _, err = trail.inspect_log_health()
+    assert healthy is False
+    assert err is not None
+
+    # Cached state must be wiped; repeated calls must also fail
+    assert trail._verified_offset == 0
+    assert trail.inspect_log_health()[0] is False
+
+
+def test_provenance_single_descriptor_stream_integrity(tmp_path: Path):
+    """Verifies that single descriptor stream in LocalProvenanceStore detects tampering."""
+    log_file = str(tmp_path / "test_stream_integrity.jsonl")
+    store = LocalProvenanceStore(log_path=log_file)
+
+    store.record_event(
+        ProvenanceEvent(
+            schema_version="1.0.0",
+            event_id="e1",
+            event_type="ACTION_PROPOSED",
+            provenance_source="AGENT_ADAPTER",
+            correlation_id="c1",
+            request_id="r1",
+            action_name="a1",
+            target="t1",
+            canonical_request_digest="d1",
+            timestamp="2026-01-01T00:00:00Z",
+        )
+    )
+    assert store._inspect_health()[0] is True
+
+    # Modify record in place
+    with open(log_file, "r", encoding="utf-8") as f:
+        lines = f.readlines()
+    rec = json.loads(lines[0].strip())
+    rec["entry_hash"] = "7" * 64
+    lines[0] = json.dumps(rec) + "\n"
+    with open(log_file, "w", encoding="utf-8") as f:
+        f.writelines(lines)
+
+    # Inspect health must fail closed
+    assert store._inspect_health()[0] is False
+    assert store._verified_offset == 0

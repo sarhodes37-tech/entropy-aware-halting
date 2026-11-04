@@ -305,51 +305,64 @@ class LocalProvenanceStore(ProvenanceStore):
             self._verified_prefix_digest = hashlib.sha256(b"").hexdigest()
             return True, self.genesis_hash, 0, set()
 
-        needs_full_rescan = (
-            self._verified_ino != st.st_ino
-            or st.st_size < self._verified_offset
-            or self._verified_offset == 0
-        )
+        # Execute inspection on a single file descriptor under synchronized access
+        with open(self.log_path, "rb") as f_raw:
+            needs_full_rescan = (
+                self._verified_ino != st.st_ino
+                or st.st_size < self._verified_offset
+                or self._verified_offset == 0
+            )
 
-        if not needs_full_rescan:
-            try:
-                with open(self.log_path, "rb") as f_chk:
-                    prefix_bytes = f_chk.read(self._verified_offset)
-                    if (
-                        len(prefix_bytes) != self._verified_offset
-                        or hashlib.sha256(prefix_bytes).hexdigest() != self._verified_prefix_digest
-                    ):
+            hasher = hashlib.sha256()
+
+            if not needs_full_rescan:
+                prefix_bytes = f_raw.read(self._verified_offset)
+                if len(prefix_bytes) != self._verified_offset:
+                    needs_full_rescan = True
+                else:
+                    hasher.update(prefix_bytes)
+                    if hasher.hexdigest() != self._verified_prefix_digest:
                         needs_full_rescan = True
-            except Exception:
-                needs_full_rescan = True
 
-        if needs_full_rescan:
-            self._verified_offset = 0
-            self._verified_last_hash = self.genesis_hash
-            self._verified_count = 0
-            self._verified_seen_ids = set()
-            self._verified_ino = st.st_ino
-            self._verified_prefix_digest = hashlib.sha256(b"").hexdigest()
+            if needs_full_rescan:
+                f_raw.seek(0)
+                hasher = hashlib.sha256()
+                self._verified_offset = 0
+                self._verified_last_hash = self.genesis_hash
+                self._verified_count = 0
+                self._verified_seen_ids = set()
+                self._verified_ino = st.st_ino
+                self._verified_prefix_digest = hashlib.sha256(b"").hexdigest()
 
-        # If file size unchanged from verified byte offset, prefix hash matched and log is healthy
-        if st.st_size == self._verified_offset:
-            return True, self._verified_last_hash, self._verified_count, set(self._verified_seen_ids)
+            # If file size unchanged from verified byte offset, prefix digest verified
+            if st.st_size == self._verified_offset:
+                return True, self._verified_last_hash, self._verified_count, set(self._verified_seen_ids)
 
-        expected_prev = self._verified_last_hash
-        seen_ids = set(self._verified_seen_ids)
-        count = self._verified_count
+            expected_prev = self._verified_last_hash
+            seen_ids = set(self._verified_seen_ids)
+            count = self._verified_count
 
-        with open(self.log_path, "r", encoding="utf-8") as f:
-            if self._verified_offset > 0:
-                f.seek(self._verified_offset)
-
+            line_idx = 0
             while True:
-                line = f.readline()
-                if not line:
+                line_bytes = f_raw.readline()
+                if not line_bytes:
                     break
-                line_str = line.strip()
+                hasher.update(line_bytes)
+                line_idx += 1
+
+                try:
+                    line_str = line_bytes.decode("utf-8").strip()
+                except UnicodeDecodeError:
+                    self._verified_offset = 0
+                    self._verified_last_hash = self.genesis_hash
+                    self._verified_count = 0
+                    self._verified_seen_ids = set()
+                    self._verified_prefix_digest = ""
+                    return False, expected_prev, count, seen_ids
+
                 if not line_str:
                     continue
+
                 try:
                     entry = json.loads(line_str)
                 except json.JSONDecodeError:
@@ -395,17 +408,10 @@ class LocalProvenanceStore(ProvenanceStore):
                 expected_prev = recorded_hash
                 count += 1
 
-            new_offset = f.tell()
+            new_offset = f_raw.tell()
+            new_prefix_digest = hasher.hexdigest()
 
-        # Compute prefix digest for the newly verified range [0:new_offset]
-        try:
-            with open(self.log_path, "rb") as f_hash:
-                new_prefix_bytes = f_hash.read(new_offset)
-                new_prefix_digest = hashlib.sha256(new_prefix_bytes).hexdigest()
-        except Exception:
-            new_prefix_digest = ""
-
-        # Update cached state on successful validation
+        # Update cached state on successful validation over the single stream
         self._verified_offset = new_offset
         self._verified_last_hash = expected_prev
         self._verified_count = count
