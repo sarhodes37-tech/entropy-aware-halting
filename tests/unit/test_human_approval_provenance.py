@@ -21,6 +21,7 @@ from epistemicos.authorization import (
     AuthorizationAuthority,
     CapabilityRegistry,
     Policy,
+    Capability,
     HumanApprovalRecord,
     PrincipalVerifier,
     AuthenticatedPrincipal,
@@ -318,6 +319,110 @@ def test_e_valid_approver_wrong_requesting_principal_or_task_rejected(auth_setup
     assert cap_task is None
     assert "TASK_ID_MISMATCH" in reason_task
 
+    # Attempt 3: Missing requesting principal in approval record
+    app_no_req = HumanApprovalRecord(
+        approval_id="APP-TEST-E-NO-REQ",
+        approver_id="security_lead_alice",
+        action_name="wipe_database",
+        target="db_primary",
+        action_digest=digest,
+        request_id=req_id,
+        task_id="TASK-ALPHA",
+        requesting_principal=None,
+        approver_assertion=alice_assertion
+    )
+    app_no_req.sign(authority.approval_signing_secret)
+    cap_no_req, reason_no_req = authority.evaluate_and_issue_capability(
+        action_name="wipe_database",
+        target="db_primary",
+        canonical_request_digest=digest,
+        principal_id="agent_bob",
+        request_id=req_id,
+        task_id="TASK-ALPHA",
+        human_approval_input=app_no_req,
+        policy=policy
+    )
+    assert cap_no_req is None
+    assert reason_no_req == "AUTHORIZATION_DENIED_HUMAN_APPROVAL_MISSING_REQUESTING_PRINCIPAL"
+
+    # Attempt 4: Empty / whitespace requesting principal in approval record
+    app_ws_req = HumanApprovalRecord(
+        approval_id="APP-TEST-E-WS-REQ",
+        approver_id="security_lead_alice",
+        action_name="wipe_database",
+        target="db_primary",
+        action_digest=digest,
+        request_id=req_id,
+        task_id="TASK-ALPHA",
+        requesting_principal="   ",
+        approver_assertion=alice_assertion
+    )
+    app_ws_req.sign(authority.approval_signing_secret)
+    cap_ws_req, reason_ws_req = authority.evaluate_and_issue_capability(
+        action_name="wipe_database",
+        target="db_primary",
+        canonical_request_digest=digest,
+        principal_id="agent_bob",
+        request_id=req_id,
+        task_id="TASK-ALPHA",
+        human_approval_input=app_ws_req,
+        policy=policy
+    )
+    assert cap_ws_req is None
+    assert reason_ws_req == "AUTHORIZATION_DENIED_HUMAN_APPROVAL_MISSING_REQUESTING_PRINCIPAL"
+
+    # Attempt 5: Missing task ID in approval when request has effective task ID
+    app_no_task = HumanApprovalRecord(
+        approval_id="APP-TEST-E-NO-TASK",
+        approver_id="security_lead_alice",
+        action_name="wipe_database",
+        target="db_primary",
+        action_digest=digest,
+        request_id=req_id,
+        task_id=None,
+        requesting_principal="agent_bob",
+        approver_assertion=alice_assertion
+    )
+    app_no_task.sign(authority.approval_signing_secret)
+    cap_no_task, reason_no_task = authority.evaluate_and_issue_capability(
+        action_name="wipe_database",
+        target="db_primary",
+        canonical_request_digest=digest,
+        principal_id="agent_bob",
+        request_id=req_id,
+        task_id="TASK-ALPHA",
+        human_approval_input=app_no_task,
+        policy=policy
+    )
+    assert cap_no_task is None
+    assert reason_no_task == "AUTHORIZATION_DENIED_HUMAN_APPROVAL_MISSING_TASK_ID"
+
+    # Attempt 6: Empty / whitespace task ID in approval when request has effective task ID
+    app_ws_task = HumanApprovalRecord(
+        approval_id="APP-TEST-E-WS-TASK",
+        approver_id="security_lead_alice",
+        action_name="wipe_database",
+        target="db_primary",
+        action_digest=digest,
+        request_id=req_id,
+        task_id="   ",
+        requesting_principal="agent_bob",
+        approver_assertion=alice_assertion
+    )
+    app_ws_task.sign(authority.approval_signing_secret)
+    cap_ws_task, reason_ws_task = authority.evaluate_and_issue_capability(
+        action_name="wipe_database",
+        target="db_primary",
+        canonical_request_digest=digest,
+        principal_id="agent_bob",
+        request_id=req_id,
+        task_id="TASK-ALPHA",
+        human_approval_input=app_ws_task,
+        policy=policy
+    )
+    assert cap_ws_task is None
+    assert reason_ws_task == "AUTHORIZATION_DENIED_HUMAN_APPROVAL_MISSING_TASK_ID"
+
 
 # =====================================================================
 # Test F: Valid approval - Complete end-to-end authorization path
@@ -598,7 +703,7 @@ def test_h_replay_and_field_mutation_protection(auth_setup):
     )
     assert cap is not None
 
-    # 3. Downstream mutation: Tampering with capability approver_principal fails verification
+    # 3. Downstream mutation: Tampering with approver_principal breaks capability signature
     cap.approver_principal = "forged_approver"
     v_ok, v_reason, _ = authority.verify_capability(
         token_id=cap.token_id, action_name="wipe_database", target="db_primary",
@@ -606,8 +711,118 @@ def test_h_replay_and_field_mutation_protection(auth_setup):
         correlation_id=corr_id, request_id=req_id, task_id="TASK-H"
     )
     assert v_ok is False
-    assert "APPROVER_MISMATCH" in v_reason
+    assert v_reason == "CAPABILITY_VERIFICATION_FAILED_INVALID_SIGNATURE"
+
+    # Re-sign with forged approver_principal: semantic check rejects approver mismatch
+    cap.signature = authority.registry.sign_capability(cap)
+    v_ok_sem, v_reason_sem, _ = authority.verify_capability(
+        token_id=cap.token_id, action_name="wipe_database", target="db_primary",
+        canonical_request_digest=digest, executor_id=exec_qual_id, principal_id=bob_assertion,
+        correlation_id=corr_id, request_id=req_id, task_id="TASK-H"
+    )
+    assert v_ok_sem is False
+    assert "APPROVER_MISMATCH" in v_reason_sem
     cap.approver_principal = "security_lead_alice"
+    cap.signature = authority.registry.sign_capability(cap)
+
+    # 3b. Downstream mutation: Mutating approver_provenance fields invalidates capability signature
+    orig_prov = dict(cap.approver_provenance)
+
+    # Mutate approver_id
+    cap.approver_provenance["approver_id"] = "forged_id"
+    v_ok, v_reason, _ = authority.verify_capability(
+        token_id=cap.token_id, action_name="wipe_database", target="db_primary",
+        canonical_request_digest=digest, executor_id=exec_qual_id, principal_id=bob_assertion,
+        correlation_id=corr_id, request_id=req_id, task_id="TASK-H"
+    )
+    assert v_ok is False
+    assert v_reason == "CAPABILITY_VERIFICATION_FAILED_INVALID_SIGNATURE"
+    cap.approver_provenance = dict(orig_prov)
+
+    # Mutate issuer_id
+    cap.approver_provenance["issuer_id"] = "forged_issuer"
+    v_ok, v_reason, _ = authority.verify_capability(
+        token_id=cap.token_id, action_name="wipe_database", target="db_primary",
+        canonical_request_digest=digest, executor_id=exec_qual_id, principal_id=bob_assertion,
+        correlation_id=corr_id, request_id=req_id, task_id="TASK-H"
+    )
+    assert v_ok is False
+    assert v_reason == "CAPABILITY_VERIFICATION_FAILED_INVALID_SIGNATURE"
+    cap.approver_provenance = dict(orig_prov)
+
+    # Mutate assertion_timestamp
+    cap.approver_provenance["assertion_timestamp"] = 999999.0
+    v_ok, v_reason, _ = authority.verify_capability(
+        token_id=cap.token_id, action_name="wipe_database", target="db_primary",
+        canonical_request_digest=digest, executor_id=exec_qual_id, principal_id=bob_assertion,
+        correlation_id=corr_id, request_id=req_id, task_id="TASK-H"
+    )
+    assert v_ok is False
+    assert v_reason == "CAPABILITY_VERIFICATION_FAILED_INVALID_SIGNATURE"
+    cap.approver_provenance = dict(orig_prov)
+
+    # Mutate verified_at
+    cap.approver_provenance["verified_at"] = 123456.0
+    v_ok, v_reason, _ = authority.verify_capability(
+        token_id=cap.token_id, action_name="wipe_database", target="db_primary",
+        canonical_request_digest=digest, executor_id=exec_qual_id, principal_id=bob_assertion,
+        correlation_id=corr_id, request_id=req_id, task_id="TASK-H"
+    )
+    assert v_ok is False
+    assert v_reason == "CAPABILITY_VERIFICATION_FAILED_INVALID_SIGNATURE"
+    cap.approver_provenance = dict(orig_prov)
+
+    # 3c. Downstream mutation: Mutating attached HumanApprovalRecord invalidates signature
+    cap.human_approval.approver_id = "attacker_approver"
+    v_ok, v_reason, _ = authority.verify_capability(
+        token_id=cap.token_id, action_name="wipe_database", target="db_primary",
+        canonical_request_digest=digest, executor_id=exec_qual_id, principal_id=bob_assertion,
+        correlation_id=corr_id, request_id=req_id, task_id="TASK-H"
+    )
+    assert v_ok is False
+    assert v_reason == "CAPABILITY_VERIFICATION_FAILED_INVALID_SIGNATURE"
+    cap.human_approval.approver_id = "security_lead_alice"
+
+    # 3d. Downstream verification failure on missing requester or task bindings
+    cap.human_approval.requesting_principal = None
+    cap.human_approval.sign(authority.approval_signing_secret)
+    cap.signature = authority.registry.sign_capability(cap)
+    v_ok, v_reason, _ = authority.verify_capability(
+        token_id=cap.token_id, action_name="wipe_database", target="db_primary",
+        canonical_request_digest=digest, executor_id=exec_qual_id, principal_id=bob_assertion,
+        correlation_id=corr_id, request_id=req_id, task_id="TASK-H"
+    )
+    assert v_ok is False
+    assert "MISSING_REQUESTING_PRINCIPAL" in v_reason
+
+    cap.human_approval.requesting_principal = "agent_bob"
+    cap.human_approval.task_id = None
+    cap.human_approval.sign(authority.approval_signing_secret)
+    cap.signature = authority.registry.sign_capability(cap)
+    v_ok, v_reason, _ = authority.verify_capability(
+        token_id=cap.token_id, action_name="wipe_database", target="db_primary",
+        canonical_request_digest=digest, executor_id=exec_qual_id, principal_id=bob_assertion,
+        correlation_id=corr_id, request_id=req_id, task_id="TASK-H"
+    )
+    assert v_ok is False
+    assert "MISSING_TASK_ID" in v_reason
+
+    # Restore legitimate approval record and signature
+    cap.human_approval.task_id = "TASK-H"
+    cap.human_approval.sign(authority.approval_signing_secret)
+    cap.signature = authority.registry.sign_capability(cap)
+
+    # 3e. Test valid persisted capability verification after serialization / reload
+    cap_dict = cap.to_dict() if hasattr(cap, "to_dict") else cap.__dict__.copy()
+    restored_cap = Capability(**cap_dict)
+    assert authority.registry.sign_capability(restored_cap) == restored_cap.signature
+    v_ok_res, v_reason_res, _ = authority.verify_capability(
+        token_id=restored_cap.token_id, action_name="wipe_database", target="db_primary",
+        canonical_request_digest=digest, executor_id=exec_qual_id, principal_id=bob_assertion,
+        correlation_id=corr_id, request_id=req_id, task_id="TASK-H"
+    )
+    assert v_ok_res is True
+    assert v_reason_res == "CAPABILITY_VERIFIED"
 
     # 4. First execution consumes capability and approval
     ctx = ExecutionContext(

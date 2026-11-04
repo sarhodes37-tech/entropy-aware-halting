@@ -1632,7 +1632,59 @@ class CapabilityRegistry:
     def sign_capability(self, cap: Capability) -> str:
         effective_scope = getattr(cap, "scope_key", None) or canonicalize_fencing_scope(cap.task_id, cap.target)
         effective_fence = getattr(cap, "fencing_token", 1)
-        payload = f"{cap.token_id}:{cap.principal_id}:{cap.correlation_id}:{cap.request_id}:{cap.action_name}:{cap.target}:{cap.canonical_request_digest}:{cap.executor_id}:{cap.policy_version}:{cap.task_id or ''}:{cap.contract_version or ''}:{cap.contract_digest or ''}:{cap.expires_at}:{effective_fence}:{effective_scope}"
+
+        # Cryptographically bind approval record and approver provenance into the capability HMAC payload
+        approval_binding_digest = ""
+        human_app = getattr(cap, "human_approval", None)
+        if human_app:
+            if isinstance(human_app, dict):
+                app_id = str(human_app.get("approval_id") or "")
+                appr_id = str(human_app.get("approver_id") or "")
+                app_sig = str(human_app.get("signature") or "")
+                app_req_p = str(human_app.get("requesting_principal") or "")
+                app_tid = str(human_app.get("task_id") or "")
+                raw_ast = human_app.get("approver_assertion")
+            else:
+                app_id = str(getattr(human_app, "approval_id", "") or "")
+                appr_id = str(getattr(human_app, "approver_id", "") or "")
+                app_sig = str(getattr(human_app, "signature", "") or "")
+                app_req_p = str(getattr(human_app, "requesting_principal", "") or "")
+                app_tid = str(getattr(human_app, "task_id", "") or "")
+                raw_ast = getattr(human_app, "approver_assertion", None)
+
+            if not raw_ast:
+                app_ast_dig = ""
+            elif hasattr(raw_ast, "compute_signature_payload"):
+                app_ast_dig = hashlib.sha256(raw_ast.compute_signature_payload()).hexdigest()
+            elif isinstance(raw_ast, dict):
+                p_id = str(raw_ast.get("principal_id") or "").strip()
+                i_id = str(raw_ast.get("issuer_id") or "").strip()
+                t_stamp = float(raw_ast.get("timestamp") or 0.0)
+                exp = raw_ast.get("expires_at")
+                exp_v = f"{float(exp):.6f}" if exp is not None else ""
+                k_id = str(raw_ast.get("key_id") or "") if raw_ast.get("key_id") is not None else ""
+                p_load = f"{p_id}:{i_id}:{t_stamp:.6f}:{exp_v}:{k_id}"
+                app_ast_dig = hashlib.sha256(p_load.encode("utf-8")).hexdigest()
+            else:
+                app_ast_dig = ""
+
+            appr_principal = str(getattr(cap, "approver_principal", "") or "")
+            prov_data = getattr(cap, "approver_provenance", None)
+            prov_str = json.dumps(prov_data, sort_keys=True, separators=(",", ":")) if prov_data else ""
+
+            app_bound_payload = (
+                f"{app_id}:{appr_id}:{app_sig}:{app_req_p}:{app_tid}:{app_ast_dig}:"
+                f"{appr_principal}:{prov_str}"
+            )
+            approval_binding_digest = hashlib.sha256(app_bound_payload.encode("utf-8")).hexdigest()
+
+        payload = (
+            f"{cap.token_id}:{cap.principal_id}:{cap.correlation_id}:{cap.request_id}:"
+            f"{cap.action_name}:{cap.target}:{cap.canonical_request_digest}:{cap.executor_id}:"
+            f"{cap.policy_version}:{cap.task_id or ''}:{cap.contract_version or ''}:"
+            f"{cap.contract_digest or ''}:{cap.expires_at}:{effective_fence}:{effective_scope}:"
+            f"{approval_binding_digest}"
+        )
         return hmac.new(self.signing_secret, payload.encode("utf-8"), hashlib.sha256).hexdigest()
 
     def _record_denial_unlocked(
@@ -2532,16 +2584,22 @@ class AuthorizationAuthority:
                     if verified_approver_principal not in active_policy.allowed_approvers:
                         return None, f"AUTHORIZATION_DENIED_HUMAN_APPROVAL_UNAUTHORIZED_APPROVER:{verified_approver_principal}"
 
-                # 7. Requesting Principal and Task Context Binding
+                # 7. Requesting Principal and Task Context Binding (Mandatory)
                 # Prevent self-approval (approver cannot be the requesting principal)
                 if verified_approver_principal == effective_principal:
                     return None, "AUTHORIZATION_DENIED_HUMAN_APPROVAL_SELF_APPROVAL_REJECTED"
 
-                if approval_record.requesting_principal and approval_record.requesting_principal != effective_principal:
+                if not approval_record.requesting_principal or not str(approval_record.requesting_principal).strip():
+                    return None, "AUTHORIZATION_DENIED_HUMAN_APPROVAL_MISSING_REQUESTING_PRINCIPAL"
+
+                if str(approval_record.requesting_principal).strip() != effective_principal:
                     return None, f"AUTHORIZATION_DENIED_HUMAN_APPROVAL_REQUESTING_PRINCIPAL_MISMATCH: bound '{approval_record.requesting_principal}', requested '{effective_principal}'"
 
-                if approval_record.task_id and effective_task_id and approval_record.task_id != effective_task_id:
-                    return None, f"AUTHORIZATION_DENIED_HUMAN_APPROVAL_TASK_ID_MISMATCH: bound '{approval_record.task_id}', requested '{effective_task_id}'"
+                if effective_task_id:
+                    if not approval_record.task_id or not str(approval_record.task_id).strip():
+                        return None, "AUTHORIZATION_DENIED_HUMAN_APPROVAL_MISSING_TASK_ID"
+                    if str(approval_record.task_id).strip() != str(effective_task_id).strip():
+                        return None, f"AUTHORIZATION_DENIED_HUMAN_APPROVAL_TASK_ID_MISMATCH: bound '{approval_record.task_id}', requested '{effective_task_id}'"
 
                 # Record provenance evidence of the independent verification decision
                 assertion_obj = approval_record.approver_assertion
@@ -2741,11 +2799,17 @@ class AuthorizationAuthority:
             if human_app.action_digest != cap.canonical_request_digest:
                 return False, f"CAPABILITY_VERIFICATION_FAILED_HUMAN_APPROVAL_DIGEST_MISMATCH: approval '{human_app.action_digest}' != capability '{cap.canonical_request_digest}'", cap
 
-            if human_app.requesting_principal and human_app.requesting_principal != cap.principal_id:
+            if not human_app.requesting_principal or not str(human_app.requesting_principal).strip():
+                return False, "CAPABILITY_VERIFICATION_FAILED_HUMAN_APPROVAL_MISSING_REQUESTING_PRINCIPAL", cap
+
+            if str(human_app.requesting_principal).strip() != cap.principal_id:
                 return False, f"CAPABILITY_VERIFICATION_FAILED_HUMAN_APPROVAL_REQUESTING_PRINCIPAL_MISMATCH: approval '{human_app.requesting_principal}' != capability '{cap.principal_id}'", cap
 
-            if human_app.task_id and cap.task_id and human_app.task_id != cap.task_id:
-                return False, f"CAPABILITY_VERIFICATION_FAILED_HUMAN_APPROVAL_TASK_ID_MISMATCH: approval '{human_app.task_id}' != capability '{cap.task_id}'", cap
+            if cap.task_id:
+                if not human_app.task_id or not str(human_app.task_id).strip():
+                    return False, "CAPABILITY_VERIFICATION_FAILED_HUMAN_APPROVAL_MISSING_TASK_ID", cap
+                if str(human_app.task_id).strip() != str(cap.task_id).strip():
+                    return False, f"CAPABILITY_VERIFICATION_FAILED_HUMAN_APPROVAL_TASK_ID_MISMATCH: approval '{human_app.task_id}' != capability '{cap.task_id}'", cap
 
             if human_app.request_id != cap.request_id:
                 return False, f"CAPABILITY_VERIFICATION_FAILED_HUMAN_APPROVAL_REQUEST_ID_MISMATCH: approval '{human_app.request_id}' != capability '{cap.request_id}'", cap

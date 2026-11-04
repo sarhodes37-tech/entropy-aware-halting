@@ -1183,6 +1183,8 @@ class TestAuthorizationAuthorityIssuanceAndVerificationInvariants:
             target="/db/tbl",
             action_digest="correct_digest",
             request_id="req-expected",
+            task_id="t1",
+            requesting_principal="agent1",
             policy_version="1.0.0",
             approver_assertion=assertion,
         )

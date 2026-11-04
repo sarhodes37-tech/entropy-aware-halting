@@ -620,6 +620,7 @@ def test_scenario_13_generic_continuation_text_cannot_issue_authorization(tmp_pa
         target="silo_1",
         action_digest=payload_digest,
         request_id=req_id,
+        requesting_principal="agent_default",
         approver_assertion=approver_assertion
     )
     typed_record.sign(authority.approval_signing_secret)
@@ -987,6 +988,7 @@ def test_human_approval_signature_and_binding_validations():
         target="resource_1",
         action_digest=digest,
         request_id=req_id,
+        requesting_principal="agent_default",
         approver_assertion=valid_assertion
     )
     valid_record.sign(authority.approval_signing_secret)
@@ -1429,6 +1431,7 @@ def test_phase1_sequential_consumption_two_capabilities_sharing_approval(tmp_pat
         target="server_1",
         action_digest=digest,
         request_id="req-seq",
+        requesting_principal="agent_default",
         approver_assertion=seq_assertion
     )
     approval.sign(authority.approval_signing_secret)
@@ -1504,6 +1507,7 @@ def test_phase1_verification_rejection_after_approval_consumed(tmp_path):
         target="account_vault",
         action_digest=digest,
         request_id="req-verify",
+        requesting_principal="agent_default",
         approver_assertion=bob_assertion
     )
     approval.sign(authority.approval_signing_secret)
@@ -1787,6 +1791,7 @@ def test_phase1_execution_boundary_integration_executor_invoked_exactly_once(tmp
         target="payment_gateway",
         action_digest=digest,
         request_id="req-pay-1",
+        requesting_principal="agent_default",
         approver_assertion=fin_assertion
     )
     approval.sign(authority.approval_signing_secret)
@@ -2353,6 +2358,7 @@ def test_phase1_public_issuance_same_approval_cross_target_replay_and_fencing():
         target="endpoint_a",
         action_digest=digest,
         request_id="req-pub-1",
+        requesting_principal="agent_default",
         approver_assertion=pub_assertion
     )
     approval_a.sign(authority.approval_signing_secret)
