@@ -5,12 +5,15 @@ Methodology:
 - Constructs a reproducible isolated JSONL log fixture with fixed record count (N=1,000).
 - Writes entries with valid incremental hash chaining directly to the fixture file.
 - Tests a documented distribution of queries: 80% matching existing correlation IDs
-  (with varying frequencies) and 20% non-matching negative controls.
-- Runs warm-up iterations to eliminate Python interpreter / file cache cold-start bias.
-- Alternates baseline (unfiltered) and optimized execution order across repetitions.
-- Measures both implementations against the exact same file and query set.
+  (with varying frequencies) and 20% non-matching negative controls (50 queries).
+- Runs warm-up iterations to eliminate interpreter and file cache cold-start bias.
 - Strictly asserts complete output equivalence between implementations before recording timings.
-- Measures and reports sample count, total record count, mean, median, and p95 latencies.
+- Runs 20 paired repetitions per query (1,000 paired trial observations total).
+- Alternates baseline-first and optimized-first execution order across repetitions.
+- Measures both implementations against the exact same query and unchanged fixture.
+- Reports queries evaluated, paired repetitions per query, total paired trials,
+  mean, median, and p95 latencies for both implementations, and speedups.
+- Results are workload-specific and synthetic.
 """
 
 import os
@@ -101,6 +104,7 @@ def generate_benchmark_fixture(
 def main():
     seed = 42
     num_records = 1000
+    num_repetitions = 20
     rng = random.Random(seed)
 
     with tempfile.TemporaryDirectory() as tmp_dir:
@@ -119,10 +123,11 @@ def main():
         query_set = matching_queries + negative_queries
         rng.shuffle(query_set)
 
-        # 1. Warm-up phase (3 queries each)
+        # 1. Warm-up phase (3 queries each for 5 repetitions)
         for warm_q in query_set[:3]:
-            _unfiltered_scan(store.log_path, warm_q)
-            store.get_events_for_correlation(warm_q)
+            for _ in range(5):
+                _unfiltered_scan(store.log_path, warm_q)
+                store.get_events_for_correlation(warm_q)
 
         # 2. Strict Equivalence Verification before timing
         for q in query_set:
@@ -130,33 +135,35 @@ def main():
             opt_out = store.get_events_for_correlation(q)
             assert ref_out == opt_out, f"Equivalence failure for query {q!r}"
 
-        # 3. Timed Trials with alternating execution order across repetitions
+        # 3. Timed Trials with 20 paired repetitions per query
+        # Alternating baseline-first and optimized-first order across repetitions
         unfiltered_latencies: List[float] = []
         optimized_latencies: List[float] = []
 
-        for idx, q in enumerate(query_set):
-            if idx % 2 == 0:
-                # Baseline first
-                t0 = time.perf_counter()
-                _unfiltered_scan(store.log_path, q)
-                t1 = time.perf_counter()
-                unfiltered_latencies.append((t1 - t0) * 1000.0)
+        for q in query_set:
+            for rep_idx in range(num_repetitions):
+                if rep_idx % 2 == 0:
+                    # Baseline first
+                    t0 = time.perf_counter()
+                    _unfiltered_scan(store.log_path, q)
+                    t1 = time.perf_counter()
+                    unfiltered_latencies.append((t1 - t0) * 1000.0)
 
-                t2 = time.perf_counter()
-                store.get_events_for_correlation(q)
-                t3 = time.perf_counter()
-                optimized_latencies.append((t3 - t2) * 1000.0)
-            else:
-                # Optimized first
-                t2 = time.perf_counter()
-                store.get_events_for_correlation(q)
-                t3 = time.perf_counter()
-                optimized_latencies.append((t3 - t2) * 1000.0)
+                    t2 = time.perf_counter()
+                    store.get_events_for_correlation(q)
+                    t3 = time.perf_counter()
+                    optimized_latencies.append((t3 - t2) * 1000.0)
+                else:
+                    # Optimized first
+                    t2 = time.perf_counter()
+                    store.get_events_for_correlation(q)
+                    t3 = time.perf_counter()
+                    optimized_latencies.append((t3 - t2) * 1000.0)
 
-                t0 = time.perf_counter()
-                _unfiltered_scan(store.log_path, q)
-                t1 = time.perf_counter()
-                unfiltered_latencies.append((t1 - t0) * 1000.0)
+                    t0 = time.perf_counter()
+                    _unfiltered_scan(store.log_path, q)
+                    t1 = time.perf_counter()
+                    unfiltered_latencies.append((t1 - t0) * 1000.0)
 
         # Compute summary statistics
         unfiltered_latencies.sort()
@@ -174,11 +181,17 @@ def main():
         speedup_med = unf_med / opt_med if opt_med > 0 else 0.0
         speedup_p95 = unf_p95 / opt_p95 if opt_p95 > 0 else 0.0
 
+        total_trials = len(unfiltered_latencies)
+
         print("\n" + "=" * 64)
         print("⚡ BOLT: LocalProvenanceStore Correlation Filtering Benchmark")
         print("=" * 64)
         print(f"Fixture records:        {num_records} JSONL entries")
         print(f"Query distribution:     {num_queries} queries (80% matching, 20% non-matching)")
+        print(
+            f"Paired repetitions:     {num_repetitions} reps per query "
+            f"({total_trials} total paired trials)"
+        )
         print("Output equivalence:     VERIFIED (100% exact match across all queries)")
         print("-" * 64)
         print(
