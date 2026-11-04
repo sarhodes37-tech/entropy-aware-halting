@@ -663,6 +663,97 @@ document.addEventListener('DOMContentLoaded', () => {
     },
 
     // Helper: Semantic Badge Creator
+    getStateMetadata(stateName) {
+      const states = {
+        'READY': {
+          label: 'READY',
+          established: true,
+          glyph: '✓',
+          statusClass: 'status-badge-verified',
+          establishmentClass: 'established-ready',
+          badgeClass: 'badge-verified',
+          meaning: 'Authoritative live runtime health evidence affirmative and attested; system ready for execution.'
+        },
+        'AUTHORIZED': {
+          label: 'AUTHORIZED',
+          established: true,
+          glyph: '◈',
+          statusClass: 'status-badge-authorized',
+          establishmentClass: 'established-authorized',
+          badgeClass: 'badge-authorized',
+          meaning: 'Pre-execution task contract and capability tokens validated. Does not imply execution outcome or runtime READY.'
+        },
+        'BLOCKED': {
+          label: 'BLOCKED',
+          established: true,
+          glyph: '⛔',
+          statusClass: 'status-badge-failed',
+          establishmentClass: 'established-blocked',
+          badgeClass: 'badge-failed',
+          meaning: 'Positively detected system-level blocking condition (e.g. cryptographic chain corruption, fence breach). Request-level policy denials do not establish system BLOCKED.'
+        },
+        'FAILED': {
+          label: 'FAILED',
+          established: true,
+          glyph: '✗',
+          statusClass: 'status-badge-failed',
+          establishmentClass: 'established-failed',
+          badgeClass: 'badge-failed',
+          meaning: 'Execution failure or protected boundary violation recorded on a specific trajectory.'
+        },
+        'HALTED': {
+          label: 'HALTED',
+          established: true,
+          glyph: '✋',
+          statusClass: 'status-badge-halted',
+          establishmentClass: 'established-halted',
+          badgeClass: 'badge-halted',
+          meaning: 'Containment guardrail or policy boundary halt triggered on a specific execution.'
+        },
+        'DEGRADED': {
+          label: 'DEGRADED',
+          established: true,
+          glyph: '⚠️',
+          statusClass: 'status-badge-partial',
+          establishmentClass: 'established-degraded',
+          badgeClass: 'badge-warning',
+          meaning: 'Positively confirmed operational impairment or subsystem failure, not merely historical retrospective failures.'
+        },
+        'UNVERIFIED': {
+          label: 'UNVERIFIED',
+          established: false,
+          glyph: '⊘',
+          statusClass: 'status-badge-unknown',
+          establishmentClass: 'not-established',
+          badgeClass: 'badge-neutral',
+          meaning: 'Required evidence is missing, unavailable, unreadable, or insufficient to evaluate.'
+        },
+        'NOT ESTABLISHED': {
+          label: 'NOT ESTABLISHED',
+          established: false,
+          glyph: '⊘',
+          statusClass: 'status-badge-unknown',
+          establishmentClass: 'not-established',
+          badgeClass: 'badge-neutral',
+          meaning: 'Required operational condition has not been affirmatively established by trusted live attestation.'
+        }
+      };
+
+      const s = String(stateName || '').trim().toUpperCase();
+      if (states[s]) {
+        return states[s];
+      }
+      return {
+        label: s || 'UNKNOWN',
+        established: false,
+        glyph: '?',
+        statusClass: 'status-badge-unknown',
+        establishmentClass: 'not-established',
+        badgeClass: 'badge-neutral',
+        meaning: 'Unrecognized system state.'
+      };
+    },
+
     createStatusBadge(statusText) {
       const span = document.createElement('span');
       const st = (statusText || 'UNKNOWN').toUpperCase();
@@ -821,6 +912,123 @@ document.addEventListener('DOMContentLoaded', () => {
         badge.title = stateResult.reason;
         sysStateEl.replaceWith(badge);
         badge.id = 'overview-system-state';
+      }
+
+      // Update State-First Primary State Card
+      const primaryStateCard = document.getElementById('overview-primary-state-card');
+      const primaryStateText = document.getElementById('overview-system-state-text');
+      const primaryEstablishment = document.getElementById('overview-state-establishment');
+      const primaryRationale = document.getElementById('overview-state-rationale');
+      const metaCumulativeExceptions = document.getElementById('overview-cumulative-exceptions-count');
+      const metaEvidenceAnchor = document.getElementById('overview-evidence-anchor');
+
+      const meta = this.getStateMetadata(stateResult.state);
+
+      if (metaEvidenceAnchor) {
+        if (ai.status === 'CORRUPTED' || pi.status === 'CORRUPTED') {
+          metaEvidenceAnchor.textContent = 'INTEGRITY FAILED';
+        } else if (ai.status === 'VERIFIED' && pi.status === 'VERIFIED') {
+          metaEvidenceAnchor.textContent = 'LOCAL SHA-256 HASH-CHAIN (VERIFIED)';
+        } else if (ai.status === 'UNAVAILABLE' && pi.status === 'UNAVAILABLE') {
+          metaEvidenceAnchor.textContent = 'UNAVAILABLE';
+        } else {
+          metaEvidenceAnchor.textContent = 'LOCAL SHA-256 HASH-CHAIN';
+        }
+      }
+
+      if (primaryStateCard) {
+        primaryStateCard.setAttribute('data-state', stateResult.state);
+      }
+      if (primaryStateText) {
+        primaryStateText.textContent = `${meta.glyph} ${meta.label}`;
+      }
+      if (primaryEstablishment) {
+        primaryEstablishment.className = `ops-establishment-badge ${meta.establishmentClass}`;
+        primaryEstablishment.textContent = meta.established ? 'ESTABLISHED' : 'NOT ESTABLISHED';
+      }
+      if (primaryRationale) {
+        primaryRationale.textContent = stateResult.reason;
+      }
+      if (metaCumulativeExceptions) {
+        const excCountText = exceptionResult.status === 'COMPLETE' ? String(exceptionResult.total) : exceptionResult.status;
+        metaCumulativeExceptions.textContent = excCountText;
+      }
+
+      // Update Dimension 1: Cryptographic Integrity
+      const dimIntegrityBadge = document.getElementById('dim-integrity-badge');
+      const dimIntegrityContent = document.getElementById('dim-integrity-content');
+      if (dimIntegrityBadge && dimIntegrityContent) {
+        const auditStatus = (ai.status || 'UNAVAILABLE').toUpperCase();
+        const provStatus = (pi.status || 'UNAVAILABLE').toUpperCase();
+        if (auditStatus === 'CORRUPTED' || provStatus === 'CORRUPTED' || auditStatus === 'CORRUPT' || provStatus === 'CORRUPT') {
+          dimIntegrityBadge.className = 'ops-dimension-badge badge-failed';
+          dimIntegrityBadge.textContent = '⛔ BLOCKED';
+          dimIntegrityContent.textContent = 'Hash chain corruption detected in local append log. Tamper-evident continuity broken.';
+        } else if (auditStatus === 'VERIFIED' && provStatus === 'VERIFIED') {
+          dimIntegrityBadge.className = 'ops-dimension-badge badge-verified';
+          dimIntegrityBadge.textContent = '✓ VERIFIED';
+          dimIntegrityContent.textContent = `All entries verified. Audit: ${ai.records_verified ?? 0} entries, Provenance: ${pi.records_verified ?? 0} records.`;
+        } else if (auditStatus === 'VERIFIED' || provStatus === 'VERIFIED') {
+          dimIntegrityBadge.className = 'ops-dimension-badge badge-warning';
+          dimIntegrityBadge.textContent = '⚠️ PARTIAL';
+          dimIntegrityContent.textContent = `Partial verification: Audit is ${auditStatus}, Provenance is ${provStatus}.`;
+        } else {
+          dimIntegrityBadge.className = 'ops-dimension-badge badge-neutral';
+          dimIntegrityBadge.textContent = '⊘ UNVERIFIED';
+          dimIntegrityContent.textContent = `Audit Trail: ${auditStatus} (${ai.records_verified ?? 0} entries) • Provenance: ${provStatus} (${pi.records_verified ?? 0} records). Scope: SHA-256 sequence hash-chain continuity. Positive corruption halts to BLOCKED.`;
+        }
+      }
+
+      // Update Dimension 2: Historical Activity
+      const dimActivityBadge = document.getElementById('dim-activity-badge');
+      const dimActivityContent = document.getElementById('dim-activity-content');
+      if (dimActivityBadge && dimActivityContent) {
+        dimActivityBadge.className = 'ops-dimension-badge badge-neutral';
+        dimActivityBadge.textContent = '• RECORDED';
+        const execs = m.total_executions ?? 0;
+        const denials = m.authorization_denials ?? 0;
+        const halts = m.halts ?? 0;
+        const fails = m.execution_failures ?? 0;
+        const excSummary = exceptionResult.status === 'COMPLETE' ?
+          `Cumulative exceptions: ${exceptionResult.total}.` :
+          `Partial exception telemetry: missing values detected.`;
+        dimActivityContent.textContent = `Cumulative: ${execs} executions, ${denials} denials, ${halts} halts, ${fails} fails (${excSummary})`;
+      }
+
+      // Update Dimension 3: Operational Health
+      const dimHealthBadge = document.getElementById('dim-health-badge');
+      const dimHealthContent = document.getElementById('dim-health-content');
+      if (dimHealthBadge && dimHealthContent) {
+        if (stateResult.state === 'READY') {
+          dimHealthBadge.className = 'ops-dimension-badge badge-verified';
+          dimHealthBadge.textContent = '✓ ATTESTED';
+          dimHealthContent.textContent = 'Authoritative supervisory live-health attestation established and valid.';
+        } else {
+          dimHealthBadge.className = 'ops-dimension-badge badge-neutral';
+          dimHealthBadge.textContent = '⊘ NOT ESTABLISHED';
+          dimHealthContent.textContent = 'No authoritative supervisory live runtime attestation authority configured. Operational health readiness remains NOT ESTABLISHED.';
+        }
+      }
+
+      // Update Dimension 4: Evidence Availability
+      const dimCompBadge = document.getElementById('dim-completeness-badge');
+      const dimCompContent = document.getElementById('dim-completeness-content');
+      if (dimCompBadge && dimCompContent) {
+        const auditAvail = this.normalizeBooleanFlag(sf.audit_data_available);
+        const provAvail = this.normalizeBooleanFlag(sf.provenance_data_available);
+        if (auditAvail && provAvail) {
+          dimCompBadge.className = 'ops-dimension-badge badge-available';
+          dimCompBadge.textContent = '✓ AVAILABLE';
+          dimCompContent.textContent = 'Physical local log files present and accessible for both Audit Trail and Provenance Store. (Note: presence does not prove source completeness or authenticity).';
+        } else if (auditAvail || provAvail) {
+          dimCompBadge.className = 'ops-dimension-badge badge-warning';
+          dimCompBadge.textContent = '⚠️ PARTIAL';
+          dimCompContent.textContent = `Partial physical log availability: Audit is ${auditAvail ? 'AVAILABLE' : 'UNAVAILABLE'}, Provenance is ${provAvail ? 'AVAILABLE' : 'UNAVAILABLE'}.`;
+        } else {
+          dimCompBadge.className = 'ops-dimension-badge badge-neutral';
+          dimCompBadge.textContent = '⊘ UNAVAILABLE';
+          dimCompContent.textContent = 'Physical logs unavailable: Audit is UNAVAILABLE, Provenance is UNAVAILABLE. Local files missing or unreadable.';
+        }
       }
 
       // Audit Data Availability Badge

@@ -344,21 +344,21 @@ def test_provenance_finding_warning_severity_styling_token():
 
 
 def test_observatory_css_design_foundation_tokens():
-    """Verifies that style.css contains the expected Neon Dusk design foundation tokens."""
+    """Verifies that style.css contains the expected operational intelligence interface design tokens."""
     import pathlib
     css_path = pathlib.Path("epistemicos/ui/static/style.css")
     css_content = css_path.read_text(encoding="utf-8")
-    assert "--bg-base: #120F24;" in css_content
-    assert "--bg-surface: #1D1833;" in css_content
-    assert "--bg-elevated: #282044;" in css_content
-    assert "--border-default: #44365F;" in css_content
-    assert "--accent-primary: #B69AFF;" in css_content
-    assert "--accent-secondary: #FF83B8;" in css_content
-    assert "--accent-interactive: #64DED9;" in css_content
-    assert "--text-primary: #F5F0FF;" in css_content
-    assert "--text-secondary: #B6A9CA;" in css_content
-    assert "--status-verified-fg: #2DD4BF;" in css_content
-    assert "--status-failed-fg: #FF83B8;" in css_content
+    assert "--bg-base: #0f1318;" in css_content
+    assert "--bg-surface: #171c23;" in css_content
+    assert "--bg-elevated: #202631;" in css_content
+    assert "--border-default: #334155;" in css_content
+    assert "--accent-primary: #38bdf8;" in css_content
+    assert "--accent-secondary: #94a3b8;" in css_content
+    assert "--accent-interactive: #2dd4bf;" in css_content
+    assert "--text-primary: #f1f5f9;" in css_content
+    assert "--text-secondary: #a6b5c9;" in css_content
+    assert "--status-verified-fg: #2dd4bf;" in css_content
+    assert "--status-failed-fg: #f87171;" in css_content
 
 
 def test_recent_traces_row_keyboard_accessibility():

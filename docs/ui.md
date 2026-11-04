@@ -80,3 +80,43 @@ PYTHONPATH=/home/jules/.pyenv/versions/3.12.13/lib/python3.12/site-packages:. /h
 - **Local Hash Chain Scope**: Valid local cryptographic hash chain integrity verifies append-only sequence chaining, but does NOT prove external source authenticity, non-repudiation, or trace completeness.
 - **Path Sanitization**: The HTTP server enforces strict path validation preventing directory traversal (`..` blocking) and restricts static asset delivery to `epistemicos/ui/static/`.
 - **Security Headers**: All HTTP responses set `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, and strict `Content-Security-Policy` headers.
+
+## State-First Operational Intelligence Interface
+
+### Epistemic Constraints & State Grammar
+
+The Observatory Overview implements a State-First Operational Intelligence Interface. The primary design mandate is that the interface must never claim more certainty than the underlying system can substantiate.
+
+#### 1. Primary System State Hierarchy
+
+1. **Primary Operational State Banner** (`#overview-primary-state-card`):
+   - **Prominent Textual State**: Renders explicit states (`READY`, `AUTHORIZED`, `BLOCKED`, `FAILED`, `HALTED`, `DEGRADED`, `UNVERIFIED`, `NOT ESTABLISHED`).
+   - **Establishment Status**: Explicitly communicates whether the condition is `ESTABLISHED` or `NOT ESTABLISHED`.
+   - **Epistemic Rationale**: Clear textual statement explaining the evidentiary basis for the state.
+   - **Metadata Context**: Binds runtime execution mode, cryptographic anchor, and cumulative exception summaries.
+
+#### 2. Four Independent Epistemic Dimensions
+
+The Overview refuses to collapse disparate telemetry signals into a single misleading health score. Four dimensions are strictly separated:
+
+1. **Dimension 01: Cryptographic Integrity**
+   - Scope: Evaluates SHA-256 sequence hash chains across `TamperEvidentAuditTrail` and `LocalProvenanceStore`.
+   - Failure condition: Positive corruption halts to `BLOCKED`. Absence of logs evaluates to `UNVERIFIED`.
+2. **Dimension 02: Historical Activity**
+   - Scope: Retrospective aggregation of recorded executions, denials, policy halts, and execution failures.
+   - Epistemic Rule: Historical counts never determine current operational health. Past failures do not degrade a currently clean, idle system.
+3. **Dimension 03: Operational Health**
+   - Scope: Live runtime supervisory attestation.
+   - Epistemic Rule: Clean historical logs do NOT establish `READY`. `READY` strictly requires live authenticated supervisory health attestation. In its absence, operational health remains `NOT ESTABLISHED`.
+4. **Dimension 04: Evidence Availability**
+   - Scope: Physical presence and readability of local append logs. Evaluates whether local audit and provenance files are `AVAILABLE`, `PARTIAL`, or `UNAVAILABLE`.
+   - Epistemic Rule: Mere physical file presence does NOT establish completeness or source authenticity. The dimension is labeled Evidence Availability and strictly avoids claiming "COMPLETE" or "VERIFIED" based solely on file accessibility.
+
+#### 3. Visual System Tokens & Contrast
+
+- Surface Foundation: Industrial graphite and deep slate (`--bg-base: #0f1318`, `--bg-surface: #171c23`, `--bg-elevated: #202631`).
+- Typography: Off-white primary (`#f1f5f9`), neutral slate (`#a6b5c9`), muted slate (`#8c9eb4`).
+- Operational Accents: Muted teal (`#2dd4bf`, glyph `✓`) for live verified/attested `READY`, operational cyan (`#38bdf8`, glyph `◈`) for pre-execution `AUTHORIZED`, restrained amber (`#fbbf24`, glyph `✋`) for policy halts/warnings, red (`#f87171`, glyph `⛔`/`✗`) for positive blocking/failure conditions, neutral slate (`#94a3b8`, glyph `⊘`) for unverified/not established conditions.
+- READY vs AUTHORIZED Visual Distinction: `READY` and `AUTHORIZED` possess distinct visual treatments: `READY` uses checkmark `✓` with affirmative teal (`status-badge-verified`, `established-ready`), whereas `AUTHORIZED` uses diamond `◈` with operational cyan (`status-badge-authorized`, `established-authorized`), visually preventing confusion between pre-execution authorization and live runtime health.
+- Solid Surfaces: Eliminated legacy purple/plum and pink gradient overlays; surfaces use solid slate graphite `--bg-surface` (`#171c23`) with clean structural borders (`#334155`).
+- Contrast Compliance: All text and interactive tokens achieve >= 4.5:1 WCAG 2.2 AA contrast across all underlying surfaces.

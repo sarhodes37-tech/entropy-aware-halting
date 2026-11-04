@@ -100,6 +100,83 @@
             </div>
           </header>
 
+          <!-- 1. PRIMARY SYSTEM STATE BANNER (STATE-FIRST OPERATIONAL INTERFACE) -->
+          <section class="ops-primary-state-card" id="overview-primary-state-card" data-state="NOT ESTABLISHED" aria-labelledby="overview-primary-state-heading">
+            <div class="ops-state-hero">
+              <h2 id="overview-primary-state-heading" class="sr-only">Primary System State</h2>
+              <div class="ops-hero-state-title" id="overview-system-state-text" role="status" aria-live="polite">NOT ESTABLISHED</div>
+              <div class="ops-establishment-badge not-established" id="overview-state-establishment">NOT ESTABLISHED</div>
+            </div>
+            <div class="ops-state-rationale-block">
+              <span class="ops-rationale-prefix">EPISTEMIC RATIONALE:</span>
+              <span id="overview-state-rationale">Cryptographic integrity verified, but authoritative live runtime operational health attestation is not established</span>
+            </div>
+            <div class="ops-state-meta-bar">
+              <span class="ops-meta-item">MODE: <strong id="overview-state-runtime">READ-ONLY OBSERVATORY</strong></span>
+              <span class="ops-meta-item">CHAIN INTEGRITY: <strong id="overview-evidence-anchor">LOCAL SHA-256 HASH-CHAIN</strong></span>
+              <span class="ops-meta-item">CUMULATIVE EXCEPTIONS: <strong id="overview-cumulative-exceptions-count">0</strong></span>
+            </div>
+          </section>
+
+          <!-- 2. FOUR EPISTEMIC STATE DIMENSIONS -->
+          <section class="ops-dimensions-grid" aria-label="Epistemic State Dimensions">
+            <!-- Dimension 1: Cryptographic Integrity -->
+            <article class="ops-dimension-panel" id="dimension-integrity">
+              <div class="ops-dimension-header">
+                <h3 class="ops-dimension-title">DIMENSION 01<br>CRYPTOGRAPHIC INTEGRITY</h3>
+                <span class="ops-dimension-badge badge-neutral" id="dim-integrity-badge">CHECKING</span>
+              </div>
+              <div class="ops-dimension-content" id="dim-integrity-content">
+                Evaluating SHA-256 hash chains across TamperEvidentAuditTrail and LocalProvenanceStore...
+              </div>
+              <div class="ops-dimension-scope">
+                Scope: SHA-256 sequence hash-chain continuity. Positive corruption halts to BLOCKED.
+              </div>
+            </article>
+
+            <!-- Dimension 2: Historical Activity -->
+            <article class="ops-dimension-panel" id="dimension-activity">
+              <div class="ops-dimension-header">
+                <h3 class="ops-dimension-title">DIMENSION 02<br>HISTORICAL ACTIVITY</h3>
+                <span class="ops-dimension-badge badge-neutral" id="dim-activity-badge">RECORDED</span>
+              </div>
+              <div class="ops-dimension-content" id="dim-activity-content">
+                Aggregating recorded executions, denials, policy halts, and failures...
+              </div>
+              <div class="ops-dimension-scope">
+                Scope: Retrospective record of past actions. Historical counts never determine current health.
+              </div>
+            </article>
+
+            <!-- Dimension 3: Operational Health -->
+            <article class="ops-dimension-panel" id="dimension-health">
+              <div class="ops-dimension-header">
+                <h3 class="ops-dimension-title">DIMENSION 03<br>OPERATIONAL HEALTH</h3>
+                <span class="ops-dimension-badge badge-neutral" id="dim-health-badge">NOT ESTABLISHED</span>
+              </div>
+              <div class="ops-dimension-content" id="dim-health-content">
+                Evaluating live runtime supervisory attestation...
+              </div>
+              <div class="ops-dimension-scope">
+                Scope: Live runtime health requires trusted supervisor attestation. Clean logs != READY.
+              </div>
+            </article>
+
+            <!-- Dimension 4: Evidence Availability -->
+            <article class="ops-dimension-panel" id="dimension-completeness">
+              <div class="ops-dimension-header">
+                <h3 class="ops-dimension-title">DIMENSION 04<br>EVIDENCE AVAILABILITY</h3>
+                <span class="ops-dimension-badge badge-neutral" id="dim-completeness-badge">UNAVAILABLE</span>
+              </div>
+              <div class="ops-dimension-content" id="dim-completeness-content">
+                Checking physical availability of audit and provenance ledgers...
+              </div>
+              <div class="ops-dimension-scope">
+                Scope: Local file presence only. Physical file availability does not establish source completeness or authenticity.
+              </div>
+            </article>
+          </section>
+
           <!-- B. Key Operational Metrics Bar -->
           <section class="ops-metrics-strip" aria-label="Key Operational Metrics">
             <div class="metrics-grid ops-metrics-grid">

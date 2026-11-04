@@ -607,6 +607,8 @@ def test_keyboard_navigation_and_focus_management_workflows(a11y_comprehensive_s
 
         # 5. Keyboard Navigation in Provenance Listbox
         page.click("#tab-provenance")
+        page.fill("#provenance-search", "")
+        page.wait_for_timeout(50)
         page.wait_for_selector("#provenance-record-list .trace-item")
         prov_first = page.locator("#provenance-record-list .trace-item").first
         prov_first.focus()

@@ -1,62 +1,62 @@
-/* EpistemicOS Control Plane Observatory - Visual System (Neon Dusk Design Token Foundation) */
+/* EpistemicOS Control Plane Observatory - Operational Intelligence Interface */
 
 :root {
-  /* Neon Dusk Color Palette (Early-Vaporwave / Retro-Futurist Scientific Instrumentation) */
-  --bg-base: #120F24;       /* Midnight violet */
-  --bg-surface: #1D1833;    /* Deep plum */
-  --bg-elevated: #282044;   /* Purple graphite */
-  --bg-subtle: #18132E;     /* Deep violet subtle background */
-  --bg-hover: #332A54;      /* Violet hover state */
+  /* Industrial Graphite / Slate Palette (Air-Traffic / ICS / Mission Ops) */
+  --bg-base: #0f1318;       /* Deep slate graphite */
+  --bg-surface: #171c23;    /* Surface slate */
+  --bg-elevated: #202631;   /* Raised industrial surface */
+  --bg-subtle: #13171e;     /* Inset slate background */
+  --bg-hover: #29313e;      /* Interactive hover state */
 
-  /* Accents */
-  --accent-primary: #B69AFF;     /* Electric lavender */
-  --accent-secondary: #FF83B8;   /* Vaporwave pink */
-  --accent-interactive: #64DED9; /* Retro cyan */
-  --accent-cyan: #64DED9;        /* Retro cyan indicator */
-  --accent-teal: #2DD4BF;        /* Mint teal indicator */
+  /* Operational Accents */
+  --accent-primary: #38bdf8;     /* Precise cyan-slate */
+  --accent-secondary: #94a3b8;   /* Slate neutral */
+  --accent-interactive: #2dd4bf; /* Muted teal (affirmative operational) */
+  --accent-cyan: #38bdf8;        /* Informational cyan */
+  --accent-teal: #2dd4bf;        /* Mint/teal verified indicator */
 
-  /* Text Contrast Hierarchy */
-  --text-primary: #F5F0FF;     /* Soft white */
-  --text-secondary: #B6A9CA;   /* Muted lavender */
-  --text-muted: #9889B8;       /* Deep muted lavender (adjusted for >= 4.5:1 WCAG AA contrast) */
+  /* Text Contrast Hierarchy (WCAG AA compliant >= 4.5:1) */
+  --text-primary: #f1f5f9;     /* Crisp off-white */
+  --text-secondary: #a6b5c9;   /* Neutral slate (>= 4.5:1 across surfaces) */
+  --text-muted: #8c9eb4;       /* Muted slate (>= 4.5:1 across surfaces) */
 
   /* Borders & Dividers */
-  --border-default: #44365F;   /* Dusty violet */
-  --border-muted: #2D2344;     /* Deep dusty violet */
-  --border-accent: rgba(182, 154, 255, 0.4);
+  --border-default: #334155;   /* Structured slate border */
+  --border-muted: #1e293b;     /* Subtle separator */
+  --border-accent: rgba(45, 212, 191, 0.4);
 
-  /* Semantic Status Colors (Preserving Distinct Evidence Treatments) */
-  --status-verified-bg: rgba(45, 212, 191, 0.15);
-  --status-verified-fg: #2DD4BF;
+  /* Semantic Status Colors (Normative Operational Status) */
+  --status-verified-bg: rgba(45, 212, 191, 0.12);
+  --status-verified-fg: #2dd4bf;
   --status-verified-border: rgba(45, 212, 191, 0.35);
 
-  --status-failed-bg: rgba(255, 131, 184, 0.15);
-  --status-failed-fg: #FF83B8;
-  --status-failed-border: rgba(255, 131, 184, 0.35);
+  --status-failed-bg: rgba(239, 68, 68, 0.12);
+  --status-failed-fg: #f87171;
+  --status-failed-border: rgba(239, 68, 68, 0.35);
 
-  --status-halted-bg: rgba(251, 191, 36, 0.15);
-  --status-halted-fg: #FBBF24;
-  --status-halted-border: rgba(251, 191, 36, 0.35);
+  --status-halted-bg: rgba(245, 158, 11, 0.12);
+  --status-halted-fg: #fbbf24;
+  --status-halted-border: rgba(245, 158, 11, 0.35);
 
-  --status-unknown-bg: rgba(182, 169, 202, 0.15);
-  --status-unknown-fg: #B6A9CA;
-  --status-unknown-border: rgba(182, 169, 202, 0.35);
+  --status-unknown-bg: rgba(100, 116, 139, 0.12);
+  --status-unknown-fg: #94a3b8;
+  --status-unknown-border: rgba(100, 116, 139, 0.35);
 
-  --status-unavailable-bg: rgba(40, 32, 68, 0.6);
-  --status-unavailable-fg: #B6A9CA;
-  --status-unavailable-border: #44365F;
+  --status-unavailable-bg: rgba(30, 41, 59, 0.6);
+  --status-unavailable-fg: #94a3b8;
+  --status-unavailable-border: #334155;
 
-  --status-pending-bg: rgba(100, 222, 217, 0.15);
-  --status-pending-fg: #64DED9;
-  --status-pending-border: rgba(100, 222, 217, 0.35);
+  --status-pending-bg: rgba(56, 189, 248, 0.12);
+  --status-pending-fg: #38bdf8;
+  --status-pending-border: rgba(56, 189, 248, 0.35);
 
-  --status-partial-bg: rgba(251, 146, 60, 0.15);
-  --status-partial-fg: #FB923C;
-  --status-partial-border: rgba(251, 146, 60, 0.35);
+  --status-partial-bg: rgba(245, 158, 11, 0.12);
+  --status-partial-fg: #fbbf24;
+  --status-partial-border: rgba(245, 158, 11, 0.35);
 
-  --status-unreadable-bg: rgba(255, 131, 184, 0.12);
-  --status-unreadable-fg: #FF83B8;
-  --status-unreadable-border: rgba(255, 131, 184, 0.35);
+  --status-unreadable-bg: rgba(239, 68, 68, 0.12);
+  --status-unreadable-fg: #f87171;
+  --status-unreadable-border: rgba(239, 68, 68, 0.35);
 
   /* Structure & Typography */
   --radius-sm: 4px;
@@ -155,7 +155,7 @@ body {
 .app-sidebar {
   width: var(--sidebar-width);
   min-width: var(--sidebar-width);
-  background: linear-gradient(180deg, #1D1833 0%, #17122B 100%);
+  background: var(--bg-surface);
   border-right: 1px solid var(--border-default);
   display: flex;
   flex-direction: column;
@@ -379,9 +379,33 @@ h2 {
 }
 
 .status-badge-available {
-  background-color: var(--status-unknown-bg);
-  color: var(--accent-secondary);
-  border: 1px solid var(--border-default);
+  background-color: var(--status-verified-bg);
+  color: var(--status-verified-fg);
+  border: 1px solid var(--status-verified-border);
+}
+
+.status-badge-authorized {
+  background-color: rgba(56, 189, 248, 0.12);
+  color: #38bdf8;
+  border: 1px solid rgba(56, 189, 248, 0.35);
+}
+
+.ops-dimension-badge.badge-authorized {
+  background-color: rgba(56, 189, 248, 0.12);
+  color: #38bdf8;
+  border: 1px solid rgba(56, 189, 248, 0.35);
+}
+
+.ops-dimension-badge.badge-available {
+  background-color: var(--status-verified-bg);
+  color: var(--status-verified-fg);
+  border: 1px solid var(--status-verified-border);
+}
+
+.ops-establishment-badge.established-authorized {
+  background: rgba(56, 189, 248, 0.12);
+  color: #38bdf8;
+  border: 1px solid rgba(56, 189, 248, 0.35);
 }
 
 .status-badge-verified {
@@ -460,7 +484,7 @@ h2 {
  * Shared Cards, Metric Reflow Grid, & Sections
  * ------------------------------------------------------------------------- */
 .card {
-  background: linear-gradient(180deg, #1D1833 0%, #1A152E 100%);
+  background: var(--bg-surface);
   border: 1px solid var(--border-default);
   border-radius: var(--radius-md);
   padding: 1.25rem;
@@ -500,7 +524,7 @@ h2 {
 }
 
 .metric-card {
-  background: linear-gradient(180deg, #1D1833 0%, #18132C 100%);
+  background: var(--bg-surface);
   border: 1px solid var(--border-default);
   border-radius: var(--radius-md);
   padding: 1.1rem;
@@ -737,7 +761,7 @@ h2 {
 }
 
 .derived-summary-card {
-  background: linear-gradient(180deg, #18132E 0%, #1F183B 100%);
+  background: var(--bg-surface);
   border: 1px solid var(--border-default);
   border-left: 3px solid var(--accent-primary);
   border-radius: var(--radius-sm);
@@ -1993,7 +2017,7 @@ button:focus-visible {
 }
 
 .swatch-precision {
-  background-color: var(--accent-interactive); /* Electric Lavender */
+  background-color: var(--accent-interactive); /* Muted Teal Accent */
 }
 
 .swatch-recall {
@@ -2043,4 +2067,216 @@ button:focus-visible {
   text-align: center;
   font-size: 0.85rem;
   color: var(--text-muted);
+}
+
+/* --- State-First Operational Interface Styles --- */
+
+.ops-primary-state-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  padding: 1rem 1.25rem;
+  margin-bottom: 0.85rem;
+  border-left: 4px solid var(--border-default);
+}
+
+.ops-primary-state-card[data-state="READY"] {
+  border-left-color: var(--status-verified-fg);
+  background: var(--bg-surface);
+}
+
+.ops-primary-state-card[data-state="AUTHORIZED"] {
+  border-left-color: var(--accent-primary);
+  background: var(--bg-surface);
+}
+
+.ops-primary-state-card[data-state="BLOCKED"],
+.ops-primary-state-card[data-state="FAILED"] {
+  border-left-color: var(--status-failed-fg);
+  background: var(--bg-surface);
+}
+
+.ops-primary-state-card[data-state="HALTED"] {
+  border-left-color: var(--status-halted-fg);
+  background: var(--bg-surface);
+}
+
+.ops-primary-state-card[data-state="DEGRADED"] {
+  border-left-color: var(--status-partial-fg);
+  background: var(--bg-surface);
+}
+
+.ops-primary-state-card[data-state="NOT ESTABLISHED"],
+.ops-primary-state-card[data-state="UNVERIFIED"] {
+  border-left-color: var(--status-unknown-fg);
+  background: var(--bg-surface);
+}
+
+.ops-state-hero {
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+  margin-bottom: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.ops-hero-state-title {
+  font-size: 1.6rem;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  color: var(--text-primary);
+  line-height: 1.1;
+  font-family: var(--font-sans);
+}
+
+.ops-establishment-badge {
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  font-weight: 700;
+  padding: 0.2rem 0.55rem;
+  border-radius: var(--radius-sm);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  line-height: 1.2;
+}
+
+.ops-establishment-badge.established-ready {
+  background: var(--status-verified-bg);
+  color: var(--status-verified-fg);
+  border: 1px solid var(--status-verified-border);
+}
+
+.ops-establishment-badge.established-blocked,
+.ops-establishment-badge.established-failed {
+  background: var(--status-failed-bg);
+  color: var(--status-failed-fg);
+  border: 1px solid var(--status-failed-border);
+}
+
+.ops-establishment-badge.established-halted {
+  background: var(--status-halted-bg);
+  color: var(--status-halted-fg);
+  border: 1px solid var(--status-halted-border);
+}
+
+.ops-establishment-badge.established-degraded {
+  background: var(--status-partial-bg);
+  color: var(--status-partial-fg);
+  border: 1px solid var(--status-partial-border);
+}
+
+.ops-establishment-badge.not-established {
+  background: var(--status-unavailable-bg);
+  color: var(--text-secondary);
+  border: 1px solid var(--border-default);
+}
+
+.ops-state-rationale-block {
+  margin-bottom: 0.75rem;
+  font-size: 0.825rem;
+  line-height: 1.4;
+  color: var(--text-secondary);
+  font-family: var(--font-sans);
+}
+
+.ops-rationale-prefix {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  font-weight: 700;
+  color: var(--text-muted);
+  letter-spacing: 0.05em;
+  margin-right: 0.35rem;
+}
+
+.ops-state-meta-bar {
+  display: flex;
+  align-items: center;
+  gap: 1.25rem;
+  padding-top: 0.55rem;
+  border-top: 1px solid var(--border-muted);
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  flex-wrap: wrap;
+}
+
+.ops-meta-item strong {
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+
+/* Four Epistemic Dimensions Grid */
+.ops-dimensions-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.65rem;
+  margin-bottom: 0.85rem;
+}
+
+.ops-dimension-panel {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  padding: 0.75rem 0.85rem;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+}
+
+.ops-dimension-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.ops-dimension-title {
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  color: var(--text-secondary);
+  line-height: 1.25;
+  margin: 0;
+  text-transform: uppercase;
+  font-family: var(--font-sans);
+}
+
+.ops-dimension-badge {
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  font-weight: 700;
+  padding: 0.15rem 0.4rem;
+  border-radius: var(--radius-sm);
+  white-space: nowrap;
+}
+
+.ops-dimension-content {
+  font-size: 0.75rem;
+  color: var(--text-primary);
+  line-height: 1.35;
+  margin-bottom: 0.5rem;
+  flex-grow: 1;
+}
+
+.ops-dimension-scope {
+  font-size: 0.65rem;
+  color: var(--text-muted);
+  line-height: 1.3;
+  padding-top: 0.4rem;
+  border-top: 1px solid var(--border-muted);
+  font-family: var(--font-sans);
+}
+
+/* Tablet & Mobile responsive reflow */
+@media (max-width: 1024px) {
+  .ops-dimensions-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 640px) {
+  .ops-dimensions-grid {
+    grid-template-columns: 1fr;
+  }
 }
