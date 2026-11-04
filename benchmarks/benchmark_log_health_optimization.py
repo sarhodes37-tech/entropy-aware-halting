@@ -545,6 +545,14 @@ def run_benchmark() -> Dict[str, Any]:
 
                 assert rb["status"] == ro["status"], f"Status divergence on {w_name}"
                 assert rb.get("reason") == ro.get("reason"), f"Reason divergence on {w_name}"
+                assert rb.get("gate") == ro.get("gate"), f"Gate divergence on {w_name}"
+                assert rb.get("vectors_revoked") == ro.get(
+                    "vectors_revoked"
+                ), f"Vector divergence on {w_name}"
+                assert rb.get("decision") == ro.get("decision"), f"Decision divergence on {w_name}"
+                assert rb.get("execution_outcome") == ro.get(
+                    "execution_outcome"
+                ), f"Outcome divergence on {w_name}"
 
             e2e_results[w_name] = {
                 "full_baseline": compute_metrics(full_base_times),
@@ -687,11 +695,16 @@ def generate_markdown_report(results: Dict[str, Any]):
         ),
         (
             "- **Thread & Multi-Process Safety:** Verification and offset mutations are executed "
-            "exclusively inside synchronized `fcntl.flock` critical sections."
+            "inside synchronized per-instance `threading.RLock` and inter-process `fcntl.flock` "
+            "critical sections across cooperating callers."
         ),
         (
-            "- **Complete Equivalence:** Verified 100% decision, outcome status, and reason code "
-            "equivalence across all workloads and scale configurations."
+            "- **Complete Equivalence:** Verified 100% output equivalence across status, gate, "
+            "reason, vectors_revoked, decision, and execution_outcome across all workloads."
+        ),
+        (
+            "- **Audit Latency Distribution Note:** While mean audit inspection latency drops by "
+            "~83%, tail p95 observations exhibit variability under load due to disk sync."
         ),
     ])
 

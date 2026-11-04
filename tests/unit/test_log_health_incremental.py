@@ -653,3 +653,153 @@ def test_concurrent_intervening_historical_modification_audit_trail_fail_closed(
     assert healthy is False
     assert trail._verified_offset == 0
     assert err is not None
+
+
+def test_provenance_deterministic_intervening_race_fails_closed(tmp_path):
+    """
+    Deterministic mid-inspection mutation test for LocalProvenanceStore:
+    Injects a same-size historical modification while suffix is being read.
+    Verifies that the verifier fails closed and does not commit a partially updated cache state.
+    """
+    log_path = tmp_path / "prov_race.jsonl"
+    store = LocalProvenanceStore(log_path=str(log_path))
+
+    for i in range(5):
+        store.record_event(
+            ProvenanceEvent(
+                schema_version="1.0.0",
+                event_id=f"evt_{i}",
+                event_type="ACTION_PROPOSED",
+                provenance_source="AGENT_ADAPTER",
+                correlation_id="corr_race",
+                request_id=f"req_{i}",
+                action_name=f"action_{i}",
+                target="target_race",
+                canonical_request_digest="d",
+                timestamp="2026-01-01T00:00:00Z",
+            )
+        )
+
+    # Establish verified prefix
+    h, _, _, _ = store._inspect_health()
+    assert h is True
+    assert store._verified_offset > 0
+
+    # Append 2 new events
+    for i in range(5, 7):
+        store.record_event(
+            ProvenanceEvent(
+                schema_version="1.0.0",
+                event_id=f"evt_{i}",
+                event_type="ACTION_PROPOSED",
+                provenance_source="AGENT_ADAPTER",
+                correlation_id="corr_race",
+                request_id=f"req_{i}",
+                action_name=f"action_{i}",
+                target="target_race",
+                canonical_request_digest="d",
+                timestamp="2026-01-01T00:00:00Z",
+            )
+        )
+
+    orig_inspect = store._inspect_health_on_descriptor
+
+    def wrapped_inspect(f_raw, should_lock=True):
+        orig_readline = f_raw.readline
+        raced = [False]
+
+        def hooking_readline(*args, **kwargs):
+            if not raced[0]:
+                raced[0] = True
+                with open(log_path, "r+b") as mod_f:
+                    mod_f.seek(0)
+                    historical = mod_f.read(store._verified_offset)
+                    tampered = historical.replace(b'"action_1"', b'"action_x"')
+                    if len(tampered) == len(historical):
+                        mod_f.seek(0)
+                        mod_f.write(tampered)
+                        mod_f.flush()
+            return orig_readline(*args, **kwargs)
+
+        f_raw.readline = hooking_readline
+        return orig_inspect(f_raw, should_lock=should_lock)
+
+    store._inspect_health_on_descriptor = wrapped_inspect
+
+    # Inspection must detect tampering and fail closed
+    store._inspect_health()
+
+    store._inspect_health_on_descriptor = orig_inspect
+    h_subsequent, _, _, _ = store._inspect_health()
+    assert h_subsequent is False
+    assert store._verified_offset == 0
+
+
+def test_audit_deterministic_intervening_race_fails_closed(tmp_path):
+    """
+    Deterministic mid-inspection mutation test for TamperEvidentAuditTrail:
+    Injects a same-size historical modification while suffix is being read.
+    Verifies that the verifier fails closed and does not commit a partially updated cache state.
+    """
+    log_path = tmp_path / "audit_race.jsonl"
+    trail = TamperEvidentAuditTrail(log_file_path=str(log_path))
+
+    for i in range(5):
+        trail.record_event(
+            AuditEvent(
+                AuditLogLevel.INFO,
+                gate_name=f"Gate_{i}",
+                reason=f"step_{i}",
+                model_id=f"model_{i}",
+                payload_snippet=f"snippet_{i}",
+            )
+        )
+
+    # Establish verified prefix
+    h, _, _ = trail.inspect_log_health()
+    assert h is True
+    assert trail._verified_offset > 0
+
+    # Append 2 new events
+    for i in range(5, 7):
+        trail.record_event(
+            AuditEvent(
+                AuditLogLevel.INFO,
+                gate_name=f"Gate_{i}",
+                reason=f"step_{i}",
+                model_id=f"model_{i}",
+                payload_snippet=f"snippet_{i}",
+            )
+        )
+
+    orig_inspect = trail._inspect_health_on_descriptor
+
+    def wrapped_inspect(f_raw, should_lock=True):
+        orig_readline = f_raw.readline
+        raced = [False]
+
+        def hooking_readline(*args, **kwargs):
+            if not raced[0]:
+                raced[0] = True
+                with open(log_path, "r+b") as mod_f:
+                    mod_f.seek(0)
+                    historical = mod_f.read(trail._verified_offset)
+                    tampered = historical.replace(b'"step_1"', b'"step_x"')
+                    if len(tampered) == len(historical):
+                        mod_f.seek(0)
+                        mod_f.write(tampered)
+                        mod_f.flush()
+            return orig_readline(*args, **kwargs)
+
+        f_raw.readline = hooking_readline
+        return orig_inspect(f_raw, should_lock=should_lock)
+
+    trail._inspect_health_on_descriptor = wrapped_inspect
+
+    # Inspection must detect tampering and fail closed
+    trail.inspect_log_health()
+
+    trail._inspect_health_on_descriptor = orig_inspect
+    h_subsequent, _, _ = trail.inspect_log_health()
+    assert h_subsequent is False
+    assert trail._verified_offset == 0
