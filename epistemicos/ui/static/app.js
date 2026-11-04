@@ -677,10 +677,10 @@ document.addEventListener('DOMContentLoaded', () => {
         'AUTHORIZED': {
           label: 'AUTHORIZED',
           established: true,
-          glyph: '✓',
-          statusClass: 'status-badge-verified',
-          establishmentClass: 'established-ready',
-          badgeClass: 'badge-verified',
+          glyph: '◈',
+          statusClass: 'status-badge-authorized',
+          establishmentClass: 'established-authorized',
+          badgeClass: 'badge-authorized',
           meaning: 'Pre-execution task contract and capability tokens validated. Does not imply execution outcome or runtime READY.'
         },
         'BLOCKED': {

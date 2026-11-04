@@ -116,5 +116,7 @@ The Overview refuses to collapse disparate telemetry signals into a single misle
 
 - Surface Foundation: Industrial graphite and deep slate (`--bg-base: #0f1318`, `--bg-surface: #171c23`, `--bg-elevated: #202631`).
 - Typography: Off-white primary (`#f1f5f9`), neutral slate (`#a6b5c9`), muted slate (`#8c9eb4`).
-- Operational Accents: Muted teal (`#2dd4bf`) for affirmative verified/authorized states, restrained amber (`#fbbf24`) for policy halts/warnings, red (`#f87171`) for positive blocking/failure conditions, neutral slate (`#94a3b8`) for unverified/not established conditions.
+- Operational Accents: Muted teal (`#2dd4bf`, glyph `✓`) for live verified/attested `READY`, operational cyan (`#38bdf8`, glyph `◈`) for pre-execution `AUTHORIZED`, restrained amber (`#fbbf24`, glyph `✋`) for policy halts/warnings, red (`#f87171`, glyph `⛔`/`✗`) for positive blocking/failure conditions, neutral slate (`#94a3b8`, glyph `⊘`) for unverified/not established conditions.
+- READY vs AUTHORIZED Visual Distinction: `READY` and `AUTHORIZED` possess distinct visual treatments: `READY` uses checkmark `✓` with affirmative teal (`status-badge-verified`, `established-ready`), whereas `AUTHORIZED` uses diamond `◈` with operational cyan (`status-badge-authorized`, `established-authorized`), visually preventing confusion between pre-execution authorization and live runtime health.
+- Solid Surfaces: Eliminated legacy purple/plum and pink gradient overlays; surfaces use solid slate graphite `--bg-surface` (`#171c23`) with clean structural borders (`#334155`).
 - Contrast Compliance: All text and interactive tokens achieve >= 4.5:1 WCAG 2.2 AA contrast across all underlying surfaces.

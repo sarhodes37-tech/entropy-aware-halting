@@ -41,7 +41,7 @@ def test_state_to_visual_mappings_and_metadata(browser_instance):
 
     states_to_test = [
         ("READY", True, "✓"),
-        ("AUTHORIZED", True, "✓"),
+        ("AUTHORIZED", True, "◈"),
         ("BLOCKED", True, "⛔"),
         ("FAILED", True, "✗"),
         ("HALTED", True, "✋"),
@@ -285,6 +285,93 @@ def test_policy_denial_does_not_establish_system_blocked(browser_instance):
 
     state_text = page.locator("#overview-system-state-text").text_content()
     assert "BLOCKED" not in state_text
+    page.close()
+
+
+def test_ready_and_authorized_have_distinct_visual_identities(browser_instance):
+    """Verifies that READY and AUTHORIZED have distinct glyphs, establishment classes, and borders."""
+    page = browser_instance.new_page()
+    page.goto(f"file://{STATIC_DIR / 'index.html'}")
+
+    meta_ready = page.evaluate("window.ObservatoryApp.getStateMetadata('READY')")
+    meta_auth = page.evaluate("window.ObservatoryApp.getStateMetadata('AUTHORIZED')")
+
+    # Distinct glyphs
+    assert meta_ready["glyph"] != meta_auth["glyph"]
+    assert meta_ready["glyph"] == "✓"
+    assert meta_auth["glyph"] == "◈"
+
+    # Distinct CSS classes
+    assert meta_ready["statusClass"] != meta_auth["statusClass"]
+    assert meta_ready["establishmentClass"] != meta_auth["establishmentClass"]
+    assert meta_ready["badgeClass"] != meta_auth["badgeClass"]
+
+    # Render each in DOM and verify applied classes and styles
+    page.evaluate("""
+        window.ObservatoryApp.state.overviewData = {
+            metrics: { total_executions: 1 },
+            status_flags: { audit_data_available: true, provenance_data_available: true },
+            audit_integrity: { status: 'VERIFIED' },
+            provenance_integrity: { status: 'VERIFIED' }
+        };
+        // Mock AUTHORIZED
+        const metaAuth = window.ObservatoryApp.getStateMetadata('AUTHORIZED');
+        const primaryCard = document.getElementById('overview-primary-state-card');
+        const primaryText = document.getElementById('overview-system-state-text');
+        const primaryEst = document.getElementById('overview-state-establishment');
+        primaryCard.setAttribute('data-state', 'AUTHORIZED');
+        primaryText.textContent = `${metaAuth.glyph} ${metaAuth.label}`;
+        primaryEst.className = `ops-establishment-badge ${metaAuth.establishmentClass}`;
+    """)
+
+    assert "◈ AUTHORIZED" in page.locator("#overview-system-state-text").text_content()
+    assert "established-authorized" in page.locator("#overview-state-establishment").get_attribute("class")
+
+    page.close()
+
+
+@pytest.mark.parametrize(
+    "audit_avail,prov_avail,expected_badge,expected_class",
+    [
+        (True, True, "AVAILABLE", "badge-available"),
+        (True, False, "PARTIAL", "badge-warning"),
+        (False, True, "PARTIAL", "badge-warning"),
+        (False, False, "UNAVAILABLE", "badge-neutral"),
+    ],
+)
+def test_all_three_evidence_availability_states(browser_instance, audit_avail, prov_avail, expected_badge, expected_class):
+    """Verifies dynamic rendering and classes across all 3 evidence availability states."""
+    page = browser_instance.new_page()
+    page.goto(f"file://{STATIC_DIR / 'index.html'}")
+
+    telemetry = {
+        "metrics": {"total_executions": 5},
+        "status_flags": {
+            "audit_data_available": audit_avail,
+            "provenance_data_available": prov_avail,
+        },
+        "audit_integrity": {"status": "VERIFIED" if audit_avail else "UNAVAILABLE"},
+        "provenance_integrity": {"status": "VERIFIED" if prov_avail else "UNAVAILABLE"},
+    }
+
+    page.evaluate(f"""
+        window.ObservatoryApp.state.overviewData = {json.dumps(telemetry)};
+        window.ObservatoryApp.renderOverview();
+    """)
+
+    badge_el = page.locator("#dim-completeness-badge")
+    assert expected_badge in badge_el.text_content()
+    assert expected_class in badge_el.get_attribute("class")
+    assert "COMPLETE" not in badge_el.text_content()
+
+    content = page.locator("#dim-completeness-content").text_content()
+    if expected_badge == "AVAILABLE":
+        assert "presence does not prove source completeness" in content.lower()
+    elif expected_badge == "PARTIAL":
+        assert "partial physical log availability" in content.lower()
+    else:
+        assert "physical logs unavailable" in content.lower()
+
     page.close()
 
 
