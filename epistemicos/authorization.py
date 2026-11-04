@@ -1637,46 +1637,25 @@ class CapabilityRegistry:
         approval_binding_digest = ""
         human_app = getattr(cap, "human_approval", None)
         if human_app:
-            if isinstance(human_app, dict):
-                app_id = str(human_app.get("approval_id") or "")
-                appr_id = str(human_app.get("approver_id") or "")
-                app_sig = str(human_app.get("signature") or "")
-                app_req_p = str(human_app.get("requesting_principal") or "")
-                app_tid = str(human_app.get("task_id") or "")
-                raw_ast = human_app.get("approver_assertion")
-            else:
-                app_id = str(getattr(human_app, "approval_id", "") or "")
-                appr_id = str(getattr(human_app, "approver_id", "") or "")
-                app_sig = str(getattr(human_app, "signature", "") or "")
-                app_req_p = str(getattr(human_app, "requesting_principal", "") or "")
-                app_tid = str(getattr(human_app, "task_id", "") or "")
-                raw_ast = getattr(human_app, "approver_assertion", None)
-
-            if not raw_ast:
-                app_ast_dig = ""
-            elif hasattr(raw_ast, "compute_signature_payload"):
-                app_ast_dig = hashlib.sha256(raw_ast.compute_signature_payload()).hexdigest()
-            elif isinstance(raw_ast, dict):
-                p_id = str(raw_ast.get("principal_id") or "").strip()
-                i_id = str(raw_ast.get("issuer_id") or "").strip()
-                t_stamp = float(raw_ast.get("timestamp") or 0.0)
-                exp = raw_ast.get("expires_at")
-                exp_v = f"{float(exp):.6f}" if exp is not None else ""
-                k_id = str(raw_ast.get("key_id") or "") if raw_ast.get("key_id") is not None else ""
-                p_load = f"{p_id}:{i_id}:{t_stamp:.6f}:{exp_v}:{k_id}"
-                app_ast_dig = hashlib.sha256(p_load.encode("utf-8")).hexdigest()
-            else:
-                app_ast_dig = ""
-
-            appr_principal = str(getattr(cap, "approver_principal", "") or "")
+            app_dict = human_app.to_dict() if hasattr(human_app, "to_dict") else dict(human_app)
+            if "approver_assertion" in app_dict and app_dict["approver_assertion"]:
+                raw_ast = app_dict["approver_assertion"]
+                if hasattr(raw_ast, "to_dict"):
+                    ast_dict = raw_ast.to_dict()
+                elif isinstance(raw_ast, dict):
+                    ast_dict = raw_ast
+                else:
+                    ast_dict = raw_ast.__dict__
+                app_dict["approver_assertion"] = ast_dict
             prov_data = getattr(cap, "approver_provenance", None)
-            prov_str = json.dumps(prov_data, sort_keys=True, separators=(",", ":")) if prov_data else ""
-
-            app_bound_payload = (
-                f"{app_id}:{appr_id}:{app_sig}:{app_req_p}:{app_tid}:{app_ast_dig}:"
-                f"{appr_principal}:{prov_str}"
-            )
-            approval_binding_digest = hashlib.sha256(app_bound_payload.encode("utf-8")).hexdigest()
+            prov_dict = prov_data.copy() if isinstance(prov_data, dict) else {}
+            app_bound_obj = {
+                "approval_record": app_dict,
+                "approver_principal": str(getattr(cap, "approver_principal", "") or ""),
+                "approver_provenance": prov_dict
+            }
+            canon_json = json.dumps(app_bound_obj, sort_keys=True, separators=(",", ":"))
+            approval_binding_digest = hashlib.sha256(canon_json.encode("utf-8")).hexdigest()
 
         payload = (
             f"{cap.token_id}:{cap.principal_id}:{cap.correlation_id}:{cap.request_id}:"
@@ -2788,6 +2767,36 @@ class AuthorizationAuthority:
             )
             if not appr_valid or verified_appr_pid != approver_principal:
                 return False, f"CAPABILITY_VERIFICATION_FAILED_HUMAN_APPROVAL_APPROVER_VERIFICATION_FAILED: {appr_reason}", cap
+
+            # Explicitly validate the provenance dictionary against the independently verified assertion
+            ast_obj = human_app.approver_assertion
+            if hasattr(ast_obj, "to_dict"):
+                ast_dict = ast_obj.to_dict()
+            elif isinstance(ast_obj, dict):
+                ast_dict = ast_obj
+            else:
+                ast_dict = ast_obj.__dict__
+            expected_issuer = str(ast_dict.get("issuer_id") or "")
+            expected_ts = float(ast_dict.get("timestamp") or 0.0)
+
+            if not isinstance(approver_prov, dict):
+                return False, "CAPABILITY_VERIFICATION_FAILED_HUMAN_APPROVAL_PROVENANCE_MALFORMED", cap
+
+            if approver_prov.get("approver_id") != verified_appr_pid:
+                return False, f"CAPABILITY_VERIFICATION_FAILED_HUMAN_APPROVAL_PROVENANCE_APPROVER_MISMATCH: provenance approver '{approver_prov.get('approver_id')}' != verified '{verified_appr_pid}'", cap
+
+            if approver_prov.get("issuer_id") != expected_issuer:
+                return False, f"CAPABILITY_VERIFICATION_FAILED_HUMAN_APPROVAL_PROVENANCE_ISSUER_MISMATCH: provenance issuer '{approver_prov.get('issuer_id')}' != assertion issuer '{expected_issuer}'", cap
+
+            if abs(float(approver_prov.get("assertion_timestamp") or 0.0) - expected_ts) > 1e-4:
+                return False, f"CAPABILITY_VERIFICATION_FAILED_HUMAN_APPROVAL_PROVENANCE_TIMESTAMP_MISMATCH: provenance ts '{approver_prov.get('assertion_timestamp')}' != assertion ts '{expected_ts}'", cap
+
+            if approver_prov.get("approval_id") != human_app.approval_id:
+                return False, f"CAPABILITY_VERIFICATION_FAILED_HUMAN_APPROVAL_PROVENANCE_APPROVAL_ID_MISMATCH: provenance approval_id '{approver_prov.get('approval_id')}' != record '{human_app.approval_id}'", cap
+
+            verified_at_val = approver_prov.get("verified_at")
+            if verified_at_val is None or isinstance(verified_at_val, bool) or not isinstance(verified_at_val, (int, float)) or not math.isfinite(float(verified_at_val)):
+                return False, "CAPABILITY_VERIFICATION_FAILED_HUMAN_APPROVAL_PROVENANCE_INVALID_VERIFIED_AT", cap
 
             # 4. Verify bindings between approval record and capability fields
             if human_app.action_name != cap.action_name:

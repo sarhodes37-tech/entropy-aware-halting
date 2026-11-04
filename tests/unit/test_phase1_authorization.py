@@ -39,7 +39,9 @@ from epistemicos.authorization import (
 from tests.unit.test_sec01_sec03_remediation import ExternalTestIdentityAuthority
 
 _PHASE1_TEST_IDP = ExternalTestIdentityAuthority(issuer_id="Phase1TestIdP")
-_PHASE1_VERIFIER = PrincipalVerifier(trusted_public_keys={"Phase1TestIdP": _PHASE1_TEST_IDP.public_key})
+_PHASE1_VERIFIER = PrincipalVerifier(
+    trusted_public_keys={"Phase1TestIdP": _PHASE1_TEST_IDP.public_key}
+)
 
 from epistemicos.provenance import (
     TrustedExecutionBoundary,
