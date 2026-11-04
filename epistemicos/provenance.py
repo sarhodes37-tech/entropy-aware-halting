@@ -311,10 +311,11 @@ class LocalProvenanceStore(ProvenanceStore):
         if not self.log_path.exists():
             return events
 
-        if not correlation_id or not isinstance(correlation_id, str):
+        if not isinstance(correlation_id, str):
             return events
 
         # Use canonical JSON string encoding for the token to safely handle any escape characters
+        # and preserve empty string correlation_id lookups without truthiness rejection.
         target_token = json.dumps(correlation_id)
 
         with open(self.log_path, "r", encoding="utf-8") as f:
