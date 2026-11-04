@@ -13,13 +13,21 @@ Asserts:
 import json
 from pathlib import Path
 import pytest
-from playwright.sync_api import sync_playwright
+try:
+    from playwright.sync_api import sync_playwright
+    PLAYWRIGHT_AVAILABLE = True
+except ImportError:
+    PLAYWRIGHT_AVAILABLE = False
+
+pytestmark = pytest.mark.skipif(not PLAYWRIGHT_AVAILABLE, reason="playwright not installed")
 
 STATIC_DIR = Path(__file__).parent.parent.parent / "epistemicos" / "ui" / "static"
 
 
 @pytest.fixture(scope="module")
 def browser_instance():
+    if not PLAYWRIGHT_AVAILABLE:
+        pytest.skip("playwright not installed")
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         yield browser
@@ -86,7 +94,7 @@ def test_overview_dom_renders_state_first_hierarchy(browser_instance):
 
     dim4 = page.locator("#dimension-completeness")
     assert "DIMENSION 04" in dim4.text_content()
-    assert "EVIDENCE COMPLETENESS" in dim4.text_content()
+    assert "EVIDENCE AVAILABILITY" in dim4.text_content()
 
     # Verify cumulative metrics bar labels
     metric_labels = (
@@ -194,6 +202,89 @@ def test_missing_and_unavailable_evidence_presentation(browser_instance):
 
     comp_badge = page.locator("#dim-completeness-badge").text_content()
     assert "UNAVAILABLE" in comp_badge
+    page.close()
+
+
+def test_physical_file_presence_yields_available_not_complete(browser_instance):
+    """Verifies that physical file presence yields AVAILABLE, never claiming COMPLETE."""
+    page = browser_instance.new_page()
+    page.goto(f"file://{STATIC_DIR / 'index.html'}")
+
+    present_telemetry = {
+        "metrics": {
+            "total_executions": 20,
+            "authorization_denials": 0,
+            "halts": 0,
+            "execution_failures": 0,
+            "parse_error_count": 0,
+        },
+        "status_flags": {
+            "audit_data_available": True,
+            "provenance_data_available": True,
+        },
+        "audit_integrity": {
+            "status": "VERIFIED",
+            "records_verified": 20,
+        },
+        "provenance_integrity": {
+            "status": "VERIFIED",
+            "records_verified": 20,
+        },
+    }
+
+    page.evaluate(f"""
+        window.ObservatoryApp.state.overviewData = {json.dumps(present_telemetry)};
+        window.ObservatoryApp.renderOverview();
+    """)
+
+    dim_badge = page.locator("#dim-completeness-badge").text_content()
+    assert "AVAILABLE" in dim_badge
+    assert "COMPLETE" not in dim_badge
+
+    dim_content = page.locator("#dim-completeness-content").text_content()
+    assert "presence does not prove source completeness" in dim_content.lower()
+
+    # Verify chain integrity metadata displays verified SHA-256 chain without HMAC hardening claims
+    chain_meta = page.locator("#overview-evidence-anchor").text_content()
+    assert "LOCAL SHA-256 HASH-CHAIN (VERIFIED)" in chain_meta
+    assert "HMAC" not in chain_meta
+    page.close()
+
+
+def test_policy_denial_does_not_establish_system_blocked(browser_instance):
+    """Verifies that request-level policy denials do not establish system-level BLOCKED."""
+    page = browser_instance.new_page()
+    page.goto(f"file://{STATIC_DIR / 'index.html'}")
+
+    denial_telemetry = {
+        "metrics": {
+            "total_executions": 100,
+            "authorization_denials": 12,
+            "halts": 0,
+            "execution_failures": 0,
+            "parse_error_count": 0,
+        },
+        "status_flags": {
+            "audit_data_available": True,
+            "provenance_data_available": True,
+        },
+        "audit_integrity": {
+            "status": "VERIFIED",
+            "records_verified": 100,
+        },
+        "provenance_integrity": {
+            "status": "VERIFIED",
+            "records_verified": 100,
+        },
+    }
+
+    page.evaluate(f"""
+        window.ObservatoryApp.state.overviewData = {json.dumps(denial_telemetry)};
+        window.ObservatoryApp.renderOverview();
+    """)
+
+    state_text = page.locator("#overview-system-state-text").text_content()
+    assert "BLOCKED" not in state_text
     page.close()
 
 

@@ -672,7 +672,7 @@ document.addEventListener('DOMContentLoaded', () => {
           statusClass: 'status-badge-verified',
           establishmentClass: 'established-ready',
           badgeClass: 'badge-verified',
-          meaning: 'System operations fully verified and attested ready for execution.'
+          meaning: 'Authoritative live runtime health evidence affirmative and attested; system ready for execution.'
         },
         'AUTHORIZED': {
           label: 'AUTHORIZED',
@@ -681,7 +681,7 @@ document.addEventListener('DOMContentLoaded', () => {
           statusClass: 'status-badge-verified',
           establishmentClass: 'established-ready',
           badgeClass: 'badge-verified',
-          meaning: 'Pre-execution policy and capability grants validated.'
+          meaning: 'Pre-execution task contract and capability tokens validated. Does not imply execution outcome or runtime READY.'
         },
         'BLOCKED': {
           label: 'BLOCKED',
@@ -690,7 +690,7 @@ document.addEventListener('DOMContentLoaded', () => {
           statusClass: 'status-badge-failed',
           establishmentClass: 'established-blocked',
           badgeClass: 'badge-failed',
-          meaning: 'Positive cryptographic chain corruption or policy denial detected.'
+          meaning: 'Positively detected system-level blocking condition (e.g. cryptographic chain corruption, fence breach). Request-level policy denials do not establish system BLOCKED.'
         },
         'FAILED': {
           label: 'FAILED',
@@ -699,7 +699,7 @@ document.addEventListener('DOMContentLoaded', () => {
           statusClass: 'status-badge-failed',
           establishmentClass: 'established-failed',
           badgeClass: 'badge-failed',
-          meaning: 'Execution failure or boundary violation recorded.'
+          meaning: 'Execution failure or protected boundary violation recorded on a specific trajectory.'
         },
         'HALTED': {
           label: 'HALTED',
@@ -708,7 +708,7 @@ document.addEventListener('DOMContentLoaded', () => {
           statusClass: 'status-badge-halted',
           establishmentClass: 'established-halted',
           badgeClass: 'badge-halted',
-          meaning: 'Policy boundary or security guardrail halt invoked.'
+          meaning: 'Containment guardrail or policy boundary halt triggered on a specific execution.'
         },
         'DEGRADED': {
           label: 'DEGRADED',
@@ -717,7 +717,7 @@ document.addEventListener('DOMContentLoaded', () => {
           statusClass: 'status-badge-partial',
           establishmentClass: 'established-degraded',
           badgeClass: 'badge-warning',
-          meaning: 'Known operational impairment or partial subsystem failure.'
+          meaning: 'Positively confirmed operational impairment or subsystem failure, not merely historical retrospective failures.'
         },
         'UNVERIFIED': {
           label: 'UNVERIFIED',
@@ -726,7 +726,7 @@ document.addEventListener('DOMContentLoaded', () => {
           statusClass: 'status-badge-unknown',
           establishmentClass: 'not-established',
           badgeClass: 'badge-neutral',
-          meaning: 'Required evidence is missing, unreadable, or insufficient.'
+          meaning: 'Required evidence is missing, unavailable, unreadable, or insufficient to evaluate.'
         },
         'NOT ESTABLISHED': {
           label: 'NOT ESTABLISHED',
@@ -735,7 +735,7 @@ document.addEventListener('DOMContentLoaded', () => {
           statusClass: 'status-badge-unknown',
           establishmentClass: 'not-established',
           badgeClass: 'badge-neutral',
-          meaning: 'Condition has not been affirmatively established by trusted attestation.'
+          meaning: 'Required operational condition has not been affirmatively established by trusted live attestation.'
         }
       };
 
@@ -920,8 +920,21 @@ document.addEventListener('DOMContentLoaded', () => {
       const primaryEstablishment = document.getElementById('overview-state-establishment');
       const primaryRationale = document.getElementById('overview-state-rationale');
       const metaCumulativeExceptions = document.getElementById('overview-cumulative-exceptions-count');
+      const metaEvidenceAnchor = document.getElementById('overview-evidence-anchor');
 
       const meta = this.getStateMetadata(stateResult.state);
+
+      if (metaEvidenceAnchor) {
+        if (ai.status === 'CORRUPTED' || pi.status === 'CORRUPTED') {
+          metaEvidenceAnchor.textContent = 'INTEGRITY FAILED';
+        } else if (ai.status === 'VERIFIED' && pi.status === 'VERIFIED') {
+          metaEvidenceAnchor.textContent = 'LOCAL SHA-256 HASH-CHAIN (VERIFIED)';
+        } else if (ai.status === 'UNAVAILABLE' && pi.status === 'UNAVAILABLE') {
+          metaEvidenceAnchor.textContent = 'UNAVAILABLE';
+        } else {
+          metaEvidenceAnchor.textContent = 'LOCAL SHA-256 HASH-CHAIN';
+        }
+      }
 
       if (primaryStateCard) {
         primaryStateCard.setAttribute('data-state', stateResult.state);
@@ -997,16 +1010,16 @@ document.addEventListener('DOMContentLoaded', () => {
         }
       }
 
-      // Update Dimension 4: Evidence Completeness
+      // Update Dimension 4: Evidence Availability
       const dimCompBadge = document.getElementById('dim-completeness-badge');
       const dimCompContent = document.getElementById('dim-completeness-content');
       if (dimCompBadge && dimCompContent) {
         const auditAvail = this.normalizeBooleanFlag(sf.audit_data_available);
         const provAvail = this.normalizeBooleanFlag(sf.provenance_data_available);
         if (auditAvail && provAvail) {
-          dimCompBadge.className = 'ops-dimension-badge badge-verified';
-          dimCompBadge.textContent = '✓ COMPLETE';
-          dimCompContent.textContent = 'Physical log files present and accessible for both Audit Trail and Local Provenance Store.';
+          dimCompBadge.className = 'ops-dimension-badge badge-available';
+          dimCompBadge.textContent = '✓ AVAILABLE';
+          dimCompContent.textContent = 'Physical local log files present and accessible for both Audit Trail and Provenance Store. (Note: presence does not prove source completeness or authenticity).';
         } else if (auditAvail || provAvail) {
           dimCompBadge.className = 'ops-dimension-badge badge-warning';
           dimCompBadge.textContent = '⚠️ PARTIAL';
@@ -1014,7 +1027,7 @@ document.addEventListener('DOMContentLoaded', () => {
         } else {
           dimCompBadge.className = 'ops-dimension-badge badge-neutral';
           dimCompBadge.textContent = '⊘ UNAVAILABLE';
-          dimCompContent.textContent = 'Physical logs: Audit UNAVAILABLE, Provenance UNAVAILABLE. Scope: Local append log completeness. Internal chaining does not prove source authenticity.';
+          dimCompContent.textContent = 'Physical logs unavailable: Audit is UNAVAILABLE, Provenance is UNAVAILABLE. Local files missing or unreadable.';
         }
       }
 

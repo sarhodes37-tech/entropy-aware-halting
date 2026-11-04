@@ -1,62 +1,62 @@
-/* EpistemicOS Control Plane Observatory - Visual System (Neon Dusk Design Token Foundation) */
+/* EpistemicOS Control Plane Observatory - Operational Intelligence Interface */
 
 :root {
-  /* Neon Dusk Color Palette (Early-Vaporwave / Retro-Futurist Scientific Instrumentation) */
-  --bg-base: #120F24;       /* Midnight violet */
-  --bg-surface: #1D1833;    /* Deep plum */
-  --bg-elevated: #282044;   /* Purple graphite */
-  --bg-subtle: #18132E;     /* Deep violet subtle background */
-  --bg-hover: #332A54;      /* Violet hover state */
+  /* Industrial Graphite / Slate Palette (Air-Traffic / ICS / Mission Ops) */
+  --bg-base: #0f1318;       /* Deep slate graphite */
+  --bg-surface: #171c23;    /* Surface slate */
+  --bg-elevated: #202631;   /* Raised industrial surface */
+  --bg-subtle: #13171e;     /* Inset slate background */
+  --bg-hover: #29313e;      /* Interactive hover state */
 
-  /* Accents */
-  --accent-primary: #B69AFF;     /* Electric lavender */
-  --accent-secondary: #FF83B8;   /* Vaporwave pink */
-  --accent-interactive: #64DED9; /* Retro cyan */
-  --accent-cyan: #64DED9;        /* Retro cyan indicator */
-  --accent-teal: #2DD4BF;        /* Mint teal indicator */
+  /* Operational Accents */
+  --accent-primary: #38bdf8;     /* Precise cyan-slate */
+  --accent-secondary: #94a3b8;   /* Slate neutral */
+  --accent-interactive: #2dd4bf; /* Muted teal (affirmative operational) */
+  --accent-cyan: #38bdf8;        /* Informational cyan */
+  --accent-teal: #2dd4bf;        /* Mint/teal verified indicator */
 
-  /* Text Contrast Hierarchy */
-  --text-primary: #F5F0FF;     /* Soft white */
-  --text-secondary: #B6A9CA;   /* Muted lavender */
-  --text-muted: #9889B8;       /* Deep muted lavender (adjusted for >= 4.5:1 WCAG AA contrast) */
+  /* Text Contrast Hierarchy (WCAG AA compliant >= 4.5:1) */
+  --text-primary: #f1f5f9;     /* Crisp off-white */
+  --text-secondary: #a6b5c9;   /* Neutral slate (>= 4.5:1 across surfaces) */
+  --text-muted: #8c9eb4;       /* Muted slate (>= 4.5:1 across surfaces) */
 
   /* Borders & Dividers */
-  --border-default: #44365F;   /* Dusty violet */
-  --border-muted: #2D2344;     /* Deep dusty violet */
-  --border-accent: rgba(182, 154, 255, 0.4);
+  --border-default: #334155;   /* Structured slate border */
+  --border-muted: #1e293b;     /* Subtle separator */
+  --border-accent: rgba(45, 212, 191, 0.4);
 
-  /* Semantic Status Colors (Preserving Distinct Evidence Treatments) */
-  --status-verified-bg: rgba(45, 212, 191, 0.15);
-  --status-verified-fg: #2DD4BF;
+  /* Semantic Status Colors (Normative Operational Status) */
+  --status-verified-bg: rgba(45, 212, 191, 0.12);
+  --status-verified-fg: #2dd4bf;
   --status-verified-border: rgba(45, 212, 191, 0.35);
 
-  --status-failed-bg: rgba(255, 131, 184, 0.15);
-  --status-failed-fg: #FF83B8;
-  --status-failed-border: rgba(255, 131, 184, 0.35);
+  --status-failed-bg: rgba(239, 68, 68, 0.12);
+  --status-failed-fg: #f87171;
+  --status-failed-border: rgba(239, 68, 68, 0.35);
 
-  --status-halted-bg: rgba(251, 191, 36, 0.15);
-  --status-halted-fg: #FBBF24;
-  --status-halted-border: rgba(251, 191, 36, 0.35);
+  --status-halted-bg: rgba(245, 158, 11, 0.12);
+  --status-halted-fg: #fbbf24;
+  --status-halted-border: rgba(245, 158, 11, 0.35);
 
-  --status-unknown-bg: rgba(182, 169, 202, 0.15);
-  --status-unknown-fg: #B6A9CA;
-  --status-unknown-border: rgba(182, 169, 202, 0.35);
+  --status-unknown-bg: rgba(100, 116, 139, 0.12);
+  --status-unknown-fg: #94a3b8;
+  --status-unknown-border: rgba(100, 116, 139, 0.35);
 
-  --status-unavailable-bg: rgba(40, 32, 68, 0.6);
-  --status-unavailable-fg: #B6A9CA;
-  --status-unavailable-border: #44365F;
+  --status-unavailable-bg: rgba(30, 41, 59, 0.6);
+  --status-unavailable-fg: #94a3b8;
+  --status-unavailable-border: #334155;
 
-  --status-pending-bg: rgba(100, 222, 217, 0.15);
-  --status-pending-fg: #64DED9;
-  --status-pending-border: rgba(100, 222, 217, 0.35);
+  --status-pending-bg: rgba(56, 189, 248, 0.12);
+  --status-pending-fg: #38bdf8;
+  --status-pending-border: rgba(56, 189, 248, 0.35);
 
-  --status-partial-bg: rgba(251, 146, 60, 0.15);
-  --status-partial-fg: #FB923C;
-  --status-partial-border: rgba(251, 146, 60, 0.35);
+  --status-partial-bg: rgba(245, 158, 11, 0.12);
+  --status-partial-fg: #fbbf24;
+  --status-partial-border: rgba(245, 158, 11, 0.35);
 
-  --status-unreadable-bg: rgba(255, 131, 184, 0.12);
-  --status-unreadable-fg: #FF83B8;
-  --status-unreadable-border: rgba(255, 131, 184, 0.35);
+  --status-unreadable-bg: rgba(239, 68, 68, 0.12);
+  --status-unreadable-fg: #f87171;
+  --status-unreadable-border: rgba(239, 68, 68, 0.35);
 
   /* Structure & Typography */
   --radius-sm: 4px;
@@ -379,9 +379,15 @@ h2 {
 }
 
 .status-badge-available {
-  background-color: var(--status-unknown-bg);
-  color: var(--accent-secondary);
-  border: 1px solid var(--border-default);
+  background-color: var(--status-verified-bg);
+  color: var(--status-verified-fg);
+  border: 1px solid var(--status-verified-border);
+}
+
+.ops-dimension-badge.badge-available {
+  background-color: var(--status-verified-bg);
+  color: var(--status-verified-fg);
+  border: 1px solid var(--status-verified-border);
 }
 
 .status-badge-verified {
@@ -1993,7 +1999,7 @@ button:focus-visible {
 }
 
 .swatch-precision {
-  background-color: var(--accent-interactive); /* Electric Lavender */
+  background-color: var(--accent-interactive); /* Muted Teal Accent */
 }
 
 .swatch-recall {

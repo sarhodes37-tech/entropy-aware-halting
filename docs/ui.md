@@ -108,13 +108,13 @@ The Overview refuses to collapse disparate telemetry signals into a single misle
 3. **Dimension 03: Operational Health**
    - Scope: Live runtime supervisory attestation.
    - Epistemic Rule: Clean historical logs do NOT establish `READY`. `READY` strictly requires live authenticated supervisory health attestation. In its absence, operational health remains `NOT ESTABLISHED`.
-4. **Dimension 04: Evidence Completeness**
-   - Scope: Physical presence and readability of local append logs.
-   - Epistemic Rule: Local log file availability confirms local appendability, but internal chaining does not prove source authenticity.
+4. **Dimension 04: Evidence Availability**
+   - Scope: Physical presence and readability of local append logs. Evaluates whether local audit and provenance files are `AVAILABLE`, `PARTIAL`, or `UNAVAILABLE`.
+   - Epistemic Rule: Mere physical file presence does NOT establish completeness or source authenticity. The dimension is labeled Evidence Availability and strictly avoids claiming "COMPLETE" or "VERIFIED" based solely on file accessibility.
 
 #### 3. Visual System Tokens & Contrast
 
-- Surface Foundation: Deep obsidian graphite (`#0B0F17`), slate charcoal (`#111827`), cool slate (`#1F2937`).
-- Typography: Off-white primary (`#F8FAFC`), slate secondary (`#CBD5E1`), muted slate (`#94A3B8`).
-- Operational Accents: Muted teal (`#2DD4BF`) for verified/authorized states, amber (`#FBBF24`) for policy halts, coral red (`#FF83B8`) for positive corruption/failure, slate neutral for unverified/not established conditions.
-- Contrast Compliance: All foreground text tokens achieve >= 4.5:1 WCAG 2.2 AA contrast across all solid and gradient surfaces.
+- Surface Foundation: Industrial graphite and deep slate (`--bg-base: #0f1318`, `--bg-surface: #171c23`, `--bg-elevated: #202631`).
+- Typography: Off-white primary (`#f1f5f9`), neutral slate (`#a6b5c9`), muted slate (`#8c9eb4`).
+- Operational Accents: Muted teal (`#2dd4bf`) for affirmative verified/authorized states, restrained amber (`#fbbf24`) for policy halts/warnings, red (`#f87171`) for positive blocking/failure conditions, neutral slate (`#94a3b8`) for unverified/not established conditions.
+- Contrast Compliance: All text and interactive tokens achieve >= 4.5:1 WCAG 2.2 AA contrast across all underlying surfaces.

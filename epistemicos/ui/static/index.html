@@ -112,8 +112,8 @@
               <span id="overview-state-rationale">Cryptographic integrity verified, but authoritative live runtime operational health attestation is not established</span>
             </div>
             <div class="ops-state-meta-bar">
-              <span class="ops-meta-item">RUNTIME: <strong id="overview-state-runtime">POSIX / READ-ONLY</strong></span>
-              <span class="ops-meta-item">EVIDENCE ANCHOR: <strong id="overview-evidence-anchor">SHA-256 HMAC-HARDENED</strong></span>
+              <span class="ops-meta-item">MODE: <strong id="overview-state-runtime">READ-ONLY OBSERVATORY</strong></span>
+              <span class="ops-meta-item">CHAIN INTEGRITY: <strong id="overview-evidence-anchor">LOCAL SHA-256 HASH-CHAIN</strong></span>
               <span class="ops-meta-item">CUMULATIVE EXCEPTIONS: <strong id="overview-cumulative-exceptions-count">0</strong></span>
             </div>
           </section>
@@ -162,17 +162,17 @@
               </div>
             </article>
 
-            <!-- Dimension 4: Evidence Completeness -->
+            <!-- Dimension 4: Evidence Availability -->
             <article class="ops-dimension-panel" id="dimension-completeness">
               <div class="ops-dimension-header">
-                <h3 class="ops-dimension-title">DIMENSION 04<br>EVIDENCE COMPLETENESS</h3>
-                <span class="ops-dimension-badge badge-neutral" id="dim-completeness-badge">PARTIAL</span>
+                <h3 class="ops-dimension-title">DIMENSION 04<br>EVIDENCE AVAILABILITY</h3>
+                <span class="ops-dimension-badge badge-neutral" id="dim-completeness-badge">UNAVAILABLE</span>
               </div>
               <div class="ops-dimension-content" id="dim-completeness-content">
                 Checking physical availability of audit and provenance ledgers...
               </div>
               <div class="ops-dimension-scope">
-                Scope: Local append log completeness. Internal chaining does not prove source authenticity.
+                Scope: Local file presence only. Physical file availability does not establish source completeness or authenticity.
               </div>
             </article>
           </section>
