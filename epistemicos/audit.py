@@ -13,6 +13,7 @@ import json
 import time
 import uuid
 import functools
+import threading
 from pathlib import Path
 import hmac
 from typing import Tuple, Optional, Dict, Any, List, Set
@@ -149,8 +150,9 @@ class TamperEvidentAuditTrail:
         else:
             self.genesis_hash = hashlib.sha256(self.GENESIS_SEED).hexdigest()
         self.last_hash = None
+        self._lock = threading.RLock()
 
-        # Incremental health verification state
+        # Incremental health verification state (mutated under self._lock)
         self._verified_offset: int = 0
         self._verified_last_hash: str = self.genesis_hash
         self._verified_seen_ids: Set[str] = set()
@@ -158,6 +160,12 @@ class TamperEvidentAuditTrail:
         self._verified_prefix_digest: str = ""
 
     def inspect_log_health(self, active_f: Optional[Any] = None) -> Tuple[bool, Optional[str], Optional[str]]:
+        with self._lock:
+            return self._inspect_log_health_locked(active_f=active_f)
+
+    def _inspect_log_health_locked(
+        self, active_f: Optional[Any] = None
+    ) -> Tuple[bool, Optional[str], Optional[str]]:
         """
         Inspects the audit log health from Genesis to tail.
         Separates health/integrity status from recovering the last valid entry hash.
@@ -210,8 +218,13 @@ class TamperEvidentAuditTrail:
         if should_lock and HAS_FCNTL:
             try:
                 fcntl.flock(f_raw.fileno(), fcntl.LOCK_SH)
-            except OSError:
-                pass
+            except OSError as e:
+                self._verified_offset = 0
+                self._verified_last_hash = self.genesis_hash
+                self._verified_seen_ids = set()
+                self._verified_ino = None
+                self._verified_prefix_digest = ""
+                return False, self.genesis_hash, f"Failed to acquire file lock: {str(e)}"
 
         try:
             st = os.fstat(f_raw.fileno())
@@ -241,8 +254,9 @@ class TamperEvidentAuditTrail:
 
         if not needs_full_rescan:
             f_raw.seek(0)
-            prefix_data = f_raw.read(self._verified_offset)
-            prefix_bytes = prefix_data.encode("utf-8") if isinstance(prefix_data, str) else prefix_data
+            prefix_bytes = f_raw.read(self._verified_offset)
+            if not isinstance(prefix_bytes, bytes):
+                prefix_bytes = prefix_bytes.encode("utf-8")
             if len(prefix_bytes) != self._verified_offset:
                 needs_full_rescan = True
             else:
@@ -273,21 +287,18 @@ class TamperEvidentAuditTrail:
             line = f_raw.readline()
             if not line:
                 break
-            line_bytes = line.encode("utf-8") if isinstance(line, str) else line
+            line_bytes = line if isinstance(line, bytes) else line.encode("utf-8")
             hasher.update(line_bytes)
             line_idx += 1
 
-            if isinstance(line, bytes):
-                try:
-                    line_str = line.decode("utf-8").strip()
-                except UnicodeDecodeError:
-                    self._verified_offset = 0
-                    self._verified_last_hash = self.genesis_hash
-                    self._verified_seen_ids = set()
-                    self._verified_prefix_digest = ""
-                    return False, last_valid_hash, f"Malformed UTF-8 at line {line_idx}"
-            else:
-                line_str = line.strip()
+            try:
+                line_str = line_bytes.decode("utf-8").strip()
+            except UnicodeDecodeError:
+                self._verified_offset = 0
+                self._verified_last_hash = self.genesis_hash
+                self._verified_seen_ids = set()
+                self._verified_prefix_digest = ""
+                return False, last_valid_hash, f"Malformed UTF-8 at line {line_idx}"
 
             if not line_str:
                 continue
@@ -337,6 +348,35 @@ class TamperEvidentAuditTrail:
         new_offset = f_raw.tell()
         new_prefix_digest = hasher.hexdigest()
 
+        # Re-check file descriptor status before committing cached verification state
+        try:
+            st_post = os.fstat(f_raw.fileno())
+            if st_post.st_ino != st.st_ino or st_post.st_size < new_offset:
+                self._verified_offset = 0
+                self._verified_last_hash = self.genesis_hash
+                self._verified_seen_ids = set()
+                self._verified_prefix_digest = ""
+                return False, last_valid_hash, "File modified or truncated during inspection"
+
+            cur_pos = f_raw.tell()
+            f_raw.seek(0)
+            post_prefix_bytes = f_raw.read(self._verified_offset)
+            if not isinstance(post_prefix_bytes, bytes):
+                post_prefix_bytes = post_prefix_bytes.encode("utf-8")
+            f_raw.seek(cur_pos)
+            if hashlib.sha256(post_prefix_bytes).hexdigest() != self._verified_prefix_digest:
+                self._verified_offset = 0
+                self._verified_last_hash = self.genesis_hash
+                self._verified_seen_ids = set()
+                self._verified_prefix_digest = ""
+                return False, last_valid_hash, "Historical prefix modified during inspection"
+        except OSError:
+            self._verified_offset = 0
+            self._verified_last_hash = self.genesis_hash
+            self._verified_seen_ids = set()
+            self._verified_prefix_digest = ""
+            return False, last_valid_hash, "Failed to verify file state before committing"
+
         # Update cached state ONLY upon complete valid pass over the single file stream
         self._verified_offset = new_offset
         self._verified_last_hash = last_valid_hash
@@ -350,12 +390,13 @@ class TamperEvidentAuditTrail:
         """
         Retrieves entry_hash of final entry.
         """
-        if not force_reload and getattr(self, "last_hash", None) is not None:
-            return self.last_hash
+        with self._lock:
+            if not force_reload and getattr(self, "last_hash", None) is not None:
+                return self.last_hash
 
-        is_healthy, last_h, _ = self.inspect_log_health()
-        self.last_hash = last_h
-        return self.last_hash
+            is_healthy, last_h, _ = self._inspect_log_health_locked()
+            self.last_hash = last_h
+            return self.last_hash
 
     def _compute_hash(self, prev_hash: str, payload_data: Dict[str, Any]) -> str:
         """Computes SHA-256 or HMAC-SHA256 over the canonical JSON representation of the entry + prev_hash."""
@@ -399,45 +440,57 @@ class TamperEvidentAuditTrail:
         # Fallback if no latency provided
         final_latency = round(event.execution_latency_ms, 4) if event.execution_latency_ms is not None else 0.0
 
-        with open(self.log_path, "a+", encoding="utf-8") as f:
-            if HAS_FCNTL:
-                fcntl.flock(f, fcntl.LOCK_EX)
-
-            try:
-                is_healthy, last_hash, err = self.inspect_log_health(active_f=f)
-                if not is_healthy:
-                    raise RuntimeError(f"Cannot write to audit trail: Log corruption detected: {err}")
-
-                entry_data = {
-                    "event_id": event_id,
-                    "timestamp": timestamp,
-                    "event_type": event.event_type.value,
-                    "gate_name": _sanitize_sensitive_data(event.gate_name),
-                    "reason": _sanitize_sensitive_data(event.reason),
-                    "model_id": _sanitize_sensitive_data(event.model_id),
-                    "latency_ms": final_latency,
-                    "payload_hash": payload_hash,
-                    "payload_snippet": _sanitize_sensitive_data(event.payload_snippet[:200]),
-                    "metadata": _sanitize_sensitive_data(event_metadata),
-                    "prev_hash": last_hash
-                }
-
-                entry_hash = self._compute_hash(last_hash, entry_data)
-                entry_data["entry_hash"] = entry_hash
-                self.last_hash = entry_hash
-
-                f.write(json.dumps(entry_data) + "\n")
-                f.flush()
-                try:
-                    os.fsync(f.fileno())
-                except OSError:
-                    pass
-
-                return entry_data
-
-            finally:
+        with self._lock:
+            with open(self.log_path, "a+b") as f:
                 if HAS_FCNTL:
-                    fcntl.flock(f, fcntl.LOCK_UN)
+                    try:
+                        fcntl.flock(f, fcntl.LOCK_EX)
+                    except OSError as e:
+                        raise RuntimeError(
+                            f"Failed to acquire exclusive file lock: {str(e)}"
+                        ) from e
+
+                try:
+                    is_healthy, last_hash, err = self._inspect_log_health_locked(active_f=f)
+                    if not is_healthy:
+                        raise RuntimeError(
+                            f"Cannot write to audit trail: Log corruption detected: {err}"
+                        )
+
+                    entry_data = {
+                        "event_id": event_id,
+                        "timestamp": timestamp,
+                        "event_type": event.event_type.value,
+                        "gate_name": _sanitize_sensitive_data(event.gate_name),
+                        "reason": _sanitize_sensitive_data(event.reason),
+                        "model_id": _sanitize_sensitive_data(event.model_id),
+                        "latency_ms": final_latency,
+                        "payload_hash": payload_hash,
+                        "payload_snippet": _sanitize_sensitive_data(event.payload_snippet[:200]),
+                        "metadata": _sanitize_sensitive_data(event_metadata),
+                        "prev_hash": last_hash
+                    }
+
+                    entry_hash = self._compute_hash(last_hash, entry_data)
+                    entry_data["entry_hash"] = entry_hash
+                    self.last_hash = entry_hash
+
+                    entry_bytes = json.dumps(entry_data).encode("utf-8") + b"\n"
+                    f.write(entry_bytes)
+                    f.flush()
+                    try:
+                        os.fsync(f.fileno())
+                    except OSError:
+                        pass
+
+                    return entry_data
+
+                finally:
+                    if HAS_FCNTL:
+                        try:
+                            fcntl.flock(f, fcntl.LOCK_UN)
+                        except OSError:
+                            pass
 
     def verify_chain_integrity(self) -> Tuple[bool, int, Optional[str]]:
         """

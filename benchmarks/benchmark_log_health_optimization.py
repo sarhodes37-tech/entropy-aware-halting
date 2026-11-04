@@ -484,11 +484,14 @@ def run_benchmark() -> Dict[str, Any]:
     try:
         sp_base = BaselineProvenanceStore(log_path=pb_path)
         sp_opt = LocalProvenanceStore(log_path=po_path)
+        aud_base = BaselineAuditTrail(log_file_path=ab_path)
+        aud_opt = TamperEvidentAuditTrail(log_file_path=ao_path)
 
         for i in range(1000):
+            ev_id = str(uuid.uuid4())
             e = ProvenanceEvent(
                 schema_version="1.0.0",
-                event_id=str(uuid.uuid4()),
+                event_id=ev_id,
                 event_type="ACTION_PROPOSED",
                 provenance_source="AGENT_ADAPTER",
                 correlation_id=f"c_{i}",
@@ -501,13 +504,23 @@ def run_benchmark() -> Dict[str, Any]:
             sp_base.record_event(e)
             sp_opt.record_event(e)
 
+            a_ev = AuditEvent(
+                AuditLogLevel.INFO,
+                gate_name="BootstrapGate",
+                reason=f"step_{i}",
+                model_id="m1",
+                payload_snippet="s1",
+            )
+            aud_base.record_event(a_ev)
+            aud_opt.record_event(a_ev)
+
         # Baseline Orchestrator (Baseline Provenance + Baseline Audit)
         orch_full_base = EpistemicOrchestrator(
             audit_log_path=ab_path,
             execution_boundary=TrustedExecutionBoundary(provenance_store=sp_base),
             enforce_determinism=True,
         )
-        orch_full_base.audit_logger = BaselineAuditTrail(log_file_path=ab_path)
+        orch_full_base.audit_logger = aud_base
 
         # Fully Optimized Orchestrator (Optimized Provenance + Optimized Audit)
         orch_full_opt = EpistemicOrchestrator(
@@ -515,6 +528,7 @@ def run_benchmark() -> Dict[str, Any]:
             execution_boundary=TrustedExecutionBoundary(provenance_store=sp_opt),
             enforce_determinism=True,
         )
+        orch_full_opt.audit_logger = aud_opt
 
         for w_name, w in workloads.items():
             full_base_times = []
@@ -679,9 +693,14 @@ def generate_markdown_report(results: Dict[str, Any]):
         "",
         "## 4. In-Place Tampering Detection & Security Guarantees",
         (
-            "- **Same-Size In-Place Tampering:** Detected via raw-byte prefix SHA-256 digest "
-            "validation. Modifying any historical byte without changing file size or inode causes "
-            "prefix digest mismatch and triggers an immediate full scan that fails closed."
+            "- **Prefix Byte-Hashing Complexity:** Validating historical entries is O(N) in byte "
+            "length via C-level SHA-256 hashing without JSON parsing, and O(Δ) for newly appended "
+            "suffix parsing. Unchanged files require hashing prefix bytes and are not O(1)."
+        ),
+        (
+            "- **Deterministic Tampering Detection:** Detected via raw-byte prefix SHA-256 digest "
+            "validation and pre-commit descriptor verification. Modifying historical bytes causes "
+            "immediate fail-closed detection without committing unverified state."
         ),
         (
             "- **Fail-Closed Guarantee:** Any corrupt JSON, broken HMAC/SHA-256 chain links, "

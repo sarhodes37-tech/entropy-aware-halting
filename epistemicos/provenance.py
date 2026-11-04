@@ -199,7 +199,7 @@ class LocalProvenanceStore(ProvenanceStore):
             self.hmac_key: Optional[bytes] = bytes(hmac_key)
         else:
             self.hmac_key = None
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         if self.hmac_key is not None:
             self.genesis_hash = hmac.new(self.hmac_key, self.GENESIS_SEED, hashlib.sha256).hexdigest()
         else:
@@ -236,9 +236,14 @@ class LocalProvenanceStore(ProvenanceStore):
                 # Acquire file lock FIRST before inspecting health and reading tail hash to avoid multi-process race conditions
                 with open(self.log_path, "a+b") as f:
                     if HAS_FCNTL:
-                        fcntl.flock(f, fcntl.LOCK_EX)
+                        try:
+                            fcntl.flock(f, fcntl.LOCK_EX)
+                        except OSError as e:
+                            raise RuntimeError(
+                                f"Failed to acquire exclusive file lock: {str(e)}"
+                            ) from e
                     try:
-                        healthy, last_hash, seq, seen_ids = self._inspect_health(active_f=f)
+                        healthy, last_hash, seq, seen_ids = self._inspect_health_locked(active_f=f)
                         if not healthy:
                             raise RuntimeError("Provenance log corruption detected")
 
@@ -265,6 +270,12 @@ class LocalProvenanceStore(ProvenanceStore):
                 return {}
 
     def _inspect_health(self, active_f: Optional[Any] = None) -> Tuple[bool, str, int, Set[str]]:
+        with self._lock:
+            return self._inspect_health_locked(active_f=active_f)
+
+    def _inspect_health_locked(
+        self, active_f: Optional[Any] = None
+    ) -> Tuple[bool, str, int, Set[str]]:
         """
         Inspects provenance log health from genesis to tail.
         Employs accelerated full-prefix integrity checking with streaming SHA-256 validation.
@@ -311,12 +322,20 @@ class LocalProvenanceStore(ProvenanceStore):
         with f_raw:
             return self._inspect_health_on_descriptor(f_raw, should_lock=True)
 
-    def _inspect_health_on_descriptor(self, f_raw: Any, should_lock: bool = True) -> Tuple[bool, str, int, Set[str]]:
+    def _inspect_health_on_descriptor(
+        self, f_raw: Any, should_lock: bool = True
+    ) -> Tuple[bool, str, int, Set[str]]:
         if should_lock and HAS_FCNTL:
             try:
                 fcntl.flock(f_raw.fileno(), fcntl.LOCK_SH)
             except OSError:
-                pass
+                self._verified_offset = 0
+                self._verified_last_hash = self.genesis_hash
+                self._verified_count = 0
+                self._verified_seen_ids = set()
+                self._verified_ino = None
+                self._verified_prefix_digest = ""
+                return False, self.genesis_hash, 0, set()
 
         try:
             st = os.fstat(f_raw.fileno())
@@ -444,6 +463,36 @@ class LocalProvenanceStore(ProvenanceStore):
         new_offset = f_raw.tell()
         new_prefix_digest = hasher.hexdigest()
 
+        # Re-check file descriptor status before committing cached verification state
+        try:
+            st_post = os.fstat(f_raw.fileno())
+            if st_post.st_ino != st.st_ino or st_post.st_size < new_offset:
+                self._verified_offset = 0
+                self._verified_last_hash = self.genesis_hash
+                self._verified_count = 0
+                self._verified_seen_ids = set()
+                self._verified_prefix_digest = ""
+                return False, expected_prev, count, seen_ids
+
+            cur_pos = f_raw.tell()
+            f_raw.seek(0)
+            post_prefix_bytes = f_raw.read(self._verified_offset)
+            f_raw.seek(cur_pos)
+            if hashlib.sha256(post_prefix_bytes).hexdigest() != self._verified_prefix_digest:
+                self._verified_offset = 0
+                self._verified_last_hash = self.genesis_hash
+                self._verified_count = 0
+                self._verified_seen_ids = set()
+                self._verified_prefix_digest = ""
+                return False, expected_prev, count, seen_ids
+        except OSError:
+            self._verified_offset = 0
+            self._verified_last_hash = self.genesis_hash
+            self._verified_count = 0
+            self._verified_seen_ids = set()
+            self._verified_prefix_digest = ""
+            return False, expected_prev, count, seen_ids
+
         # Update cached state on successful validation over the single stream
         self._verified_offset = new_offset
         self._verified_last_hash = expected_prev
@@ -513,7 +562,7 @@ class TrustedExecutionBoundary:
         self.registry = self.authority.registry
         self._consumed_tokens: Set[str] = set()
         self._consumed_attempts: Set[str] = set()
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
 
     def compute_canonical_digest(self, payload: Any) -> str:
         if isinstance(payload, bytes):

@@ -17,6 +17,7 @@ Verifies:
 12. Intervening modification before cache state commitment fails closed and never becomes trusted.
 """
 
+import os
 import json
 import uuid
 import pytest
@@ -803,3 +804,81 @@ def test_audit_deterministic_intervening_race_fails_closed(tmp_path):
     h_subsequent, _, _ = trail.inspect_log_health()
     assert h_subsequent is False
     assert trail._verified_offset == 0
+
+
+def test_concurrent_same_instance_inspection_and_append(tmp_path):
+    """
+    Verifies that concurrent threads appending and inspecting the same instance
+    maintain strict consistency without deadlocks or corrupting cache state.
+    """
+    import threading
+    log_path = tmp_path / "concurrent_instance.jsonl"
+    trail = TamperEvidentAuditTrail(log_file_path=str(log_path))
+
+    errors = []
+
+    def appender(tid):
+        try:
+            for i in range(15):
+                ev = AuditEvent(
+                    AuditLogLevel.INFO,
+                    gate_name="TestGate",
+                    reason=f"thread_{tid}_step_{i}",
+                    model_id=f"m_{tid}",
+                    payload_snippet=f"snippet_{tid}_{i}"
+                )
+                trail.record_event(ev)
+        except Exception as e:
+            errors.append(e)
+
+    def inspector():
+        try:
+            for _ in range(20):
+                healthy, last_h, err = trail.inspect_log_health()
+                if not healthy:
+                    errors.append(RuntimeError(f"Inspection failed concurrently: {err}"))
+        except Exception as e:
+            errors.append(e)
+
+    threads = [
+        threading.Thread(target=appender, args=(1,)),
+        threading.Thread(target=appender, args=(2,)),
+        threading.Thread(target=inspector),
+        threading.Thread(target=inspector),
+    ]
+
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert len(errors) == 0, f"Concurrent errors observed: {errors}"
+    healthy, last_hash, err = trail.inspect_log_health()
+    assert healthy is True
+    assert err is None
+    assert trail._verified_offset == os.path.getsize(log_path)
+
+
+def test_file_lock_failure_fails_closed(tmp_path):
+    """
+    Verifies that if fcntl.flock fails with OSError, the stores fail closed
+    instead of proceeding without synchronization.
+    """
+    from unittest.mock import patch
+    log_path = tmp_path / "flock_fail.jsonl"
+    trail = TamperEvidentAuditTrail(log_file_path=str(log_path))
+
+    ev = AuditEvent(AuditLogLevel.INFO, "Gate", "step_0", "m0", "s0")
+    trail.record_event(ev)
+
+    with patch("fcntl.flock", side_effect=OSError("Lock table full")):
+        # Standalone inspection must fail closed
+        healthy, _, err = trail.inspect_log_health()
+        assert healthy is False
+        assert "Failed to acquire file lock" in str(err)
+        assert trail._verified_offset == 0
+
+        # Append must fail closed
+        with pytest.raises(RuntimeError) as exc_info:
+            trail.record_event(ev)
+        assert "Failed to acquire exclusive file lock" in str(exc_info.value)
