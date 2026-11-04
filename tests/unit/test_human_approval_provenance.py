@@ -825,6 +825,23 @@ def test_h_replay_and_field_mutation_protection(auth_setup):
     cap.approver_provenance = dict(orig_prov)
     cap.signature = authority.registry.sign_capability(cap)
 
+    # 3e-2. Malformed assertion_timestamp rejection tests (missing, string, bool, NaN, +inf, -inf)
+    import math
+    for bad_ts in [None, "12345.67", True, False, float("nan"), float("inf"), float("-inf")]:
+        cap.approver_provenance["assertion_timestamp"] = bad_ts
+        cap.signature = authority.registry.sign_capability(cap)
+        v_ok_ts, v_reason_ts, _ = authority.verify_capability(
+            token_id=cap.token_id, action_name="wipe_database", target="db_primary",
+            canonical_request_digest=digest, executor_id=exec_qual_id, principal_id=bob_assertion,
+            correlation_id=corr_id, request_id=req_id, task_id="TASK-H"
+        )
+        assert v_ok_ts is False
+        assert v_reason_ts == (
+            "CAPABILITY_VERIFICATION_FAILED_HUMAN_APPROVAL_PROVENANCE_INVALID_ASSERTION_TIMESTAMP"
+        )
+    cap.approver_provenance = dict(orig_prov)
+    cap.signature = authority.registry.sign_capability(cap)
+
     # 3f. Test valid persisted capability verification after serialization / reload
     cap_dict = cap.to_dict() if hasattr(cap, "to_dict") else cap.__dict__.copy()
     restored_cap = Capability(**cap_dict)

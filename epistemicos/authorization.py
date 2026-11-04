@@ -2788,8 +2788,17 @@ class AuthorizationAuthority:
             if approver_prov.get("issuer_id") != expected_issuer:
                 return False, f"CAPABILITY_VERIFICATION_FAILED_HUMAN_APPROVAL_PROVENANCE_ISSUER_MISMATCH: provenance issuer '{approver_prov.get('issuer_id')}' != assertion issuer '{expected_issuer}'", cap
 
-            if abs(float(approver_prov.get("assertion_timestamp") or 0.0) - expected_ts) > 1e-4:
-                return False, f"CAPABILITY_VERIFICATION_FAILED_HUMAN_APPROVAL_PROVENANCE_TIMESTAMP_MISMATCH: provenance ts '{approver_prov.get('assertion_timestamp')}' != assertion ts '{expected_ts}'", cap
+            ast_ts_val = approver_prov.get("assertion_timestamp")
+            if (
+                ast_ts_val is None
+                or isinstance(ast_ts_val, bool)
+                or not isinstance(ast_ts_val, (int, float))
+                or not math.isfinite(float(ast_ts_val))
+            ):
+                return False, "CAPABILITY_VERIFICATION_FAILED_HUMAN_APPROVAL_PROVENANCE_INVALID_ASSERTION_TIMESTAMP", cap
+
+            if abs(float(ast_ts_val) - expected_ts) > 1e-4:
+                return False, f"CAPABILITY_VERIFICATION_FAILED_HUMAN_APPROVAL_PROVENANCE_TIMESTAMP_MISMATCH: provenance ts '{ast_ts_val}' != assertion ts '{expected_ts}'", cap
 
             if approver_prov.get("approval_id") != human_app.approval_id:
                 return False, f"CAPABILITY_VERIFICATION_FAILED_HUMAN_APPROVAL_PROVENANCE_APPROVAL_ID_MISMATCH: provenance approval_id '{approver_prov.get('approval_id')}' != record '{human_app.approval_id}'", cap
