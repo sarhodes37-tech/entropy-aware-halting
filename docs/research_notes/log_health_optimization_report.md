@@ -9,34 +9,34 @@ By implementing **accelerated prefix integrity verification** with raw byte stre
 
 | Log Size (N) | Baseline Mean (ms) | Baseline p95 (ms) | Optimized Mean (ms) | Optimized p95 (ms) | Latency Reduction (%) | Speedup |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **10 entries** | 0.454 ms | 0.615 ms | 0.115 ms | 0.157 ms | **-74.7%** | **3.9x** |
-| **50 entries** | 1.987 ms | 2.176 ms | 0.319 ms | 0.409 ms | **-84.0%** | **6.2x** |
-| **100 entries** | 4.096 ms | 4.569 ms | 0.571 ms | 0.624 ms | **-86.0%** | **7.2x** |
-| **250 entries** | 9.657 ms | 10.296 ms | 1.516 ms | 1.782 ms | **-84.3%** | **6.4x** |
-| **500 entries** | 19.183 ms | 19.711 ms | 3.055 ms | 3.322 ms | **-84.1%** | **6.3x** |
-| **1000 entries** | 37.881 ms | 38.631 ms | 6.024 ms | 6.162 ms | **-84.1%** | **6.3x** |
-| **2500 entries** | 94.297 ms | 96.013 ms | 15.372 ms | 20.515 ms | **-83.7%** | **6.1x** |
+| **10 entries** | 0.446 ms | 0.555 ms | 0.080 ms | 0.145 ms | **-82.1%** | **5.6x** |
+| **50 entries** | 1.955 ms | 2.039 ms | 0.173 ms | 0.230 ms | **-91.2%** | **11.3x** |
+| **100 entries** | 3.798 ms | 3.927 ms | 0.296 ms | 0.364 ms | **-92.2%** | **12.8x** |
+| **250 entries** | 9.324 ms | 9.469 ms | 0.674 ms | 0.798 ms | **-92.8%** | **13.8x** |
+| **500 entries** | 19.412 ms | 20.728 ms | 1.306 ms | 1.365 ms | **-93.3%** | **14.9x** |
+| **1000 entries** | 37.586 ms | 37.870 ms | 2.549 ms | 2.660 ms | **-93.2%** | **14.7x** |
+| **2500 entries** | 95.992 ms | 101.600 ms | 6.370 ms | 6.656 ms | **-93.4%** | **15.1x** |
 
 ## 2. Audit Trail Health Inspection Latency Across Log Scales
 
 | Log Size (N) | Baseline Mean (ms) | Baseline p95 (ms) | Optimized Mean (ms) | Optimized p95 (ms) | Latency Reduction (%) | Speedup |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **10 entries** | 0.329 ms | 0.377 ms | 0.090 ms | 0.412 ms | **-72.5%** | **3.6x** |
-| **50 entries** | 1.455 ms | 1.594 ms | 0.278 ms | 1.633 ms | **-80.9%** | **5.2x** |
-| **100 entries** | 2.926 ms | 3.078 ms | 0.523 ms | 3.258 ms | **-82.1%** | **5.6x** |
-| **250 entries** | 7.001 ms | 7.163 ms | 1.170 ms | 7.714 ms | **-83.3%** | **6.0x** |
-| **500 entries** | 13.910 ms | 14.105 ms | 2.319 ms | 15.072 ms | **-83.3%** | **6.0x** |
-| **1000 entries** | 27.348 ms | 27.714 ms | 4.580 ms | 30.308 ms | **-83.2%** | **6.0x** |
-| **2500 entries** | 68.804 ms | 70.339 ms | 11.355 ms | 75.034 ms | **-83.5%** | **6.1x** |
+| **10 entries** | 0.338 ms | 0.384 ms | 0.094 ms | 0.370 ms | **-72.1%** | **3.6x** |
+| **50 entries** | 1.419 ms | 1.513 ms | 0.274 ms | 1.598 ms | **-80.7%** | **5.2x** |
+| **100 entries** | 2.760 ms | 2.921 ms | 0.495 ms | 3.033 ms | **-82.1%** | **5.6x** |
+| **250 entries** | 6.768 ms | 6.945 ms | 1.146 ms | 7.503 ms | **-83.1%** | **5.9x** |
+| **500 entries** | 13.493 ms | 14.069 ms | 2.246 ms | 14.888 ms | **-83.3%** | **6.0x** |
+| **1000 entries** | 27.001 ms | 27.474 ms | 4.486 ms | 30.135 ms | **-83.4%** | **6.0x** |
+| **2500 entries** | 68.570 ms | 69.641 ms | 11.239 ms | 75.271 ms | **-83.6%** | **6.1x** |
 
 ## 3. End-to-End Orchestrator Latency Attribution (Log Scale N = 1,000 entries)
 
 | Workload | Full Baseline Mean (ms) | Full Baseline p95 (ms) | Fully Optimized Mean (ms) | Fully Optimized p95 (ms) | Latency Reduction (%) | Speedup |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Benign** | 82.76 ms | 86.38 ms | 14.84 ms | 16.12 ms | **-82.1%** | **5.6x** |
-| **Adversarial** | 85.79 ms | 87.24 ms | 15.75 ms | 16.53 ms | **-81.7%** | **5.4x** |
-| **Malformed** | 3.31 ms | 3.65 ms | 1.66 ms | 2.17 ms | **-49.6%** | **2.0x** |
-| **High_volume** | 95.38 ms | 108.97 ms | 18.55 ms | 19.29 ms | **-80.5%** | **5.1x** |
+| **Benign** | 81.41 ms | 83.11 ms | 9.82 ms | 10.20 ms | **-87.9%** | **8.3x** |
+| **Adversarial** | 85.95 ms | 87.81 ms | 9.53 ms | 10.14 ms | **-88.9%** | **9.0x** |
+| **Malformed** | 3.07 ms | 3.35 ms | 1.53 ms | 1.86 ms | **-50.1%** | **2.0x** |
+| **High_volume** | 91.31 ms | 94.54 ms | 11.74 ms | 12.54 ms | **-87.2%** | **7.8x** |
 
 ## 4. In-Place Tampering Detection & Security Guarantees
 - **Same-Size In-Place Tampering:** Detected via raw-byte prefix SHA-256 digest validation. Modifying any historical byte without changing file size or inode causes prefix digest mismatch and triggers an immediate full scan that fails closed.

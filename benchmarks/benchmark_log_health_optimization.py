@@ -27,7 +27,7 @@ import math
 import tempfile
 import statistics
 from pathlib import Path
-from typing import Dict, Any, List, Tuple
+from typing import Dict, Any, List, Tuple, Optional
 
 REPO_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(REPO_ROOT))
@@ -53,13 +53,49 @@ REPORT_MD_PATH = REPO_ROOT / "docs" / "research_notes" / "log_health_optimizatio
 class BaselineProvenanceStore(LocalProvenanceStore):
     """Reference implementation unconditionally performing full linear scans from genesis."""
 
-    def _inspect_health(self) -> Tuple[bool, str, int, set]:
+    def _inspect_health(self, active_f: Optional[Any] = None) -> Tuple[bool, str, int, set]:
         if not self.log_path.exists() or self.log_path.stat().st_size == 0:
             return True, self.genesis_hash, 0, set()
 
         expected_prev = self.genesis_hash
         seen_ids = set()
         count = 0
+
+        if active_f is not None:
+            active_f.seek(0)
+            lines = active_f.readlines()
+            for line_bytes in lines:
+                if isinstance(line_bytes, bytes):
+                    line_str = line_bytes.decode("utf-8").strip()
+                else:
+                    line_str = line_bytes.strip()
+                if not line_str:
+                    continue
+                try:
+                    entry = json.loads(line_str)
+                except json.JSONDecodeError:
+                    return False, expected_prev, count, seen_ids
+
+                recorded_id = entry.get("event_id")
+                if recorded_id:
+                    if recorded_id in seen_ids:
+                        return False, expected_prev, count, seen_ids
+                    seen_ids.add(recorded_id)
+
+                recorded_prev = entry.get("prev_hash")
+                recorded_hash = entry.get("entry_hash")
+
+                if recorded_prev != expected_prev:
+                    return False, expected_prev, count, seen_ids
+
+                check_data = {k: v for k, v in entry.items() if k != "entry_hash"}
+                computed_hash = self._compute_chain_hash(recorded_prev, check_data)
+                if computed_hash != recorded_hash:
+                    return False, expected_prev, count, seen_ids
+
+                expected_prev = recorded_hash
+                count += 1
+            return True, expected_prev, count, seen_ids
 
         with open(self.log_path, "r", encoding="utf-8") as f:
             for line in f:
@@ -97,13 +133,47 @@ class BaselineProvenanceStore(LocalProvenanceStore):
 class BaselineAuditTrail(TamperEvidentAuditTrail):
     """Reference audit trail unconditionally performing full linear scans from genesis."""
 
-    def inspect_log_health(self) -> Tuple[bool, str, str]:
+    def inspect_log_health(self, active_f: Optional[Any] = None) -> Tuple[bool, str, str]:
         if not self.log_path.exists() or self.log_path.stat().st_size == 0:
             return True, self.genesis_hash, None
 
         expected_prev_hash = self.genesis_hash
         last_valid_hash = self.genesis_hash
         seen_event_ids = set()
+
+        if active_f is not None:
+            active_f.seek(0)
+            lines = active_f.readlines()
+            for line_idx, line in enumerate(lines, 1):
+                line_str = line.decode("utf-8").strip() if isinstance(line, bytes) else line.strip()
+                if not line_str:
+                    continue
+                try:
+                    entry = json.loads(line_str)
+                except json.JSONDecodeError:
+                    return False, last_valid_hash, f"Malformed JSON on line {line_idx}"
+
+                recorded_id = entry.get("event_id")
+                if recorded_id:
+                    if recorded_id in seen_event_ids:
+                        return False, last_valid_hash, f"Duplicate event_id: {recorded_id}"
+                    seen_event_ids.add(recorded_id)
+
+                recorded_prev = entry.get("prev_hash")
+                recorded_hash = entry.get("entry_hash")
+
+                if recorded_prev != expected_prev_hash:
+                    return False, last_valid_hash, f"Hash chain break at line {line_idx}"
+
+                check_data = {k: v for k, v in entry.items() if k != "entry_hash"}
+                computed_hash = self._compute_hash(recorded_prev, check_data)
+                if computed_hash != recorded_hash:
+                    return False, last_valid_hash, f"Digest mismatch at line {line_idx}"
+
+                expected_prev_hash = recorded_hash
+                last_valid_hash = recorded_hash
+
+            return True, last_valid_hash, None
 
         with open(self.log_path, "r", encoding="utf-8") as f:
             for line_idx, line in enumerate(f, 1):

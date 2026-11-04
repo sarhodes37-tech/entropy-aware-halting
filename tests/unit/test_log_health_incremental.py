@@ -577,3 +577,79 @@ def test_provenance_single_descriptor_stream_integrity(tmp_path: Path):
     # Inspect health must fail closed
     assert store._inspect_health()[0] is False
     assert store._verified_offset == 0
+
+
+def test_concurrent_intervening_historical_modification_fail_closed(tmp_path):
+    """
+    Simulates external modification to historical bytes while handle is open or between checks.
+    Confirms fail-closed detection triggers immediately on inspection, resetting offset to 0.
+    """
+    log_path = tmp_path / "provenance_concurrent.jsonl"
+    store = LocalProvenanceStore(log_path=str(log_path))
+
+    for i in range(10):
+        ev = ProvenanceEvent(
+            schema_version="1.0.0",
+            event_id=f"evt_{i}",
+            event_type="ACTION_PROPOSED",
+            provenance_source="AGENT_ADAPTER",
+            correlation_id="corr_test",
+            request_id=f"req_{i}",
+            action_name=f"action_{i}",
+            target="target_test",
+            canonical_request_digest="d",
+            timestamp="2026-01-01T00:00:00Z",
+        )
+        store.record_event(ev)
+
+    assert store._verified_offset > 0
+
+    # External attacker modifies an early event in-place (preserving file size)
+    with open(log_path, "r+b") as f:
+        content = f.read()
+        tampered = content.replace(b'"action_2"', b'"action_9"')
+        assert len(content) == len(tampered)
+        f.seek(0)
+        f.write(tampered)
+        f.flush()
+
+    # Next health inspection must detect the prefix mismatch on fstat and reset
+    healthy, last_h, cnt, seen = store._inspect_health()
+    assert healthy is False
+    assert store._verified_offset == 0
+
+
+def test_concurrent_intervening_historical_modification_audit_trail_fail_closed(tmp_path):
+    """
+    Simulates external modification to historical bytes in TamperEvidentAuditTrail.
+    Verifies that fail-closed detection triggers immediately upon next inspect_log_health,
+    resetting offset to 0 and failing closed.
+    """
+    log_path = tmp_path / "audit_concurrent.jsonl"
+    trail = TamperEvidentAuditTrail(log_file_path=str(log_path))
+
+    for i in range(10):
+        ev = AuditEvent(
+            AuditLogLevel.INFO,
+            "TestGate",
+            f"step_{i}",
+            "m1",
+            "s1"
+        )
+        trail.record_event(ev)
+
+    assert trail._verified_offset > 0
+
+    # Modify historical entry in place while preserving file size
+    with open(log_path, "r+b") as f:
+        content = f.read()
+        tampered = content.replace(b'"step_2"', b'"step_9"')
+        assert len(content) == len(tampered)
+        f.seek(0)
+        f.write(tampered)
+        f.flush()
+
+    healthy, last_h, err = trail.inspect_log_health()
+    assert healthy is False
+    assert trail._verified_offset == 0
+    assert err is not None

@@ -234,11 +234,11 @@ class LocalProvenanceStore(ProvenanceStore):
                     raise ValueError(f"Unsupported provenance_source: {event.provenance_source}")
 
                 # Acquire file lock FIRST before inspecting health and reading tail hash to avoid multi-process race conditions
-                with open(self.log_path, "a+", encoding="utf-8") as f:
+                with open(self.log_path, "a+b") as f:
                     if HAS_FCNTL:
                         fcntl.flock(f, fcntl.LOCK_EX)
                     try:
-                        healthy, last_hash, seq, seen_ids = self._inspect_health()
+                        healthy, last_hash, seq, seen_ids = self._inspect_health(active_f=f)
                         if not healthy:
                             raise RuntimeError("Provenance log corruption detected")
 
@@ -252,7 +252,7 @@ class LocalProvenanceStore(ProvenanceStore):
                         entry_hash = self._compute_chain_hash(last_hash, event_dict)
                         event_dict["entry_hash"] = entry_hash
 
-                        f.write(json.dumps(event_dict) + "\n")
+                        f.write(json.dumps(event_dict).encode("utf-8") + b"\n")
                         f.flush()
                         os.fsync(f.fileno())
                         return event_dict
@@ -264,29 +264,41 @@ class LocalProvenanceStore(ProvenanceStore):
                     raise RuntimeError(f"Provenance recording failed (fail-closed enforced): {str(e)}") from e
                 return {}
 
-    def _inspect_health(self) -> Tuple[bool, str, int, Set[str]]:
+    def _inspect_health(self, active_f: Optional[Any] = None) -> Tuple[bool, str, int, Set[str]]:
         """
         Inspects provenance log health from genesis to tail.
-        Employs incremental byte-offset verification under lock to eliminate redundant
-        linear scanning of historical records (O(N^2) cumulative append overhead).
+        Employs accelerated full-prefix integrity checking with streaming SHA-256 validation.
 
-        Threat Model & Tamper Detection Invariants:
-        1. In a local append-only JSONL log, historical entries are immutably preserved.
-        2. Rather than only trusting file size and inode, the verifier computes a raw byte
-           SHA-256 digest over the verified prefix bytes [0:_verified_offset].
-        3. Before checking newly appended suffix bytes, the verifier validates that the prefix
-           bytes still match _verified_prefix_digest. If ANY byte in the historical prefix was
-           modified, rewritten with same size, truncated, or replaced, the prefix digest mismatches.
-        4. On any prefix mismatch, inode change, or size shrinkage, verification immediately resets
-           to Genesis (offset 0) and performs a full scan from scratch, guaranteeing fail-closed detection.
-        5. Reading and hashing raw bytes in C (via hashlib.sha256) takes <2ms even for 1,000+ entries
-           (~450KB), avoiding expensive per-line JSON parsing, Python string allocations, and
-           per-entry HMAC/SHA-256 recalculations (~45ms).
-        6. On any verification failure (malformed JSON, broken hash link, duplicate ID), cached state
-           is wiped to prevent stale state retention.
+        Threat Model & Performance Characteristics:
+        1. Performance Complexity: Hashing prefix bytes in C is O(N) in byte length, but bypasses
+           expensive Python JSON decoding, string allocation, and per-record HMAC calculations.
+           Only newly appended suffix records undergo full JSON deserialization and chain-link
+           cryptographic evaluation.
+        2. Single-Descriptor Consistency: File validation, prefix hashing, suffix parsing, and
+           digest updating occur sequentially across a single open file descriptor under file lock,
+           guaranteeing that the exact prefix validated is the prefix establishing the new state.
+        3. Fail-Closed Invalidation: If file size shrinks, inode changes, prefix digest mismatches,
+           or any JSON/hash anomaly is encountered, cached state is wiped (_verified_offset = 0)
+           and a full re-scan from Genesis is performed.
+        4. Storage Assumption & Limitations: In POSIX filesystems without kernel WORM guarantees,
+           an uncoordinated external writer with raw write access could modify historical bytes
+           outside application locks; such tampering is immediately detected upon the next health check
+           because the streaming prefix SHA-256 digest will diverge, triggering a full fail-closed scan.
         """
+        if not self.log_path.exists():
+            self._verified_offset = 0
+            self._verified_last_hash = self.genesis_hash
+            self._verified_count = 0
+            self._verified_seen_ids = set()
+            self._verified_ino = None
+            self._verified_prefix_digest = ""
+            return True, self.genesis_hash, 0, set()
+
+        if active_f is not None:
+            return self._inspect_health_on_descriptor(active_f, should_lock=False)
+
         try:
-            st = self.log_path.stat()
+            f_raw = open(self.log_path, "rb")
         except (FileNotFoundError, OSError):
             self._verified_offset = 0
             self._verified_last_hash = self.genesis_hash
@@ -295,6 +307,27 @@ class LocalProvenanceStore(ProvenanceStore):
             self._verified_ino = None
             self._verified_prefix_digest = ""
             return True, self.genesis_hash, 0, set()
+
+        with f_raw:
+            return self._inspect_health_on_descriptor(f_raw, should_lock=True)
+
+    def _inspect_health_on_descriptor(self, f_raw: Any, should_lock: bool = True) -> Tuple[bool, str, int, Set[str]]:
+        if should_lock and HAS_FCNTL:
+            try:
+                fcntl.flock(f_raw.fileno(), fcntl.LOCK_SH)
+            except OSError:
+                pass
+
+        try:
+            st = os.fstat(f_raw.fileno())
+        except OSError:
+            self._verified_offset = 0
+            self._verified_last_hash = self.genesis_hash
+            self._verified_count = 0
+            self._verified_seen_ids = set()
+            self._verified_ino = None
+            self._verified_prefix_digest = ""
+            return False, self.genesis_hash, 0, set()
 
         if st.st_size == 0:
             self._verified_offset = 0
@@ -305,111 +338,111 @@ class LocalProvenanceStore(ProvenanceStore):
             self._verified_prefix_digest = hashlib.sha256(b"").hexdigest()
             return True, self.genesis_hash, 0, set()
 
-        # Execute inspection on a single file descriptor under synchronized access
-        with open(self.log_path, "rb") as f_raw:
-            needs_full_rescan = (
-                self._verified_ino != st.st_ino
-                or st.st_size < self._verified_offset
-                or self._verified_offset == 0
-            )
+        needs_full_rescan = (
+            self._verified_ino != st.st_ino
+            or st.st_size < self._verified_offset
+            or self._verified_offset == 0
+        )
 
-            hasher = hashlib.sha256()
+        hasher = hashlib.sha256()
 
-            if not needs_full_rescan:
-                prefix_bytes = f_raw.read(self._verified_offset)
-                if len(prefix_bytes) != self._verified_offset:
+        if not needs_full_rescan:
+            f_raw.seek(0)
+            prefix_bytes = f_raw.read(self._verified_offset)
+            if len(prefix_bytes) != self._verified_offset:
+                needs_full_rescan = True
+            else:
+                hasher.update(prefix_bytes)
+                if hasher.hexdigest() != self._verified_prefix_digest:
                     needs_full_rescan = True
-                else:
-                    hasher.update(prefix_bytes)
-                    if hasher.hexdigest() != self._verified_prefix_digest:
-                        needs_full_rescan = True
 
-            if needs_full_rescan:
-                f_raw.seek(0)
-                hasher = hashlib.sha256()
+        if needs_full_rescan:
+            f_raw.seek(0)
+            hasher = hashlib.sha256()
+            self._verified_offset = 0
+            self._verified_last_hash = self.genesis_hash
+            self._verified_count = 0
+            self._verified_seen_ids = set()
+            self._verified_ino = st.st_ino
+            self._verified_prefix_digest = hashlib.sha256(b"").hexdigest()
+
+        # If file size unchanged from verified byte offset, prefix digest verified
+        if st.st_size == self._verified_offset:
+            return True, self._verified_last_hash, self._verified_count, set(self._verified_seen_ids)
+
+        f_raw.seek(self._verified_offset)
+        expected_prev = self._verified_last_hash
+        seen_ids = set(self._verified_seen_ids)
+        count = self._verified_count
+
+        line_idx = 0
+        while True:
+            line_bytes = f_raw.readline()
+            if not line_bytes:
+                break
+            hasher.update(line_bytes)
+            line_idx += 1
+
+            try:
+                line_str = line_bytes.decode("utf-8").strip()
+            except UnicodeDecodeError:
                 self._verified_offset = 0
                 self._verified_last_hash = self.genesis_hash
                 self._verified_count = 0
                 self._verified_seen_ids = set()
-                self._verified_ino = st.st_ino
-                self._verified_prefix_digest = hashlib.sha256(b"").hexdigest()
+                self._verified_prefix_digest = ""
+                return False, expected_prev, count, seen_ids
 
-            # If file size unchanged from verified byte offset, prefix digest verified
-            if st.st_size == self._verified_offset:
-                return True, self._verified_last_hash, self._verified_count, set(self._verified_seen_ids)
+            if not line_str:
+                continue
 
-            expected_prev = self._verified_last_hash
-            seen_ids = set(self._verified_seen_ids)
-            count = self._verified_count
+            try:
+                entry = json.loads(line_str)
+            except json.JSONDecodeError:
+                self._verified_offset = 0
+                self._verified_last_hash = self.genesis_hash
+                self._verified_count = 0
+                self._verified_seen_ids = set()
+                self._verified_prefix_digest = ""
+                return False, expected_prev, count, seen_ids
 
-            line_idx = 0
-            while True:
-                line_bytes = f_raw.readline()
-                if not line_bytes:
-                    break
-                hasher.update(line_bytes)
-                line_idx += 1
-
-                try:
-                    line_str = line_bytes.decode("utf-8").strip()
-                except UnicodeDecodeError:
+            recorded_id = entry.get("event_id")
+            if recorded_id:
+                if recorded_id in seen_ids:
                     self._verified_offset = 0
                     self._verified_last_hash = self.genesis_hash
                     self._verified_count = 0
                     self._verified_seen_ids = set()
                     self._verified_prefix_digest = ""
                     return False, expected_prev, count, seen_ids
+                seen_ids.add(recorded_id)
 
-                if not line_str:
-                    continue
+            recorded_prev = entry.get("prev_hash")
+            recorded_hash = entry.get("entry_hash")
 
-                try:
-                    entry = json.loads(line_str)
-                except json.JSONDecodeError:
-                    self._verified_offset = 0
-                    self._verified_last_hash = self.genesis_hash
-                    self._verified_count = 0
-                    self._verified_seen_ids = set()
-                    self._verified_prefix_digest = ""
-                    return False, expected_prev, count, seen_ids
+            if recorded_prev != expected_prev:
+                self._verified_offset = 0
+                self._verified_last_hash = self.genesis_hash
+                self._verified_count = 0
+                self._verified_seen_ids = set()
+                self._verified_prefix_digest = ""
+                return False, expected_prev, count, seen_ids
 
-                recorded_id = entry.get("event_id")
-                if recorded_id:
-                    if recorded_id in seen_ids:
-                        self._verified_offset = 0
-                        self._verified_last_hash = self.genesis_hash
-                        self._verified_count = 0
-                        self._verified_seen_ids = set()
-                        self._verified_prefix_digest = ""
-                        return False, expected_prev, count, seen_ids
-                    seen_ids.add(recorded_id)
+            check_data = {k: v for k, v in entry.items() if k != "entry_hash"}
+            computed_hash = self._compute_chain_hash(recorded_prev, check_data)
+            if computed_hash != recorded_hash:
+                self._verified_offset = 0
+                self._verified_last_hash = self.genesis_hash
+                self._verified_count = 0
+                self._verified_seen_ids = set()
+                self._verified_prefix_digest = ""
+                return False, expected_prev, count, seen_ids
 
-                recorded_prev = entry.get("prev_hash")
-                recorded_hash = entry.get("entry_hash")
+            expected_prev = recorded_hash
+            count += 1
 
-                if recorded_prev != expected_prev:
-                    self._verified_offset = 0
-                    self._verified_last_hash = self.genesis_hash
-                    self._verified_count = 0
-                    self._verified_seen_ids = set()
-                    self._verified_prefix_digest = ""
-                    return False, expected_prev, count, seen_ids
-
-                check_data = {k: v for k, v in entry.items() if k != "entry_hash"}
-                computed_hash = self._compute_chain_hash(recorded_prev, check_data)
-                if computed_hash != recorded_hash:
-                    self._verified_offset = 0
-                    self._verified_last_hash = self.genesis_hash
-                    self._verified_count = 0
-                    self._verified_seen_ids = set()
-                    self._verified_prefix_digest = ""
-                    return False, expected_prev, count, seen_ids
-
-                expected_prev = recorded_hash
-                count += 1
-
-            new_offset = f_raw.tell()
-            new_prefix_digest = hasher.hexdigest()
+        new_offset = f_raw.tell()
+        new_prefix_digest = hasher.hexdigest()
 
         # Update cached state on successful validation over the single stream
         self._verified_offset = new_offset
