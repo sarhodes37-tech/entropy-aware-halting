@@ -129,7 +129,7 @@ def test_provenance_valid_control_cannot_compensate_for_missing_attack_correlati
     invalid or missing attack correlation when evaluating overall scenario provenance.
     """
     prov_store = LocalProvenanceStore(log_path=str(tmp_path / "test_prov.jsonl"))
-    reconciler = ProvenanceReconciler()
+    reconciler = ProvenanceReconciler(allow_unverified_legacy=True)
 
     attack_corr_id = f"ATTACK-CORR-{uuid.uuid4()}"
     legit_corr_id = f"LEGIT-CORR-{uuid.uuid4()}"

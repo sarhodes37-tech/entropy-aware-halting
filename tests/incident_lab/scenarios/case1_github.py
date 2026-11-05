@@ -56,6 +56,7 @@ class Case1GitHubCredentialExposureScenario(IncidentScenario):
             audit_log_path=str(self.audit_dir / "s1_audit.jsonl"),
             execution_boundary=TrustedExecutionBoundary(provenance_store=prov_store)
         )
+        self.reconciler = ProvenanceReconciler(authority=orchestrator.authority)
         orchestrator.gates[0] = PermissionGate(trusted_scope=scope)
         orchestrator.register_gate(ShowerCurtainGate())
 

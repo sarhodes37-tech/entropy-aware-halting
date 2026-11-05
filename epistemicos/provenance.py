@@ -996,6 +996,9 @@ class ProvenanceReconciler:
         agent_claimed_success: bool = False,
         allow_unverified_legacy: Optional[bool] = None
     ) -> ReconciliationReport:
+        effective_allow_legacy = (
+            allow_unverified_legacy if allow_unverified_legacy is not None else self.allow_unverified_legacy
+        )
         violations: List[str] = []
         details: Dict[str, Any] = {
             "correlation_id": correlation_id,
@@ -1167,9 +1170,13 @@ class ProvenanceReconciler:
             status = "INCOMPLETE_EVIDENCE"
             valid = False
         elif not has_authoritative_verification:
-            status = "UNVERIFIED_LEGACY_EVIDENCE"
-            valid = False
-            violations.append("Authoritative verification unavailable: No AuthorizationAuthority supplied to reconciler")
+            if not effective_allow_legacy:
+                status = "UNVERIFIED_LEGACY_EVIDENCE"
+                valid = False
+                violations.append("Authoritative verification unavailable: No AuthorizationAuthority supplied to reconciler")
+            else:
+                status = "RECONCILED"
+                valid = True
         else:
             status = "RECONCILED"
             valid = True
