@@ -99,6 +99,45 @@ def _sanitize_sensitive_data(obj: Any) -> Any:
     elif isinstance(obj, (set, frozenset)):
         sanitized_items = [_sanitize_sensitive_data(item) for item in obj]
         return sorted(sanitized_items, key=lambda x: json.dumps(x, sort_keys=True))
+    # Handle Mapping subclasses (not directly isinstance dict)
+    from collections.abc import Mapping
+    if isinstance(obj, Mapping):
+        sanitized_map = {}
+        for k, v in obj.items():
+            k_str = str(k).lower()
+            if _is_sensitive_key(k_str):
+                sanitized_map[k] = "[REDACTED]"
+            else:
+                sanitized_map[k] = _sanitize_sensitive_data(v)
+        return sanitized_map
+    # Handle dataclasses
+    import dataclasses
+    if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
+        try:
+            return _sanitize_sensitive_data(dataclasses.asdict(obj))
+        except Exception:
+            pass
+    # Handle objects exposing model_dump / to_dict
+    if hasattr(obj, "model_dump") and callable(getattr(obj, "model_dump")):
+        try:
+            return _sanitize_sensitive_data(obj.model_dump())
+        except Exception:
+            pass
+    if hasattr(obj, "to_dict") and callable(getattr(obj, "to_dict")):
+        try:
+            return _sanitize_sensitive_data(obj.to_dict())
+        except Exception:
+            pass
+    # Handle general inspectable user objects with __dict__ (exclude functions/classes)
+    if not callable(obj) and not isinstance(obj, type) and hasattr(obj, "__dict__") and isinstance(obj.__dict__, dict):
+        sanitized_inst = {}
+        for k, v in obj.__dict__.items():
+            k_str = str(k).lower()
+            if _is_sensitive_key(k_str):
+                sanitized_inst[k] = "[REDACTED]"
+            else:
+                sanitized_inst[k] = _sanitize_sensitive_data(v)
+        return sanitized_inst
     return obj
 
 
@@ -107,7 +146,6 @@ class AuditLogLevel(Enum):
     WARNING = "WARNING"
     HALT = "DETERMINISTIC_HALT"
     ROLLBACK = "ACTION_ROLLBACK"
-
 
 
 @dataclass

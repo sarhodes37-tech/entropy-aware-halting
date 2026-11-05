@@ -381,3 +381,64 @@ def test_gap_wid_01_caller_cannot_opt_out_of_sanitization():
     res = tool(context={"unmask": True, "raw_output": True, "skip_sanitization": True})
     assert res["status"] == "SUCCESS"
     assert res["result"]["password"] == "[REDACTED]"
+
+
+def test_gap_wid_01_custom_objects_dataclasses_and_mappings():
+    """Scenario 11: Non-primitive results (dataclasses, Mappings, custom objects) are sanitized."""
+    from dataclasses import dataclass
+    from collections.abc import Mapping
+
+    @dataclass
+    class ServiceCredentials:
+        service: str
+        api_key: str
+        token: str
+
+    class CustomHeaderMapping(Mapping):
+        def __init__(self, data):
+            self._data = data
+
+        def __getitem__(self, k):
+            return self._data[k]
+
+        def __iter__(self):
+            return iter(self._data)
+
+        def __len__(self):
+            return len(self._data)
+
+    class CustomResultObject:
+        def __init__(self):
+            self.status = "SUCCESS"
+            self.password = "secret_password"
+            self.client_id = "CID-001"
+
+    def complex_tool():
+        return {
+            "service_data": ServiceCredentials(
+                "auth_svc", "sk-ant-api03-12345678901234567890", "opaque_tok"
+            ),
+            "headers_map": CustomHeaderMapping(
+                {"Authorization": "Bearer token123", "X-Custom": "val"}
+            ),
+            "custom_inst": CustomResultObject()
+        }
+
+    reg = TrustedToolRegistry()
+    reg.authority.default_policy = _make_open_policy()
+    tool = reg.register_tool(
+        tool_id="complex_tool",
+        action_name="get_complex",
+        executor_func=complex_tool,
+        default_target="/complex"
+    )
+
+    res = tool()
+    assert res["status"] == "SUCCESS"
+    r = res["result"]
+    assert r["service_data"]["api_key"] == "[REDACTED]"
+    assert r["service_data"]["token"] == "[REDACTED]"
+    assert r["headers_map"]["Authorization"] == "[REDACTED]"
+    assert r["headers_map"]["X-Custom"] == "val"
+    assert r["custom_inst"]["password"] == "[REDACTED]"
+    assert r["custom_inst"]["client_id"] == "CID-001"
