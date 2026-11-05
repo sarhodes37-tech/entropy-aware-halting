@@ -77,29 +77,167 @@ def _is_sensitive_key(k_str: str) -> bool:
     return False
 
 
-def _sanitize_sensitive_data(obj: Any) -> Any:
-    """Recursively redacts sensitive keys, credentials, and PII from logs and receipts."""
+def _sanitize_sensitive_data(obj: Any, _visited: Optional[Set[int]] = None) -> Any:
+    """
+    Recursively redacts sensitive keys, credentials, and PII from logs and receipts.
+    Safe against cyclic references, inspects slot-based and dictionary-based instances,
+    and handles custom mappings and dataclasses deterministically without invoking
+    untrusted serialization hooks or deepcopy methods.
+    """
+    if _visited is None:
+        _visited = set()
+
     if isinstance(obj, str):
         return _sanitize_string_value(obj)
-    elif isinstance(obj, dict):
-        sanitized = {}
-        for k, v in obj.items():
-            k_str = str(k).lower()
-            if _is_sensitive_key(k_str):
-                sanitized[k] = "[REDACTED]"
-            else:
-                sanitized[k] = _sanitize_sensitive_data(v)
-        return sanitized
-    elif isinstance(obj, list):
-        return [_sanitize_sensitive_data(item) for item in obj]
     elif isinstance(obj, (int, float, bool, type(None))):
         return obj
+
+    from enum import Enum
+    if isinstance(obj, Enum):
+        return _sanitize_sensitive_data(obj.value, _visited)
+
+    obj_id = id(obj)
+    if obj_id in _visited:
+        return "[CIRCULAR_REFERENCE]"
+
+    def _sanitize_key(k: Any) -> Any:
+        if not isinstance(k, (str, int, float, bool)):
+            return "[UNSUPPORTED_KEY]"
+        if isinstance(k, (int, float, bool)):
+            return str(k)
+        if isinstance(k, str):
+            return _sanitize_string_value(k)
+        return str(k)
+
+    if isinstance(obj, dict):
+        _visited.add(obj_id)
+        try:
+            sanitized = {}
+            for k, v in obj.items():
+                san_k = _sanitize_key(k)
+                if not isinstance(k, (str, int, float, bool)):
+                    k_str = ""
+                else:
+                    k_str = str(k).lower()
+                if k_str and _is_sensitive_key(k_str):
+                    sanitized[san_k] = "[REDACTED]"
+                else:
+                    sanitized[san_k] = _sanitize_sensitive_data(v, _visited)
+            return sanitized
+        finally:
+            _visited.remove(obj_id)
+    elif isinstance(obj, list):
+        _visited.add(obj_id)
+        try:
+            return [_sanitize_sensitive_data(item, _visited) for item in obj]
+        finally:
+            _visited.remove(obj_id)
     elif isinstance(obj, tuple):
-        return tuple(_sanitize_sensitive_data(item) for item in obj)
+        _visited.add(obj_id)
+        try:
+            return tuple(_sanitize_sensitive_data(item, _visited) for item in obj)
+        finally:
+            _visited.remove(obj_id)
     elif isinstance(obj, (set, frozenset)):
-        sanitized_items = [_sanitize_sensitive_data(item) for item in obj]
-        return sorted(sanitized_items, key=lambda x: json.dumps(x, sort_keys=True))
-    return obj
+        _visited.add(obj_id)
+        try:
+            # For set serialization, unsupported un-serializable callables (e.g. lambdas)
+            # must raise TypeError explicitly per audit determinism invariants
+            sanitized_items = []
+            for item in obj:
+                if callable(item):
+                    raise TypeError(f"Object of type {type(item).__name__} is not JSON serializable")
+                sanitized_items.append(_sanitize_sensitive_data(item, _visited))
+            return sorted(sanitized_items, key=lambda x: json.dumps(x, sort_keys=True))
+        finally:
+            _visited.remove(obj_id)
+
+    # Handle mock objects safely (do not dynamically create infinite attribute chains)
+    if getattr(obj.__class__, "__module__", "").startswith("unittest.mock"):
+        return str(obj)
+
+    # Handle Mapping subclasses (not directly isinstance dict)
+    from collections.abc import Mapping
+    if isinstance(obj, Mapping):
+        _visited.add(obj_id)
+        try:
+            sanitized_map = {}
+            for k, v in obj.items():
+                san_k = _sanitize_key(k)
+                if not isinstance(k, (str, int, float, bool)):
+                    k_str = ""
+                else:
+                    k_str = str(k).lower()
+                if k_str and _is_sensitive_key(k_str):
+                    sanitized_map[san_k] = "[REDACTED]"
+                else:
+                    sanitized_map[san_k] = _sanitize_sensitive_data(v, _visited)
+            return sanitized_map
+        finally:
+            _visited.remove(obj_id)
+
+    # Handle dataclasses directly by inspecting fields without invoking asdict() or __deepcopy__
+    import dataclasses
+    if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
+        _visited.add(obj_id)
+        try:
+            sanitized_dc = {}
+            for field in dataclasses.fields(obj):
+                f_name = field.name
+                f_val = getattr(obj, f_name)
+                k_str = str(f_name).lower()
+                if _is_sensitive_key(k_str):
+                    sanitized_dc[f_name] = "[REDACTED]"
+                else:
+                    sanitized_dc[f_name] = _sanitize_sensitive_data(f_val, _visited)
+            return sanitized_dc
+        finally:
+            _visited.remove(obj_id)
+
+
+    # Handle general inspectable user objects with __dict__ (exclude functions/classes)
+    if not callable(obj) and not isinstance(obj, type) and hasattr(obj, "__dict__") and isinstance(obj.__dict__, dict):
+        _visited.add(obj_id)
+        try:
+            sanitized_inst = {}
+            for k, v in obj.__dict__.items():
+                k_str = str(k).lower()
+                if _is_sensitive_key(k_str):
+                    sanitized_inst[k] = "[REDACTED]"
+                else:
+                    sanitized_inst[k] = _sanitize_sensitive_data(v, _visited)
+            return sanitized_inst
+        finally:
+            _visited.remove(obj_id)
+
+    # Handle slot-based objects (__slots__) across MRO
+    if not callable(obj) and not isinstance(obj, type) and hasattr(obj, "__slots__"):
+        _visited.add(obj_id)
+        try:
+            all_slots = set()
+            for cls_in_mro in obj.__class__.__mro__:
+                s = getattr(cls_in_mro, "__slots__", None)
+                if s:
+                    if isinstance(s, str):
+                        all_slots.add(s)
+                    else:
+                        all_slots.update(s)
+            sanitized_slots = {}
+            for slot_name in all_slots:
+                if hasattr(obj, slot_name):
+                    val = getattr(obj, slot_name)
+                    k_str = str(slot_name).lower()
+                    if _is_sensitive_key(k_str):
+                        sanitized_slots[slot_name] = "[REDACTED]"
+                    else:
+                        sanitized_slots[slot_name] = _sanitize_sensitive_data(val, _visited)
+            return sanitized_slots
+        finally:
+            _visited.remove(obj_id)
+
+    # Explicit deterministic fail-closed behavior for unsupported uninspectable objects:
+    # Do not silently pass raw uninspected objects through across trust boundaries.
+    return "[UNSUPPORTED_OBJECT]"
 
 
 class AuditLogLevel(Enum):
@@ -107,7 +245,6 @@ class AuditLogLevel(Enum):
     WARNING = "WARNING"
     HALT = "DETERMINISTIC_HALT"
     ROLLBACK = "ACTION_ROLLBACK"
-
 
 
 @dataclass
