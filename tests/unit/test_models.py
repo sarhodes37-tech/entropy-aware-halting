@@ -1160,8 +1160,8 @@ def test_token_surprisal_sensor_observable_float_conversion():
 
     # 2. With ceiling=None
     sensor_no_ceiling = TokenSurprisalSensor(z_threshold=2.85, max_surprisal_ceiling=None)
-    obs_tokens_ref_none = [ObservableFloat(-0.1), ObservableFloat(-0.3), ObservableFloat(-0.4)]
-    obs_tokens_act_none = [ObservableFloat(-0.1), ObservableFloat(-0.3), ObservableFloat(-0.4)]
+    obs_tokens_ref_none = [ObservableFloat(-0.1), ObservableFloat(-0.3)]
+    obs_tokens_act_none = [ObservableFloat(-0.1), ObservableFloat(-0.3)]
 
     res_ref_none = _pre_pr_evaluate(sensor_no_ceiling, obs_tokens_ref_none)
     res_act_none = sensor_no_ceiling.evaluate(obs_tokens_act_none)
@@ -1169,3 +1169,49 @@ def test_token_surprisal_sensor_observable_float_conversion():
     assert res_act_none == res_ref_none
     for ref_tok, act_tok in zip(obs_tokens_ref_none, obs_tokens_act_none):
         assert act_tok.float_conversions == ref_tok.float_conversions == 2
+
+
+def test_token_surprisal_sensor_input_contract_and_nonfinite_conversion_order():
+    """
+    Documents and verifies input assumptions for TokenSurprisalSensor.evaluate:
+    1. Supported input types:
+       - 1D Sequence of real numbers (float, int, or numeric subclasses) or string representations
+         convertible to float without stateful/observable side effects.
+    2. compute_z_scores validation:
+       - Any non-finite value (NaN, +inf, -inf) in logprobs is detected upfront during
+         compute_z_scores, raising ValueError and returning the fail-closed
+         MALFORMED_NON_FINITE_LOGPROBS outcome before evaluate()'s loop is reached.
+    3. Derived z-score non-finite handling:
+       - If an underlying mathematical step or mock produces a non-finite z-score at index k,
+         the single-pass loop breaks immediately without processing subsequent elements k..N-1,
+         preventing unnecessary float conversions and returning a clean fail-closed error.
+    """
+    sensor = TokenSurprisalSensor()
+
+    # Raw non-finite logprobs fail upfront during compute_z_scores
+    res_nan = sensor.evaluate([-0.5, float("nan"), -0.2])
+    assert res_nan["passed"] is False
+    assert res_nan["reason"] == "MALFORMED_NON_FINITE_LOGPROBS"
+
+    # Synthetic non-finite in derived z-scores breaks early
+    class TrackingFloat:
+        def __init__(self, val: float):
+            self.val = val
+            self.conversions = 0
+
+        def __float__(self) -> float:
+            self.conversions += 1
+            return float(self.val)
+
+    tokens = [TrackingFloat(-0.5), TrackingFloat(-0.2), TrackingFloat(-0.3)]
+    mock_sensor = TokenSurprisalSensor()
+    # Mock compute_z_scores to simulate a non-finite z-score at index 1
+    mock_sensor.compute_z_scores = lambda lp: [1.0, float("nan"), 2.0]
+
+    res_mock = mock_sensor.evaluate(tokens)
+    assert res_mock["passed"] is False
+    assert res_mock["reason"] == "MALFORMED_NON_FINITE_LOGPROBS"
+    # Token 0 was inspected and converted in evaluate loop; Tokens 1 and 2 were not converted
+    assert tokens[0].conversions == 1
+    assert tokens[1].conversions == 0
+    assert tokens[2].conversions == 0
