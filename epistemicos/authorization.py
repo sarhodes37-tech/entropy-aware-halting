@@ -2262,16 +2262,57 @@ class AuthorizationAuthority:
         env_mode = os.getenv("EPISTEMICOS_ENV", os.getenv("ENVIRONMENT", "development")).strip().lower()
         self.is_production = env_mode in ("production", "prod")
 
-        env_approval_sec = os.getenv("EPISTEMICOS_APPROVAL_SECRET")
-        env_contract_sec = os.getenv("EPISTEMICOS_CONTRACT_SECRET")
+        # Fail-closed resolution and strict validation for approval signing secret
+        if approval_signing_secret is None:
+            env_approval_sec = os.getenv("EPISTEMICOS_APPROVAL_SECRET")
+            if env_approval_sec is not None:
+                approval_signing_secret = env_approval_sec.encode("utf-8")
+
+        if approval_signing_secret is not None:
+            if not isinstance(approval_signing_secret, (bytes, bytearray)):
+                sec_type = type(approval_signing_secret).__name__
+                raise TypeError(
+                    f"approval_signing_secret must be bytes or bytearray, got {sec_type}"
+                )
+            if len(approval_signing_secret) == 0:
+                raise ValueError("approval_signing_secret cannot be empty")
+            self.approval_signing_secret = bytes(approval_signing_secret)
+        elif self.is_production:
+            raise ValueError(
+                "Production configuration error: EPISTEMICOS_APPROVAL_SECRET must be explicitly set in production mode"
+            )
+        else:
+            entropy_tag = f"EPISTEMICOS_APPROVAL_KEY_{uuid.uuid4()}".encode("utf-8")
+            self.approval_signing_secret = hashlib.sha256(entropy_tag).digest()
+
+        # Fail-closed resolution and strict validation for contract signing secret
+        if contract_signing_secret is None:
+            env_contract_sec = os.getenv("EPISTEMICOS_CONTRACT_SECRET")
+            if env_contract_sec is not None:
+                contract_signing_secret = env_contract_sec.encode("utf-8")
+
+        if contract_signing_secret is not None:
+            if not isinstance(contract_signing_secret, (bytes, bytearray)):
+                sec_type = type(contract_signing_secret).__name__
+                raise TypeError(
+                    f"contract_signing_secret must be bytes or bytearray, got {sec_type}"
+                )
+            if len(contract_signing_secret) == 0:
+                raise ValueError("contract_signing_secret cannot be empty")
+            self.contract_signing_secret = bytes(contract_signing_secret)
+        elif self.is_production:
+            raise ValueError(
+                "Production configuration error: EPISTEMICOS_CONTRACT_SECRET must be explicitly set in production mode"
+            )
+        else:
+            entropy_tag = f"EPISTEMICOS_CONTRACT_KEY_{uuid.uuid4()}".encode("utf-8")
+            self.contract_signing_secret = hashlib.sha256(entropy_tag).digest()
 
         if self.is_production:
-            if not env_approval_sec and not approval_signing_secret:
-                raise ValueError("Production configuration error: EPISTEMICOS_APPROVAL_SECRET must be explicitly set in production mode")
-            if not env_contract_sec and not contract_signing_secret:
-                raise ValueError("Production configuration error: EPISTEMICOS_CONTRACT_SECRET must be explicitly set in production mode")
             if require_task_contract is False:
-                raise ValueError("Production configuration error: task contract enforcement (require_task_contract) cannot be disabled in production mode")
+                raise ValueError(
+                    "Production configuration error: task contract enforcement (require_task_contract) cannot be disabled in production mode"
+                )
             self.require_task_contract = True
         else:
             if require_task_contract is not None:
@@ -2279,20 +2320,6 @@ class AuthorizationAuthority:
             else:
                 env_req = os.getenv("EPISTEMICOS_REQUIRE_TASK_CONTRACT", "").strip().lower()
                 self.require_task_contract = env_req in ("1", "true", "yes", "on")
-
-        if approval_signing_secret:
-            self.approval_signing_secret = approval_signing_secret
-        elif env_approval_sec:
-            self.approval_signing_secret = env_approval_sec.encode("utf-8")
-        else:
-            self.approval_signing_secret = hashlib.sha256(f"EPISTEMICOS_APPROVAL_KEY_{uuid.uuid4()}".encode("utf-8")).digest()
-
-        if contract_signing_secret:
-            self.contract_signing_secret = contract_signing_secret
-        elif env_contract_sec:
-            self.contract_signing_secret = env_contract_sec.encode("utf-8")
-        else:
-            self.contract_signing_secret = hashlib.sha256(f"EPISTEMICOS_CONTRACT_KEY_{uuid.uuid4()}".encode("utf-8")).digest()
 
         if isinstance(executor_registry, ExecutorRegistry):
             self.executor_registry = executor_registry

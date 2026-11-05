@@ -1444,3 +1444,87 @@ class TestAuthorizationConcurrencyAndDeterminism:
         assert isinstance(reg_rand1.signing_secret, bytes) and len(reg_rand1.signing_secret) == 32
         assert isinstance(reg_rand2.signing_secret, bytes) and len(reg_rand2.signing_secret) == 32
         assert reg_rand1.signing_secret != reg_rand2.signing_secret
+
+    def test_authority_signing_secret_validation_and_falsy_key_rejection(self, monkeypatch):
+        """
+        Validates fail-closed handling and strict typing for approval_signing_secret
+        and contract_signing_secret in AuthorizationAuthority.
+        """
+        monkeypatch.delenv("EPISTEMICOS_APPROVAL_SECRET", raising=False)
+        monkeypatch.delenv("EPISTEMICOS_CONTRACT_SECRET", raising=False)
+        monkeypatch.delenv("EPISTEMICOS_ENV", raising=False)
+        monkeypatch.delenv("ENVIRONMENT", raising=False)
+
+        # 1. Non-bytes types raise TypeError
+        for invalid_secret in [12345, "string_key", {"key": "val"}, [1, 2, 3], True]:
+            with pytest.raises(
+                TypeError, match="approval_signing_secret must be bytes or bytearray"
+            ):
+                AuthorizationAuthority(approval_signing_secret=invalid_secret)
+
+            with pytest.raises(
+                TypeError, match="contract_signing_secret must be bytes or bytearray"
+            ):
+                AuthorizationAuthority(contract_signing_secret=invalid_secret)
+
+        # 2. Empty bytes or bytearray raise ValueError
+        for empty_sec in [b"", bytearray(b"")]:
+            with pytest.raises(ValueError, match="approval_signing_secret cannot be empty"):
+                AuthorizationAuthority(approval_signing_secret=empty_sec)
+
+            with pytest.raises(ValueError, match="contract_signing_secret cannot be empty"):
+                AuthorizationAuthority(contract_signing_secret=empty_sec)
+
+        # 3. Valid bytearray converts to immutable bytes
+        app_ba = bytearray(b"approval_test_secret_key_32_bytes")
+        con_ba = bytearray(b"contract_test_secret_key_32_bytes")
+        auth_ba = AuthorizationAuthority(
+            approval_signing_secret=app_ba, contract_signing_secret=con_ba
+        )
+        assert auth_ba.approval_signing_secret == b"approval_test_secret_key_32_bytes"
+        assert auth_ba.contract_signing_secret == b"contract_test_secret_key_32_bytes"
+        app_ba[0] = ord(b"Z")
+        con_ba[0] = ord(b"W")
+        assert auth_ba.approval_signing_secret == b"approval_test_secret_key_32_bytes"
+        assert auth_ba.contract_signing_secret == b"contract_test_secret_key_32_bytes"
+
+        # 4. Explicit empty string env var -> raises ValueError
+        monkeypatch.setenv("EPISTEMICOS_APPROVAL_SECRET", "")
+        with pytest.raises(ValueError, match="approval_signing_secret cannot be empty"):
+            AuthorizationAuthority()
+
+        monkeypatch.delenv("EPISTEMICOS_APPROVAL_SECRET", raising=False)
+        monkeypatch.setenv("EPISTEMICOS_CONTRACT_SECRET", "")
+        with pytest.raises(ValueError, match="contract_signing_secret cannot be empty"):
+            AuthorizationAuthority()
+
+        # 5. Valid env var -> loads correctly
+        monkeypatch.setenv("EPISTEMICOS_APPROVAL_SECRET", "env_approval_secret_value")
+        monkeypatch.setenv("EPISTEMICOS_CONTRACT_SECRET", "env_contract_secret_value")
+        auth_env = AuthorizationAuthority()
+        assert auth_env.approval_signing_secret == b"env_approval_secret_value"
+        assert auth_env.contract_signing_secret == b"env_contract_secret_value"
+
+        # 6. Explicit constructor arg takes precedence over env var
+        auth_override = AuthorizationAuthority(
+            approval_signing_secret=b"override_approval",
+            contract_signing_secret=b"override_contract",
+        )
+        assert auth_override.approval_signing_secret == b"override_approval"
+        assert auth_override.contract_signing_secret == b"override_contract"
+
+        # 7. Default ephemeral generation when unset
+        monkeypatch.delenv("EPISTEMICOS_APPROVAL_SECRET", raising=False)
+        monkeypatch.delenv("EPISTEMICOS_CONTRACT_SECRET", raising=False)
+        auth_rand1 = AuthorizationAuthority()
+        auth_rand2 = AuthorizationAuthority()
+        assert (
+            isinstance(auth_rand1.approval_signing_secret, bytes)
+            and len(auth_rand1.approval_signing_secret) == 32
+        )
+        assert (
+            isinstance(auth_rand1.contract_signing_secret, bytes)
+            and len(auth_rand1.contract_signing_secret) == 32
+        )
+        assert auth_rand1.approval_signing_secret != auth_rand2.approval_signing_secret
+        assert auth_rand1.contract_signing_secret != auth_rand2.contract_signing_secret
