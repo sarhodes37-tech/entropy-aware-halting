@@ -617,6 +617,23 @@ def test_keyboard_navigation_and_focus_management_workflows(a11y_comprehensive_s
         page.wait_for_selector("#provenance-inspector-content:not(.hidden)")
         assert page.locator("#provenance-inspector-content").is_visible()
 
+        # 5b. Provenance to Trace "View Related Trace" Shortcut & Focus Restoration
+        trace_shortcut_btn = page.locator(
+            "#provenance-inspector-content button:has-text('View Related Trace')"
+        ).first
+        if trace_shortcut_btn.is_visible():
+            trace_shortcut_btn.focus()
+            page.keyboard.press("Enter")
+            page.wait_for_function(
+                "() => document.getElementById('a11y-status-announcer')"
+                ".textContent.includes('Selected execution trace')"
+            )
+            assert page.evaluate("() => window.ObservatoryApp.state.currentTab") == "traces"
+            focused_classes_prov = page.evaluate(
+                "() => document.activeElement ? Array.from(document.activeElement.classList) : []"
+            )
+            assert "trace-item" in focused_classes_prov and "active" in focused_classes_prov
+
         # 6. Keyboard Navigation in Benchmark Cases Listbox
         page.click("#tab-benchmarks")
         page.wait_for_selector("#benchmark-case-list .trace-item")

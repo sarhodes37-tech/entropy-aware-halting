@@ -1176,10 +1176,14 @@ document.addEventListener('DOMContentLoaded', () => {
         tr.setAttribute('role', 'button');
         tr.setAttribute('aria-label', `Inspect execution trace ${trace.correlation_id || 'UNKNOWN'}`);
 
-        const handleActivate = () => {
+        const handleActivate = async () => {
           this.state.selectedTraceId = trace.correlation_id;
           this.switchTab('traces');
-          this.selectTrace(trace.correlation_id);
+          await this.selectTrace(trace.correlation_id);
+          const activeItem = document.querySelector('#trace-list .trace-item.active');
+          if (activeItem) {
+            activeItem.focus();
+          }
         };
 
         tr.addEventListener('click', handleActivate);
@@ -2524,10 +2528,14 @@ document.addEventListener('DOMContentLoaded', () => {
         traceBtn.setAttribute('aria-label', `Navigate to related execution trace ${corrId}`);
         traceBtn.setAttribute('title', `Navigate to related execution trace ${corrId}`);
         traceBtn.innerHTML = `<span>View Related Trace</span> <span class="arrow" aria-hidden="true">➔</span>`;
-        traceBtn.addEventListener('click', () => {
+        traceBtn.addEventListener('click', async () => {
           this.state.selectedTraceId = corrId;
           this.switchTab('traces');
-          this.selectTrace(corrId);
+          await this.selectTrace(corrId);
+          const activeItem = document.querySelector('#trace-list .trace-item.active');
+          if (activeItem) {
+            activeItem.focus();
+          }
         });
         actionBtnGroup.appendChild(traceBtn);
       }
