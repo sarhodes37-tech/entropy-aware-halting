@@ -8,6 +8,7 @@ import json
 import math
 import os
 import sys
+from typing import List, Dict, Any, Tuple
 from datetime import datetime, timezone
 import pytest
 from epistemicos.models import (
@@ -963,3 +964,164 @@ def test_surprisal_sensor_differential_equivalence_exhaustive():
         assert err_opt is not None
         assert err_ref is not None
         assert err_opt == err_ref
+
+
+# =========================================================================
+# TOKEN SURPRISAL SENSOR EVALUATE DIFFERENTIAL EQUIVALENCE TESTS
+# =========================================================================
+
+def _pre_pr_evaluate(sensor: TokenSurprisalSensor, logprobs: List[float]) -> Dict[str, Any]:
+    """Reference implementation of pre-PR multi-pass evaluate() for differential testing."""
+    try:
+        z_scores = sensor.compute_z_scores(logprobs)
+    except ValueError as e:
+        return {
+            "passed": False,
+            "reason": "MALFORMED_NON_FINITE_LOGPROBS",
+            "error": str(e),
+            "max_z_score": 0.0,
+            "flagged_tokens": len(logprobs) if logprobs else 1,
+            "token_z_scores": []
+        }
+
+    isfinite = math.isfinite
+    if any(not isfinite(z) for z in z_scores):
+        sanitized_z_scores = [z if isfinite(z) else None for z in z_scores]
+        non_finite_count = sanitized_z_scores.count(None)
+        return {
+            "passed": False,
+            "reason": "MALFORMED_NON_FINITE_LOGPROBS",
+            "error": f"Derived Z-scores contain {non_finite_count} non-finite value(s)",
+            "max_z_score": 0.0,
+            "flagged_tokens": len(logprobs) if logprobs else 1,
+            "token_z_scores": sanitized_z_scores
+        }
+
+    flagged_count = 0
+    for i, z in enumerate(z_scores):
+        lp = float(logprobs[i])
+        surprisal = -lp
+        is_z_anomaly = z > sensor.z_threshold
+        is_ceiling_anomaly = (
+            sensor.max_surprisal_ceiling is not None
+            and surprisal > sensor.max_surprisal_ceiling
+        )
+        if is_z_anomaly or is_ceiling_anomaly:
+            flagged_count += 1
+
+    max_z = float(max(z_scores)) if z_scores else 0.0
+
+    return {
+        "passed": flagged_count == 0,
+        "max_z_score": max_z,
+        "flagged_tokens": flagged_count,
+        "token_z_scores": z_scores
+    }
+
+
+def test_token_surprisal_sensor_evaluate_differential_equivalence():
+    """
+    Exhaustively verifies differential equivalence between pre-PR multi-pass
+    and post-PR single-pass implementations across all required edge cases:
+    - Empty input
+    - Ordinary finite inputs
+    - Z-score anomalies alone
+    - Surprisal-ceiling anomalies alone
+    - Overlapping z-score and surprisal-ceiling anomalies
+    - Boundary equality at z_threshold and max_surprisal_ceiling
+    - Non-finite derived z-scores (NaN, +inf, -inf at start, middle, end)
+    - Multiple non-finite values and correct sanitization/counting
+    - Float-convertible inputs and numeric subclasses
+    """
+    class NumericFloatSubclass(float):
+        pass
+
+    class NumericIntSubclass(int):
+        pass
+
+    sensor_default = TokenSurprisalSensor(z_threshold=2.85, max_surprisal_ceiling=10.0)
+    sensor_no_ceiling = TokenSurprisalSensor(z_threshold=2.85, max_surprisal_ceiling=None)
+    sensor_strict_ceiling = TokenSurprisalSensor(z_threshold=5.0, max_surprisal_ceiling=2.0)
+
+    test_cases: List[Tuple[TokenSurprisalSensor, List[Any], str]] = [
+        # 1. Empty input
+        (sensor_default, [], "empty input"),
+        (sensor_no_ceiling, [], "empty input no ceiling"),
+
+        # 2. Ordinary finite inputs (lengths 1, 2, 5, 20)
+        (sensor_default, [-0.5], "single finite token"),
+        (sensor_default, [-0.5, -0.3], "two finite tokens"),
+        (sensor_default, [-0.1, -0.2, -0.15, -0.3, -0.25], "5 finite tokens"),
+        (sensor_default, [-0.1 * ((i % 5) + 1) for i in range(20)], "20 normal tokens"),
+
+        # 3. Z-score anomaly alone (z > z_threshold while surprisal <= ceiling)
+        # Using a distribution where token surprisal is low (< 10.0) but z exceeds threshold
+        (TokenSurprisalSensor(z_threshold=1.5, max_surprisal_ceiling=20.0),
+         [-0.01] * 10 + [-1.0], "z-score anomaly alone"),
+
+        # 4. Surprisal ceiling anomaly alone (surprisal > ceiling while z <= z_threshold)
+        (sensor_strict_ceiling, [-2.5] * 10, "surprisal ceiling anomaly alone"),
+
+        # 5. Overlapping z-score and surprisal ceiling anomalies
+        (sensor_default, [-0.1] * 10 + [-15.0], "overlapping z anomaly and ceiling anomaly"),
+
+        # 6. Boundary equality tests (z == z_threshold or surprisal == max_surprisal_ceiling)
+        # Exactly equal should NOT be flagged as anomaly (strict > required)
+        (TokenSurprisalSensor(z_threshold=0.0, max_surprisal_ceiling=1.0),
+         [-1.0] * 5, "exact boundary equality for ceiling"),
+
+        # 7. Float-convertible inputs and numeric subclasses
+        (sensor_default, [NumericFloatSubclass(-0.5), NumericIntSubclass(-1), "-0.25", -0.75],
+         "numeric subclasses and string floats"),
+
+        # 8. Malformed inputs in raw logprobs (caught in compute_z_scores)
+        (sensor_default, [float("nan")], "raw nan"),
+        (sensor_default, [float("inf")], "raw inf"),
+        (sensor_default, [float("-inf")], "raw -inf"),
+        (sensor_default, [-0.5, float("nan"), -0.2], "raw nan in middle"),
+        (sensor_default, ["invalid_token"], "invalid string"),
+    ]
+
+    for sensor, logprobs, label in test_cases:
+        res_ref = _pre_pr_evaluate(sensor, logprobs)
+        res_act = sensor.evaluate(logprobs)
+        assert res_act == res_ref, (
+            f"Mismatch in {label}:\n  Expected: {res_ref}\n  Actual:   {res_act}"
+        )
+
+    # 9. Derived Z-score non-finite handling (mock compute_z_scores to test post-processing)
+    # Tests non-finite values at beginning, middle, end, and multiple non-finites
+    non_finite_patterns = [
+        ([float("nan"), 1.0, 2.0], "NaN at beginning"),
+        ([1.0, float("nan"), 2.0], "NaN in middle"),
+        ([1.0, 2.0, float("nan")], "NaN at end"),
+        ([float("inf"), 1.0, 2.0], "+inf at beginning"),
+        ([1.0, float("-inf"), 2.0], "-inf in middle"),
+        ([float("nan"), float("inf"), float("-inf")], "all non-finite"),
+        (
+            [1.0, float("nan"), 2.0, float("inf"), 3.0, float("-inf")],
+            "multiple non-finites interspersed"
+        ),
+    ]
+
+    for z_pattern, label in non_finite_patterns:
+        mock_sensor = TokenSurprisalSensor()
+        dummy_logprobs = [-0.5] * len(z_pattern)
+        mock_sensor.compute_z_scores = lambda lp, z_pat=z_pattern: list(z_pat)
+
+        ref_sensor = TokenSurprisalSensor()
+        ref_sensor.compute_z_scores = lambda lp, z_pat=z_pattern: list(z_pat)
+
+        res_ref = _pre_pr_evaluate(ref_sensor, dummy_logprobs)
+        res_act = mock_sensor.evaluate(dummy_logprobs)
+
+        assert res_act == res_ref, (
+            f"Mismatch in non-finite derived z-score test ({label}):\n"
+            f"  Expected: {res_ref}\n  Actual:   {res_act}"
+        )
+        assert res_act["passed"] is False
+        assert res_act["reason"] == "MALFORMED_NON_FINITE_LOGPROBS"
+        assert res_act["max_z_score"] == 0.0
+        assert res_act["flagged_tokens"] == len(dummy_logprobs)
+        expected_none_count = sum(1 for z in z_pattern if not math.isfinite(z))
+        assert res_act["token_z_scores"].count(None) == expected_none_count
