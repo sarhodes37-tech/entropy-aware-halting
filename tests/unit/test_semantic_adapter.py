@@ -357,3 +357,11 @@ def test_semantic_adapter_repr_and_string_interpolation():
     expected = "SemanticAdapter(model=eval-model, threshold=0.65)"
     assert repr(adapter) == expected
     assert f"{adapter}" == expected
+
+
+def test_semantic_adapter_public_export():
+    """Verifies package-level export and __str__ output when imported from epistemicos."""
+    from epistemicos import SemanticAdapter as PublicSemanticAdapter
+
+    adapter = PublicSemanticAdapter()
+    assert str(adapter) == "SemanticAdapter(model=default, threshold=0.5)"
