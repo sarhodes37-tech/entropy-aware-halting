@@ -929,3 +929,169 @@ def test_permission_error_and_io_error_fail_closed(tmp_path):
 
         p_io_h, _, _, _ = prov._inspect_health()
         assert p_io_h is False
+
+
+def test_provenance_deterministic_suffix_mutation_fails_closed(tmp_path):
+    """
+    Deterministic mid-inspection mutation test for LocalProvenanceStore:
+    Modifies bytes in the newly scanned suffix AFTER those lines were read
+    but BEFORE verification state is committed.
+    Verifies that the pre-commit validation catches the divergence up to new_offset,
+    fails closed immediately, invalidates cache state, and subsequent calls remain fail-closed.
+    """
+    log_path = tmp_path / "prov_suffix_race.jsonl"
+    store = LocalProvenanceStore(log_path=str(log_path))
+
+    for i in range(5):
+        store.record_event(
+            ProvenanceEvent(
+                schema_version="1.0.0",
+                event_id=f"evt_{i}",
+                event_type="ACTION_PROPOSED",
+                provenance_source="AGENT_ADAPTER",
+                correlation_id="corr_suffix_race",
+                request_id=f"req_{i}",
+                action_name=f"action_{i}",
+                target="target_suffix_race",
+                canonical_request_digest="d",
+                timestamp="2026-01-01T00:00:00Z",
+            )
+        )
+
+    # Establish verified prefix
+    h, _, _, _ = store._inspect_health()
+    assert h is True
+    assert store._verified_offset > 0
+
+    # Append 2 new events
+    for i in range(5, 7):
+        store.record_event(
+            ProvenanceEvent(
+                schema_version="1.0.0",
+                event_id=f"evt_{i}",
+                event_type="ACTION_PROPOSED",
+                provenance_source="AGENT_ADAPTER",
+                correlation_id="corr_suffix_race",
+                request_id=f"req_{i}",
+                action_name=f"action_{i}",
+                target="target_suffix_race",
+                canonical_request_digest="d",
+                timestamp="2026-01-01T00:00:00Z",
+            )
+        )
+
+    orig_inspect = store._inspect_health_on_descriptor
+    raced = [False]
+
+    def wrapped_inspect(f_raw, should_lock=True):
+        orig_readline = f_raw.readline
+
+        def hooking_readline(*args, **kwargs):
+            line = orig_readline(*args, **kwargs)
+            # Inject mutation after reading the final suffix line (line contains evt_6)
+            if not line and not raced[0]:
+                raced[0] = True
+                with open(log_path, "r+b") as mod_f:
+                    content = mod_f.read()
+                    assert b'"action_6"' in content
+                    tampered = content.replace(b'"action_6"', b'"action_y"')
+                    assert len(tampered) == len(content)
+                    mod_f.seek(0)
+                    mod_f.write(tampered)
+                    mod_f.flush()
+            return line
+
+        f_raw.readline = hooking_readline
+        return orig_inspect(f_raw, should_lock=should_lock)
+
+    store._inspect_health_on_descriptor = wrapped_inspect
+
+    # Active inspection must detect suffix tampering and fail closed
+    active_healthy, last_hash, count, seen_ids = store._inspect_health()
+    assert raced[0] is True, "Suffix mutation hook did not execute"
+    assert active_healthy is False, "Active inspection failed to detect suffix tampering"
+    assert store._verified_offset == 0, "Cache state was not invalidated"
+
+    # Subsequent inspection must also fail closed
+    store._inspect_health_on_descriptor = orig_inspect
+    h_subsequent, _, _, _ = store._inspect_health()
+    assert h_subsequent is False
+    assert store._verified_offset == 0
+
+
+def test_audit_deterministic_suffix_mutation_fails_closed(tmp_path):
+    """
+    Deterministic mid-inspection mutation test for TamperEvidentAuditTrail:
+    Modifies bytes in the newly scanned suffix AFTER those lines were read
+    but BEFORE verification state is committed.
+    Verifies that the pre-commit validation catches the divergence up to new_offset,
+    fails closed immediately, invalidates cache state, and subsequent calls remain fail-closed.
+    """
+    log_path = tmp_path / "audit_suffix_race.jsonl"
+    trail = TamperEvidentAuditTrail(log_file_path=str(log_path))
+
+    for i in range(5):
+        trail.record_event(
+            AuditEvent(
+                AuditLogLevel.INFO,
+                gate_name=f"Gate_{i}",
+                reason=f"step_{i}",
+                model_id=f"model_{i}",
+                payload_snippet=f"snippet_{i}",
+            )
+        )
+
+    # Establish verified prefix
+    h, _, _ = trail.inspect_log_health()
+    assert h is True
+    assert trail._verified_offset > 0
+
+    # Append 2 new events
+    for i in range(5, 7):
+        trail.record_event(
+            AuditEvent(
+                AuditLogLevel.INFO,
+                gate_name=f"Gate_{i}",
+                reason=f"step_{i}",
+                model_id=f"model_{i}",
+                payload_snippet=f"snippet_{i}",
+            )
+        )
+
+    orig_inspect = trail._inspect_health_on_descriptor
+    raced = [False]
+
+    def wrapped_inspect(f_raw, should_lock=True):
+        orig_readline = f_raw.readline
+
+        def hooking_readline(*args, **kwargs):
+            line = orig_readline(*args, **kwargs)
+            # Inject mutation after reading the final suffix line (line contains step_6)
+            if not line and not raced[0]:
+                raced[0] = True
+                with open(log_path, "r+b") as mod_f:
+                    content = mod_f.read()
+                    assert b'"step_6"' in content
+                    tampered = content.replace(b'"step_6"', b'"step_y"')
+                    assert len(tampered) == len(content)
+                    mod_f.seek(0)
+                    mod_f.write(tampered)
+                    mod_f.flush()
+            return line
+
+        f_raw.readline = hooking_readline
+        return orig_inspect(f_raw, should_lock=should_lock)
+
+    trail._inspect_health_on_descriptor = wrapped_inspect
+
+    # Active inspection must detect suffix tampering and fail closed
+    active_healthy, last_hash, err = trail.inspect_log_health()
+    assert raced[0] is True, "Suffix mutation hook did not execute"
+    assert active_healthy is False, "Active inspection failed to detect suffix tampering"
+    assert trail._verified_offset == 0, "Cache state was not invalidated"
+
+    # Subsequent inspection must also fail closed
+    trail._inspect_health_on_descriptor = orig_inspect
+    h_subsequent, _, _ = trail.inspect_log_health()
+    assert h_subsequent is False
+    assert trail._verified_offset == 0

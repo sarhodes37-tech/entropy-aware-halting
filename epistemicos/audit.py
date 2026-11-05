@@ -359,16 +359,16 @@ class TamperEvidentAuditTrail:
 
             cur_pos = f_raw.tell()
             f_raw.seek(0)
-            post_prefix_bytes = f_raw.read(self._verified_offset)
+            post_prefix_bytes = f_raw.read(new_offset)
             if not isinstance(post_prefix_bytes, bytes):
                 post_prefix_bytes = post_prefix_bytes.encode("utf-8")
             f_raw.seek(cur_pos)
-            if hashlib.sha256(post_prefix_bytes).hexdigest() != self._verified_prefix_digest:
+            if hashlib.sha256(post_prefix_bytes).hexdigest() != new_prefix_digest:
                 self._verified_offset = 0
                 self._verified_last_hash = self.genesis_hash
                 self._verified_seen_ids = set()
                 self._verified_prefix_digest = ""
-                return False, last_valid_hash, "Historical prefix modified during inspection"
+                return False, last_valid_hash, "Prefix modified during inspection"
         except OSError:
             self._verified_offset = 0
             self._verified_last_hash = self.genesis_hash
