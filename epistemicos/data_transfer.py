@@ -246,14 +246,23 @@ class DataTransferContext:
             ):
                 return False
 
-            # task_id binding: if assertion binds task_id, it cannot be used with a different
-            # task ID or in an unauthenticated context to acquire a fresh cumulative volume bucket.
-            if asserted_task is not None and str(asserted_task).strip():
-                if str(asserted_task).strip() != (self.task_id or "").strip():
+            # Strict task_id binding: whenever the context specifies a task_id, the assertion
+            # must explicitly bind that task_id. An assertion with a task_id cannot be replayed
+            # under a different task_id.
+            if self.task_id is not None and self.task_id.strip():
+                if not asserted_task or str(asserted_task).strip() != self.task_id.strip():
                     return False
+            elif asserted_task is not None and str(asserted_task).strip():
+                return False
 
-            # Volume constraint binding: context cannot exceed asserted volume limit
-            if asserted_bytes is not None:
+            # Strict volume constraint binding: whenever context has declared volume > 0, the
+            # assertion must explicitly bind and authorize that volume. Context cannot exceed it.
+            if self.declared_bytes is not None and self.declared_bytes > 0:
+                if asserted_bytes is None or not isinstance(asserted_bytes, int):
+                    return False
+                if self.declared_bytes > asserted_bytes:
+                    return False
+            elif asserted_bytes is not None:
                 ctx_bytes = self.declared_bytes if self.declared_bytes is not None else 0
                 if not isinstance(asserted_bytes, int) or ctx_bytes > asserted_bytes:
                     return False
@@ -292,19 +301,7 @@ class DataTransferContext:
                     f"{task_str}:{bytes_str}:{ts_str}:{exp_str}"
                 ).encode("utf-8")
 
-                if verify_ed25519_signature(sig_bytes, payload_extended, trusted_pubkey):
-                    return True
-
-                # Backward compatibility: verify base signature if extended fields are absent
-                if not ws_str and not ep_str and not task_str and not bytes_str:
-                    payload_base = (
-                        f"{asserted_principal.strip()}:{issuer}:{dest_str}:"
-                        f"{tenant_str}:{account_str}:{asserted_class.upper()}:"
-                        f"{scope_str}:{asserted_direction.upper()}:"
-                        f"{asserted_operation.upper()}:{ts_str}:{exp_str}"
-                    ).encode("utf-8")
-                    return bool(verify_ed25519_signature(sig_bytes, payload_base, trusted_pubkey))
-                return False
+                return bool(verify_ed25519_signature(sig_bytes, payload_extended, trusted_pubkey))
             except Exception:
                 return False
 
@@ -480,18 +477,29 @@ class TrustedTransferContextBuilder:
                         and str(asserted_operation).upper() == operation.value.upper()
                     )
 
-                    # Task ID binding: if assertion binds task_id, must match context task_id
-                    if asserted_task is not None and str(asserted_task).strip():
-                        has_valid_task = (str(asserted_task).strip() == (task_id or "").strip())
+                    # Strict Task ID binding: whenever task_id is present, assertion must bind it
+                    if task_id is not None and task_id.strip():
+                        has_valid_task = bool(
+                            asserted_task and str(asserted_task).strip() == task_id.strip()
+                        )
+                    elif asserted_task is not None and str(asserted_task).strip():
+                        has_valid_task = False
                     else:
                         has_valid_task = True
 
-                    # Volume binding constraint: declared_bytes must not exceed asserted_bytes
+                    # Strict volume binding: whenever declared_bytes > 0, assertion must bind it
                     ctx_bytes = declared_bytes if declared_bytes is not None else 0
-                    has_valid_bytes = (
-                        asserted_bytes is None
-                        or (isinstance(asserted_bytes, int) and ctx_bytes <= asserted_bytes)
-                    )
+                    if ctx_bytes > 0:
+                        has_valid_bytes = (
+                            asserted_bytes is not None
+                            and isinstance(asserted_bytes, int)
+                            and ctx_bytes <= asserted_bytes
+                        )
+                    else:
+                        has_valid_bytes = (
+                            asserted_bytes is None
+                            or (isinstance(asserted_bytes, int) and ctx_bytes <= asserted_bytes)
+                        )
 
                     # Expiration is MANDATORY: missing expiration or expired fails closed
                     now = time.time()
@@ -551,17 +559,6 @@ class TrustedTransferContextBuilder:
                                 sig_bytes, payload_extended, trusted_pubkey
                             ):
                                 is_trusted = True
-                            elif not ws_str and not ep_str and not task_str and not bytes_str:
-                                payload_base = (
-                                    f"{asserted_principal.strip()}:{issuer}:{dest_str}:"
-                                    f"{tenant_str}:{account_str}:{asserted_class.upper()}:"
-                                    f"{scope_str}:{asserted_direction.upper()}:"
-                                    f"{asserted_operation.upper()}:{ts_str}:{exp_str}"
-                                ).encode("utf-8")
-                                if verify_ed25519_signature(
-                                    sig_bytes, payload_base, trusted_pubkey
-                                ):
-                                    is_trusted = True
                         except Exception:
                             is_trusted = False
             else:

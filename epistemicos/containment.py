@@ -1677,9 +1677,17 @@ class ControlledEgressTransport:
                                     )
 
                                 # Enforce cumulative limit in-flight
+                                # alloc already includes committed bytes from prior requests plus the
+                                # current request's initial reservation. To accurately assess multi-hop
+                                # in-flight volume against the cumulative ceiling, compare committed
+                                # cumulative bytes plus all observed bytes across prior redirect hops,
+                                # current hop upload, and current hop stream reception.
                                 if eff_cumulative_limit is not None and tracker_key:
-                                    alloc = self.broker.transfer_policy.get_allocated_bytes(tracker_key)
-                                    if (alloc + received_bytes) > eff_cumulative_limit:
+                                    prior_committed = (
+                                        self.broker.transfer_policy.get_cumulative_bytes(tracker_key)
+                                    )
+                                    in_flight_chain_total = prior_committed + curr_total
+                                    if in_flight_chain_total > eff_cumulative_limit:
                                         conn.close()
                                         raise PermissionError(
                                             f"Egress transport streaming aborted: Cumulative volume exceeds "

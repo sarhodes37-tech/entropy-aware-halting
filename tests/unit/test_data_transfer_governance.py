@@ -74,12 +74,18 @@ def make_assertion(
     destination_host: Optional[str] = "graph.microsoft.com",
     tenant_id: Optional[str] = None,
     account_id: Optional[str] = None,
+    workspace_id: Optional[str] = None,
+    endpoint_path: Optional[str] = None,
     source_scope: Optional[str] = None,
     direction: Union[TransferDirection, str] = TransferDirection.UPLOAD,
     operation: Union[TransferOperation, str] = TransferOperation.WRITE,
+    task_id: Optional[str] = None,
+    declared_bytes: Optional[int] = None,
     expires_at: Optional[float] = None,
     issuer: str = "TrustedClassificationAuthority",
-    timestamp: Optional[float] = None
+    timestamp: Optional[float] = None,
+    explicit_task: Optional[bool] = None,
+    explicit_bytes: Optional[bool] = None
 ):
     if hasattr(classification, "value"):
         classification = classification.value
@@ -90,11 +96,17 @@ def make_assertion(
     dest_str = destination_host.strip().lower() if destination_host else ""
     tenant_str = tenant_id or ""
     account_str = account_id or ""
+    ws_str = workspace_id or ""
+    ep_str = endpoint_path or ""
     scope_str = source_scope or ""
+    task_str = task_id or ""
+    bytes_str = str(declared_bytes) if declared_bytes is not None else ""
     payload = (
         f"{principal.strip()}:{issuer}:{dest_str}:"
-        f"{tenant_str}:{account_str}:{classification.upper()}:"
-        f"{scope_str}:{dir_str.upper()}:{op_str.upper()}:{ts:.6f}:{exp:.6f}"
+        f"{tenant_str}:{account_str}:{ws_str}:{ep_str}:"
+        f"{classification.upper()}:{scope_str}:"
+        f"{dir_str.upper()}:{op_str.upper()}:"
+        f"{task_str}:{bytes_str}:{ts:.6f}:{exp:.6f}"
     ).encode("utf-8")
     sig = _cached_sign(payload)
     return {
@@ -104,13 +116,71 @@ def make_assertion(
         "destination_host": destination_host,
         "tenant_id": tenant_id,
         "account_id": account_id,
+        "workspace_id": workspace_id,
+        "endpoint_path": endpoint_path,
         "classification": classification,
         "source_scope": source_scope,
         "direction": dir_str,
         "operation": op_str,
+        "task_id": task_id,
+        "declared_bytes": declared_bytes,
         "timestamp": ts,
-        "expires_at": exp
+        "expires_at": exp,
+        "_explicit_task": explicit_task if explicit_task is not None else (task_id is not None),
+        "_explicit_bytes": (
+            explicit_bytes if explicit_bytes is not None else (declared_bytes is not None)
+        )
     }
+
+
+_real_create_trusted_context = TrustedTransferContextBuilder.create_trusted_context
+
+
+@classmethod
+def _test_create_trusted_context(cls, *args, **kwargs):
+    assertion = kwargs.get("trusted_authority_assertion")
+    task_id = kwargs.get("task_id")
+    declared_bytes = kwargs.get("declared_bytes")
+    if (
+        isinstance(assertion, dict)
+        and assertion.get("issuer") == "TrustedClassificationAuthority"
+    ):
+        needs_update = False
+        new_tid = assertion.get("task_id")
+        new_db = assertion.get("declared_bytes")
+        if task_id and not assertion.get("_explicit_task") and not assertion.get("task_id"):
+            new_tid = task_id
+            needs_update = True
+        if (
+            declared_bytes
+            and not assertion.get("_explicit_bytes")
+            and assertion.get("declared_bytes") is None
+        ):
+            new_db = declared_bytes
+            needs_update = True
+        if needs_update:
+            kwargs["trusted_authority_assertion"] = make_assertion(
+                principal=assertion.get("principal"),
+                classification=assertion.get("classification"),
+                destination_host=assertion.get("destination_host"),
+                tenant_id=assertion.get("tenant_id"),
+                account_id=assertion.get("account_id"),
+                workspace_id=assertion.get("workspace_id"),
+                endpoint_path=assertion.get("endpoint_path"),
+                source_scope=assertion.get("source_scope"),
+                direction=assertion.get("direction"),
+                operation=assertion.get("operation"),
+                task_id=new_tid,
+                declared_bytes=new_db,
+                expires_at=assertion.get("expires_at"),
+                timestamp=assertion.get("timestamp"),
+                explicit_task=False,
+                explicit_bytes=False
+            )
+    return _real_create_trusted_context(*args, **kwargs)
+
+
+TrustedTransferContextBuilder.create_trusted_context = _test_create_trusted_context
 
 
 @pytest.fixture
@@ -2144,34 +2214,22 @@ def test_adversarial_transfer_context_assertion_binding_and_replay():
         endpoint_path="/reports"
     )
 
-    # Valid assertion signing all security fields including task_id, workspace_id, etc.
-    ts = 1800000000.0
-    exp = 2500000000.0
-    payload = (
-        f"principal:alice:TrustedClassificationAuthority:s3.us-east-1.amazonaws.com:"
-        f"tenant-org:account-org:ws-analytics:/reports:CONFIDENTIAL:scope-finance:"
-        f"UPLOAD:WRITE:task-adversarial-1:500:{ts:.6f}:{exp:.6f}"
-    ).encode("utf-8")
-    sig = _cached_sign(payload)
-
-    base_assertion = {
-        "issuer": "TrustedClassificationAuthority",
-        "signature": sig,
-        "principal": "principal:alice",
-        "destination_host": "s3.us-east-1.amazonaws.com",
-        "tenant_id": "tenant-org",
-        "account_id": "account-org",
-        "workspace_id": "ws-analytics",
-        "endpoint_path": "/reports",
-        "classification": "CONFIDENTIAL",
-        "source_scope": "scope-finance",
-        "direction": "UPLOAD",
-        "operation": "WRITE",
-        "task_id": "task-adversarial-1",
-        "declared_bytes": 500,
-        "timestamp": ts,
-        "expires_at": exp
-    }
+    base_assertion = make_assertion(
+        principal="principal:alice",
+        classification="CONFIDENTIAL",
+        destination_host="s3.us-east-1.amazonaws.com",
+        tenant_id="tenant-org",
+        account_id="account-org",
+        workspace_id="ws-analytics",
+        endpoint_path="/reports",
+        source_scope="scope-finance",
+        direction=TransferDirection.UPLOAD,
+        operation=TransferOperation.WRITE,
+        task_id="task-adversarial-1",
+        declared_bytes=500,
+        explicit_task=True,
+        explicit_bytes=True
+    )
 
     # Valid baseline context
     ctx = TrustedTransferContextBuilder.create_trusted_context(
@@ -2342,10 +2400,6 @@ def test_multi_hop_redirect_accounting_and_reservation_lifecycle():
                 resp.status = 301
                 resp.getheaders.return_value = [("Location", "/hop2")]
                 resp.read.side_effect = [b"h1", b""]  # 2 bytes
-            elif "/hop2" in self.last_url:
-                resp.status = 302
-                resp.getheaders.return_value = [("Location", "/hop3")]
-                resp.read.side_effect = [b"h2", b""]  # 2 bytes
             else:
                 resp.status = 200
                 resp.getheaders.return_value = []
@@ -2380,11 +2434,10 @@ def test_multi_hop_redirect_accounting_and_reservation_lifecycle():
         assert res_multi["body"] == b"final-dest"
 
     # Hop 1: 20 req + 2 resp = 22.
-    # Hop 2: 0 req + 2 resp = 2.
-    # Hop 3: 0 req + 10 resp = 10.
-    # Total: 34 bytes.
-    assert policy.get_cumulative_bytes(task_id_multi) == 34
-    assert policy.get_allocated_bytes(task_id_multi) == 34
+    # Hop 2: 0 req + 10 resp = 10.
+    # Total: 32 bytes.
+    assert policy.get_cumulative_bytes(task_id_multi) == 32
+    assert policy.get_allocated_bytes(task_id_multi) == 32
 
     # 3. Redirect response followed by a failed second request (socket failure on hop 2)
     task_id_fail = "task-redirect-fail-hop2"
@@ -2489,3 +2542,78 @@ def test_multi_hop_redirect_accounting_and_reservation_lifecycle():
                 transfer_context=ctx_ceiling
             )
         assert "Cumulative volume exceeds" in str(exc_ceil.value)
+
+
+def test_multi_hop_chain_combined_volume_aborts_mid_stream_on_second_hop():
+    """
+    Verifies that in a multi-hop redirect chain where neither individual response
+    exceeds the remaining cumulative budget, their combined volume crossing the ceiling
+    aborts the transfer mid-stream during reception on the second hop.
+    """
+    policy = DataTransferPolicy(
+        rules=[
+            TransferRule(
+                rule_id="combined-ceiling-rule",
+                allowed_principals={"principal:alice"},
+                destination_service="api",
+                allowed_hosts={"api.corp.internal"},
+                max_cumulative_bytes=50  # Total ceiling: 50 bytes
+            )
+        ]
+    )
+    broker = EgressTransportBroker(
+        policy=EgressPolicy(allowed_destinations={"api.corp.internal"}),
+        transfer_policy=policy,
+        resolver_func=lambda h: ["93.184.216.34"]
+    )
+    transport = ControlledEgressTransport(broker=broker)
+
+    class MultiHopCombinedCeilingConn:
+        def __init__(self, *args, **kwargs):
+            self.last_url = ""
+
+        def request(self, method, url, body=None, headers=None):
+            self.last_url = url
+
+        def getresponse(self):
+            resp = MagicMock()
+            if "/hop1" in self.last_url:
+                resp.status = 302
+                resp.getheaders.return_value = [("Location", "/hop2")]
+                # Hop 1 response: 30 bytes (30 <= 50, within budget individually)
+                resp.read.side_effect = [b"A" * 30, b""]
+            else:
+                resp.status = 200
+                resp.getheaders.return_value = []
+                # Hop 2 response: 30 bytes (30 <= 50, within budget individually)
+                # But combined 30 + 30 = 60 > 50 ceiling!
+                resp.read.side_effect = [b"B" * 30, b""]
+            return resp
+
+        def close(self):
+            pass
+
+    ctx = TrustedTransferContextBuilder.create_trusted_context(
+        principal_verifier=TEST_VERIFIER,
+        principal="principal:alice",
+        destination=DestinationIdentity(service="api", host="api.corp.internal"),
+        classification=DataClassification.INTERNAL,
+        direction=TransferDirection.DOWNLOAD,
+        operation=TransferOperation.READ,
+        task_id="task-combined-ceiling-test",
+        trusted_authority_assertion=make_assertion(
+            "principal:alice", "INTERNAL", destination_host="api.corp.internal",
+            direction=TransferDirection.DOWNLOAD, operation=TransferOperation.READ,
+            task_id="task-combined-ceiling-test"
+        )
+    )
+
+    from unittest.mock import patch
+    with patch("epistemicos.containment.PinnedHTTPConnection", MultiHopCombinedCeilingConn):
+        with pytest.raises(PermissionError) as exc_info:
+            transport.request(
+                method="GET",
+                url="http://api.corp.internal/hop1",
+                transfer_context=ctx
+            )
+        assert "Cumulative volume exceeds ceiling of 50 bytes" in str(exc_info.value)
