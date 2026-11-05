@@ -235,8 +235,9 @@ class EntropyAwareScheduler:
             # PERFORMANCE OPTIMIZATION:
             # len(real_deltas) == len(self.history) - 1. Avoiding the intermediate O(N) list
             # comprehension allocation of [x.delta_h for x in self.history[1:]] and directly
-            # slicing self.history[-self.stagnation_window:] reduces memory allocation from O(N)
-            # to O(1) and evaluation time by 60%-93% on trajectories with N >= 50.
+            # slicing self.history[-self.stagnation_window:] reduces auxiliary memory allocation
+            # from unbounded O(N) to bounded O(W), where W = self.stagnation_window, while
+            # preserving exact directive evaluation semantics across tested trajectories.
             if len(self.history) > self.stagnation_window:
                 win = self.history[-self.stagnation_window:]
                 if all(abs(x.delta_h) < self.entropy_delta_threshold for x in win):
