@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
 
 from epistemicos.audit import TamperEvidentAuditTrail
+from epistemicos.authorization import AuthorizationAuthority
 from epistemicos.provenance import (
     LocalProvenanceStore,
     ProvenanceEvent,
@@ -30,12 +31,18 @@ class ObservatoryDataAdapter:
         audit_log_path: str = "logs/epistemic_audit.jsonl",
         provenance_log_path: str = "logs/provenance_audit.jsonl",
         ablation_table_path: str = "results/ablation_table.json",
-        per_case_results_path: str = "results/per_case_results.json"
+        per_case_results_path: str = "results/per_case_results.json",
+        authority: Optional[AuthorizationAuthority] = None,
+        allow_unverified_legacy: Optional[bool] = None
     ):
         self.audit_log_path = Path(audit_log_path)
         self.provenance_log_path = Path(provenance_log_path)
         self.ablation_table_path = Path(ablation_table_path)
         self.per_case_results_path = Path(per_case_results_path)
+        self.authority = authority
+        # Default allow_unverified_legacy=True when authority is None (preserving legacy test compatibility)
+        # and False when authority is provided (enforcing strict authoritative verification)
+        self.allow_unverified_legacy = (authority is None) if allow_unverified_legacy is None else allow_unverified_legacy
 
     # -------------------------------------------------------------------------
     # Overview View Adapter
@@ -110,7 +117,10 @@ class ObservatoryDataAdapter:
             corr = pe.get("correlation_id") or "UNKNOWN_CORRELATION"
             grouped.setdefault(corr, []).append(pe)
 
-        reconciler = ProvenanceReconciler()
+        reconciler = ProvenanceReconciler(
+            authority=self.authority,
+            allow_unverified_legacy=self.allow_unverified_legacy
+        )
         traces = []
 
         for corr_id, pe_list in grouped.items():
@@ -130,7 +140,7 @@ class ObservatoryDataAdapter:
             reconciliation = reconciler.reconcile_correlation(corr_id, typed_events)
 
             # Determine lifecycle execution status
-            status = self._determine_execution_status(pe_list)
+            status = self._determine_execution_status(pe_list, reconciliation=reconciliation)
 
             # Collect gate decisions and evidence
             gate_decisions = []
@@ -553,20 +563,51 @@ class ObservatoryDataAdapter:
                 "message": f"Verification execution failed: {str(e)}"
             }
 
-    def _determine_execution_status(self, events: List[Dict[str, Any]]) -> str:
+    def _determine_execution_status(
+        self,
+        events: List[Dict[str, Any]],
+        reconciliation: Optional[ReconciliationReport] = None
+    ) -> str:
         """
         Determines execution outcome state:
-        DENIED, HALTED, COMPLETED, FAILED, or OUTCOME_UNKNOWN.
+        DENIED, HALTED, COMPLETED, FAILED, UNVERIFIED, MISMATCH, or OUTCOME_UNKNOWN.
+        Never masks evidence mismatches as executor FAILED.
         """
         event_types = [e.get("event_type") for e in events]
 
+        # Explicit priority: denials and halts
         if "AUTHORIZATION_DENIED" in event_types:
             return "DENIED"
         if "EGRESS_BLOCKED" in event_types:
             return "HALTED"
+
+        # Explicit priority: executor failure or interrupt
         if "EXECUTION_FAILED" in event_types or "EXECUTION_INTERRUPTED" in event_types:
             return "FAILED"
+
+        # Gate 1: Evidence reconciliation mismatch or forgery maps to MISMATCH or OUTCOME_UNKNOWN
+        if reconciliation is not None:
+            if reconciliation.status == "RECONCILIATION_MISMATCH":
+                if "EXECUTION_STARTED" in event_types and not any(t in event_types for t in ("EXECUTION_SUCCEEDED", "EXECUTION_FAILED", "EXECUTION_INTERRUPTED")):
+                    return "OUTCOME_UNKNOWN"
+                return "MISMATCH"
+            if reconciliation.status == "UNVERIFIED_LEGACY_EVIDENCE":
+                # When authority is absent and legacy compatibility is not active, status is UNVERIFIED
+                if not getattr(self, "allow_unverified_legacy", False) and self.authority is not None:
+                    return "UNVERIFIED"
+
+        # Gate 2: COMPLETED requires verified reconciliation AND genuine EXECUTION_SUCCEEDED
         if "EXECUTION_SUCCEEDED" in event_types:
+            if reconciliation is not None:
+                if reconciliation.status == "RECONCILIATION_MISMATCH":
+                    return "MISMATCH"
+                if reconciliation.status == "UNVERIFIED_LEGACY_EVIDENCE" and self.authority is not None:
+                    return "UNVERIFIED"
+                if not reconciliation.valid and self.authority is not None:
+                    return "MISMATCH"
             return "COMPLETED"
+
+        if "EXECUTION_STARTED" in event_types:
+            return "OUTCOME_UNKNOWN"
 
         return "OUTCOME_UNKNOWN"

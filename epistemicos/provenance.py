@@ -608,13 +608,14 @@ class TrustedExecutionBoundary:
             if executor_func is None and callable(request_id):
                 executor_func = request_id
 
+        caller_attempt_id = execution_attempt_id
         if context is not None:
             corr_id = context.correlation_id
             req_id = context.request_id
             auth_token_id = context.authorization_token_id
             auth_digest = context.authorized_digest
             auth_granted = context.authorization_granted
-            attempt_id = execution_attempt_id or context.execution_attempt_id or str(uuid.uuid4())
+            caller_attempt_id = caller_attempt_id or context.execution_attempt_id
             pol_version = policy_version if policy_version != "1.0.0" else context.policy_version
             auth_principal = getattr(context, "authenticated_principal", None) or authenticated_principal
         else:
@@ -623,9 +624,15 @@ class TrustedExecutionBoundary:
             auth_token_id = authorization_token_id
             auth_digest = authorized_digest
             auth_granted = authorization_granted
-            attempt_id = execution_attempt_id or str(uuid.uuid4())
             pol_version = policy_version
             auth_principal = authenticated_principal
+
+        # Check for caller-supplied attempt ID duplication
+        if caller_attempt_id and caller_attempt_id in self._consumed_attempts:
+            raise ValueError(f"Execution attempt ID {caller_attempt_id} has already been processed")
+
+        # Authoritative attempt ID generated internally by boundary
+        attempt_id = str(uuid.uuid4())
 
         # Enforce strict validation of authorization evidence, token ID, digest, and executor
         if auth_granted is not True:
@@ -688,19 +695,41 @@ class TrustedExecutionBoundary:
             else:
                 raise PermissionError(f"Execution rejected: Unregistered callable object cannot execute capability bound to '{cap.executor_id if cap else executor_id}'")
 
-        # Atomic token consumption and retry check against authoritative storage
+        # Atomic token consumption and execution-attempt dispatch recording in authoritative storage
         with self._lock:
             expected_fence = getattr(cap, "fencing_token", None) if cap else getattr(context, "fencing_token", None)
-            if not self.registry.consume_token(auth_token_id, expected_fencing_token=expected_fence):
-                if self.registry.is_revoked(auth_token_id):
-                    raise PermissionError(f"Authorization token {auth_token_id} has been revoked")
-                raise PermissionError(f"Authorization token {auth_token_id} has already been consumed (replay attempt)")
+            now_epoch = time.time()
+            dispatch_meta = {
+                "correlation_id": corr_id,
+                "request_id": req_id,
+                "action_name": action_name,
+                "target": target,
+                "caller_attempt_id": caller_attempt_id,
+                "task_id": getattr(cap, "task_id", None),
+                "principal_id": getattr(cap, "principal_id", None)
+            }
 
-            if attempt_id in self._consumed_attempts:
-                raise ValueError(f"Execution attempt ID {attempt_id} has already been processed")
+            ok, reason, _ = self.registry.consume_token_and_record_dispatch(
+                token_id=auth_token_id,
+                attempt_id=attempt_id,
+                dispatched_executor_id=executor_id,
+                started_at=now_epoch,
+                expected_fencing_token=expected_fence,
+                dispatch_metadata=dispatch_meta
+            )
+            if not ok:
+                if "REVOKED" in reason:
+                    raise PermissionError(f"Authorization token {auth_token_id} has been revoked")
+                if "ALREADY_CONSUMED" in reason:
+                    raise PermissionError(f"Authorization token {auth_token_id} has already been consumed (replay attempt)")
+                if "EXPIRED" in reason:
+                    raise PermissionError(f"Authorization token {auth_token_id} has expired prior to execution")
+                raise PermissionError(f"Execution rejected by authoritative storage: {reason}")
 
             self._consumed_tokens.add(auth_token_id)
             self._consumed_attempts.add(attempt_id)
+            if caller_attempt_id:
+                self._consumed_attempts.add(caller_attempt_id)
 
         # Emit EXECUTION_STARTED
         start_event = ProvenanceEvent(
@@ -763,6 +792,18 @@ class TrustedExecutionBoundary:
                 result = executor_func()
         except Exception as e:
             end_ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            end_epoch = time.time()
+            try:
+                self.registry.record_execution_outcome(
+                    token_id=auth_token_id,
+                    attempt_id=attempt_id,
+                    outcome_status="FAILED",
+                    terminal_ts=end_epoch,
+                    details={"error": str(e)}
+                )
+            except Exception:
+                pass
+
             fail_event = ProvenanceEvent(
                 schema_version="1.0.0",
                 event_id=str(uuid.uuid4()),
@@ -786,6 +827,18 @@ class TrustedExecutionBoundary:
             raise
         except BaseException as be:
             end_ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            end_epoch = time.time()
+            try:
+                self.registry.record_execution_outcome(
+                    token_id=auth_token_id,
+                    attempt_id=attempt_id,
+                    outcome_status="INTERRUPTED",
+                    terminal_ts=end_epoch,
+                    details={"reason": str(be)}
+                )
+            except Exception:
+                pass
+
             interrupt_event = ProvenanceEvent(
                 schema_version="1.0.0",
                 event_id=str(uuid.uuid4()),
@@ -820,7 +873,19 @@ class TrustedExecutionBoundary:
             sanitized_result = f"[SANITIZATION_FAILED: {type(san_err).__name__}]"
 
         ev_ok, ev_msg = _verify_success_evidence(result)
+        end_epoch = time.time()
         if not ev_ok:
+            try:
+                self.registry.record_execution_outcome(
+                    token_id=auth_token_id,
+                    attempt_id=attempt_id,
+                    outcome_status="UNVERIFIED_SUCCESS",
+                    terminal_ts=end_epoch,
+                    details={"reason": ev_msg}
+                )
+            except Exception:
+                pass
+
             fail_ev_event = ProvenanceEvent(
                 schema_version="1.0.0",
                 event_id=str(uuid.uuid4()),
@@ -846,6 +911,25 @@ class TrustedExecutionBoundary:
                 "result": sanitized_result,
                 "attempt_id": attempt_id,
                 "reason": ev_msg
+            }
+
+        # Record authoritative SUCCESS outcome in registry
+        try:
+            ok_out, out_reason, _ = self.registry.record_execution_outcome(
+                token_id=auth_token_id,
+                attempt_id=attempt_id,
+                outcome_status="SUCCESS",
+                terminal_ts=end_epoch
+            )
+            if not ok_out:
+                raise RuntimeError(out_reason)
+        except Exception as outcome_err:
+            return {
+                "status": "EXECUTION_OUTCOME_UNKNOWN",
+                "result": sanitized_result,
+                "attempt_id": attempt_id,
+                "recovery_required": True,
+                "reason": f"Execution completed but authoritative outcome persistence failed: {str(outcome_err)}"
             }
 
         success_event = ProvenanceEvent(
@@ -894,14 +978,25 @@ class ProvenanceReconciler:
     """
     Reconciles proposed actions, control-plane authorization decisions, and executor activity.
     Detects unauthorized execution, target/digest mismatches, false success claims,
-    egress bypasses, and missing/interrupted execution traces.
+    egress bypasses, missing/interrupted execution traces, and fabricated execution evidence.
     """
+
+    def __init__(
+        self,
+        authority: Optional[AuthorizationAuthority] = None,
+        allow_unverified_legacy: Optional[bool] = None
+    ):
+        self.authority = authority
+        # If authority is provided, default allow_unverified_legacy=False (strict authoritative verification)
+        # If authority is None, default allow_unverified_legacy=True (preserving structural-only legacy compatibility)
+        self.allow_unverified_legacy = (authority is None) if allow_unverified_legacy is None else allow_unverified_legacy
 
     def reconcile_correlation(
         self,
         correlation_id: str,
         events: List[ProvenanceEvent],
-        agent_claimed_success: bool = False
+        agent_claimed_success: bool = False,
+        allow_unverified_legacy: Optional[bool] = None
     ) -> ReconciliationReport:
         violations: List[str] = []
         details: Dict[str, Any] = {
@@ -978,6 +1073,15 @@ class ProvenanceReconciler:
             if token_exec_counts[tok] > 1:
                 violations.append(f"Multiple execution attempts detected for single-use authorization token: {tok}")
 
+        # Rule 6b: Duplicate terminal events for the same execution attempt
+        terminal_attempt_counts: Dict[str, int] = {}
+        for e in (exec_succeeded + exec_failed + exec_interrupted):
+            att = e.execution_attempt_id
+            if att:
+                terminal_attempt_counts[att] = terminal_attempt_counts.get(att, 0) + 1
+                if terminal_attempt_counts[att] > 1:
+                    violations.append(f"Multiple terminal outcome events detected for execution attempt: {att}")
+
         # Rule 7: Missing or interrupted execution records (started but no terminal event)
         started_attempts = {s.execution_attempt_id for s in exec_started if s.execution_attempt_id}
         ended_attempts = {e.execution_attempt_id for e in (exec_succeeded + exec_failed + exec_interrupted) if e.execution_attempt_id}
@@ -989,6 +1093,73 @@ class ProvenanceReconciler:
         if egress_blocked and agent_claimed_success:
             violations.append("Agent claimed successful disclosure, but egress was blocked by Shower Curtain")
 
+        # Rule 9 & 10: Cryptographic Capability and Authoritative Execution Verification
+        allow_legacy = self.allow_unverified_legacy if allow_unverified_legacy is None else allow_unverified_legacy
+        has_authoritative_verification = self.authority is not None
+
+        if has_authoritative_verification:
+            # Authoritative Verification Path
+            for g in auth_granted:
+                tok = g.authorization_token_id
+                if not tok or tok == "[REDACTED]":
+                    violations.append("Authorization grant event missing valid authorization_token_id")
+                    continue
+
+                valid_hist, hist_reason, cap_obj, _ = self.authority.verify_historical_capability(
+                    token_id=tok,
+                    action_name=g.action_name,
+                    target=g.target,
+                    canonical_request_digest=g.canonical_request_digest,
+                    correlation_id=correlation_id,
+                    request_id=g.request_id
+                )
+                if not valid_hist:
+                    violations.append(f"Authoritative capability verification failed for token {tok}: {hist_reason}")
+
+            for s in exec_started:
+                tok = s.authorization_token_id
+                att = s.execution_attempt_id
+                if not tok or tok == "[REDACTED]":
+                    violations.append("Execution started event missing valid authorization_token_id")
+                    continue
+                if not att:
+                    violations.append(f"Execution started event for token {tok} missing execution_attempt_id")
+                    continue
+
+                # Determine expected terminal outcome status from events
+                expected_outcome = None
+                for succ in exec_succeeded:
+                    if succ.execution_attempt_id == att or (not succ.execution_attempt_id and succ.authorization_token_id == tok):
+                        expected_outcome = "SUCCESS"
+                        break
+                if not expected_outcome:
+                    for fl in exec_failed:
+                        if fl.execution_attempt_id == att or (not fl.execution_attempt_id and fl.authorization_token_id == tok):
+                            expected_outcome = "FAILED"
+                            break
+                if not expected_outcome:
+                    for intr in exec_interrupted:
+                        if intr.execution_attempt_id == att or (not intr.execution_attempt_id and intr.authorization_token_id == tok):
+                            expected_outcome = "INTERRUPTED"
+                            break
+
+                valid_exec, exec_reason, _, _ = self.authority.verify_historical_capability(
+                    token_id=tok,
+                    action_name=s.action_name,
+                    target=s.target,
+                    canonical_request_digest=s.canonical_request_digest,
+                    execution_attempt_id=att,
+                    dispatched_executor_id=None,
+                    expected_outcome_status=expected_outcome,
+                    correlation_id=correlation_id,
+                    request_id=s.request_id
+                )
+                if not valid_exec:
+                    violations.append(f"Authoritative execution verification failed for attempt {att} (token {tok}): {exec_reason}")
+        else:
+            if allow_legacy:
+                details["authoritative_verification"] = "UNVERIFIED_LEGACY_STRUCTURAL_ONLY"
+
         # Determine status
         if violations:
             status = "RECONCILIATION_MISMATCH"
@@ -996,6 +1167,10 @@ class ProvenanceReconciler:
         elif not exec_succeeded and not exec_failed and not exec_interrupted and auth_granted:
             status = "INCOMPLETE_EVIDENCE"
             valid = False
+        elif not has_authoritative_verification and not allow_legacy:
+            status = "UNVERIFIED_LEGACY_EVIDENCE"
+            valid = False
+            violations.append("Authoritative verification unavailable: No AuthorizationAuthority supplied to reconciler")
         else:
             status = "RECONCILED"
             valid = True
