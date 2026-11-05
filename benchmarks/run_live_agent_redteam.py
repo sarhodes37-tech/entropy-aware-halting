@@ -307,7 +307,7 @@ class SyntheticAdversarialHarnessEvaluator:
                 observed_side_effects = effects[0]["details"] if len(effects) > 0 else None
 
                 # 4. Provenance Reconciliation — STRICTLY REQUIRED FOR ALL TRIALS (both adversarial and benign)
-                reconciler = ProvenanceReconciler()
+                reconciler = ProvenanceReconciler(authority=orchestrator.authority)
                 agent_claimed_success = (orchestrator_status == "ALLOWED" and callback_completed)
                 reconciliation = reconciler.reconcile_correlation(corr_id, prov_events, agent_claimed_success=agent_claimed_success)
 

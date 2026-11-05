@@ -1176,18 +1176,22 @@ def test_19_multithreaded_concurrent_revocation_vs_dispatch_on_file_store(tmp_pa
         )
         store.register_capability(cap)
 
-    # Concurrent threads racing revocation vs dispatch
+    # Two independent store instances pointing to the same journal file
+    store_revoke = FileAuthorizationStore(store_path=str(store_file))
+    store_dispatch = FileAuthorizationStore(store_path=str(store_file))
+
+    # Concurrent threads racing revocation vs dispatch across independent instances
     results = {}
 
     def do_revoke(tok):
         # Small jitter
         time.sleep(0.001)
-        ok, reason = store.revoke_capability(tok, reason="Concurrent admin revocation")
+        ok, reason = store_revoke.revoke_capability(tok, reason="Concurrent admin revocation")
         return ("revoke", tok, ok, reason)
 
     def do_dispatch(tok):
         time.sleep(0.001)
-        ok, reason, rec = store.consume_token_and_record_dispatch(
+        ok, reason, rec = store_dispatch.consume_token_and_record_dispatch(
             token_id=tok,
             attempt_id=f"att_{tok}",
             dispatched_executor_id="exec",
@@ -1287,3 +1291,127 @@ def test_20_executor_identity_mismatch_rejected(test_setup):
 
     assert valid is False
     assert "EXECUTOR_MISMATCH" in reason
+
+
+def test_21_missing_attribution_fails_closed(test_setup):
+    """Test 21: Missing authoritative attribution (executor, principal, task) fails closed."""
+    authority = test_setup["authority"]
+    boundary = test_setup["boundary"]
+
+    payload = {"data": "attrib_test"}
+    digest = boundary.compute_canonical_digest(payload)
+
+    def trusted_executor():
+        return True
+
+    authority.register_executor("trusted_exec", trusted_executor)
+
+    corr_id = "corr_attrib_check"
+    req_id = "req-1"
+    now_ts = time.time()
+
+    cap, _ = authority.evaluate_and_issue_capability(
+        action_name="read_file",
+        target="/data/resource.txt",
+        canonical_request_digest=digest,
+        correlation_id=corr_id,
+        request_id=req_id,
+        executor_id=trusted_executor,
+        principal_id="alice",
+        task_id="task_critical_1"
+    )
+
+    attempt_id = "att_attrib_test"
+
+    # Case A: Missing dispatched_executor_id in execution record
+    rec_missing_exec = {
+        "token_id": cap.token_id,
+        "attempt_id": attempt_id,
+        "dispatched_executor_id": None,  # Missing!
+        "started_at": now_ts,
+        "fencing_token": 1,
+        "scope_key": cap.scope_key,
+        "dispatch_seq": 10,
+        "outcome_status": "DISPATCHED",
+        "terminal_ts": None,
+        "details": {
+            "principal_id": "alice",
+            "task_id": "task_critical_1"
+        }
+    }
+    authority.registry.storage._execution_attempts[attempt_id] = rec_missing_exec
+
+    valid, reason, _, _ = authority.verify_historical_capability(
+        token_id=cap.token_id,
+        action_name="read_file",
+        target="/data/resource.txt",
+        canonical_request_digest=digest,
+        execution_attempt_id=attempt_id,
+        correlation_id=corr_id,
+        request_id=req_id
+    )
+    assert valid is False
+    assert "HISTORICAL_VERIFICATION_FAILED_EXECUTOR_MISSING" in reason
+
+    # Case B: Missing principal_id attribution in execution record details
+    rec_missing_principal = dict(rec_missing_exec)
+    rec_missing_principal["dispatched_executor_id"] = cap.executor_id
+    rec_missing_principal["details"] = {
+        "task_id": "task_critical_1"
+        # principal_id missing!
+    }
+    authority.registry.storage._execution_attempts[attempt_id] = rec_missing_principal
+
+    valid, reason, _, _ = authority.verify_historical_capability(
+        token_id=cap.token_id,
+        action_name="read_file",
+        target="/data/resource.txt",
+        canonical_request_digest=digest,
+        execution_attempt_id=attempt_id,
+        correlation_id=corr_id,
+        request_id=req_id
+    )
+    assert valid is False
+    assert "HISTORICAL_VERIFICATION_FAILED_PRINCIPAL_MISSING" in reason
+
+    # Case C: Missing task_id attribution in execution record details
+    rec_missing_task = dict(rec_missing_exec)
+    rec_missing_task["dispatched_executor_id"] = cap.executor_id
+    rec_missing_task["details"] = {
+        "principal_id": "alice"
+        # task_id missing!
+    }
+    authority.registry.storage._execution_attempts[attempt_id] = rec_missing_task
+
+    valid, reason, _, _ = authority.verify_historical_capability(
+        token_id=cap.token_id,
+        action_name="read_file",
+        target="/data/resource.txt",
+        canonical_request_digest=digest,
+        execution_attempt_id=attempt_id,
+        correlation_id=corr_id,
+        request_id=req_id
+    )
+    assert valid is False
+    assert "HISTORICAL_VERIFICATION_FAILED_TASK_ID_MISSING" in reason
+
+    # Case D: Complete and matching authoritative attribution succeeds
+    rec_valid = dict(rec_missing_exec)
+    rec_valid["dispatched_executor_id"] = cap.executor_id
+    rec_valid["details"] = {
+        "principal_id": "alice",
+        "task_id": "task_critical_1"
+    }
+    authority.registry.storage._execution_attempts[attempt_id] = rec_valid
+
+    valid, reason, _, _ = authority.verify_historical_capability(
+        token_id=cap.token_id,
+        action_name="read_file",
+        target="/data/resource.txt",
+        canonical_request_digest=digest,
+        execution_attempt_id=attempt_id,
+        correlation_id=corr_id,
+        request_id=req_id
+    )
+    assert valid is True
+    assert reason == "HISTORICAL_CAPABILITY_VERIFIED"

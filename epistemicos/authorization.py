@@ -3401,7 +3401,12 @@ class AuthorizationAuthority:
             # Compare the executor identity recorded by TrustedExecutionBoundary against the signed capability
             rec_exec = exec_record.get("dispatched_executor_id")
             cap_exec = getattr(cap, "executor_id", None)
-            if cap_exec and rec_exec and cap_exec != rec_exec:
+            if cap_exec and cap_exec != "default_executor":
+                if not rec_exec:
+                    return False, f"HISTORICAL_VERIFICATION_FAILED_EXECUTOR_MISSING: capability bound to '{cap_exec}', but dispatch record is missing dispatched_executor_id", cap, exec_record
+                if cap_exec != rec_exec:
+                    return False, f"HISTORICAL_VERIFICATION_FAILED_EXECUTOR_MISMATCH: capability bound to '{cap_exec}', dispatched to '{rec_exec}'", cap, exec_record
+            elif cap_exec and rec_exec and cap_exec != rec_exec:
                 return False, f"HISTORICAL_VERIFICATION_FAILED_EXECUTOR_MISMATCH: capability bound to '{cap_exec}', dispatched to '{rec_exec}'", cap, exec_record
 
             if dispatched_executor_id and rec_exec and rec_exec != dispatched_executor_id:
@@ -3409,13 +3414,23 @@ class AuthorizationAuthority:
 
             # Authoritative Principal and Task Attribution Verification:
             rec_meta = exec_record.get("details") or {}
-            if isinstance(rec_meta, dict):
+            if not isinstance(rec_meta, dict):
+                rec_meta = {}
+
+            # Principal attribution verification:
+            if cap.principal_id and cap.principal_id != "agent_default":
                 rec_principal = rec_meta.get("principal_id")
-                if cap.principal_id != "agent_default" and rec_principal and cap.principal_id != rec_principal:
+                if not rec_principal:
+                    return False, f"HISTORICAL_VERIFICATION_FAILED_PRINCIPAL_MISSING: capability bound to principal '{cap.principal_id}', but dispatch record is missing principal_id attribution", cap, exec_record
+                if cap.principal_id != rec_principal:
                     return False, f"HISTORICAL_VERIFICATION_FAILED_PRINCIPAL_MISMATCH: capability bound to '{cap.principal_id}', dispatched for '{rec_principal}'", cap, exec_record
 
+            # Task attribution verification:
+            if cap.task_id:
                 rec_task = rec_meta.get("task_id")
-                if cap.task_id and rec_task and cap.task_id != rec_task:
+                if not rec_task:
+                    return False, f"HISTORICAL_VERIFICATION_FAILED_TASK_ID_MISSING: capability bound to task_id '{cap.task_id}', but dispatch record is missing task_id attribution", cap, exec_record
+                if cap.task_id != rec_task:
                     return False, f"HISTORICAL_VERIFICATION_FAILED_TASK_ID_MISMATCH: capability bound to '{cap.task_id}', dispatched for '{rec_task}'", cap, exec_record
 
             # Verify terminal outcome match against authoritative record
