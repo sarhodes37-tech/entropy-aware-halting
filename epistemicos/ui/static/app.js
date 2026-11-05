@@ -339,6 +339,34 @@ document.addEventListener('DOMContentLoaded', () => {
     },
 
     // -------------------------------------------------------------------------
+    // Helper: Async Action Execution with Accessible Loading State
+    // -------------------------------------------------------------------------
+    async executeWithRetryFeedback(btn, loadingText, actionFn) {
+      if (!btn || btn.disabled) return;
+      const origDisabled = btn.disabled;
+      const origAriaBusy = btn.getAttribute('aria-busy');
+      const origTitle = btn.getAttribute('title');
+      const origText = btn.textContent;
+      btn.disabled = true;
+      btn.setAttribute('aria-busy', 'true');
+      btn.textContent = loadingText;
+      btn.setAttribute('title', loadingText);
+      try {
+        this.announce(loadingText);
+        await actionFn();
+      } finally {
+        if (btn && btn.isConnected) {
+          btn.disabled = origDisabled;
+          if (origAriaBusy !== null) btn.setAttribute('aria-busy', origAriaBusy);
+          else btn.removeAttribute('aria-busy');
+          if (origTitle !== null) btn.setAttribute('title', origTitle);
+          else btn.removeAttribute('title');
+          btn.textContent = origText;
+        }
+      }
+    },
+
+    // -------------------------------------------------------------------------
     // Helper: Clipboard Copy Action
     // -------------------------------------------------------------------------
     copyToClipboard(text, btnElement) {
@@ -1262,7 +1290,7 @@ document.addEventListener('DOMContentLoaded', () => {
       retryBtn.textContent = 'Retry Loading Traces';
       retryBtn.setAttribute('aria-label', 'Retry loading execution traces');
       retryBtn.setAttribute('title', 'Retry loading execution traces');
-      retryBtn.addEventListener('click', () => this.loadTraces());
+      retryBtn.addEventListener('click', () => this.executeWithRetryFeedback(retryBtn, 'Retrying Traces...', () => this.loadTraces()));
 
       errLi.appendChild(msgSpan);
       errLi.appendChild(detailSpan);
@@ -1488,7 +1516,7 @@ document.addEventListener('DOMContentLoaded', () => {
       retryBtn.textContent = 'Retry Selection';
       retryBtn.setAttribute('aria-label', `Retry selection for trace ${correlationId}`);
       retryBtn.setAttribute('title', `Retry selection for trace ${correlationId}`);
-      retryBtn.addEventListener('click', () => this.selectTrace(correlationId));
+      retryBtn.addEventListener('click', () => this.executeWithRetryFeedback(retryBtn, 'Retrying Selection...', () => this.selectTrace(correlationId)));
 
       errCard.appendChild(errHeader);
       errCard.appendChild(h3);
@@ -2123,7 +2151,7 @@ document.addEventListener('DOMContentLoaded', () => {
         retryBtn.textContent = 'Retry Loading Provenance';
         retryBtn.setAttribute('aria-label', 'Retry loading provenance records');
         retryBtn.setAttribute('title', 'Retry loading provenance records');
-        retryBtn.addEventListener('click', () => this.loadProvenance());
+        retryBtn.addEventListener('click', () => this.executeWithRetryFeedback(retryBtn, 'Retrying Provenance...', () => this.loadProvenance()));
 
         errLi.appendChild(msgSpan);
         errLi.appendChild(detailSpan);
@@ -2735,7 +2763,7 @@ document.addEventListener('DOMContentLoaded', () => {
         retryBtn.textContent = 'Retry Loading Benchmarks';
         retryBtn.setAttribute('aria-label', 'Retry loading benchmark artifacts');
         retryBtn.setAttribute('title', 'Retry loading benchmark artifacts');
-        retryBtn.addEventListener('click', () => this.loadBenchmarks());
+        retryBtn.addEventListener('click', () => this.executeWithRetryFeedback(retryBtn, 'Retrying Benchmarks...', () => this.loadBenchmarks()));
 
         errLi.appendChild(msgSpan);
         errLi.appendChild(detailSpan);
