@@ -383,6 +383,8 @@ def test_semantic_adapter_threshold_validation():
         None,
         [],
         {},
+        10**1000,
+        -(10**1000),
     ]
     for val in invalid_thresholds:
         with pytest.raises(
@@ -396,3 +398,16 @@ def test_semantic_adapter_threshold_validation():
     for val in valid_thresholds:
         adapter = SemanticAdapter(threshold=val)
         assert adapter.threshold == val
+
+
+def test_semantic_adapter_threshold_large_integer_overflow_regression():
+    """
+    Regression test ensuring extremely large integers outside 64-bit float conversion range
+    do not raise OverflowError in math functions, and instead consistently raise ValueError.
+    """
+    for large_val in (10**1000, -(10**1000)):
+        with pytest.raises(
+            ValueError,
+            match=r"threshold must be a finite numeric value within \[0\.0, 1\.0\]",
+        ):
+            SemanticAdapter(threshold=large_val)
