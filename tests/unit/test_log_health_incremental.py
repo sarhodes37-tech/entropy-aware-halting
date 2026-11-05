@@ -513,6 +513,47 @@ def test_hmac_keyed_incremental_verification(tmp_path: Path):
     assert healthy_wrong is False
 
 
+def test_audit_trail_multibyte_utf8_byte_offset_consistency(tmp_path: Path):
+    """
+    Verifies that multibyte UTF-8 characters (e.g. Japanese, Arabic, emoji)
+    where character count != byte count maintain exact byte offset consistency
+    and full verification equivalence between full-scan and incremental verification.
+    """
+    log_file = str(tmp_path / "test_multibyte.jsonl")
+    trail = TamperEvidentAuditTrail(log_file_path=log_file)
+
+    multibyte_reasons = [
+        "こんにちは世界 - Japanese greeting",
+        "مرحبا بالعالم - Arabic greeting",
+        "🚀 Secure Autonomous Governance 🛡️🔐",
+        "Schöne Grüße aus München! ÄÖÜß",
+    ]
+
+    for i, reason in enumerate(multibyte_reasons):
+        trail.record_event(
+            AuditEvent(
+                event_type=AuditLogLevel.INFO,
+                gate_name=f"GateMultibyte_{i}",
+                reason=reason,
+                model_id="m_multibyte",
+                payload_snippet=json.dumps({"text": reason}),
+            )
+        )
+
+    # Full scan reference check
+    ref_trail = TamperEvidentAuditTrail(log_file_path=log_file)
+    ref_healthy, ref_hash, ref_err = ref_trail.inspect_log_health()
+    inc_healthy, inc_hash, inc_err = trail.inspect_log_health()
+
+    assert ref_healthy is True
+    assert inc_healthy is True
+    assert ref_hash == inc_hash
+    assert ref_err is None
+    assert inc_err is None
+    # Verified offset must exactly equal file byte size
+    assert trail._verified_offset == os.path.getsize(log_file)
+
+
 def test_intervening_historical_modification_during_inspection_fails_closed(tmp_path: Path):
     """
     Verifies that if historical content is modified while or between inspections,
