@@ -687,3 +687,41 @@ def test_gap_wid_01_sanitization_failure_preserves_execution_status():
     assert res["status"] == "SUCCESS"
     # Never leaks the raw dict {"status": "ok", "secret": "leaked_secret"}
     assert res["result"] == "[SANITIZATION_FAILED: TypeError]"
+
+
+def test_gap_wid_01_credential_bearing_and_unsupported_dictionary_keys():
+    """Scenario 19: Credentials in keys are sanitized and uninspected key objects fail closed."""
+    class EvilKeyObject:
+        def __str__(self):
+            raise RuntimeError("Dangerous side-effect in __str__")
+
+    def dict_key_tool():
+        return {
+            "sk-ant-api03-abcdefghijklmnop1234567890": "credential_key_value",
+            "header_with_Bearer token_123": "bearer_key_value",
+            EvilKeyObject(): "evil_key_value",
+            "normal_safe_key": "normal_data",
+            42: "integer_key"
+        }
+
+    reg = TrustedToolRegistry()
+    reg.authority.default_policy = _make_open_policy()
+    tool = reg.register_tool(
+        tool_id="key_tool",
+        action_name="get_keys",
+        executor_func=dict_key_tool,
+        default_target="/keys"
+    )
+    res = tool()
+    assert res["status"] == "SUCCESS"
+    r = res["result"]
+    assert "sk-ant-api03-abcdefghijklmnop1234567890" not in r
+    assert "sk-[REDACTED]" in r
+    assert r["sk-[REDACTED]"] == "credential_key_value"
+    assert "header_with_Bearer [REDACTED]" in r
+    # Because key contains 'bearer' (a sensitive key pattern), its associated value is also redacted
+    assert r["header_with_Bearer [REDACTED]"] == "[REDACTED]"
+    assert "[UNSUPPORTED_KEY]" in r
+    assert r["[UNSUPPORTED_KEY]"] == "evil_key_value"
+    assert r["normal_safe_key"] == "normal_data"
+    assert r["42"] == "integer_key"

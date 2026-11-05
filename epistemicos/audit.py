@@ -99,16 +99,29 @@ def _sanitize_sensitive_data(obj: Any, _visited: Optional[Set[int]] = None) -> A
     if obj_id in _visited:
         return "[CIRCULAR_REFERENCE]"
 
+    def _sanitize_key(k: Any) -> Any:
+        if not isinstance(k, (str, int, float, bool)):
+            return "[UNSUPPORTED_KEY]"
+        if isinstance(k, (int, float, bool)):
+            return str(k)
+        if isinstance(k, str):
+            return _sanitize_string_value(k)
+        return str(k)
+
     if isinstance(obj, dict):
         _visited.add(obj_id)
         try:
             sanitized = {}
             for k, v in obj.items():
-                k_str = str(k).lower()
-                if _is_sensitive_key(k_str):
-                    sanitized[k] = "[REDACTED]"
+                san_k = _sanitize_key(k)
+                if not isinstance(k, (str, int, float, bool)):
+                    k_str = ""
                 else:
-                    sanitized[k] = _sanitize_sensitive_data(v, _visited)
+                    k_str = str(k).lower()
+                if k_str and _is_sensitive_key(k_str):
+                    sanitized[san_k] = "[REDACTED]"
+                else:
+                    sanitized[san_k] = _sanitize_sensitive_data(v, _visited)
             return sanitized
         finally:
             _visited.remove(obj_id)
@@ -149,11 +162,15 @@ def _sanitize_sensitive_data(obj: Any, _visited: Optional[Set[int]] = None) -> A
         try:
             sanitized_map = {}
             for k, v in obj.items():
-                k_str = str(k).lower()
-                if _is_sensitive_key(k_str):
-                    sanitized_map[k] = "[REDACTED]"
+                san_k = _sanitize_key(k)
+                if not isinstance(k, (str, int, float, bool)):
+                    k_str = ""
                 else:
-                    sanitized_map[k] = _sanitize_sensitive_data(v, _visited)
+                    k_str = str(k).lower()
+                if k_str and _is_sensitive_key(k_str):
+                    sanitized_map[san_k] = "[REDACTED]"
+                else:
+                    sanitized_map[san_k] = _sanitize_sensitive_data(v, _visited)
             return sanitized_map
         finally:
             _visited.remove(obj_id)
