@@ -40,6 +40,15 @@ class SemanticAdapter:
         threshold: float = 0.5,
         model: Optional[str] = None,
     ):
+        if (
+            isinstance(threshold, bool)
+            or not isinstance(threshold, (int, float))
+            or math.isnan(threshold)
+            or math.isinf(threshold)
+            or not (0.0 <= threshold <= 1.0)
+        ):
+            raise ValueError("threshold must be a finite numeric value within [0.0, 1.0]")
+
         self.model_name = model if model is not None else model_name
         self.threshold = threshold
 

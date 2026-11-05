@@ -365,3 +365,34 @@ def test_semantic_adapter_public_export():
 
     adapter = PublicSemanticAdapter()
     assert str(adapter) == "SemanticAdapter(model=default, threshold=0.5)"
+
+
+def test_semantic_adapter_threshold_validation():
+    """Verifies that SemanticAdapter strictly validates threshold within [0.0, 1.0]."""
+    invalid_thresholds = [
+        -0.01,
+        -1.0,
+        1.01,
+        2.0,
+        float("nan"),
+        float("inf"),
+        float("-inf"),
+        True,
+        False,
+        "0.5",
+        None,
+        [],
+        {},
+    ]
+    for val in invalid_thresholds:
+        with pytest.raises(
+            ValueError,
+            match=r"threshold must be a finite numeric value within \[0\.0, 1\.0\]",
+        ):
+            SemanticAdapter(threshold=val)
+
+    # Valid boundary and intermediate values
+    valid_thresholds = [0.0, 1.0, 0, 1, 0.5, 0.25]
+    for val in valid_thresholds:
+        adapter = SemanticAdapter(threshold=val)
+        assert adapter.threshold == val
