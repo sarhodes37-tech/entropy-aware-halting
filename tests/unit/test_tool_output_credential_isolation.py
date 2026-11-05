@@ -531,3 +531,159 @@ def test_gap_wid_01_self_returning_serialization_hooks():
     res = tool()
     assert res["status"] == "SUCCESS"
     assert res["result"]["password"] == "[REDACTED]"
+
+
+def test_gap_wid_01_unsupported_object_with_no_dict_or_slots_redacted():
+    """Scenario 15: Objects without __dict__ or __slots__ fail closed rather than passing."""
+    import sqlite3
+
+    def sqlite_row_tool():
+        con = sqlite3.connect(":memory:")
+        con.row_factory = sqlite3.Row
+        cur = con.cursor()
+        cur.execute('select "sk-ant-secret-12345" as secret, "admin" as user')
+        return cur.fetchone()
+
+    reg = TrustedToolRegistry()
+    reg.authority.default_policy = _make_open_policy()
+    tool = reg.register_tool(
+        tool_id="row_tool",
+        action_name="get_row",
+        executor_func=sqlite_row_tool,
+        default_target="/db"
+    )
+    res = tool()
+    assert res["status"] == "SUCCESS"
+    # Fails closed to [UNSUPPORTED_OBJECT] rather than leaking the raw sqlite3.Row object
+    assert res["result"] == "[UNSUPPORTED_OBJECT]"
+
+
+def test_gap_wid_01_untrusted_serialization_hooks_not_blindly_invoked():
+    """Scenario 16: Arbitrary serialization hooks with side-effects or errors are not invoked."""
+    hook_invoked = False
+
+    class EvilHookObject:
+        def __init__(self):
+            self.normal_attr = "ok"
+
+        def to_dict(self):
+            nonlocal hook_invoked
+            hook_invoked = True
+            raise RuntimeError("Untrusted serialization side effect or bomb!")
+
+    def evil_hook_tool():
+        return EvilHookObject()
+
+    reg = TrustedToolRegistry()
+    reg.authority.default_policy = _make_open_policy()
+    tool = reg.register_tool(
+        tool_id="evil_tool",
+        action_name="get_evil",
+        executor_func=evil_hook_tool,
+        default_target="/obj"
+    )
+    res = tool()
+    assert res["status"] == "SUCCESS"
+    # Sanitization relied on safe __dict__ inspection without invoking arbitrary to_dict()
+    assert hook_invoked is False
+    assert res["result"] == {"normal_attr": "ok"}
+
+
+def test_gap_wid_01_cyclic_custom_objects_and_cyclic_dataclasses():
+    """Scenario 17: Cyclic __dict__ objects and cyclic dataclasses are handled deterministically."""
+    from dataclasses import dataclass
+
+    # 1. Cyclic object with __dict__
+    class CyclicCustom:
+        def __init__(self):
+            self.token = "sk-ant-api03-abcdefghijklmnop1234567890"
+            self.ref = self
+
+    def cyclic_custom_tool():
+        return CyclicCustom()
+
+    reg = TrustedToolRegistry()
+    reg.authority.default_policy = _make_open_policy()
+    t1 = reg.register_tool(
+        tool_id="t_custom",
+        action_name="custom",
+        executor_func=cyclic_custom_tool,
+        default_target="/t"
+    )
+    res1 = t1()
+    assert res1["status"] == "SUCCESS"
+    assert res1["result"]["token"] == "[REDACTED]"
+    assert res1["result"]["ref"] == "[CIRCULAR_REFERENCE]"
+
+    # 2. Cyclic dataclass
+    @dataclass
+    class Node:
+        secret: str
+        next_node: "Node" = None
+
+    def cyclic_dc_tool():
+        n = Node("super_secret_dc")
+        n.next_node = n
+        return n
+
+    t2 = reg.register_tool(
+        tool_id="t_dc", action_name="dc", executor_func=cyclic_dc_tool, default_target="/t"
+    )
+    res2 = t2()
+    assert res2["status"] == "SUCCESS"
+    assert res2["result"]["secret"] == "[REDACTED]"
+    assert res2["result"]["next_node"] == "[CIRCULAR_REFERENCE]"
+
+    # 3. Cyclic slotted object
+    class SlottedCyclicNode:
+        __slots__ = ("api_key", "cycle_ref")
+
+    def cyclic_slot_tool():
+        sn = SlottedCyclicNode()
+        sn.api_key = "sk-ant-api03-abcdefghijklmnop1234567890"
+        sn.cycle_ref = sn
+        return sn
+
+    t3 = reg.register_tool(
+        tool_id="t_slot_cyc",
+        action_name="slot_cyc",
+        executor_func=cyclic_slot_tool,
+        default_target="/t"
+    )
+    res3 = t3()
+    assert res3["status"] == "SUCCESS"
+    assert res3["result"]["api_key"] == "[REDACTED]"
+    assert res3["result"]["cycle_ref"] == "[CIRCULAR_REFERENCE]"
+
+
+def test_gap_wid_01_sanitization_failure_preserves_execution_status():
+    """Scenario 18: If sanitization throws, safe failure representation is returned."""
+    from unittest.mock import patch
+    from epistemicos.audit import _sanitize_sensitive_data as real_sanitize
+
+    def exploding_sanitize_tool():
+        return {"status": "ok", "secret": "leaked_secret"}
+
+    reg = TrustedToolRegistry()
+    reg.authority.default_policy = _make_open_policy()
+    tool = reg.register_tool(
+        tool_id="exploding_tool",
+        action_name="explode_action",
+        executor_func=exploding_sanitize_tool,
+        default_target="/explode"
+    )
+
+    def explode_on_tool_result(obj, *args, **kwargs):
+        if isinstance(obj, dict) and obj.get("secret") == "leaked_secret":
+            raise TypeError("Simulated traversal fault on tool result")
+        return real_sanitize(obj, *args, **kwargs)
+
+    with patch(
+        "epistemicos.provenance._sanitize_sensitive_data",
+        side_effect=explode_on_tool_result
+    ):
+        res = tool()
+
+    assert res["status"] == "SUCCESS"
+    # Never leaks the raw dict {"status": "ok", "secret": "leaked_secret"}
+    assert res["result"] == "[SANITIZATION_FAILED: TypeError]"

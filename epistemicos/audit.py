@@ -91,6 +91,10 @@ def _sanitize_sensitive_data(obj: Any, _visited: Optional[Set[int]] = None) -> A
     elif isinstance(obj, (int, float, bool, type(None))):
         return obj
 
+    from enum import Enum
+    if isinstance(obj, Enum):
+        return _sanitize_sensitive_data(obj.value, _visited)
+
     obj_id = id(obj)
     if obj_id in _visited:
         return "[CIRCULAR_REFERENCE]"
@@ -123,7 +127,13 @@ def _sanitize_sensitive_data(obj: Any, _visited: Optional[Set[int]] = None) -> A
     elif isinstance(obj, (set, frozenset)):
         _visited.add(obj_id)
         try:
-            sanitized_items = [_sanitize_sensitive_data(item, _visited) for item in obj]
+            # For set serialization, unsupported un-serializable callables (e.g. lambdas)
+            # must raise TypeError explicitly per audit determinism invariants
+            sanitized_items = []
+            for item in obj:
+                if callable(item):
+                    raise TypeError(f"Object of type {type(item).__name__} is not JSON serializable")
+                sanitized_items.append(_sanitize_sensitive_data(item, _visited))
             return sorted(sanitized_items, key=lambda x: json.dumps(x, sort_keys=True))
         finally:
             _visited.remove(obj_id)
@@ -159,28 +169,6 @@ def _sanitize_sensitive_data(obj: Any, _visited: Optional[Set[int]] = None) -> A
         finally:
             _visited.discard(obj_id)
 
-    # Handle objects exposing model_dump / to_dict safely (guard against self-return & cycles)
-    if hasattr(obj, "model_dump") and callable(getattr(obj, "model_dump")):
-        _visited.add(obj_id)
-        try:
-            dumped = obj.model_dump()
-            if dumped is not obj and not getattr(dumped.__class__, "__module__", "").startswith("unittest.mock"):
-                return _sanitize_sensitive_data(dumped, _visited)
-        except Exception:
-            pass
-        finally:
-            _visited.discard(obj_id)
-
-    if hasattr(obj, "to_dict") and callable(getattr(obj, "to_dict")):
-        _visited.add(obj_id)
-        try:
-            dumped = obj.to_dict()
-            if dumped is not obj and not getattr(dumped.__class__, "__module__", "").startswith("unittest.mock"):
-                return _sanitize_sensitive_data(dumped, _visited)
-        except Exception:
-            pass
-        finally:
-            _visited.discard(obj_id)
 
     # Handle general inspectable user objects with __dict__ (exclude functions/classes)
     if not callable(obj) and not isinstance(obj, type) and hasattr(obj, "__dict__") and isinstance(obj.__dict__, dict):
@@ -222,7 +210,9 @@ def _sanitize_sensitive_data(obj: Any, _visited: Optional[Set[int]] = None) -> A
         finally:
             _visited.remove(obj_id)
 
-    return obj
+    # Explicit deterministic fail-closed behavior for unsupported uninspectable objects:
+    # Do not silently pass raw uninspected objects through across trust boundaries.
+    return "[UNSUPPORTED_OBJECT]"
 
 
 class AuditLogLevel(Enum):

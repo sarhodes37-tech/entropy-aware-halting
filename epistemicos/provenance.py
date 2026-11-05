@@ -812,7 +812,12 @@ class TrustedExecutionBoundary:
         # GAP-WID-01 Remediation: Enforce credential isolation across execution boundary.
         # Raw credential-bearing tool output must not cross boundary to untrusted consumers.
         # Non-destructively sanitize result before return while preserving original executor object.
-        sanitized_result = _sanitize_sensitive_data(result)
+        # If sanitization raises an unexpected error, fail closed by returning a safe error representation
+        # rather than returning the raw unsanitized result or discarding that execution occurred.
+        try:
+            sanitized_result = _sanitize_sensitive_data(result)
+        except Exception as san_err:
+            sanitized_result = f"[SANITIZATION_FAILED: {type(san_err).__name__}]"
 
         ev_ok, ev_msg = _verify_success_evidence(result)
         if not ev_ok:
