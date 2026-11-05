@@ -343,21 +343,25 @@ document.addEventListener('DOMContentLoaded', () => {
     // -------------------------------------------------------------------------
     async executeWithRetryFeedback(btn, loadingText, actionFn) {
       if (!btn || btn.disabled) return;
-      const origText = btn.textContent;
+      const origDisabled = btn.disabled;
+      const origAriaBusy = btn.getAttribute('aria-busy');
       const origTitle = btn.getAttribute('title');
+      const origText = btn.textContent;
       btn.disabled = true;
       btn.setAttribute('aria-busy', 'true');
       btn.textContent = loadingText;
       btn.setAttribute('title', loadingText);
-      this.announce(loadingText);
       try {
+        this.announce(loadingText);
         await actionFn();
       } finally {
         if (btn && btn.isConnected) {
-          btn.disabled = false;
-          btn.removeAttribute('aria-busy');
+          btn.disabled = origDisabled;
+          if (origAriaBusy !== null) btn.setAttribute('aria-busy', origAriaBusy);
+          else btn.removeAttribute('aria-busy');
+          if (origTitle !== null) btn.setAttribute('title', origTitle);
+          else btn.removeAttribute('title');
           btn.textContent = origText;
-          if (origTitle) btn.setAttribute('title', origTitle);
         }
       }
     },
