@@ -46,7 +46,6 @@ from epistemicos.provenance import LocalProvenanceStore
 
 
 import functools
-import time
 from epistemicos.authorization import PrincipalVerifier
 from tests.unit.test_sec01_sec03_remediation import ExternalTestIdentityAuthority, _ed25519_sign
 
@@ -61,6 +60,12 @@ def _cached_sign(payload: bytes):
     return _ed25519_sign(payload, TEST_IDP.private_seed, TEST_IDP.public_key).hex()
 
 
+# Fixed static timestamp to enable LRU cache hits across thread workers
+# While ensuring expiration is valid relative to runtime
+_BASE_TIMESTAMP = 1800000000.0
+_BASE_EXPIRY = 2500000000.0
+
+
 def make_assertion(
     principal: str,
     classification: str = "CONFIDENTIAL",
@@ -71,10 +76,8 @@ def make_assertion(
 ):
     if hasattr(classification, "value"):
         classification = classification.value
-    now = time.time()
-    ts = timestamp if timestamp is not None else now
-    # Default expiry far in the future
-    exp = expires_at if expires_at is not None else now + 3600.0 * 24
+    ts = timestamp if timestamp is not None else _BASE_TIMESTAMP
+    exp = expires_at if expires_at is not None else _BASE_EXPIRY
     dest_str = destination_host or ""
     payload = f"{principal}:{issuer}:{classification}:{dest_str}:{ts:.6f}:{exp:.6f}".encode("utf-8")
     sig = _cached_sign(payload)
