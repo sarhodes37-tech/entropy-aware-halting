@@ -151,49 +151,115 @@ class DataTransferContext:
     request_id: str = "DEFAULT-REQ"
     capability_token_id: Optional[str] = None
     _is_classification_trusted: bool = field(default=False, repr=False)
-    _integrity_seal: Optional[str] = field(default=None, repr=False)
     action_name: Optional[str] = None
     target: Optional[str] = None
     canonical_request_digest: Optional[str] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
-
-    def compute_integrity_seal(self) -> str:
-        """Computes a deterministic cryptographic integrity seal over critical security fields."""
-        dest_host = self.destination.host.strip().lower() if self.destination else ""
-        dest_tenant = (self.destination.tenant_id or "").strip() if self.destination else ""
-        dest_account = (self.destination.account_id or "").strip() if self.destination else ""
-        scope_str = (self.source_scope or "").strip()
-        dir_str = (
-            self.direction.value.upper()
-            if hasattr(self.direction, "value")
-            else str(self.direction)
-        )
-        op_str = (
-            self.operation.value.upper()
-            if hasattr(self.operation, "value")
-            else str(self.operation)
-        )
-        class_str = (
-            self.classification.value.upper()
-            if hasattr(self.classification, "value")
-            else str(self.classification)
-        )
-        prin_str = self.initiating_principal.strip() if self.initiating_principal else ""
-
-        raw = (
-            f"{prin_str}|{dest_host}|{dest_tenant}|{dest_account}|"
-            f"{scope_str}|{dir_str}|{op_str}|{class_str}"
-        ).encode("utf-8")
-        return hashlib.sha256(raw).hexdigest()
+    trusted_authority_assertion: Optional[Any] = field(default=None, repr=False)
+    principal_verifier: Optional[Any] = field(default=None, repr=False)
 
     @property
     def is_classification_trusted(self) -> bool:
         if not self._is_classification_trusted:
             return False
-        if not self._integrity_seal:
+        if not self.trusted_authority_assertion:
             return False
-        # If any security field was mutated post-construction, seal check fails
-        return hmac.compare_digest(self._integrity_seal, self.compute_integrity_seal())
+        return self._verify_context_assertion(self.principal_verifier)
+
+    def _verify_context_assertion(self, verifier_override: Optional[Any] = None) -> bool:
+        """
+        Cryptographically verifies the bound authority assertion against the current context
+        fields using Ed25519 asymmetric verification.
+        Any post-construction mutation of security fields will cause this check to fail,
+        and an unauthenticated caller cannot forge a valid Ed25519 signature.
+        """
+        assertion = self.trusted_authority_assertion
+        if not assertion:
+            return False
+
+        from epistemicos.authorization import PrincipalVerifier, verify_ed25519_signature
+        verifier = verifier_override or self.principal_verifier or PrincipalVerifier()
+        if not verifier.has_trusted_issuers():
+            return False
+
+        if isinstance(assertion, dict):
+            issuer = assertion.get("issuer")
+            sig_hex = assertion.get("signature")
+            asserted_principal = assertion.get("principal")
+            asserted_dest = assertion.get("destination_host")
+            asserted_tenant = assertion.get("tenant_id")
+            asserted_account = assertion.get("account_id")
+            asserted_class = assertion.get("classification")
+            asserted_scope = assertion.get("source_scope")
+            asserted_direction = assertion.get("direction")
+            asserted_operation = assertion.get("operation")
+            timestamp = assertion.get("timestamp")
+            expires_at = assertion.get("expires_at")
+
+            dest_host = self.destination.host.strip().lower() if self.destination else ""
+            if not asserted_dest or str(asserted_dest).strip().lower() != dest_host:
+                return False
+
+            if not asserted_principal or str(asserted_principal).strip() != self.initiating_principal.strip():
+                return False
+
+            if (asserted_tenant or "") != ((self.destination.tenant_id if self.destination else "") or ""):
+                return False
+
+            if (asserted_account or "") != ((self.destination.account_id if self.destination else "") or ""):
+                return False
+
+            if not asserted_class or str(asserted_class).upper() != self.classification.value.upper():
+                return False
+
+            if (asserted_scope or "") != (self.source_scope or ""):
+                return False
+
+            if not asserted_direction or str(asserted_direction).upper() != self.direction.value.upper():
+                return False
+
+            if not asserted_operation or str(asserted_operation).upper() != self.operation.value.upper():
+                return False
+
+            now = time.time()
+            if expires_at is None or not isinstance(expires_at, (int, float)) or now >= expires_at:
+                return False
+
+            trusted_pubkey = verifier._trusted_public_keys.get(issuer) if issuer else None
+            if not issuer or not sig_hex or not trusted_pubkey:
+                return False
+
+            try:
+                sig_bytes = bytes.fromhex(sig_hex)
+                dest_str = asserted_dest.strip().lower()
+                tenant_str = asserted_tenant or ""
+                account_str = asserted_account or ""
+                scope_str = asserted_scope or ""
+                ts_str = (
+                    f"{timestamp:.6f}" if isinstance(timestamp, (int, float))
+                    else str(timestamp or "")
+                )
+                exp_str = (
+                    f"{expires_at:.6f}" if isinstance(expires_at, (int, float))
+                    else str(expires_at or "")
+                )
+                payload = (
+                    f"{asserted_principal.strip()}:{issuer}:{dest_str}:"
+                    f"{tenant_str}:{account_str}:{asserted_class.upper()}:"
+                    f"{scope_str}:{asserted_direction.upper()}:"
+                    f"{asserted_operation.upper()}:{ts_str}:{exp_str}"
+                ).encode("utf-8")
+
+                return bool(verify_ed25519_signature(sig_bytes, payload, trusted_pubkey))
+            except Exception:
+                return False
+
+        from epistemicos.authorization import AuthenticatedPrincipal
+        if isinstance(assertion, AuthenticatedPrincipal):
+            valid, reason, _ = verifier.verify_principal(assertion)
+            return valid and assertion.principal_id == self.initiating_principal
+
+        return False
 
     def __post_init__(self):
         if (
@@ -400,7 +466,7 @@ class TrustedTransferContextBuilder:
             else:
                 is_trusted = False
 
-        ctx = DataTransferContext(
+        return DataTransferContext(
             initiating_principal=principal,
             destination=destination,
             classification=classification,
@@ -416,11 +482,10 @@ class TrustedTransferContextBuilder:
             _is_classification_trusted=is_trusted,
             action_name=action_name,
             target=target,
-            canonical_request_digest=canonical_request_digest
+            canonical_request_digest=canonical_request_digest,
+            trusted_authority_assertion=trusted_authority_assertion if is_trusted else None,
+            principal_verifier=principal_verifier if is_trusted else None
         )
-        if is_trusted:
-            ctx._integrity_seal = ctx.compute_integrity_seal()
-        return ctx
 
 
 @dataclass
@@ -650,14 +715,23 @@ class DataTransferPolicy:
             )
 
         # Fail closed on untrusted or unverified classification in protected mode
-        if self.protected_mode and not context.is_classification_trusted:
-            return TransferDecision(
-                allowed=False,
-                reason=(
-                    f"Transfer blocked: Classification '{context.classification.value}' "
-                    "does not originate from a trusted authority or policy-controlled metadata."
+        if self.protected_mode:
+            if not context._is_classification_trusted:
+                return TransferDecision(
+                    allowed=False,
+                    reason=(
+                        f"Transfer blocked: Classification '{context.classification.value}' "
+                        "does not originate from a trusted authority or policy-controlled metadata."
+                    )
                 )
-            )
+            if not context._verify_context_assertion():
+                return TransferDecision(
+                    allowed=False,
+                    reason=(
+                        f"Transfer blocked: Classification '{context.classification.value}' "
+                        "failed cryptographic authority assertion verification or binding mismatch."
+                    )
+                )
 
         dest = context.destination
         principal = context.initiating_principal

@@ -1738,6 +1738,7 @@ def test_targeted_security_defect_verification_suite():
         assert (
             "Untrusted or unverified data classification" in decision.reason
             or "does not originate from a trusted authority" in decision.reason
+            or "failed cryptographic authority assertion verification" in decision.reason
         )
 
     # 2. Required capability with no AuthorizationAuthority is denied before socket creation
@@ -1955,12 +1956,15 @@ def test_targeted_security_defect_verification_suite():
             )
     assert accounting_policy.get_cumulative_bytes("task-refund-full") == 0
 
-    # 4. Partial upload: failure during send
-    class FailSend:
+    # 4. Partial upload: failure during send after 150 bytes have crossed the wire
+    class FailMidSend:
         def __init__(self, *args, **kwargs):
             pass
 
         def request(self, method, url, body=None, headers=None):
+            if hasattr(body, "read"):
+                # Read 150 bytes from the body stream to simulate transmission
+                body.read(150)
             raise BrokenPipeError("Socket severed during payload transmission")
 
         def close(self):
@@ -1979,7 +1983,7 @@ def test_targeted_security_defect_verification_suite():
             "principal:alice", "INTERNAL", destination_host="s3.us-east-1.amazonaws.com"
         )
     )
-    with patch("epistemicos.containment.PinnedHTTPSConnection", FailSend):
+    with patch("epistemicos.containment.PinnedHTTPSConnection", FailMidSend):
         with pytest.raises((BrokenPipeError, OSError)):
             transport_acct.request(
                 method="POST",
@@ -1987,8 +1991,8 @@ def test_targeted_security_defect_verification_suite():
                 body=b"B" * 400,
                 transfer_context=ctx_part_up
             )
-    # Pre-send failure commits 0 bytes and refunds
-    assert accounting_policy.get_cumulative_bytes("task-partial-up") == 0
+    # 150 bytes crossed the boundary and must be committed; remaining 250 reserved bytes refunded
+    assert accounting_policy.get_cumulative_bytes("task-partial-up") == 150
 
     # 4. Streamed download: 350 bytes received before stream disconnection
     class PartialStreamResponse:

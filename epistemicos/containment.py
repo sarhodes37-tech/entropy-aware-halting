@@ -1335,6 +1335,23 @@ class EgressTransportBroker:
 
 import http.client
 import ssl
+import io
+
+
+class UploadProgressStream(io.BytesIO):
+    """
+    Byte stream wrapper tracking actual bytes read by the transport during transmission.
+    Invokes callback immediately as chunks are dispatched to the socket.
+    """
+    def __init__(self, data: bytes, on_read_callback: Optional[Callable[[int], None]] = None):
+        super().__init__(data)
+        self._on_read_callback = on_read_callback
+
+    def read(self, size: int = -1) -> bytes:
+        chunk = super().read(size)
+        if chunk and self._on_read_callback:
+            self._on_read_callback(len(chunk))
+        return chunk
 
 
 class PinnedHTTPConnection(http.client.HTTPConnection):
@@ -1591,7 +1608,22 @@ class ControlledEgressTransport:
                             port=eff_port,
                             timeout=eff_timeout
                         )
-                    conn.request(current_method, path_and_query, body=encoded_body, headers=req_headers)
+
+                    # Wrap payload body in UploadProgressStream if body is present and tracking is needed
+                    request_body_to_send = encoded_body
+                    if encoded_body is not None and len(encoded_body) > 0 and transfer_context is not None:
+                        def on_chunk_sent(chunk_len: int):
+                            transfer_context.observed_bytes = (
+                                getattr(transfer_context, "observed_bytes", 0) + chunk_len
+                            )
+
+                        request_body_to_send = UploadProgressStream(
+                            encoded_body, on_read_callback=on_chunk_sent
+                        )
+                        if "Content-Length" not in req_headers and "content-length" not in req_headers:
+                            req_headers["Content-Length"] = str(len(encoded_body))
+
+                    conn.request(current_method, path_and_query, body=request_body_to_send, headers=req_headers)
                     resp = conn.getresponse()
                     resp_headers = {k: v for k, v in resp.getheaders()}
 
