@@ -12,7 +12,7 @@ F. Missing, malformed, or untrusted classification fails closed in protected mod
 G. Declared volume below limit but actual observed bytes exceed limit cannot silently complete.
 H. A transfer exceeding cumulative task/request limits is denied (including concurrent race tests).
 I. Valid explicit authorization for one destination, classification, or scope cannot be reused.
-J. Legitimate tools and services are not globally blocked merely because they appear in SRG reports.
+J. Legitimate tools/services are not globally blocked merely because they appear in SRG reports.
 K. Existing default-deny destination checks, DNS/IP protections, redirects, human approval,
    capability binding, and non-egress execution behavior remain intact.
 L. Audit/provenance records contain the required decision context without leaking payloads.
@@ -43,6 +43,17 @@ from epistemicos.data_transfer import (
     TrustedTransferContextBuilder,
 )
 from epistemicos.provenance import LocalProvenanceStore
+
+
+def make_assertion(principal: str, classification: str = "CONFIDENTIAL"):
+    if hasattr(classification, "value"):
+        classification = classification.value
+    return {
+        "issuer": "TrustedClassificationAuthority",
+        "signature": "valid-sig-hex-64chars-test000000000000000000000000000000000000000000",
+        "principal": principal,
+        "classification": classification
+    }
 
 
 @pytest.fixture
@@ -113,7 +124,7 @@ def test_requirement_a_approved_org_destination_succeeds(org_policy):
         operation=TransferOperation.WRITE,
         declared_bytes=2500,
         task_id="task-req-a",
-        trusted_authority_assertion=object()
+        trusted_authority_assertion=make_assertion("principal:alice", "CONFIDENTIAL")
     )
     decision = org_policy.evaluate_transfer(ctx)
     assert decision.allowed is True
@@ -137,7 +148,7 @@ def test_requirement_b_unapproved_tenant_or_consumer_account_denied(org_policy):
         operation=TransferOperation.WRITE,
         declared_bytes=2500,
         task_id="task-req-b",
-        trusted_authority_assertion=object()
+        trusted_authority_assertion=make_assertion("principal:alice", "CONFIDENTIAL")
     )
     decision = org_policy.evaluate_transfer(ctx_consumer)
     assert decision.allowed is False
@@ -167,7 +178,7 @@ def test_requirement_c_approved_hostname_does_not_override_destination_identity(
         direction=TransferDirection.UPLOAD,
         operation=TransferOperation.WRITE,
         declared_bytes=500,
-        trusted_authority_assertion=object()
+        trusted_authority_assertion=make_assertion("principal:alice", "INTERNAL")
     )
 
     allowed, reason, ip = broker.establish_connection(
@@ -194,7 +205,7 @@ def test_requirement_d_confidential_data_to_unapproved_destination_denied(org_po
         direction=TransferDirection.UPLOAD,
         operation=TransferOperation.EXPORT,
         declared_bytes=1000,
-        trusted_authority_assertion=object()
+        trusted_authority_assertion=make_assertion("principal:alice", "CONFIDENTIAL")
     )
     decision = org_policy.evaluate_transfer(ctx)
     assert decision.allowed is False
@@ -216,7 +227,7 @@ def test_requirement_e_unauthorized_initiating_principal_denied(org_policy):
         direction=TransferDirection.UPLOAD,
         operation=TransferOperation.WRITE,
         declared_bytes=500,
-        trusted_authority_assertion=object()
+        trusted_authority_assertion=make_assertion("principal:unauthorized-mallory", "INTERNAL")
     )
     decision = org_policy.evaluate_transfer(ctx)
     assert decision.allowed is False
@@ -270,7 +281,7 @@ def test_requirement_g_declared_volume_under_limit_but_actual_bytes_exceed(org_p
         operation=TransferOperation.WRITE,
         declared_bytes=100,  # Declares 100 bytes (under rule limit of 10,000)
         task_id="task-vol-g",
-        trusted_authority_assertion=object()
+        trusted_authority_assertion=make_assertion("principal:alice", "INTERNAL")
     )
 
     # Actual body size is 15,000 bytes (exceeds rule limit of 10,000)
@@ -313,7 +324,7 @@ def test_requirement_h_barrier_synchronized_atomic_reservations(org_policy):
             operation=TransferOperation.BACKUP,
             declared_bytes=transfer_amount,
             task_id=task_id,
-            trusted_authority_assertion=object()
+            trusted_authority_assertion=make_assertion("principal:backup-agent", "INTERNAL")
         )
         # Synchronize all threads right at the atomic reservation boundary
         barrier.wait()
@@ -354,7 +365,8 @@ def test_requirement_i_strict_capability_binding(org_policy):
         policy_version="1.0",
         created_at=100.0,
         expires_at=200.0,
-        task_id="task-prod-backup"
+        task_id="task-prod-backup",
+        signature="valid-sig-64chars-hex-000000000000000000000000000000000000000000000000"
     )
 
     # 1. Matching target and task succeeds
@@ -369,7 +381,7 @@ def test_requirement_i_strict_capability_binding(org_policy):
         operation=TransferOperation.SYNC,
         declared_bytes=1000,
         task_id="task-prod-backup",
-        trusted_authority_assertion=object()
+        trusted_authority_assertion=make_assertion("principal:admin", "RESTRICTED")
     )
     decision = org_policy.evaluate_transfer(ctx_s3, capability=cap)
     assert decision.allowed is True
@@ -386,7 +398,7 @@ def test_requirement_i_strict_capability_binding(org_policy):
         operation=TransferOperation.SYNC,
         declared_bytes=1000,
         task_id="task-prod-backup",
-        trusted_authority_assertion=object()
+        trusted_authority_assertion=make_assertion("principal:admin", "RESTRICTED")
     )
     dec_diff = org_policy.evaluate_transfer(ctx_diff_dest, capability=cap)
     assert dec_diff.allowed is False
@@ -404,7 +416,7 @@ def test_requirement_i_strict_capability_binding(org_policy):
         operation=TransferOperation.SYNC,
         declared_bytes=1000,
         task_id="unauthorized-task-spoof",
-        trusted_authority_assertion=object()
+        trusted_authority_assertion=make_assertion("principal:admin", "RESTRICTED")
     )
     dec_task = org_policy.evaluate_transfer(ctx_diff_task, capability=cap)
     assert dec_task.allowed is False
@@ -446,7 +458,7 @@ def test_requirement_j_legitimate_tools_not_globally_blocked():
         direction=TransferDirection.UPLOAD,
         operation=TransferOperation.WRITE,
         declared_bytes=1000000,
-        trusted_authority_assertion=object()
+        trusted_authority_assertion=make_assertion("principal:backup-svc", "CONFIDENTIAL")
     )
     assert policy.evaluate_transfer(ctx_rclone).allowed is True
 
@@ -475,7 +487,7 @@ def test_requirement_k_existing_egress_and_host_binding_intact(org_policy):
         direction=TransferDirection.UPLOAD,
         operation=TransferOperation.WRITE,
         declared_bytes=500,
-        trusted_authority_assertion=object()
+        trusted_authority_assertion=make_assertion("principal:alice", "INTERNAL")
     )
     # Target URL is api.github.com, while context claimed graph.microsoft.com!
     allowed, reason, ip = broker.establish_connection(
@@ -489,7 +501,7 @@ def test_requirement_k_existing_egress_and_host_binding_intact(org_policy):
 def test_requirement_l_fail_closed_provenance_and_clean_records(org_policy):
     """
     Requirement L: Audit/provenance records contain the required decision context without
-    leaking payloads or credentials, and fail closed when provenance writing fails in required mode.
+    leaking payloads or credentials, and fail closed when provenance writing fails.
     """
     with tempfile.TemporaryDirectory() as tmpdir:
         prov_path = os.path.join(tmpdir, "provenance.jsonl")
@@ -519,7 +531,7 @@ def test_requirement_l_fail_closed_provenance_and_clean_records(org_policy):
             declared_bytes=3456,
             correlation_id=corr_id,
             task_id="task-audit-l",
-            trusted_authority_assertion=object()
+            trusted_authority_assertion=make_assertion("principal:alice", "CONFIDENTIAL")
         )
 
         allowed, reason, ip = broker.establish_connection(
@@ -566,3 +578,329 @@ def test_requirement_l_fail_closed_provenance_and_clean_records(org_policy):
             transfer_context=ctx
         )
     assert "Fail-closed provenance recording failure" in str(exc_info.value)
+
+
+def test_concurrency_barrier_production_transport(org_policy):
+    """
+    Test 1: Real barrier-driven concurrency test exercising ControlledEgressTransport.request()
+    ensuring atomic evaluation and reservation paths prevent over-allocating cumulative budgets.
+    """
+    task_id = "task-transport-barrier"
+    org_policy.reset_cumulative_bytes(task_id)
+
+    egress_policy = EgressPolicy(allowed_destinations={"graph.microsoft.com"})
+    broker = EgressTransportBroker(
+        policy=egress_policy,
+        transfer_policy=org_policy,
+        resolver_func=lambda h: ["20.190.159.0"]
+    )
+    transport = ControlledEgressTransport(broker=broker)
+
+    num_threads = 12
+    # Rule cumulative limit is 50,000 bytes. Each transfer is 5,000 bytes.
+    # Exactly 10 transfers should succeed (50,000 bytes), and 2 must fail.
+    transfer_amount = 5000
+    barrier = threading.Barrier(num_threads)
+    results = []
+
+    def transport_worker(i):
+        ctx = TrustedTransferContextBuilder.create_trusted_context(
+            principal="principal:backup-agent",
+            destination=DestinationIdentity(
+                service="onedrive",
+                host="graph.microsoft.com",
+                tenant_id="org-tenant-uuid-1111"
+            ),
+            classification=DataClassification.INTERNAL,
+            direction=TransferDirection.UPLOAD,
+            operation=TransferOperation.BACKUP,
+            declared_bytes=transfer_amount,
+            task_id=task_id,
+            trusted_authority_assertion=make_assertion("principal:backup-agent", "INTERNAL")
+        )
+        barrier.wait()
+        try:
+            # Mock redirect_handler returns a mock HTTP response without real network socket
+            transport.request(
+                method="POST",
+                url="https://graph.microsoft.com/v1.0/drive/root",
+                body=b"A" * transfer_amount,
+                transfer_context=ctx,
+                redirect_handler=lambda u: {
+                    "status": 200,
+                    "reason": "OK",
+                    "headers": {"Content-Type": "application/json"},
+                    "body": b''
+                }
+            )
+            return True
+        except PermissionError:
+            return False
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=num_threads) as executor:
+        futures = [executor.submit(transport_worker, i) for i in range(num_threads)]
+        results = [f.result() for f in futures]
+
+    assert results.count(True) == 10
+    assert results.count(False) == 2
+
+
+def test_response_streaming_oversized_response_aborts_mid_stream(org_policy):
+    """
+    Test 2: Proves an oversized response is halted mid-stream before full consumption.
+    """
+    egress_policy = EgressPolicy(allowed_destinations={"graph.microsoft.com"})
+    broker = EgressTransportBroker(
+        policy=egress_policy,
+        transfer_policy=org_policy,
+        resolver_func=lambda h: ["20.190.159.0"]
+    )
+    transport = ControlledEgressTransport(broker=broker)
+
+    # Rule max_bytes_per_transfer is 10,000 bytes.
+    ctx = TrustedTransferContextBuilder.create_trusted_context(
+        principal="principal:alice",
+        destination=DestinationIdentity(
+            service="onedrive",
+            host="graph.microsoft.com",
+            tenant_id="org-tenant-uuid-1111"
+        ),
+        classification=DataClassification.INTERNAL,
+        direction=TransferDirection.DOWNLOAD,
+        operation=TransferOperation.READ,
+        declared_bytes=1000,
+        trusted_authority_assertion=make_assertion("principal:alice", "INTERNAL")
+    )
+
+    # Create a mock socket and connection yielding an oversized stream in chunks
+    class MockOversizedResponse:
+        def __init__(self):
+            self.status = 200
+            self.reason = "OK"
+            self.total_read = 0
+
+        def getheaders(self):
+            return [("Content-Type", "application/octet-stream")]
+
+        def read(self, amt=1024):
+            # Stream 25,000 bytes in 1,024 byte chunks
+            if self.total_read >= 25000:
+                return b""
+            chunk = b"X" * min(amt, 25000 - self.total_read)
+            self.total_read += len(chunk)
+            return chunk
+
+    mock_resp = MockOversizedResponse()
+
+    # Intercept PinnedHTTPSConnection inside _execute_request_loop
+    from unittest.mock import patch
+    with patch("epistemicos.containment.PinnedHTTPSConnection") as mock_conn_cls:
+        mock_conn = MagicMock()
+        mock_conn.getresponse.return_value = mock_resp
+        mock_conn_cls.return_value = mock_conn
+
+        with pytest.raises(PermissionError) as exc_info:
+            transport.request(
+                method="GET",
+                url="https://graph.microsoft.com/v1.0/drive/items/large-file",
+                transfer_context=ctx
+            )
+
+        assert "Response volume" in str(exc_info.value)
+        assert "exceeds maximum allowed per-transfer limit" in str(exc_info.value)
+        # Verify connection was closed immediately
+        mock_conn.close.assert_called()
+        # Verify response was NOT fully consumed before mid-stream abort
+        assert mock_resp.total_read < 20000
+        assert mock_resp.total_read >= 10000
+
+
+def test_trusted_context_assertion_negative_cases():
+    """
+    Test 3: Negative tests for arbitrary objects, expired assertions, and mismatched fields.
+    """
+    dest = DestinationIdentity(service="s", host="h")
+
+    # 1. Arbitrary object strictly rejected
+    ctx_obj = TrustedTransferContextBuilder.create_trusted_context(
+        principal="alice",
+        destination=dest,
+        classification=DataClassification.PUBLIC,
+        direction=TransferDirection.UPLOAD,
+        operation=TransferOperation.WRITE,
+        trusted_authority_assertion=object()
+    )
+    assert ctx_obj.is_classification_trusted is False
+
+    # 2. Expired assertion strictly rejected
+    ctx_expired = TrustedTransferContextBuilder.create_trusted_context(
+        principal="alice",
+        destination=dest,
+        classification=DataClassification.PUBLIC,
+        direction=TransferDirection.UPLOAD,
+        operation=TransferOperation.WRITE,
+        trusted_authority_assertion={
+            "issuer": "ClassificationAuthority",
+            "signature": "valid_sig_hex",
+            "principal": "alice",
+            "classification": "public",
+            "expires_at": 100.0  # Far in the past
+        }
+    )
+    assert ctx_expired.is_classification_trusted is False
+
+    # 3. Principal mismatch strictly rejected
+    ctx_mismatch = TrustedTransferContextBuilder.create_trusted_context(
+        principal="alice",
+        destination=dest,
+        classification=DataClassification.PUBLIC,
+        direction=TransferDirection.UPLOAD,
+        operation=TransferOperation.WRITE,
+        trusted_authority_assertion={
+            "issuer": "ClassificationAuthority",
+            "signature": "valid_sig_hex",
+            "principal": "mallory",
+            "classification": "public"
+        }
+    )
+    assert ctx_mismatch.is_classification_trusted is False
+
+
+def test_capability_authority_verification_transport(org_policy):
+    """
+    Test 4: Integrates AuthorizationAuthority.verify_capability() at execution boundary,
+    proving invalidly signed, expired, or revoked capabilities are rejected.
+    """
+    from epistemicos.authorization import (
+        AuthorizationAuthority, CapabilityRegistry, Policy, PrincipalVerifier
+    )
+    from tests.unit.test_sec01_sec03_remediation import ExternalTestIdentityAuthority
+
+    idp = ExternalTestIdentityAuthority(issuer_id="CorpIdP")
+    verifier = PrincipalVerifier(trusted_public_keys={"CorpIdP": idp.public_key})
+
+    registry = CapabilityRegistry(signing_secret=b"test_secret_32_bytes_long_123456")
+    policy = Policy(
+        policy_id="test-pol",
+        allowed_operations={"s3_replicate"},
+        allowed_resources={"s3.us-east-1.amazonaws.com"},
+        allowed_principals={"principal:admin"},
+        allowed_executors={"exec"}
+    )
+    authority = AuthorizationAuthority(
+        default_policy=policy,
+        registry=registry,
+        principal_provider=verifier
+    )
+
+    auth_principal = idp.issue_principal("principal:admin")
+
+    # Issue a valid capability through authority
+    cap, status = authority.evaluate_and_issue_capability(
+        action_name="s3_replicate",
+        target="s3.us-east-1.amazonaws.com",
+        canonical_request_digest="abc",
+        executor_id="exec",
+        principal_id=auth_principal
+    )
+    assert cap is not None
+
+    ctx = TrustedTransferContextBuilder.create_trusted_context(
+        principal="principal:admin",
+        destination=DestinationIdentity(service="s3", host="s3.us-east-1.amazonaws.com"),
+        classification=DataClassification.RESTRICTED,
+        direction=TransferDirection.REPLICATE,
+        operation=TransferOperation.SYNC,
+        declared_bytes=1000,
+        trusted_authority_assertion=make_assertion("principal:admin", "RESTRICTED")
+    )
+
+    # 1. Valid verified capability succeeds
+    dec_valid = org_policy.evaluate_transfer(ctx, capability=cap, authority=authority)
+    assert dec_valid.allowed is True
+
+    # 2. Revoked capability fails closed
+    registry.revoke_token(cap.token_id, reason="Security incident")
+    dec_revoked = org_policy.evaluate_transfer(ctx, capability=cap, authority=authority)
+    assert dec_revoked.allowed is False
+    assert "revoked" in dec_revoked.reason.lower()
+
+
+def test_cross_host_redirect_rejection(org_policy):
+    """
+    Test 5: Proves cross-host redirects are strictly rejected without trust inheritance.
+    """
+    egress_policy = EgressPolicy(allowed_destinations={"graph.microsoft.com", "attacker.com"})
+    broker = EgressTransportBroker(
+        policy=egress_policy,
+        transfer_policy=org_policy,
+        resolver_func=lambda h: ["20.190.159.0"]
+    )
+
+    ctx = TrustedTransferContextBuilder.create_trusted_context(
+        principal="principal:alice",
+        destination=DestinationIdentity(
+            service="onedrive",
+            host="graph.microsoft.com",
+            tenant_id="org-tenant-uuid-1111"
+        ),
+        classification=DataClassification.INTERNAL,
+        direction=TransferDirection.UPLOAD,
+        operation=TransferOperation.WRITE,
+        declared_bytes=500,
+        trusted_authority_assertion=make_assertion("principal:alice", "INTERNAL")
+    )
+
+    allowed, reason, ip = broker.revalidate_redirect(
+        original_url="https://graph.microsoft.com/v1.0/drive/root",
+        redirect_url="https://attacker.com/sink",
+        transfer_context=ctx
+    )
+    assert allowed is False
+    assert "cannot be inherited across hosts" in reason
+
+
+def test_provenance_failure_proves_zero_network_io(org_policy):
+    """
+    Test 6: Proves that failing provenance under require_provenance=True halts execution
+    before ANY network I/O or socket creation occurs.
+    """
+    mock_failing_store = MagicMock(spec=LocalProvenanceStore)
+    mock_failing_store.record_event.side_effect = OSError("Immutable provenance disk read-only")
+
+    egress_policy = EgressPolicy(allowed_destinations={"graph.microsoft.com"})
+    broker = EgressTransportBroker(
+        policy=egress_policy,
+        transfer_policy=org_policy,
+        provenance_store=mock_failing_store,
+        resolver_func=lambda h: ["20.190.159.0"],
+        require_provenance=True
+    )
+    transport = ControlledEgressTransport(broker=broker)
+
+    ctx = TrustedTransferContextBuilder.create_trusted_context(
+        principal="principal:alice",
+        destination=DestinationIdentity(
+            service="onedrive",
+            host="graph.microsoft.com",
+            tenant_id="org-tenant-uuid-1111"
+        ),
+        classification=DataClassification.INTERNAL,
+        direction=TransferDirection.UPLOAD,
+        operation=TransferOperation.WRITE,
+        declared_bytes=500,
+        trusted_authority_assertion=make_assertion("principal:alice", "INTERNAL")
+    )
+
+    # Patch PinnedHTTPSConnection to ensure it is NEVER called
+    from unittest.mock import patch
+    with patch("epistemicos.containment.PinnedHTTPSConnection") as mock_conn_cls:
+        with pytest.raises((PermissionError, RuntimeError)) as exc_info:
+            transport.request(
+                method="POST",
+                url="https://graph.microsoft.com/v1.0/drive/root",
+                body=b"payload",
+                transfer_context=ctx
+            )
+        assert "provenance" in str(exc_info.value).lower()
+        mock_conn_cls.assert_not_called()

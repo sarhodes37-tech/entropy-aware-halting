@@ -904,7 +904,8 @@ class EgressTransportBroker:
         require_infrastructure_enforcement: bool = False,
         infrastructure_enforced: bool = False,
         transfer_policy: Optional[Any] = None,
-        require_provenance: bool = False
+        require_provenance: bool = False,
+        authorization_authority: Optional[Any] = None
     ):
         self.policy = policy or EgressPolicy()
         self.resolver_func = resolver_func or self._default_resolver
@@ -913,6 +914,7 @@ class EgressTransportBroker:
         self.infrastructure_enforced = infrastructure_enforced
         self.transfer_policy = transfer_policy
         self.require_provenance = require_provenance
+        self.authorization_authority = authorization_authority
         self.connection_history: List[EgressConnectionRecord] = []
 
         if self.require_infrastructure_enforcement and not self.infrastructure_enforced:
@@ -1045,7 +1047,8 @@ class EgressTransportBroker:
         request_id: str = "DEFAULT-REQ",
         category: Optional[ActionCategory] = None,
         transfer_context: Optional[Any] = None,
-        capability: Optional[Any] = None
+        capability: Optional[Any] = None,
+        reservation_id: Optional[str] = None
     ) -> Tuple[bool, str, Optional[str]]:
         """
         Validates egress policy at connection time:
@@ -1145,7 +1148,9 @@ class EgressTransportBroker:
                     return False, pol_reason, None
 
                 decision = eff_transfer_policy.evaluate_transfer(
-                    transfer_context, capability=capability
+                    transfer_context,
+                    capability=capability,
+                    active_reservation_id=reservation_id
                 )
                 if not decision.allowed:
                     self._record_egress_event(
@@ -1184,40 +1189,17 @@ class EgressTransportBroker:
             redir_host = normalize_destination_host(redirect_url)
             orig_dest = getattr(transfer_context, "destination", None)
             if orig_dest and orig_dest.host != redir_host:
-                # If redirect hops across hosts, construct an updated context for re-evaluation
-                from epistemicos.data_transfer import DestinationIdentity, DataTransferContext
-                try:
-                    new_dest = DestinationIdentity(
-                        service=orig_dest.service,
-                        host=redir_host,
-                        tenant_id=orig_dest.tenant_id,
-                        account_id=orig_dest.account_id,
-                        workspace_id=orig_dest.workspace_id,
-                        endpoint_path=redirect_url
-                    )
-                    redir_context = DataTransferContext(
-                        initiating_principal=transfer_context.initiating_principal,
-                        destination=new_dest,
-                        classification=transfer_context.classification,
-                        direction=transfer_context.direction,
-                        operation=transfer_context.operation,
-                        source_scope=transfer_context.source_scope,
-                        service_identity=transfer_context.service_identity,
-                        declared_bytes=transfer_context.declared_bytes,
-                        observed_bytes=transfer_context.observed_bytes,
-                        task_id=transfer_context.task_id,
-                        correlation_id=correlation_id,
-                        request_id=request_id,
-                        capability_token_id=transfer_context.capability_token_id,
-                        is_classification_trusted=transfer_context.is_classification_trusted
-                    )
-                except Exception as e:
-                    reason = f"Egress transport blocked: Redirect destination invalid: {str(e)}"
-                    self._record_egress_event(
-                        correlation_id, request_id, action_name, redirect_url,
-                        redir_host, None, False, reason, transfer_context=transfer_context
-                    )
-                    return False, reason, None
+                # Security boundary: Cross-host redirects are strictly rejected by default
+                # and must NEVER inherit verified destination tenant/account identity or classification trust.
+                reason = (
+                    f"Egress transport blocked cross-host redirect from '{orig_dest.host}' to '{redir_host}': "
+                    "Trust assertions, tenant identities, and capabilities cannot be inherited across hosts."
+                )
+                self._record_egress_event(
+                    correlation_id, request_id, action_name, redirect_url,
+                    redir_host, None, False, reason, transfer_context=transfer_context
+                )
+                return False, reason, None
 
         return self.establish_connection(
             target_url=redirect_url,
@@ -1445,34 +1427,28 @@ class ControlledEgressTransport:
         encoded_body = body.encode("utf-8") if isinstance(body, str) else body
         actual_bytes = len(encoded_body) if encoded_body is not None else 0
 
-        # If transfer_context is provided, update observed_bytes and pre-flight check actual volume
+        # If transfer_context is provided, update observed_bytes and atomically evaluate & reserve
         reservation_id = None
         tracker_key = None
         if transfer_context is not None:
             transfer_context.observed_bytes = actual_bytes
             if self.broker.transfer_policy is not None:
-                # Re-check transfer policy against actual observed bytes
-                decision = self.broker.transfer_policy.evaluate_transfer(
-                    transfer_context, capability=capability
+                tracker_key = (
+                    transfer_context.task_id
+                    or f"{transfer_context.initiating_principal}:{transfer_context.destination.host}"
+                )
+                res_uuid = str(uuid.uuid4())
+                decision = self.broker.transfer_policy.evaluate_and_reserve(
+                    context=transfer_context,
+                    capability=capability,
+                    authority=self.broker.authorization_authority,
+                    reservation_id=res_uuid
                 )
                 if not decision.allowed:
                     raise PermissionError(
                         f"Egress transport blocked request to '{current_url}': {decision.reason}"
                     )
-
-                # Atomically reserve bytes for the duration of the request
-                tracker_key = (
-                    transfer_context.task_id
-                    or f"{transfer_context.initiating_principal}:{transfer_context.destination.host}"
-                )
-                reservation_id = str(uuid.uuid4())
-                if not self.broker.transfer_policy.reserve_bytes(
-                    tracker_key, actual_bytes, reservation_id
-                ):
-                    raise PermissionError(
-                        f"Egress transport blocked request to '{current_url}': "
-                        f"Failed to atomically reserve {actual_bytes} bytes for task scope '{tracker_key}'."
-                    )
+                reservation_id = decision.reservation_id
 
         try:
             return self._execute_request_loop(
@@ -1526,13 +1502,30 @@ class ControlledEgressTransport:
                 request_id=request_id,
                 category=category,
                 transfer_context=transfer_context,
-                capability=capability
+                capability=capability,
+                reservation_id=reservation_id
             )
             if not allowed:
                 raise PermissionError(f"Egress transport blocked request to '{current_url}': {reason}")
 
             if redirect_handler:
                 res = redirect_handler(current_url)
+                resp_data = res.get("body", b"")
+                if isinstance(resp_data, str):
+                    resp_data = resp_data.encode("utf-8")
+                if transfer_context is not None:
+                    total_observed = actual_bytes + len(resp_data)
+                    transfer_context.observed_bytes = total_observed
+                    if self.broker.transfer_policy is not None:
+                        if reservation_id:
+                            self.broker.transfer_policy.commit_reservation(
+                                reservation_id, total_observed
+                            )
+                            reservation_id = None
+                        elif tracker_key:
+                            self.broker.transfer_policy.record_observed_bytes(
+                                tracker_key, total_observed
+                            )
             else:
                 parsed = urlsplit(current_url)
                 scheme = parsed.scheme.lower() or "http"
@@ -1563,11 +1556,69 @@ class ControlledEgressTransport:
                         )
                     conn.request(current_method, path_and_query, body=encoded_body, headers=req_headers)
                     resp = conn.getresponse()
-                    resp_data = resp.read()
                     resp_headers = {k: v for k, v in resp.getheaders()}
-                    conn.close()
 
-                    # Account for received bytes if operation is download/read
+                    # Determine volume limits for in-flight response streaming
+                    max_resp_limit = None
+                    eff_cumulative_limit = None
+                    if transfer_context is not None and self.broker.transfer_policy is not None:
+                        matched_rule = None
+                        dest_obj = getattr(transfer_context, "destination", None)
+                        for r in self.broker.transfer_policy.rules:
+                            if dest_obj and dest_obj.host in r.allowed_hosts:
+                                matched_rule = r
+                                break
+                        if matched_rule:
+                            max_resp_limit = matched_rule.max_bytes_per_transfer
+                            eff_cumulative_limit = (
+                                matched_rule.max_cumulative_bytes
+                                if matched_rule.max_cumulative_bytes is not None
+                                else self.broker.transfer_policy.default_max_cumulative_bytes
+                            )
+                        else:
+                            eff_cumulative_limit = self.broker.transfer_policy.default_max_cumulative_bytes
+
+                    # Read response stream incrementally in bounded chunks (1024 bytes)
+                    chunks = []
+                    received_bytes = 0
+                    chunk_size = 1024
+
+                    try:
+                        while True:
+                            chunk = resp.read(chunk_size)
+                            if not chunk:
+                                break
+                            chunks.append(chunk)
+                            received_bytes += len(chunk)
+                            curr_total = actual_bytes + received_bytes
+
+                            # Enforce per-transfer limit in-flight
+                            if max_resp_limit is not None and curr_total > max_resp_limit:
+                                conn.close()
+                                if transfer_context is not None:
+                                    transfer_context.observed_bytes = curr_total
+                                raise PermissionError(
+                                    f"Egress transport streaming aborted: Response volume ({curr_total} bytes) "
+                                    f"exceeds maximum allowed per-transfer limit ({max_resp_limit} bytes)."
+                                )
+
+                            # Enforce cumulative limit in-flight
+                            if eff_cumulative_limit is not None and tracker_key:
+                                alloc = self.broker.transfer_policy.get_allocated_bytes(tracker_key)
+                                if (alloc + received_bytes) > eff_cumulative_limit:
+                                    conn.close()
+                                    if transfer_context is not None:
+                                        transfer_context.observed_bytes = curr_total
+                                    raise PermissionError(
+                                        f"Egress transport streaming aborted: Cumulative volume exceeds "
+                                        f"ceiling of {eff_cumulative_limit} bytes during stream reception."
+                                    )
+                    finally:
+                        conn.close()
+
+                    resp_data = b"".join(chunks)
+
+                    # Account for total received bytes on clean completion
                     if transfer_context is not None:
                         total_observed = actual_bytes + len(resp_data)
                         transfer_context.observed_bytes = total_observed
@@ -1590,6 +1641,8 @@ class ControlledEgressTransport:
                         "headers": resp_headers,
                         "body": resp_data
                     }
+                except (PermissionError, RuntimeError, ValueError):
+                    raise
                 except Exception as net_err:
                     raise socket.error(f"Egress transport network I/O error to '{current_url}': {str(net_err)}") from net_err
 

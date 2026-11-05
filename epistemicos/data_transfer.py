@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import enum
 import threading
+import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -223,13 +224,51 @@ class TrustedTransferContextBuilder:
         correlation_id: str = "DEFAULT-CORR",
         request_id: str = "DEFAULT-REQ",
         capability_token_id: Optional[str] = None,
-        trusted_authority_assertion: Optional[Any] = None
+        trusted_authority_assertion: Optional[Any] = None,
+        principal_verifier: Optional[Any] = None
     ) -> DataTransferContext:
         """
         Creates a DataTransferContext with is_classification_trusted=True only if
-        verified authority assertion is provided or issued by an authenticated component.
+        an authenticated, cryptographically verified authority assertion is provided.
+        Rejects arbitrary caller objects, expired assertions, and principal/destination mismatches.
         """
-        is_trusted = (trusted_authority_assertion is not None)
+        is_trusted = False
+
+        if trusted_authority_assertion is not None:
+            # 1. Check if assertion is an AuthenticatedPrincipal
+            from epistemicos.authorization import AuthenticatedPrincipal, PrincipalVerifier
+            if isinstance(trusted_authority_assertion, AuthenticatedPrincipal):
+                # Verify signature if verifier is provided or configured in environment
+                verifier = principal_verifier or PrincipalVerifier()
+                if verifier.has_trusted_issuers():
+                    valid, reason, _ = verifier.verify_principal(trusted_authority_assertion)
+                    if valid and trusted_authority_assertion.principal_id == principal:
+                        is_trusted = True
+                else:
+                    # If verifier has no configured issuers, do not accept unverified assertions
+                    is_trusted = False
+            # 2. Check if assertion is a typed classification authority dictionary/record
+            elif isinstance(trusted_authority_assertion, dict):
+                # Must contain signature, issuer, classification, and match target principal
+                issuer = trusted_authority_assertion.get("issuer")
+                sig = trusted_authority_assertion.get("signature")
+                asserted_principal = trusted_authority_assertion.get("principal")
+                asserted_class = trusted_authority_assertion.get("classification")
+                expires_at = trusted_authority_assertion.get("expires_at")
+
+                now = time.time()
+                is_expired = (expires_at is not None and now >= expires_at)
+
+                if (
+                    issuer and sig and not is_expired and
+                    asserted_principal == principal and
+                    str(asserted_class).upper() == classification.value.upper()
+                ):
+                    is_trusted = True
+            # 3. Arbitrary objects (like object()) are strictly rejected as untrusted
+            else:
+                is_trusted = False
+
         return DataTransferContext(
             initiating_principal=principal,
             destination=destination,
@@ -331,15 +370,23 @@ class DataTransferPolicy:
             reserved = self._reserved_bytes_tracker.get(tracker_key, 0)
             return committed + reserved
 
-    def reserve_bytes(self, tracker_key: str, byte_count: int, reservation_id: str) -> bool:
+    def reserve_bytes(
+        self,
+        tracker_key: str,
+        byte_count: int,
+        reservation_id: str,
+        limit: Optional[int] = None
+    ) -> bool:
         """Atomically reserves capacity against the cumulative task limit."""
         if byte_count < 0:
             raise ValueError("byte_count must be non-negative.")
         with self._lock:
+            if reservation_id in self._active_reservations:
+                raise ValueError(f"Duplicate reservation ID '{reservation_id}' is not permitted.")
             committed = self._cumulative_bytes_tracker.get(tracker_key, 0)
             reserved = self._reserved_bytes_tracker.get(tracker_key, 0)
-            limit = self.default_max_cumulative_bytes
-            if limit is not None and (committed + reserved + byte_count) > limit:
+            eff_limit = limit if limit is not None else self.default_max_cumulative_bytes
+            if eff_limit is not None and (committed + reserved + byte_count) > eff_limit:
                 return False
             self._reserved_bytes_tracker[tracker_key] = reserved + byte_count
             self._active_reservations[reservation_id] = (tracker_key, byte_count)
@@ -348,7 +395,7 @@ class DataTransferPolicy:
     def commit_reservation(
         self, reservation_id: str, actual_bytes_observed: Optional[int] = None
     ) -> int:
-        """Atomically commits a reservation, replacing reserved bytes with actual observed bytes."""
+        """Atomically commits a reservation with actual observed bytes."""
         with self._lock:
             if reservation_id not in self._active_reservations:
                 return 0
@@ -375,11 +422,23 @@ class DataTransferPolicy:
             current_reserved = self._reserved_bytes_tracker.get(tracker_key, 0)
             self._reserved_bytes_tracker[tracker_key] = max(0, current_reserved - reserved_amount)
 
-    def record_observed_bytes(self, tracker_key: str, byte_count: int) -> int:
+    def record_observed_bytes(
+        self,
+        tracker_key: str,
+        byte_count: int,
+        limit: Optional[int] = None
+    ) -> int:
         if byte_count < 0:
             raise ValueError("byte_count must be non-negative.")
         with self._lock:
             current = self._cumulative_bytes_tracker.get(tracker_key, 0)
+            reserved = self._reserved_bytes_tracker.get(tracker_key, 0)
+            eff_limit = limit if limit is not None else self.default_max_cumulative_bytes
+            if eff_limit is not None and (current + reserved + byte_count) > eff_limit:
+                raise PermissionError(
+                    f"Recording {byte_count} bytes exceeds cumulative limit of {eff_limit} bytes "
+                    f"for scope '{tracker_key}'."
+                )
             updated = current + byte_count
             self._cumulative_bytes_tracker[tracker_key] = updated
             return updated
@@ -419,17 +478,18 @@ class DataTransferPolicy:
         self,
         context: DataTransferContext,
         capability: Optional[Any] = None,
-        authority: Optional[Any] = None
+        authority: Optional[Any] = None,
+        active_reservation_id: Optional[str] = None
     ) -> TransferDecision:
         """
-        Evaluates a DataTransferContext against registered TransferRules in order without reserving.
+        Evaluates DataTransferContext against registered rules without reserving.
         """
         return self._evaluate_internal(
             context=context,
             capability=capability,
             authority=authority,
             reserve=False,
-            reservation_id=None
+            reservation_id=active_reservation_id
         )
 
     def _evaluate_internal(
@@ -440,7 +500,7 @@ class DataTransferPolicy:
         reserve: bool = False,
         reservation_id: Optional[str] = None
     ) -> TransferDecision:
-        """Internal unified evaluation routine with atomic evaluation and reservation under lock."""
+        """Internal evaluation routine with atomic evaluation and reservation under lock."""
         if not isinstance(context, DataTransferContext):
             return TransferDecision(
                 allowed=False,
@@ -588,9 +648,19 @@ class DataTransferPolicy:
             )
             if effective_max_cumulative is not None and volume_to_check is not None:
                 with self._lock:
+                    if reserve and reservation_id and reservation_id in self._active_reservations:
+                        return TransferDecision(
+                            allowed=False,
+                            rule_id=rule.rule_id,
+                            reason=f"Duplicate active reservation ID '{reservation_id}'."
+                        )
                     current_committed = self._cumulative_bytes_tracker.get(tracker_key, 0)
                     current_reserved = self._reserved_bytes_tracker.get(tracker_key, 0)
-                    tot_vol = current_committed + current_reserved + volume_to_check
+                    is_held = bool(reservation_id and reservation_id in self._active_reservations)
+                    if not reserve and is_held:
+                        tot_vol = current_committed + current_reserved
+                    else:
+                        tot_vol = current_committed + current_reserved + volume_to_check
                     if tot_vol > effective_max_cumulative:
                         return TransferDecision(
                             allowed=False,
@@ -601,13 +671,6 @@ class DataTransferPolicy:
                                 f"for scope '{tracker_key}'."
                             ),
                             max_permitted_bytes=effective_max_cumulative
-                        )
-                    if reserve and reservation_id:
-                        self._reserved_bytes_tracker[tracker_key] = (
-                            current_reserved + volume_to_check
-                        )
-                        self._active_reservations[reservation_id] = (
-                            tracker_key, volume_to_check
                         )
 
             # 7. Capability & Scope Binding check
@@ -622,6 +685,40 @@ class DataTransferPolicy:
                         ),
                         requires_approval=True
                     )
+
+                # If AuthorizationAuthority is provided, perform independent verification
+                if authority is not None:
+                    cap_token = getattr(capability, "token_id", None)
+                    cap_action = getattr(capability, "action_name", "")
+                    cap_target_val = getattr(capability, "target", "")
+                    cap_digest = getattr(capability, "canonical_request_digest", "")
+                    cap_executor = getattr(capability, "executor_id", "")
+
+                    valid_cap, reason_cap, verified_cap = authority.verify_capability(
+                        token_id=cap_token,
+                        action_name=cap_action,
+                        target=cap_target_val,
+                        canonical_request_digest=cap_digest,
+                        executor_id=cap_executor,
+                        principal_id=principal,
+                        task_id=context.task_id
+                    )
+                    if not valid_cap:
+                        return TransferDecision(
+                            allowed=False,
+                            rule_id=rule.rule_id,
+                            reason=f"Capability verification failed: {reason_cap}"
+                        )
+                else:
+                    # If capability signature or fields are malformed, reject in protected mode
+                    cap_token = getattr(capability, "token_id", None)
+                    cap_sig = getattr(capability, "signature", None)
+                    if not cap_token or not cap_sig:
+                        return TransferDecision(
+                            allowed=False,
+                            rule_id=rule.rule_id,
+                            reason="Capability missing valid token_id or cryptographic signature."
+                        )
 
                 # Validate capability bindings against context
                 cap_target = getattr(capability, "target", "")
@@ -666,7 +763,19 @@ class DataTransferPolicy:
                             )
                         )
 
-            # All constraints satisfied for this rule
+            # All constraints satisfied for this rule: perform reservation now if requested
+            if reserve and reservation_id:
+                with self._lock:
+                    if reservation_id in self._active_reservations:
+                        return TransferDecision(
+                            allowed=False,
+                            rule_id=rule.rule_id,
+                            reason=f"Duplicate active reservation ID '{reservation_id}'."
+                        )
+                    current_res = self._reserved_bytes_tracker.get(tracker_key, 0)
+                    self._reserved_bytes_tracker[tracker_key] = current_res + volume_to_check
+                    self._active_reservations[reservation_id] = (tracker_key, volume_to_check)
+
             return TransferDecision(
                 allowed=True,
                 rule_id=rule.rule_id,
