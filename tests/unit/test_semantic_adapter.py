@@ -24,6 +24,7 @@ from epistemicos.semantic_uncertainty import (
 )
 from epistemicos.semantic_adapter import (
     DualUncertaintyStepMetrics,
+    SemanticAdapter,
     SemanticSchedulerAdapter,
 )
 
@@ -305,3 +306,54 @@ def test_get_telemetry_summary():
 
     empty_summary = adapter.get_telemetry_summary("unknown_traj")
     assert empty_summary == []
+
+
+def test_semantic_adapter_str_default():
+    """Verifies that SemanticAdapter.__str__ returns expected string with default parameters."""
+    adapter = SemanticAdapter()
+    expected = "SemanticAdapter(model=default, threshold=0.5)"
+    assert str(adapter) == expected
+    assert adapter.__str__() == expected
+
+
+def test_semantic_adapter_str_custom_parameters():
+    """Verifies that SemanticAdapter.__str__ formats custom model and threshold values."""
+    adapter_pos = SemanticAdapter("custom-model", 0.75)
+    assert str(adapter_pos) == "SemanticAdapter(model=custom-model, threshold=0.75)"
+
+    adapter_kwargs = SemanticAdapter(model_name="qwen-2.5", threshold=0.85)
+    assert str(adapter_kwargs) == "SemanticAdapter(model=qwen-2.5, threshold=0.85)"
+
+    adapter_model_alias = SemanticAdapter(model="gpt-4o", threshold=0.9)
+    assert str(adapter_model_alias) == "SemanticAdapter(model=gpt-4o, threshold=0.9)"
+
+
+def test_semantic_adapter_str_edge_cases():
+    """Verifies SemanticAdapter.__str__ behavior on boundary thresholds and model names."""
+    # Threshold boundary at 0.0
+    adapter_zero = SemanticAdapter(model_name="model-zero", threshold=0.0)
+    assert str(adapter_zero) == "SemanticAdapter(model=model-zero, threshold=0.0)"
+
+    # Threshold boundary at 1.0
+    adapter_one = SemanticAdapter(model_name="model-one", threshold=1.0)
+    assert str(adapter_one) == "SemanticAdapter(model=model-one, threshold=1.0)"
+
+    # Empty string model name
+    adapter_empty_model = SemanticAdapter(model_name="", threshold=0.5)
+    assert str(adapter_empty_model) == "SemanticAdapter(model=, threshold=0.5)"
+
+    # Model name with slashes and special characters
+    adapter_hf = SemanticAdapter(
+        model_name="Qwen/Qwen2.5-Coder-1.5B-Instruct",
+        threshold=0.123,
+    )
+    expected_hf = "SemanticAdapter(model=Qwen/Qwen2.5-Coder-1.5B-Instruct, threshold=0.123)"
+    assert str(adapter_hf) == expected_hf
+
+
+def test_semantic_adapter_repr_and_string_interpolation():
+    """Verifies that repr matches str and f-string interpolation behaves consistently."""
+    adapter = SemanticAdapter(model_name="eval-model", threshold=0.65)
+    expected = "SemanticAdapter(model=eval-model, threshold=0.65)"
+    assert repr(adapter) == expected
+    assert f"{adapter}" == expected

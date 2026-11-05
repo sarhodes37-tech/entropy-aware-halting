@@ -29,6 +29,27 @@ from epistemicos.semantic_uncertainty import (
 )
 
 
+class SemanticAdapter:
+    """
+    Adapter representing a semantic model configuration with an equivalence threshold.
+    """
+
+    def __init__(
+        self,
+        model_name: str = "default",
+        threshold: float = 0.5,
+        model: Optional[str] = None,
+    ):
+        self.model_name = model if model is not None else model_name
+        self.threshold = threshold
+
+    def __str__(self) -> str:
+        return f"SemanticAdapter(model={self.model_name}, threshold={self.threshold})"
+
+    def __repr__(self) -> str:
+        return self.__str__()
+
+
 @dataclass
 class DualUncertaintyStepMetrics:
     """Combines token-level StepMetrics and SemanticUncertaintyResult for step-wise evaluation."""
