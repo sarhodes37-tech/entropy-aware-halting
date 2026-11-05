@@ -725,3 +725,45 @@ def test_gap_wid_01_credential_bearing_and_unsupported_dictionary_keys():
     assert r["[UNSUPPORTED_KEY]"] == "evil_key_value"
     assert r["normal_safe_key"] == "normal_data"
     assert r["42"] == "integer_key"
+
+
+def test_gap_wid_01_dataclass_with_evil_deepcopy_never_invoked():
+    """Scenario 20: Dataclass sanitization inspects fields directly without __deepcopy__."""
+    deepcopy_called = False
+
+    class EvilDeepCopyObject:
+        def __init__(self):
+            self.val = "evil_sub"
+
+        def __deepcopy__(self, memo):
+            nonlocal deepcopy_called
+            deepcopy_called = True
+            raise RuntimeError("Untrusted __deepcopy__ executed!")
+
+    from dataclasses import dataclass
+
+    @dataclass
+    class DeepCopyTestDC:
+        service: str
+        token: str
+        sub_obj: EvilDeepCopyObject
+
+    def dc_tool():
+        return DeepCopyTestDC(
+            "auth_service",
+            "sk-ant-api03-abcdefghijklmnop1234567890",
+            EvilDeepCopyObject()
+        )
+
+    reg = TrustedToolRegistry()
+    reg.authority.default_policy = _make_open_policy()
+    tool = reg.register_tool(
+        tool_id="dc_tool", action_name="get_dc", executor_func=dc_tool, default_target="/dc"
+    )
+    res = tool()
+    assert res["status"] == "SUCCESS"
+    r = res["result"]
+    assert deepcopy_called is False
+    assert r["service"] == "auth_service"
+    assert r["token"] == "[REDACTED]"
+    assert r["sub_obj"] == {"val": "evil_sub"}

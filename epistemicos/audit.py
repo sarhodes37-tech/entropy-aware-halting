@@ -81,7 +81,8 @@ def _sanitize_sensitive_data(obj: Any, _visited: Optional[Set[int]] = None) -> A
     """
     Recursively redacts sensitive keys, credentials, and PII from logs and receipts.
     Safe against cyclic references, inspects slot-based and dictionary-based instances,
-    and handles custom mappings, dataclasses, and serialization hooks deterministically.
+    and handles custom mappings and dataclasses deterministically without invoking
+    untrusted serialization hooks or deepcopy methods.
     """
     if _visited is None:
         _visited = set()
@@ -175,16 +176,23 @@ def _sanitize_sensitive_data(obj: Any, _visited: Optional[Set[int]] = None) -> A
         finally:
             _visited.remove(obj_id)
 
-    # Handle dataclasses
+    # Handle dataclasses directly by inspecting fields without invoking asdict() or __deepcopy__
     import dataclasses
     if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
         _visited.add(obj_id)
         try:
-            return _sanitize_sensitive_data(dataclasses.asdict(obj), _visited)
-        except Exception:
-            pass
+            sanitized_dc = {}
+            for field in dataclasses.fields(obj):
+                f_name = field.name
+                f_val = getattr(obj, f_name)
+                k_str = str(f_name).lower()
+                if _is_sensitive_key(k_str):
+                    sanitized_dc[f_name] = "[REDACTED]"
+                else:
+                    sanitized_dc[f_name] = _sanitize_sensitive_data(f_val, _visited)
+            return sanitized_dc
         finally:
-            _visited.discard(obj_id)
+            _visited.remove(obj_id)
 
 
     # Handle general inspectable user objects with __dict__ (exclude functions/classes)
