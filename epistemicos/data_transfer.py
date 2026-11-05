@@ -16,6 +16,8 @@ Motivated by the Silent Ransom Group (SRG / Luna Moth) threat model, where legit
 from __future__ import annotations
 
 import enum
+import hashlib
+import hmac
 import threading
 import time
 from dataclasses import dataclass, field
@@ -148,11 +150,50 @@ class DataTransferContext:
     correlation_id: str = "DEFAULT-CORR"
     request_id: str = "DEFAULT-REQ"
     capability_token_id: Optional[str] = None
-    is_classification_trusted: bool = False
+    _is_classification_trusted: bool = field(default=False, repr=False)
+    _integrity_seal: Optional[str] = field(default=None, repr=False)
     action_name: Optional[str] = None
     target: Optional[str] = None
     canonical_request_digest: Optional[str] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def compute_integrity_seal(self) -> str:
+        """Computes a deterministic cryptographic integrity seal over critical security fields."""
+        dest_host = self.destination.host.strip().lower() if self.destination else ""
+        dest_tenant = (self.destination.tenant_id or "").strip() if self.destination else ""
+        dest_account = (self.destination.account_id or "").strip() if self.destination else ""
+        scope_str = (self.source_scope or "").strip()
+        dir_str = (
+            self.direction.value.upper()
+            if hasattr(self.direction, "value")
+            else str(self.direction)
+        )
+        op_str = (
+            self.operation.value.upper()
+            if hasattr(self.operation, "value")
+            else str(self.operation)
+        )
+        class_str = (
+            self.classification.value.upper()
+            if hasattr(self.classification, "value")
+            else str(self.classification)
+        )
+        prin_str = self.initiating_principal.strip() if self.initiating_principal else ""
+
+        raw = (
+            f"{prin_str}|{dest_host}|{dest_tenant}|{dest_account}|"
+            f"{scope_str}|{dir_str}|{op_str}|{class_str}"
+        ).encode("utf-8")
+        return hashlib.sha256(raw).hexdigest()
+
+    @property
+    def is_classification_trusted(self) -> bool:
+        if not self._is_classification_trusted:
+            return False
+        if not self._integrity_seal:
+            return False
+        # If any security field was mutated post-construction, seal check fails
+        return hmac.compare_digest(self._integrity_seal, self.compute_integrity_seal())
 
     def __post_init__(self):
         if (
@@ -359,7 +400,7 @@ class TrustedTransferContextBuilder:
             else:
                 is_trusted = False
 
-        return DataTransferContext(
+        ctx = DataTransferContext(
             initiating_principal=principal,
             destination=destination,
             classification=classification,
@@ -372,11 +413,14 @@ class TrustedTransferContextBuilder:
             correlation_id=correlation_id,
             request_id=request_id,
             capability_token_id=capability_token_id,
-            is_classification_trusted=is_trusted,
+            _is_classification_trusted=is_trusted,
             action_name=action_name,
             target=target,
             canonical_request_digest=canonical_request_digest
         )
+        if is_trusted:
+            ctx._integrity_seal = ctx.compute_integrity_seal()
+        return ctx
 
 
 @dataclass
@@ -441,11 +485,13 @@ class DataTransferPolicy:
         self,
         rules: Optional[List[TransferRule]] = None,
         default_max_cumulative_bytes: Optional[int] = None,
-        protected_mode: bool = True
+        protected_mode: bool = True,
+        authorization_authority: Optional[Any] = None
     ):
         self.rules: List[TransferRule] = list(rules or [])
         self.default_max_cumulative_bytes = default_max_cumulative_bytes
         self.protected_mode = protected_mode
+        self.authorization_authority = authorization_authority
         self._cumulative_bytes_tracker: Dict[str, int] = {}
         self._reserved_bytes_tracker: Dict[str, int] = {}
         self._active_reservations: Dict[str, Tuple[str, int]] = {}
@@ -560,10 +606,11 @@ class DataTransferPolicy:
         """
         import uuid as _uuid
         res_id = reservation_id or str(_uuid.uuid4())
+        eff_authority = authority or self.authorization_authority
         return self._evaluate_internal(
             context=context,
             capability=capability,
-            authority=authority,
+            authority=eff_authority,
             reserve=True,
             reservation_id=res_id
         )
@@ -578,10 +625,11 @@ class DataTransferPolicy:
         """
         Evaluates DataTransferContext against registered rules without reserving.
         """
+        eff_authority = authority or self.authorization_authority
         return self._evaluate_internal(
             context=context,
             capability=capability,
-            authority=authority,
+            authority=eff_authority,
             reserve=False,
             reservation_id=active_reservation_id
         )
@@ -748,6 +796,17 @@ class DataTransferPolicy:
                         requires_approval=True
                     )
 
+                if authority is None:
+                    return TransferDecision(
+                        allowed=False,
+                        rule_id=rule.rule_id,
+                        reason=(
+                            f"Rule '{rule.rule_id}' requires capability verification, but "
+                            "AuthorizationAuthority is not configured."
+                        ),
+                        requires_approval=True
+                    )
+
                 cap_token = getattr(capability, "token_id", None)
                 cap_sig = getattr(capability, "signature", None)
                 if not cap_token or not cap_sig:
@@ -817,6 +876,18 @@ class DataTransferPolicy:
 
                 # If AuthorizationAuthority is provided, perform independent verification
                 if authority is not None:
+                    if (
+                        hasattr(authority, "registry")
+                        and hasattr(authority.registry, "sign_capability")
+                    ):
+                        expected_sig = authority.registry.sign_capability(capability)
+                        if not hmac.compare_digest(cap_sig, expected_sig):
+                            return TransferDecision(
+                                allowed=False,
+                                rule_id=rule.rule_id,
+                                reason="Capability verification failed: signature mismatch."
+                            )
+
                     cap_executor = getattr(capability, "executor_id", "")
                     valid_cap, reason_cap, verified_cap = authority.verify_capability(
                         token_id=cap_token,

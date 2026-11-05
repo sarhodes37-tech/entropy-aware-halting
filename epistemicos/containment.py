@@ -917,6 +917,12 @@ class EgressTransportBroker:
         self.authorization_authority = authorization_authority
         self.connection_history: List[EgressConnectionRecord] = []
 
+        if self.require_provenance and self.provenance_store is None:
+            raise ValueError(
+                "EgressTransportBroker configuration error: require_provenance=True "
+                "requires a valid provenance_store instance."
+            )
+
         if self.require_infrastructure_enforcement and not self.infrastructure_enforced:
             raise RuntimeError(
                 "EgressTransportBroker initialization failed: Mandatory infrastructure-level network enforcement is missing."
@@ -1150,6 +1156,7 @@ class EgressTransportBroker:
                 decision = eff_transfer_policy.evaluate_transfer(
                     transfer_context,
                     capability=capability,
+                    authority=self.authorization_authority,
                     active_reservation_id=reservation_id
                 )
                 if not decision.allowed:
@@ -1463,6 +1470,9 @@ class ControlledEgressTransport:
                 reservation_id = decision.reservation_id
                 matched_rule = decision.matched_rule
 
+            # Pre-flight passed: reset observed_bytes to 0 until bytes actually cross the network boundary
+            transfer_context.observed_bytes = 0
+
         try:
             res = self._execute_request_loop(
                 current_url=current_url,
@@ -1490,7 +1500,13 @@ class ControlledEgressTransport:
             return res
         except Exception:
             if reservation_id and self.broker.transfer_policy is not None:
-                self.broker.transfer_policy.refund_reservation(reservation_id)
+                observed = getattr(transfer_context, "observed_bytes", 0) if transfer_context else 0
+                if observed > 0:
+                    self.broker.transfer_policy.commit_reservation(
+                        reservation_id, actual_bytes_observed=observed
+                    )
+                else:
+                    self.broker.transfer_policy.refund_reservation(reservation_id)
             raise
 
     def _execute_request_loop(
@@ -1612,6 +1628,8 @@ class ControlledEgressTransport:
                                 chunks.append(chunk)
                                 received_bytes += len(chunk)
                                 curr_total = actual_bytes + received_bytes
+                                if transfer_context is not None:
+                                    transfer_context.observed_bytes = curr_total
 
                                 # Enforce per-transfer limit in-flight
                                 if max_resp_limit is not None and curr_total > max_resp_limit:

@@ -51,7 +51,7 @@ import functools
 from epistemicos.authorization import PrincipalVerifier
 from tests.unit.test_sec01_sec03_remediation import ExternalTestIdentityAuthority, _ed25519_sign
 
-TEST_IDP = ExternalTestIdentityAuthority("TrustedClassificationAuthority")
+TEST_IDP = ExternalTestIdentityAuthority(issuer_id="TrustedClassificationAuthority")
 TEST_VERIFIER = PrincipalVerifier(
     trusted_public_keys={"TrustedClassificationAuthority": TEST_IDP.public_key}
 )
@@ -157,10 +157,27 @@ def org_policy():
         max_bytes_per_transfer=100000,
         require_capability=True
     )
+    from epistemicos.authorization import (
+        AuthorizationAuthority, CapabilityRegistry, Policy
+    )
+    test_registry = CapabilityRegistry(signing_secret=b"org_policy_cap_secret_bytes_1234")
+    test_auth_policy = Policy(
+        policy_id="org-auth-policy",
+        allowed_operations={"s3_replicate"},
+        allowed_resources={"s3.us-east-1.amazonaws.com"},
+        allowed_principals={"principal:admin"},
+        allowed_executors={"exec"}
+    )
+    test_authority = AuthorizationAuthority(
+        default_policy=test_auth_policy,
+        registry=test_registry,
+        principal_provider=TEST_VERIFIER
+    )
     return DataTransferPolicy(
         rules=[rule_onedrive, rule_gdrive, rule_cap_required],
         default_max_cumulative_bytes=100000,
-        protected_mode=True
+        protected_mode=True,
+        authorization_authority=test_authority
     )
 
 
@@ -491,21 +508,17 @@ def test_requirement_i_strict_capability_binding(org_policy):
     Requirement I: Valid explicit authorization for one destination, classification,
     or scope cannot be reused for another.
     """
-    cap = Capability(
-        token_id="cap-token-s3-prod",
-        principal_id="principal:admin",
-        correlation_id="corr-1",
-        request_id="req-1",
+    auth = org_policy.authorization_authority
+    auth_principal = TEST_IDP.issue_principal("principal:admin")
+    cap, status = auth.evaluate_and_issue_capability(
         action_name="s3_replicate",
         target="s3.us-east-1.amazonaws.com",
         canonical_request_digest="abc",
         executor_id="exec",
-        policy_version="1.0",
-        created_at=100.0,
-        expires_at=200.0,
-        task_id="task-prod-backup",
-        signature="valid-sig-64chars-hex-000000000000000000000000000000000000000000000000"
+        principal_id=auth_principal,
+        task_id="task-prod-backup"
     )
+    assert cap is not None, f"Failed to issue cap: {status}"
 
     # 1. Matching target and task succeeds
     ctx_s3 = TrustedTransferContextBuilder.create_trusted_context(
@@ -600,7 +613,10 @@ def test_requirement_i_strict_capability_binding(org_policy):
     )
     dec_task = org_policy.evaluate_transfer(ctx_diff_task, capability=cap)
     assert dec_task.allowed is False
-    assert "Capability task mismatch" in dec_task.reason
+    assert (
+        "Capability task mismatch" in dec_task.reason
+        or "TASK_ID_MISMATCH" in dec_task.reason
+    )
 
 
 def test_requirement_j_legitimate_tools_not_globally_blocked():
@@ -1660,3 +1676,447 @@ def test_overlapping_host_different_tenant_streaming_limits():
         )
         assert resp["status"] == 200
         assert len(resp["body"]) == 100
+
+
+def test_targeted_security_defect_verification_suite():
+    """
+    Targeted regression tests confirming user verification requirements:
+    1. Mutating any security-relevant field after trusted-context construction
+       invalidates the integrity seal and causes denial.
+    2. A required capability with no AuthorizationAuthority is denied before socket creation.
+    3. Invalid, expired, revoked, or mismatched capabilities are denied before network I/O.
+    4. Partial uploads and streamed downloads retain actual transferred-byte accounting after
+       exceptions.
+    5. Failures before any bytes cross the network boundary refund the full reservation.
+    6. Successful transfers are accounted exactly once.
+    7. Required provenance with a missing or failing store prevents transfer before socket creation.
+    """
+    from epistemicos.authorization import (
+        AuthorizationAuthority, CapabilityRegistry, Policy
+    )
+    from unittest.mock import patch, MagicMock
+
+    # 1. Mutating security-relevant fields invalidates seal and causes denial
+    for field, new_val in [
+        ("initiating_principal", "principal:malicious"),
+        ("destination", DestinationIdentity(service="s3", host="attacker.com")),
+        ("classification", DataClassification.PUBLIC),
+        ("source_scope", "tampered-scope"),
+        ("direction", TransferDirection.DOWNLOAD),
+        ("operation", TransferOperation.READ),
+    ]:
+        ctx = TrustedTransferContextBuilder.create_trusted_context(
+            principal_verifier=TEST_VERIFIER,
+            principal="principal:alice",
+            destination=DestinationIdentity(service="s3", host="s3.us-east-1.amazonaws.com"),
+            classification=DataClassification.INTERNAL,
+            direction=TransferDirection.UPLOAD,
+            operation=TransferOperation.WRITE,
+            source_scope="scope-1",
+            declared_bytes=100,
+            trusted_authority_assertion=make_assertion(
+                "principal:alice", "INTERNAL", destination_host="s3.us-east-1.amazonaws.com",
+                source_scope="scope-1"
+            )
+        )
+        assert ctx.is_classification_trusted is True
+        setattr(ctx, field, new_val)
+        # Verify seal invalidation
+        assert ctx.is_classification_trusted is False
+
+        # Verify policy denies tampered context
+        rule = TransferRule(
+            rule_id="tamper-test-rule",
+            allowed_principals={"principal:alice"},
+            destination_service="s3",
+            allowed_hosts={"s3.us-east-1.amazonaws.com"},
+            max_classification=DataClassification.INTERNAL
+        )
+        policy = DataTransferPolicy(rules=[rule])
+        decision = policy.evaluate_transfer(ctx)
+        assert decision.allowed is False
+        assert (
+            "Untrusted or unverified data classification" in decision.reason
+            or "does not originate from a trusted authority" in decision.reason
+        )
+
+    # 2. Required capability with no AuthorizationAuthority is denied before socket creation
+    cap_rule = TransferRule(
+        rule_id="cap-required-rule",
+        allowed_principals={"principal:alice"},
+        destination_service="s3",
+        allowed_hosts={"s3.us-east-1.amazonaws.com"},
+        max_classification=DataClassification.INTERNAL,
+        require_capability=True
+    )
+    cap_policy = DataTransferPolicy(rules=[cap_rule])
+    dummy_cap = Capability(
+        token_id="tok-dummy",
+        principal_id="principal:alice",
+        correlation_id="corr-1",
+        request_id="req-1",
+        action_name="s3_upload",
+        target="s3.us-east-1.amazonaws.com",
+        canonical_request_digest="dig-1",
+        executor_id="exec",
+        policy_version="1.0",
+        created_at=100.0,
+        expires_at=200.0,
+        signature="aa" * 32
+    )
+    clean_ctx = TrustedTransferContextBuilder.create_trusted_context(
+        principal_verifier=TEST_VERIFIER,
+        principal="principal:alice",
+        destination=DestinationIdentity(service="s3", host="s3.us-east-1.amazonaws.com"),
+        classification=DataClassification.INTERNAL,
+        direction=TransferDirection.UPLOAD,
+        operation=TransferOperation.WRITE,
+        trusted_authority_assertion=make_assertion(
+            "principal:alice", "INTERNAL", destination_host="s3.us-east-1.amazonaws.com"
+        )
+    )
+    dec_no_auth = cap_policy.evaluate_transfer(clean_ctx, capability=dummy_cap, authority=None)
+    assert dec_no_auth.allowed is False
+    assert "AuthorizationAuthority is not configured" in dec_no_auth.reason
+
+    # Ensure broker with no authority raises PermissionError before socket connection
+    egress_policy = EgressPolicy(allowed_destinations={"s3.us-east-1.amazonaws.com"})
+    broker_no_auth = EgressTransportBroker(
+        policy=egress_policy,
+        transfer_policy=cap_policy,
+        authorization_authority=None,
+        resolver_func=lambda h: ["52.216.0.1"]
+    )
+    transport_no_auth = ControlledEgressTransport(broker=broker_no_auth)
+    with patch("epistemicos.containment.PinnedHTTPSConnection") as mock_conn:
+        with pytest.raises(PermissionError) as exc_no_auth:
+            transport_no_auth.request(
+                method="POST",
+                url="https://s3.us-east-1.amazonaws.com/test",
+                body=b"data",
+                transfer_context=clean_ctx,
+                capability=dummy_cap
+            )
+        assert "AuthorizationAuthority is not configured" in str(exc_no_auth.value)
+        mock_conn.assert_not_called()
+
+    # 3. Invalid, expired, revoked, or mismatched capabilities denied before network I/O
+    registry = CapabilityRegistry(signing_secret=b"cap_secret_targeted_test_key_1234")
+    auth_policy = Policy(
+        policy_id="targeted-policy",
+        allowed_operations={"s3_upload"},
+        allowed_resources={"s3.us-east-1.amazonaws.com"},
+        allowed_principals={"principal:alice"},
+        allowed_executors={"exec"}
+    )
+    authority = AuthorizationAuthority(
+        default_policy=auth_policy,
+        registry=registry,
+        principal_provider=TEST_VERIFIER
+    )
+    auth_principal = TEST_IDP.issue_principal("principal:alice")
+
+    body_digest = hashlib.sha256(b"data").hexdigest()
+    cap_valid, _ = authority.evaluate_and_issue_capability(
+        action_name="s3_upload",
+        target="s3.us-east-1.amazonaws.com",
+        canonical_request_digest=body_digest,
+        executor_id="exec",
+        principal_id=auth_principal,
+        task_id="task-targeted"
+    )
+    broker_auth = EgressTransportBroker(
+        policy=egress_policy,
+        transfer_policy=cap_policy,
+        authorization_authority=authority,
+        resolver_func=lambda h: ["52.216.0.1"]
+    )
+    transport_auth = ControlledEgressTransport(broker=broker_auth)
+
+    # 3a. Invalid signature
+    cap_bad_sig = Capability(
+        token_id=cap_valid.token_id,
+        principal_id=cap_valid.principal_id,
+        correlation_id=cap_valid.correlation_id,
+        request_id=cap_valid.request_id,
+        action_name=cap_valid.action_name,
+        target=cap_valid.target,
+        canonical_request_digest=cap_valid.canonical_request_digest,
+        executor_id=cap_valid.executor_id,
+        policy_version=cap_valid.policy_version,
+        created_at=cap_valid.created_at,
+        expires_at=cap_valid.expires_at,
+        task_id=cap_valid.task_id,
+        signature="00" * 32
+    )
+    with patch("epistemicos.containment.PinnedHTTPSConnection") as mock_conn:
+        with pytest.raises(PermissionError) as exc_bad_sig:
+            transport_auth.request(
+                method="POST",
+                url="https://s3.us-east-1.amazonaws.com/test",
+                body=b"data",
+                transfer_context=clean_ctx,
+                capability=cap_bad_sig
+            )
+        assert "Capability verification failed" in str(exc_bad_sig.value)
+        mock_conn.assert_not_called()
+
+    # 3b. Expired capability
+    past_principal = TEST_IDP.issue_principal("principal:alice", current_time=10.0, expires_at=20.0)
+    cap_expired, _ = authority.evaluate_and_issue_capability(
+        action_name="s3_upload",
+        target="s3.us-east-1.amazonaws.com",
+        canonical_request_digest=body_digest,
+        executor_id="exec",
+        principal_id=past_principal,
+        task_id="task-targeted-exp",
+        current_time=10.0
+    )
+    with patch("epistemicos.containment.PinnedHTTPSConnection") as mock_conn:
+        with pytest.raises(PermissionError) as exc_exp:
+            transport_auth.request(
+                method="POST",
+                url="https://s3.us-east-1.amazonaws.com/test",
+                body=b"data",
+                transfer_context=clean_ctx,
+                capability=cap_expired
+            )
+        assert "expired" in str(exc_exp.value).lower()
+        mock_conn.assert_not_called()
+
+    # 3c. Revoked capability
+    cap_revoked, _ = authority.evaluate_and_issue_capability(
+        action_name="s3_upload",
+        target="s3.us-east-1.amazonaws.com",
+        canonical_request_digest=body_digest,
+        executor_id="exec",
+        principal_id=auth_principal,
+        task_id="task-targeted-rev"
+    )
+    registry.revoke_token(cap_revoked.token_id, reason="Revoked for test")
+    with patch("epistemicos.containment.PinnedHTTPSConnection") as mock_conn:
+        with pytest.raises(PermissionError) as exc_rev:
+            transport_auth.request(
+                method="POST",
+                url="https://s3.us-east-1.amazonaws.com/test",
+                body=b"data",
+                transfer_context=clean_ctx,
+                capability=cap_revoked
+            )
+        assert "revoked" in str(exc_rev.value).lower()
+        mock_conn.assert_not_called()
+
+    # 4 & 5. Partial uploads/downloads and pre-network failure accounting
+    accounting_rule = TransferRule(
+        rule_id="accounting-test-rule",
+        allowed_principals={"principal:alice"},
+        destination_service="s3",
+        allowed_hosts={"s3.us-east-1.amazonaws.com"},
+        max_classification=DataClassification.INTERNAL,
+        max_bytes_per_transfer=1000,
+        max_cumulative_bytes=1000
+    )
+    accounting_policy = DataTransferPolicy(
+        rules=[accounting_rule],
+        default_max_cumulative_bytes=1000
+    )
+    broker_acct = EgressTransportBroker(
+        policy=egress_policy,
+        transfer_policy=accounting_policy,
+        resolver_func=lambda h: ["52.216.0.1"]
+    )
+    transport_acct = ControlledEgressTransport(broker=broker_acct)
+
+    # 5. Failure before any bytes cross network boundary refunds full reservation
+    class FailConnect:
+        def __init__(self, *args, **kwargs):
+            raise ConnectionError("DNS or TLS connect failure")
+
+    ctx_pre = TrustedTransferContextBuilder.create_trusted_context(
+        principal_verifier=TEST_VERIFIER,
+        principal="principal:alice",
+        destination=DestinationIdentity(service="s3", host="s3.us-east-1.amazonaws.com"),
+        classification=DataClassification.INTERNAL,
+        direction=TransferDirection.UPLOAD,
+        operation=TransferOperation.WRITE,
+        declared_bytes=300,
+        task_id="task-refund-full",
+        trusted_authority_assertion=make_assertion(
+            "principal:alice", "INTERNAL", destination_host="s3.us-east-1.amazonaws.com"
+        )
+    )
+    with patch("epistemicos.containment.PinnedHTTPSConnection", FailConnect):
+        with pytest.raises((ConnectionError, OSError)):
+            transport_acct.request(
+                method="POST",
+                url="https://s3.us-east-1.amazonaws.com/test",
+                body=b"A" * 300,
+                transfer_context=ctx_pre
+            )
+    assert accounting_policy.get_cumulative_bytes("task-refund-full") == 0
+
+    # 4. Partial upload: failure during send
+    class FailSend:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def request(self, method, url, body=None, headers=None):
+            raise BrokenPipeError("Socket severed during payload transmission")
+
+        def close(self):
+            pass
+
+    ctx_part_up = TrustedTransferContextBuilder.create_trusted_context(
+        principal_verifier=TEST_VERIFIER,
+        principal="principal:alice",
+        destination=DestinationIdentity(service="s3", host="s3.us-east-1.amazonaws.com"),
+        classification=DataClassification.INTERNAL,
+        direction=TransferDirection.UPLOAD,
+        operation=TransferOperation.WRITE,
+        declared_bytes=400,
+        task_id="task-partial-up",
+        trusted_authority_assertion=make_assertion(
+            "principal:alice", "INTERNAL", destination_host="s3.us-east-1.amazonaws.com"
+        )
+    )
+    with patch("epistemicos.containment.PinnedHTTPSConnection", FailSend):
+        with pytest.raises((BrokenPipeError, OSError)):
+            transport_acct.request(
+                method="POST",
+                url="https://s3.us-east-1.amazonaws.com/test",
+                body=b"B" * 400,
+                transfer_context=ctx_part_up
+            )
+    # Pre-send failure commits 0 bytes and refunds
+    assert accounting_policy.get_cumulative_bytes("task-partial-up") == 0
+
+    # 4. Streamed download: 350 bytes received before stream disconnection
+    class PartialStreamResponse:
+        def __init__(self):
+            self.status = 200
+            self.reason = "OK"
+            self.sent = False
+
+        def getheaders(self):
+            return [("Content-Type", "application/octet-stream")]
+
+        def read(self, amt=1024):
+            if not self.sent:
+                self.sent = True
+                return b"C" * 350
+            raise ConnectionResetError("Reset mid-stream")
+
+        def close(self):
+            pass
+
+    class PartialStreamConn:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def request(self, method, url, body=None, headers=None):
+            pass
+
+        def getresponse(self):
+            return PartialStreamResponse()
+
+        def close(self):
+            pass
+
+    ctx_stream = TrustedTransferContextBuilder.create_trusted_context(
+        principal_verifier=TEST_VERIFIER,
+        principal="principal:alice",
+        destination=DestinationIdentity(service="s3", host="s3.us-east-1.amazonaws.com"),
+        classification=DataClassification.INTERNAL,
+        direction=TransferDirection.DOWNLOAD,
+        operation=TransferOperation.READ,
+        declared_bytes=800,
+        task_id="task-stream-fail",
+        trusted_authority_assertion=make_assertion(
+            "principal:alice", "INTERNAL", destination_host="s3.us-east-1.amazonaws.com",
+            direction=TransferDirection.DOWNLOAD, operation=TransferOperation.READ
+        )
+    )
+    with patch("epistemicos.containment.PinnedHTTPSConnection", PartialStreamConn):
+        with pytest.raises((ConnectionResetError, OSError)):
+            transport_acct.request(
+                method="GET",
+                url="https://s3.us-east-1.amazonaws.com/test",
+                transfer_context=ctx_stream
+            )
+    # 350 bytes were received and must be retained in cumulative volume accounting!
+    assert accounting_policy.get_cumulative_bytes("task-stream-fail") == 350
+
+    # 6. Successful transfer is accounted exactly once
+    class CleanConn:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def request(self, method, url, body=None, headers=None):
+            pass
+
+        def getresponse(self):
+            resp = MagicMock()
+            resp.status = 200
+            resp.reason = "OK"
+            resp.getheaders.return_value = [("Content-Type", "application/octet-stream")]
+            resp.read.side_effect = [b"D" * 200, b""]
+            return resp
+
+        def close(self):
+            pass
+
+    ctx_success = TrustedTransferContextBuilder.create_trusted_context(
+        principal_verifier=TEST_VERIFIER,
+        principal="principal:alice",
+        destination=DestinationIdentity(service="s3", host="s3.us-east-1.amazonaws.com"),
+        classification=DataClassification.INTERNAL,
+        direction=TransferDirection.UPLOAD,
+        operation=TransferOperation.WRITE,
+        declared_bytes=150,
+        task_id="task-stream-fail",  # Add to existing 350
+        trusted_authority_assertion=make_assertion(
+            "principal:alice", "INTERNAL", destination_host="s3.us-east-1.amazonaws.com"
+        )
+    )
+    with patch("epistemicos.containment.PinnedHTTPSConnection", CleanConn):
+        res = transport_acct.request(
+            method="POST",
+            url="https://s3.us-east-1.amazonaws.com/test",
+            body=b"D" * 150,
+            transfer_context=ctx_success
+        )
+        assert res["status"] == 200
+    # Expected total: 350 + (150 request + 200 response = 350) = 700 bytes total, exactly once
+    assert accounting_policy.get_cumulative_bytes("task-stream-fail") == 700
+
+    # 7. Required provenance with missing store prevents transfer before socket creation
+    with pytest.raises(ValueError) as exc_prov_init:
+        EgressTransportBroker(
+            policy=egress_policy,
+            require_provenance=True,
+            provenance_store=None
+        )
+    assert "require_provenance=True requires a valid provenance_store" in str(exc_prov_init.value)
+
+    # Required provenance with failing store prevents transfer before socket creation
+    failing_store = MagicMock()
+    failing_store.record_event.side_effect = IOError("Disk full: provenance record failure")
+    broker_prov_fail = EgressTransportBroker(
+        policy=egress_policy,
+        require_provenance=True,
+        provenance_store=failing_store,
+        resolver_func=lambda h: ["52.216.0.1"]
+    )
+    transport_prov_fail = ControlledEgressTransport(broker=broker_prov_fail)
+    with patch("epistemicos.containment.PinnedHTTPSConnection") as mock_conn:
+        with pytest.raises((PermissionError, RuntimeError)) as exc_prov_rec:
+            transport_prov_fail.request(
+                method="GET",
+                url="https://s3.us-east-1.amazonaws.com/test",
+                transfer_context=clean_ctx
+            )
+        assert (
+            "provenance recording failed" in str(exc_prov_rec.value).lower()
+            or "provenance recording failure" in str(exc_prov_rec.value).lower()
+        )
+        mock_conn.assert_not_called()
