@@ -890,3 +890,42 @@ def test_file_lock_failure_fails_closed(tmp_path):
         with pytest.raises(RuntimeError) as exc_info:
             trail.record_event(ev)
         assert "Failed to acquire exclusive file lock" in str(exc_info.value)
+
+
+def test_permission_error_and_io_error_fail_closed(tmp_path):
+    """
+    Verifies that PermissionError or general OSError during file open
+    fails closed (returns unhealthy/False), while genuinely missing files
+    receive the empty-log treatment.
+    """
+    from unittest.mock import patch
+
+    missing_path = tmp_path / "never_created.jsonl"
+    audit = TamperEvidentAuditTrail(log_file_path=str(missing_path))
+    prov = LocalProvenanceStore(log_path=str(missing_path))
+
+    # Genuinely missing file receives empty-log treatment
+    a_healthy, a_h, a_err = audit.inspect_log_health()
+    assert a_healthy is True
+    assert a_err is None
+
+    p_healthy, p_h, p_seq, p_ids = prov._inspect_health()
+    assert p_healthy is True
+
+    # PermissionError on open must fail closed
+    with patch("builtins.open", side_effect=PermissionError("Permission denied")):
+        a_perm_h, _, a_perm_err = audit.inspect_log_health()
+        assert a_perm_h is False
+        assert "Failed to open log file" in str(a_perm_err)
+
+        p_perm_h, _, _, _ = prov._inspect_health()
+        assert p_perm_h is False
+
+    # General OSError on open must fail closed
+    with patch("builtins.open", side_effect=OSError("I/O device error")):
+        a_io_h, _, a_io_err = audit.inspect_log_health()
+        assert a_io_h is False
+        assert "Failed to open log file" in str(a_io_err)
+
+        p_io_h, _, _, _ = prov._inspect_health()
+        assert p_io_h is False

@@ -188,28 +188,27 @@ class TamperEvidentAuditTrail:
            because the streaming prefix SHA-256 digest will diverge, triggering a full fail-closed scan.
         Returns: (is_healthy, last_valid_entry_hash, error_message)
         """
-        if not self.log_path.exists():
-            self._verified_offset = 0
-            self._verified_last_hash = self.genesis_hash
-            self._verified_seen_ids = set()
-            self._verified_ino = None
-            self._verified_prefix_digest = ""
-            return True, self.genesis_hash, None
-
         if active_f is not None:
             # Re-use caller's locked descriptor directly (e.g. from record_event)
             return self._inspect_health_on_descriptor(active_f, should_lock=False)
 
-        # Standalone call: open descriptor and acquire flock
+        # Standalone call: open descriptor directly without uncoordinated exists() check
         try:
             f_raw = open(self.log_path, "rb")
-        except (FileNotFoundError, OSError):
+        except FileNotFoundError:
             self._verified_offset = 0
             self._verified_last_hash = self.genesis_hash
             self._verified_seen_ids = set()
             self._verified_ino = None
             self._verified_prefix_digest = ""
             return True, self.genesis_hash, None
+        except OSError as e:
+            self._verified_offset = 0
+            self._verified_last_hash = self.genesis_hash
+            self._verified_seen_ids = set()
+            self._verified_ino = None
+            self._verified_prefix_digest = ""
+            return False, self.genesis_hash, f"Failed to open log file: {str(e)}"
 
         with f_raw:
             return self._inspect_health_on_descriptor(f_raw, should_lock=True)
