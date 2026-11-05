@@ -21,8 +21,8 @@ def original_post_process(
     """Exact pre-PR multi-pass post-processing implementation."""
     isfinite = math.isfinite
     if any(not isfinite(z) for z in z_scores):
+        non_finite_count = sum(1 for z in z_scores if not isfinite(z))
         sanitized_z_scores = [z if isfinite(z) else None for z in z_scores]
-        non_finite_count = sanitized_z_scores.count(None)
         return {
             "passed": False,
             "reason": "MALFORMED_NON_FINITE_LOGPROBS",
@@ -175,16 +175,17 @@ def run_benchmark():
     measurement_trials = 10
     iters_per_trial = 2000
 
-    print("=" * 88)
+    print("=" * 115)
     print(" TOKEN SURPRISAL SENSOR: PRE-PR MULTI-PASS VS NEW SINGLE-PASS BENCHMARK")
-    print("=" * 88)
+    print("=" * 115)
+
+    hdr = (
+        f"{'Scenario':<34} | {'Orig Med (p95) µs':<23} | {'Opt Med (p95) µs':<23} | "
+        f"{'Speedup':<8} | {'Latency Reduction':<18}"
+    )
 
     # 1. Post-Processing Benchmark (Isolated)
     print("\n--- PART 1: Isolated Post-Processing (Kernel Microbenchmark) ---")
-    hdr = (
-        f"{'Scenario':<36} | {'Orig Med (µs)':<14} | {'Opt Med (µs)':<14} | "
-        f"{'Speedup':<8} | {'Latency Reduction':<18}"
-    )
     print(hdr)
     print("-" * len(hdr))
 
@@ -231,13 +232,16 @@ def run_benchmark():
         orig_stats = _compute_stats(orig_trials)
         opt_stats = _compute_stats(opt_trials)
         med_orig = orig_stats["median"]
+        p95_orig = orig_stats["p95"]
         med_opt = opt_stats["median"]
+        p95_opt = opt_stats["p95"]
         speedup = med_orig / med_opt if med_opt > 0 else 1.0
         pct_reduction = ((med_orig - med_opt) / med_orig) * 100.0 if med_orig > 0 else 0.0
 
+        orig_str = f"{med_orig:6.3f} ({p95_orig:6.3f})"
+        opt_str = f"{med_opt:6.3f} ({p95_opt:6.3f})"
         print(
-            f"{name:<36} | {med_orig:8.3f} (±{orig_stats['std']:4.2f}) | "
-            f"{med_opt:8.3f} (±{opt_stats['std']:4.2f}) | {speedup:5.2f}x  | "
+            f"{name:<34} | {orig_str:<23} | {opt_str:<23} | {speedup:5.2f}x  | "
             f"{pct_reduction:5.1f}%"
         )
 
@@ -300,13 +304,16 @@ def run_benchmark():
         orig_stats = _compute_stats(orig_trials)
         opt_stats = _compute_stats(opt_trials)
         med_orig = orig_stats["median"]
+        p95_orig = orig_stats["p95"]
         med_opt = opt_stats["median"]
+        p95_opt = opt_stats["p95"]
         speedup = med_orig / med_opt if med_opt > 0 else 1.0
         pct_reduction = ((med_orig - med_opt) / med_orig) * 100.0 if med_orig > 0 else 0.0
 
+        orig_str = f"{med_orig:6.3f} ({p95_orig:6.3f})"
+        opt_str = f"{med_opt:6.3f} ({p95_opt:6.3f})"
         print(
-            f"{name:<36} | {med_orig:8.3f} (±{orig_stats['std']:4.2f}) | "
-            f"{med_opt:8.3f} (±{opt_stats['std']:4.2f}) | {speedup:5.2f}x  | "
+            f"{name:<34} | {orig_str:<23} | {opt_str:<23} | {speedup:5.2f}x  | "
             f"{pct_reduction:5.1f}%"
         )
 
