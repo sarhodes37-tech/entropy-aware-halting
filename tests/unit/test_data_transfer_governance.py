@@ -45,14 +45,47 @@ from epistemicos.data_transfer import (
 from epistemicos.provenance import LocalProvenanceStore
 
 
-def make_assertion(principal: str, classification: str = "CONFIDENTIAL"):
+import functools
+import time
+from epistemicos.authorization import PrincipalVerifier
+from tests.unit.test_sec01_sec03_remediation import ExternalTestIdentityAuthority, _ed25519_sign
+
+TEST_IDP = ExternalTestIdentityAuthority("TrustedClassificationAuthority")
+TEST_VERIFIER = PrincipalVerifier(
+    trusted_public_keys={"TrustedClassificationAuthority": TEST_IDP.public_key}
+)
+
+
+@functools.lru_cache(maxsize=128)
+def _cached_sign(payload: bytes):
+    return _ed25519_sign(payload, TEST_IDP.private_seed, TEST_IDP.public_key).hex()
+
+
+def make_assertion(
+    principal: str,
+    classification: str = "CONFIDENTIAL",
+    destination_host: str = None,
+    expires_at: float = None,
+    issuer: str = "TrustedClassificationAuthority",
+    timestamp: float = None
+):
     if hasattr(classification, "value"):
         classification = classification.value
+    now = time.time()
+    ts = timestamp if timestamp is not None else now
+    # Default expiry far in the future
+    exp = expires_at if expires_at is not None else now + 3600.0 * 24
+    dest_str = destination_host or ""
+    payload = f"{principal}:{issuer}:{classification}:{dest_str}:{ts:.6f}:{exp:.6f}".encode("utf-8")
+    sig = _cached_sign(payload)
     return {
-        "issuer": "TrustedClassificationAuthority",
-        "signature": "valid-sig-hex-64chars-test000000000000000000000000000000000000000000",
+        "issuer": issuer,
+        "signature": sig,
         "principal": principal,
-        "classification": classification
+        "classification": classification,
+        "destination_host": destination_host,
+        "timestamp": ts,
+        "expires_at": exp
     }
 
 
@@ -113,6 +146,7 @@ def test_requirement_a_approved_org_destination_succeeds(org_policy):
     permitted classification + permitted volume succeeds.
     """
     ctx = TrustedTransferContextBuilder.create_trusted_context(
+        principal_verifier=TEST_VERIFIER,
         principal="principal:alice",
         destination=DestinationIdentity(
             service="onedrive",
@@ -137,6 +171,7 @@ def test_requirement_b_unapproved_tenant_or_consumer_account_denied(org_policy):
     Requirement B: Same provider, different/unapproved tenant or consumer account is denied.
     """
     ctx_consumer = TrustedTransferContextBuilder.create_trusted_context(
+        principal_verifier=TEST_VERIFIER,
         principal="principal:alice",
         destination=DestinationIdentity(
             service="onedrive",
@@ -168,6 +203,7 @@ def test_requirement_c_approved_hostname_does_not_override_destination_identity(
     )
 
     ctx_unapproved_tenant = TrustedTransferContextBuilder.create_trusted_context(
+        principal_verifier=TEST_VERIFIER,
         principal="principal:alice",
         destination=DestinationIdentity(
             service="onedrive",
@@ -195,6 +231,7 @@ def test_requirement_d_confidential_data_to_unapproved_destination_denied(org_po
     """
     # Google Drive rule only permits up to INTERNAL classification
     ctx = TrustedTransferContextBuilder.create_trusted_context(
+        principal_verifier=TEST_VERIFIER,
         principal="principal:alice",
         destination=DestinationIdentity(
             service="google_drive",
@@ -217,6 +254,7 @@ def test_requirement_e_unauthorized_initiating_principal_denied(org_policy):
     Requirement E: Unauthorized or mismatched initiating principal is denied.
     """
     ctx = TrustedTransferContextBuilder.create_trusted_context(
+        principal_verifier=TEST_VERIFIER,
         principal="principal:unauthorized-mallory",
         destination=DestinationIdentity(
             service="onedrive",
@@ -270,6 +308,7 @@ def test_requirement_g_declared_volume_under_limit_but_actual_bytes_exceed(org_p
     transport = ControlledEgressTransport(broker=broker)
 
     ctx = TrustedTransferContextBuilder.create_trusted_context(
+        principal_verifier=TEST_VERIFIER,
         principal="principal:alice",
         destination=DestinationIdentity(
             service="onedrive",
@@ -313,6 +352,7 @@ def test_requirement_h_barrier_synchronized_atomic_reservations(org_policy):
 
     def worker(worker_id):
         c = TrustedTransferContextBuilder.create_trusted_context(
+            principal_verifier=TEST_VERIFIER,
             principal="principal:backup-agent",
             destination=DestinationIdentity(
                 service="onedrive",
@@ -371,6 +411,7 @@ def test_requirement_i_strict_capability_binding(org_policy):
 
     # 1. Matching target and task succeeds
     ctx_s3 = TrustedTransferContextBuilder.create_trusted_context(
+        principal_verifier=TEST_VERIFIER,
         principal="principal:admin",
         destination=DestinationIdentity(
             service="s3",
@@ -388,6 +429,7 @@ def test_requirement_i_strict_capability_binding(org_policy):
 
     # 2. Destination host mismatch fails closed
     ctx_diff_dest = TrustedTransferContextBuilder.create_trusted_context(
+        principal_verifier=TEST_VERIFIER,
         principal="principal:admin",
         destination=DestinationIdentity(
             service="s3",
@@ -406,6 +448,7 @@ def test_requirement_i_strict_capability_binding(org_policy):
 
     # 3. Task ID mismatch fails closed
     ctx_diff_task = TrustedTransferContextBuilder.create_trusted_context(
+        principal_verifier=TEST_VERIFIER,
         principal="principal:admin",
         destination=DestinationIdentity(
             service="s3",
@@ -449,6 +492,7 @@ def test_requirement_j_legitimate_tools_not_globally_blocked():
     )
 
     ctx_rclone = TrustedTransferContextBuilder.create_trusted_context(
+        principal_verifier=TEST_VERIFIER,
         principal="principal:backup-svc",
         destination=DestinationIdentity(
             service="rclone_s3",
@@ -477,6 +521,7 @@ def test_requirement_k_existing_egress_and_host_binding_intact(org_policy):
 
     # 1. Host in transfer context must match the actual request target host
     ctx_mismatch = TrustedTransferContextBuilder.create_trusted_context(
+        principal_verifier=TEST_VERIFIER,
         principal="principal:alice",
         destination=DestinationIdentity(
             service="onedrive",
@@ -519,6 +564,7 @@ def test_requirement_l_fail_closed_provenance_and_clean_records(org_policy):
         corr_id = "corr-audit-test-123"
 
         ctx = TrustedTransferContextBuilder.create_trusted_context(
+            principal_verifier=TEST_VERIFIER,
             principal="principal:alice",
             destination=DestinationIdentity(
                 service="onedrive",
@@ -605,6 +651,7 @@ def test_concurrency_barrier_production_transport(org_policy):
 
     def transport_worker(i):
         ctx = TrustedTransferContextBuilder.create_trusted_context(
+            principal_verifier=TEST_VERIFIER,
             principal="principal:backup-agent",
             destination=DestinationIdentity(
                 service="onedrive",
@@ -659,6 +706,7 @@ def test_response_streaming_oversized_response_aborts_mid_stream(org_policy):
 
     # Rule max_bytes_per_transfer is 10,000 bytes.
     ctx = TrustedTransferContextBuilder.create_trusted_context(
+        principal_verifier=TEST_VERIFIER,
         principal="principal:alice",
         destination=DestinationIdentity(
             service="onedrive",
@@ -717,12 +765,14 @@ def test_response_streaming_oversized_response_aborts_mid_stream(org_policy):
 
 def test_trusted_context_assertion_negative_cases():
     """
-    Test 3: Negative tests for arbitrary objects, expired assertions, and mismatched fields.
+    Test 3: Cryptographic negative tests: forged signatures, unknown issuers,
+    destination mismatches, expired assertions, altered payloads, and unconfigured verifiers.
     """
     dest = DestinationIdentity(service="s", host="h")
 
     # 1. Arbitrary object strictly rejected
     ctx_obj = TrustedTransferContextBuilder.create_trusted_context(
+        principal_verifier=TEST_VERIFIER,
         principal="alice",
         destination=dest,
         classification=DataClassification.PUBLIC,
@@ -732,38 +782,90 @@ def test_trusted_context_assertion_negative_cases():
     )
     assert ctx_obj.is_classification_trusted is False
 
-    # 2. Expired assertion strictly rejected
-    ctx_expired = TrustedTransferContextBuilder.create_trusted_context(
+    # 2. Forged signature strictly rejected
+    valid_assert = make_assertion("alice", "PUBLIC", destination_host="h")
+    forged_assert = dict(valid_assert)
+    forged_assert["signature"] = "00" * 64
+    ctx_forged = TrustedTransferContextBuilder.create_trusted_context(
+        principal_verifier=TEST_VERIFIER,
         principal="alice",
         destination=dest,
         classification=DataClassification.PUBLIC,
         direction=TransferDirection.UPLOAD,
         operation=TransferOperation.WRITE,
-        trusted_authority_assertion={
-            "issuer": "ClassificationAuthority",
-            "signature": "valid_sig_hex",
-            "principal": "alice",
-            "classification": "public",
-            "expires_at": 100.0  # Far in the past
-        }
+        trusted_authority_assertion=forged_assert
+    )
+    assert ctx_forged.is_classification_trusted is False
+
+    # 3. Altered payload content (tampering with classification after signing) rejected
+    tampered_assert = dict(valid_assert)
+    tampered_assert["classification"] = "CONFIDENTIAL"
+    ctx_tampered = TrustedTransferContextBuilder.create_trusted_context(
+        principal_verifier=TEST_VERIFIER,
+        principal="alice",
+        destination=dest,
+        classification=DataClassification.CONFIDENTIAL,
+        direction=TransferDirection.UPLOAD,
+        operation=TransferOperation.WRITE,
+        trusted_authority_assertion=tampered_assert
+    )
+    assert ctx_tampered.is_classification_trusted is False
+
+    # 4. Unknown/untrusted issuer rejected
+    unknown_issuer_assert = make_assertion(
+        "alice", "PUBLIC", destination_host="h", issuer="AttackerIssuer"
+    )
+    ctx_unknown = TrustedTransferContextBuilder.create_trusted_context(
+        principal_verifier=TEST_VERIFIER,
+        principal="alice",
+        destination=dest,
+        classification=DataClassification.PUBLIC,
+        direction=TransferDirection.UPLOAD,
+        operation=TransferOperation.WRITE,
+        trusted_authority_assertion=unknown_issuer_assert
+    )
+    assert ctx_unknown.is_classification_trusted is False
+
+    # 5. Destination host mismatch rejected
+    mismatched_dest_assert = make_assertion(
+        "alice", "PUBLIC", destination_host="different-host.com"
+    )
+    ctx_dest_mismatch = TrustedTransferContextBuilder.create_trusted_context(
+        principal_verifier=TEST_VERIFIER,
+        principal="alice",
+        destination=dest,
+        classification=DataClassification.PUBLIC,
+        direction=TransferDirection.UPLOAD,
+        operation=TransferOperation.WRITE,
+        trusted_authority_assertion=mismatched_dest_assert
+    )
+    assert ctx_dest_mismatch.is_classification_trusted is False
+
+    # 6. Expired assertion strictly rejected
+    expired_assert = make_assertion("alice", "PUBLIC", destination_host="h", expires_at=100.0)
+    ctx_expired = TrustedTransferContextBuilder.create_trusted_context(
+        principal_verifier=TEST_VERIFIER,
+        principal="alice",
+        destination=dest,
+        classification=DataClassification.PUBLIC,
+        direction=TransferDirection.UPLOAD,
+        operation=TransferOperation.WRITE,
+        trusted_authority_assertion=expired_assert
     )
     assert ctx_expired.is_classification_trusted is False
 
-    # 3. Principal mismatch strictly rejected
-    ctx_mismatch = TrustedTransferContextBuilder.create_trusted_context(
+    # 7. Unconfigured verifier (no trusted issuers) fails closed
+    empty_verifier = PrincipalVerifier(trusted_public_keys={})
+    ctx_no_verifier = TrustedTransferContextBuilder.create_trusted_context(
+        principal_verifier=empty_verifier,
         principal="alice",
         destination=dest,
         classification=DataClassification.PUBLIC,
         direction=TransferDirection.UPLOAD,
         operation=TransferOperation.WRITE,
-        trusted_authority_assertion={
-            "issuer": "ClassificationAuthority",
-            "signature": "valid_sig_hex",
-            "principal": "mallory",
-            "classification": "public"
-        }
+        trusted_authority_assertion=valid_assert
     )
-    assert ctx_mismatch.is_classification_trusted is False
+    assert ctx_no_verifier.is_classification_trusted is False
 
 
 def test_capability_authority_verification_transport(org_policy):
@@ -806,6 +908,7 @@ def test_capability_authority_verification_transport(org_policy):
     assert cap is not None
 
     ctx = TrustedTransferContextBuilder.create_trusted_context(
+        principal_verifier=TEST_VERIFIER,
         principal="principal:admin",
         destination=DestinationIdentity(service="s3", host="s3.us-east-1.amazonaws.com"),
         classification=DataClassification.RESTRICTED,
@@ -838,6 +941,7 @@ def test_cross_host_redirect_rejection(org_policy):
     )
 
     ctx = TrustedTransferContextBuilder.create_trusted_context(
+        principal_verifier=TEST_VERIFIER,
         principal="principal:alice",
         destination=DestinationIdentity(
             service="onedrive",
@@ -879,6 +983,7 @@ def test_provenance_failure_proves_zero_network_io(org_policy):
     transport = ControlledEgressTransport(broker=broker)
 
     ctx = TrustedTransferContextBuilder.create_trusted_context(
+        principal_verifier=TEST_VERIFIER,
         principal="principal:alice",
         destination=DestinationIdentity(
             service="onedrive",

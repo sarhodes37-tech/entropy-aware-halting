@@ -249,22 +249,52 @@ class TrustedTransferContextBuilder:
                     is_trusted = False
             # 2. Check if assertion is a typed classification authority dictionary/record
             elif isinstance(trusted_authority_assertion, dict):
-                # Must contain signature, issuer, classification, and match target principal
-                issuer = trusted_authority_assertion.get("issuer")
-                sig = trusted_authority_assertion.get("signature")
-                asserted_principal = trusted_authority_assertion.get("principal")
-                asserted_class = trusted_authority_assertion.get("classification")
-                expires_at = trusted_authority_assertion.get("expires_at")
+                # Cryptographic verification required: field presence alone is strictly rejected.
+                from epistemicos.authorization import PrincipalVerifier, verify_ed25519_signature
 
-                now = time.time()
-                is_expired = (expires_at is not None and now >= expires_at)
+                verifier = principal_verifier or PrincipalVerifier()
+                if not verifier.has_trusted_issuers():
+                    is_trusted = False
+                else:
+                    issuer = trusted_authority_assertion.get("issuer")
+                    sig_hex = trusted_authority_assertion.get("signature")
+                    asserted_principal = trusted_authority_assertion.get("principal")
+                    asserted_dest = trusted_authority_assertion.get("destination_host")
+                    asserted_class = trusted_authority_assertion.get("classification")
+                    timestamp = trusted_authority_assertion.get("timestamp")
+                    expires_at = trusted_authority_assertion.get("expires_at")
 
-                if (
-                    issuer and sig and not is_expired and
-                    asserted_principal == principal and
-                    str(asserted_class).upper() == classification.value.upper()
-                ):
-                    is_trusted = True
+                    now = time.time()
+                    is_expired = (expires_at is not None and now >= expires_at)
+
+                    trusted_pubkey = verifier._trusted_public_keys.get(issuer) if issuer else None
+
+                    if (
+                        issuer and sig_hex and trusted_pubkey and not is_expired and
+                        asserted_principal == principal and
+                        (asserted_dest is None or asserted_dest == destination.host) and
+                        str(asserted_class).upper() == classification.value.upper()
+                    ):
+                        try:
+                            sig_bytes = bytes.fromhex(sig_hex)
+                            dest_str = asserted_dest or ""
+                            ts_str = (
+                                f"{timestamp:.6f}" if isinstance(timestamp, (int, float))
+                                else str(timestamp or "")
+                            )
+                            exp_str = (
+                                f"{expires_at:.6f}" if isinstance(expires_at, (int, float))
+                                else str(expires_at or "")
+                            )
+                            payload = (
+                                f"{asserted_principal}:{issuer}:{asserted_class}:"
+                                f"{dest_str}:{ts_str}:{exp_str}"
+                            ).encode("utf-8")
+
+                            if verify_ed25519_signature(sig_bytes, payload, trusted_pubkey):
+                                is_trusted = True
+                        except Exception:
+                            is_trusted = False
             # 3. Arbitrary objects (like object()) are strictly rejected as untrusted
             else:
                 is_trusted = False

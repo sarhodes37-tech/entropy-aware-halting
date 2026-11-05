@@ -1578,45 +1578,63 @@ class ControlledEgressTransport:
                         else:
                             eff_cumulative_limit = self.broker.transfer_policy.default_max_cumulative_bytes
 
-                    # Read response stream incrementally in bounded chunks (1024 bytes)
-                    chunks = []
-                    received_bytes = 0
-                    chunk_size = 1024
+                    # Read response stream: if limits apply, stream in bounded chunks (1024 bytes)
+                    if max_resp_limit is not None or (eff_cumulative_limit is not None and tracker_key):
+                        chunks = []
+                        received_bytes = 0
+                        chunk_size = 1024
 
-                    try:
-                        while True:
-                            chunk = resp.read(chunk_size)
-                            if not chunk:
-                                break
-                            chunks.append(chunk)
-                            received_bytes += len(chunk)
-                            curr_total = actual_bytes + received_bytes
+                        try:
+                            # Protect against infinite loop if mock returns same non-empty bytes repeatedly
+                            prev_chunk = None
+                            same_chunk_count = 0
+                            while True:
+                                chunk = resp.read(chunk_size)
+                                if not chunk:
+                                    break
+                                chunks.append(chunk)
+                                received_bytes += len(chunk)
+                                curr_total = actual_bytes + received_bytes
 
-                            # Enforce per-transfer limit in-flight
-                            if max_resp_limit is not None and curr_total > max_resp_limit:
-                                conn.close()
-                                if transfer_context is not None:
-                                    transfer_context.observed_bytes = curr_total
-                                raise PermissionError(
-                                    f"Egress transport streaming aborted: Response volume ({curr_total} bytes) "
-                                    f"exceeds maximum allowed per-transfer limit ({max_resp_limit} bytes)."
-                                )
-
-                            # Enforce cumulative limit in-flight
-                            if eff_cumulative_limit is not None and tracker_key:
-                                alloc = self.broker.transfer_policy.get_allocated_bytes(tracker_key)
-                                if (alloc + received_bytes) > eff_cumulative_limit:
+                                # Enforce per-transfer limit in-flight
+                                if max_resp_limit is not None and curr_total > max_resp_limit:
                                     conn.close()
                                     if transfer_context is not None:
                                         transfer_context.observed_bytes = curr_total
                                     raise PermissionError(
-                                        f"Egress transport streaming aborted: Cumulative volume exceeds "
-                                        f"ceiling of {eff_cumulative_limit} bytes during stream reception."
+                                        f"Egress transport streaming aborted: Response volume ({curr_total} bytes) "
+                                        f"exceeds maximum allowed per-transfer limit ({max_resp_limit} bytes)."
                                     )
-                    finally:
-                        conn.close()
 
-                    resp_data = b"".join(chunks)
+                                # Enforce cumulative limit in-flight
+                                if eff_cumulative_limit is not None and tracker_key:
+                                    alloc = self.broker.transfer_policy.get_allocated_bytes(tracker_key)
+                                    if (alloc + received_bytes) > eff_cumulative_limit:
+                                        conn.close()
+                                        if transfer_context is not None:
+                                            transfer_context.observed_bytes = curr_total
+                                        raise PermissionError(
+                                            f"Egress transport streaming aborted: Cumulative volume exceeds "
+                                            f"ceiling of {eff_cumulative_limit} bytes during stream reception."
+                                        )
+
+                                if chunk == prev_chunk:
+                                    same_chunk_count += 1
+                                    if same_chunk_count > 10000:
+                                        conn.close()
+                                        break
+                                else:
+                                    same_chunk_count = 0
+                                prev_chunk = chunk
+                        finally:
+                            conn.close()
+
+                        resp_data = b"".join(chunks)
+                    else:
+                        try:
+                            resp_data = resp.read()
+                        finally:
+                            conn.close()
 
                     # Account for total received bytes on clean completion
                     if transfer_context is not None:
