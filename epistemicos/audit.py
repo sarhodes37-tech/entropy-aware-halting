@@ -117,15 +117,23 @@ def _sanitize_sensitive_data(obj: Any) -> Any:
             return _sanitize_sensitive_data(dataclasses.asdict(obj))
         except Exception:
             pass
+    # Handle mock objects safely (do not dynamically create infinite attribute chains)
+    if obj.__class__.__module__.startswith("unittest.mock"):
+        return str(obj)
+
     # Handle objects exposing model_dump / to_dict
     if hasattr(obj, "model_dump") and callable(getattr(obj, "model_dump")):
         try:
-            return _sanitize_sensitive_data(obj.model_dump())
+            dumped = obj.model_dump()
+            if not dumped.__class__.__module__.startswith("unittest.mock"):
+                return _sanitize_sensitive_data(dumped)
         except Exception:
             pass
     if hasattr(obj, "to_dict") and callable(getattr(obj, "to_dict")):
         try:
-            return _sanitize_sensitive_data(obj.to_dict())
+            dumped = obj.to_dict()
+            if not dumped.__class__.__module__.startswith("unittest.mock"):
+                return _sanitize_sensitive_data(dumped)
         except Exception:
             pass
     # Handle general inspectable user objects with __dict__ (exclude functions/classes)
