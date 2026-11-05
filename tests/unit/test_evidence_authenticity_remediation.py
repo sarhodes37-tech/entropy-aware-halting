@@ -925,7 +925,6 @@ def test_16_duplicate_terminal_events_rejected_in_reconciliation(test_setup):
     authority = test_setup["authority"]
 
     corr_id = "corr_dup_terminal"
-    tok_id = "tok_dup_terminal"
     attempt_id = "att_dup_terminal"
 
     cap, _ = authority.evaluate_and_issue_capability(
@@ -1061,3 +1060,230 @@ def test_17_atomic_dispatch_failure_injection_prevents_partial_consumption(tmp_p
     store_reloaded = FileAuthorizationStore(store_path=str(store_file))
     assert store_reloaded.is_consumed(tok_id) is False
     assert store_reloaded.get_execution_record(tok_id, "att_atom_fail") is None
+
+
+def test_18_fabricated_trace_cannot_display_completed_when_authority_is_none(tmp_path):
+    """Test 18: An end-to-end test confirming that a fabricated trace with complete lifecycle
+
+    cannot display COMPLETED in the UI adapter when authority is None (fails closed to UNVERIFIED).
+    """
+    prov_path = tmp_path / "provenance.jsonl"
+    audit_path = tmp_path / "audit.jsonl"
+    store = LocalProvenanceStore(log_path=str(prov_path))
+
+    corr_id = "corr_e2e_fabricated_no_auth"
+    tok_id = "tok_forged_no_auth"
+    attempt_id = "att_forged_no_auth"
+
+    ev1 = ProvenanceEvent(
+        schema_version="1.0.0",
+        event_id=str(uuid.uuid4()),
+        event_type=ProvenanceEventType.AUTHORIZATION_GRANTED.value,
+        provenance_source=ProvenanceSource.GOVERNANCE_GATE.value,
+        correlation_id=corr_id,
+        request_id="req-1",
+        action_name="read_file",
+        target="/data/resource.txt",
+        canonical_request_digest="fake_digest",
+        timestamp="2026-11-03T00:00:00Z",
+        authorization_token_id=tok_id,
+    )
+    ev2 = ProvenanceEvent(
+        schema_version="1.0.0",
+        event_id=str(uuid.uuid4()),
+        event_type=ProvenanceEventType.EXECUTION_STARTED.value,
+        provenance_source=ProvenanceSource.EXECUTOR.value,
+        correlation_id=corr_id,
+        request_id="req-1",
+        action_name="read_file",
+        target="/data/resource.txt",
+        canonical_request_digest="fake_digest",
+        timestamp="2026-11-03T00:00:01Z",
+        authorization_token_id=tok_id,
+        execution_attempt_id=attempt_id,
+    )
+    ev3 = ProvenanceEvent(
+        schema_version="1.0.0",
+        event_id=str(uuid.uuid4()),
+        event_type=ProvenanceEventType.EXECUTION_SUCCEEDED.value,
+        provenance_source=ProvenanceSource.EXECUTOR.value,
+        correlation_id=corr_id,
+        request_id="req-1",
+        action_name="read_file",
+        target="/data/resource.txt",
+        canonical_request_digest="fake_digest",
+        timestamp="2026-11-03T00:00:02Z",
+        authorization_token_id=tok_id,
+        execution_attempt_id=attempt_id,
+        outcome={"status": "SUCCESS"},
+    )
+    for e in (ev1, ev2, ev3):
+        store.record_event(e)
+
+    # UI Adapter initialized with authority=None
+    adapter = ObservatoryDataAdapter(
+        audit_log_path=str(audit_path),
+        provenance_log_path=str(prov_path),
+        authority=None,
+    )
+
+    trace = adapter.get_execution_trace_by_id(corr_id)
+    assert trace is not None
+    assert trace["status"] == "UNVERIFIED"
+    assert trace["status"] != "COMPLETED"
+    assert trace["reconciliation"]["valid"] is False
+    assert trace["reconciliation"]["status"] == "UNVERIFIED_LEGACY_EVIDENCE"
+
+    traces = adapter.get_execution_traces()
+    matched = next((t for t in traces if t["correlation_id"] == corr_id), None)
+    assert matched is not None
+    assert matched["status"] == "UNVERIFIED"
+    assert matched["status"] != "COMPLETED"
+
+
+def test_19_multithreaded_concurrent_revocation_vs_dispatch_on_file_store(tmp_path):
+    """Test 19: Multithreaded race test on FileAuthorizationStore asserting strict monotonic serialization
+
+    between concurrent revocation and dispatch. In no execution can a token be dispatched
+    after it is revoked.
+    """
+    import concurrent.futures
+
+    store_file = tmp_path / "auth_concurrent_race.jsonl"
+    store = FileAuthorizationStore(store_path=str(store_file))
+
+    num_tokens = 25
+    scope = canonicalize_fencing_scope(None, "tgt")
+    now_ts = time.time()
+
+    # Register capabilities
+    tokens = [f"tok_race_{i}" for i in range(num_tokens)]
+    for tok in tokens:
+        cap = Capability(
+            token_id=tok,
+            principal_id="p1",
+            correlation_id=f"c_{tok}",
+            request_id=f"r_{tok}",
+            action_name="act",
+            target="tgt",
+            canonical_request_digest="dig",
+            executor_id="exec",
+            policy_version="1.0",
+            created_at=now_ts,
+            expires_at=now_ts + 300,
+            fencing_token=1,
+            scope_key=scope,
+        )
+        store.register_capability(cap)
+
+    # Concurrent threads racing revocation vs dispatch
+    results = {}
+
+    def do_revoke(tok):
+        # Small jitter
+        time.sleep(0.001)
+        ok, reason = store.revoke_capability(tok, reason="Concurrent admin revocation")
+        return ("revoke", tok, ok, reason)
+
+    def do_dispatch(tok):
+        time.sleep(0.001)
+        ok, reason, rec = store.consume_token_and_record_dispatch(
+            token_id=tok,
+            attempt_id=f"att_{tok}",
+            dispatched_executor_id="exec",
+            started_at=time.time(),
+        )
+        return ("dispatch", tok, ok, reason, rec)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+        futures = []
+        for tok in tokens:
+            futures.append(executor.submit(do_revoke, tok))
+            futures.append(executor.submit(do_dispatch, tok))
+
+        for f in concurrent.futures.as_completed(futures):
+            res = f.result()
+            op, tok = res[0], res[1]
+            if tok not in results:
+                results[tok] = {}
+            results[tok][op] = res
+
+    # Verify each token's invariant: strict mutual exclusion under concurrent contention
+    for tok in tokens:
+        res_revoke = results[tok]["revoke"]
+        res_dispatch = results[tok]["dispatch"]
+
+        rev_ok = res_revoke[2]
+        disp_ok = res_dispatch[2]
+
+        # In no execution can a token both be successfully revoked AND successfully dispatched
+        assert rev_ok ^ disp_ok, f"Mutual exclusion failed for token {tok}: rev_ok={rev_ok}, disp_ok={disp_ok}"
+
+        if rev_ok:
+            # Revocation won the race before dispatch
+            disp_reason = res_dispatch[3]
+            assert "REVOKED" in disp_reason
+            # Execution record was never created
+            assert store.get_execution_record(tok, f"att_{tok}") is None
+            rev_rec = store.get_revocation_record(tok)
+            assert rev_rec is not None
+        else:
+            # Dispatch won the race before revocation: revocation rejected as already consumed
+            rev_reason = res_revoke[3]
+            assert "ALREADY_CONSUMED" in rev_reason
+            disp_rec = res_dispatch[4]
+            assert disp_rec is not None
+            assert disp_rec["outcome_status"] == "DISPATCHED"
+
+    # Verify reload consistency from disk
+    store_reloaded = FileAuthorizationStore(store_path=str(store_file))
+    for tok in tokens:
+        disp_ok = results[tok]["dispatch"][2]
+        if not disp_ok:
+            assert store_reloaded.get_execution_record(tok, f"att_{tok}") is None
+            assert store_reloaded.get_revocation_record(tok) is not None
+        else:
+            rec = store_reloaded.get_execution_record(tok, f"att_{tok}")
+            assert rec is not None
+            assert rec["outcome_status"] == "DISPATCHED"
+
+
+def test_20_executor_identity_mismatch_rejected(test_setup):
+    """Test 20: Capability issued for trusted_executor is rejected if dispatched to different executor."""
+    authority = test_setup["authority"]
+    boundary = test_setup["boundary"]
+
+    payload = {"data": "exec_test"}
+    digest = boundary.compute_canonical_digest(payload)
+
+    def trusted_executor():
+        return True
+
+    def unauthorized_executor():
+        return False
+
+    authority.register_executor("trusted_exec", trusted_executor)
+    authority.register_executor("unauth_exec", unauthorized_executor)
+
+    corr_id = "corr_exec_mismatch"
+    cap, _ = authority.evaluate_and_issue_capability(
+        action_name="read_file",
+        target="/data/resource.txt",
+        canonical_request_digest=digest,
+        correlation_id=corr_id,
+        request_id="req-1",
+        executor_id=trusted_executor,
+    )
+
+    valid, reason, _, _ = authority.verify_historical_capability(
+        token_id=cap.token_id,
+        action_name="read_file",
+        target="/data/resource.txt",
+        canonical_request_digest=digest,
+        correlation_id=corr_id,
+        request_id="req-1",
+        dispatched_executor_id=unauthorized_executor,  # Mismatch!
+    )
+
+    assert valid is False
+    assert "EXECUTOR_MISMATCH" in reason

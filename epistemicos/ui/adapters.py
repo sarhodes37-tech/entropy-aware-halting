@@ -40,9 +40,8 @@ class ObservatoryDataAdapter:
         self.ablation_table_path = Path(ablation_table_path)
         self.per_case_results_path = Path(per_case_results_path)
         self.authority = authority
-        # Default allow_unverified_legacy=True when authority is None (preserving legacy test compatibility)
-        # and False when authority is provided (enforcing strict authoritative verification)
-        self.allow_unverified_legacy = (authority is None) if allow_unverified_legacy is None else allow_unverified_legacy
+        # Default allow_unverified_legacy=False unconditionally
+        self.allow_unverified_legacy = False if allow_unverified_legacy is None else allow_unverified_legacy
 
     # -------------------------------------------------------------------------
     # Overview View Adapter
@@ -259,21 +258,22 @@ class ObservatoryDataAdapter:
         traces = self.get_execution_traces() if events else []
         incomplete_traces = [
             t for t in traces
-            if not t.get("reconciliation", {}).get("valid", True) or t.get("status") == "OUTCOME_UNKNOWN"
+            if (not t.get("reconciliation", {}).get("valid", True) or t.get("status") in ("OUTCOME_UNKNOWN", "MISMATCH"))
+            and t.get("reconciliation", {}).get("status") != "UNVERIFIED_LEGACY_EVIDENCE"
         ]
 
         if not file_exists or len(events) == 0:
             coverage_status = "UNAVAILABLE"
             coverage_msg = "No provenance records available to assess event coverage."
-        elif incomplete_traces:
-            coverage_status = "INCOMPLETE"
-            coverage_msg = f"{len(incomplete_traces)} of {len(traces)} execution trace(s) have missing terminal outcome events or reconciliation violations."
         elif integrity.get("status") == "CORRUPTED":
             coverage_status = "UNVERIFIED"
             coverage_msg = "Cryptographic sequence chaining corruption positively detected; log continuity and trace completeness cannot be established."
         elif integrity.get("status") != "VERIFIED":
             coverage_status = "UNVERIFIED"
             coverage_msg = "Cryptographic sequence chaining integrity unverified; log continuity and trace completeness cannot be established."
+        elif incomplete_traces:
+            coverage_status = "INCOMPLETE"
+            coverage_msg = f"{len(incomplete_traces)} of {len(traces)} execution trace(s) have missing terminal outcome events or reconciliation violations."
         else:
             coverage_status = "UNVERIFIED"
             coverage_msg = "Valid local cryptographic sequence chaining verifies log continuity, but cannot establish whether unrecorded external actions occurred."
@@ -575,37 +575,36 @@ class ObservatoryDataAdapter:
         """
         event_types = [e.get("event_type") for e in events]
 
-        # Explicit priority: denials and halts
+        # Explicit priority: Governance decisions (denials and halts)
         if "AUTHORIZATION_DENIED" in event_types:
             return "DENIED"
         if "EGRESS_BLOCKED" in event_types:
             return "HALTED"
 
-        # Explicit priority: executor failure or interrupt
-        if "EXECUTION_FAILED" in event_types or "EXECUTION_INTERRUPTED" in event_types:
-            return "FAILED"
-
-        # Gate 1: Evidence reconciliation mismatch or forgery maps to MISMATCH or OUTCOME_UNKNOWN
+        # Gate 1: Evidence reconciliation mismatch or forgery maps to MISMATCH
+        # (Evidence-integrity failures must remain distinguishable from verified executor failures)
         if reconciliation is not None:
             if reconciliation.status == "RECONCILIATION_MISMATCH":
+                # If execution started but terminal outcome is missing, map to OUTCOME_UNKNOWN
                 if "EXECUTION_STARTED" in event_types and not any(t in event_types for t in ("EXECUTION_SUCCEEDED", "EXECUTION_FAILED", "EXECUTION_INTERRUPTED")):
                     return "OUTCOME_UNKNOWN"
                 return "MISMATCH"
-            if reconciliation.status == "UNVERIFIED_LEGACY_EVIDENCE":
-                # When authority is absent and legacy compatibility is not active, status is UNVERIFIED
-                if not getattr(self, "allow_unverified_legacy", False) and self.authority is not None:
-                    return "UNVERIFIED"
+
+        # Authenticated executor failure -> FAILED (as long as there is no evidence mismatch)
+        if "EXECUTION_FAILED" in event_types or "EXECUTION_INTERRUPTED" in event_types:
+            return "FAILED"
 
         # Gate 2: COMPLETED requires verified reconciliation AND genuine EXECUTION_SUCCEEDED
         if "EXECUTION_SUCCEEDED" in event_types:
-            if reconciliation is not None:
-                if reconciliation.status == "RECONCILIATION_MISMATCH":
-                    return "MISMATCH"
-                if reconciliation.status == "UNVERIFIED_LEGACY_EVIDENCE" and self.authority is not None:
-                    return "UNVERIFIED"
-                if not reconciliation.valid and self.authority is not None:
-                    return "MISMATCH"
-            return "COMPLETED"
+            if reconciliation is not None and reconciliation.status == "RECONCILED" and reconciliation.valid:
+                return "COMPLETED"
+            elif reconciliation is not None and reconciliation.status == "UNVERIFIED_LEGACY_EVIDENCE":
+                return "UNVERIFIED"
+            elif reconciliation is not None and reconciliation.status == "INCOMPLETE_EVIDENCE":
+                return "UNVERIFIED"
+            elif reconciliation is not None and not reconciliation.valid:
+                return "MISMATCH"
+            return "UNVERIFIED"
 
         if "EXECUTION_STARTED" in event_types:
             return "OUTCOME_UNKNOWN"

@@ -468,7 +468,7 @@ def test_full_provenance_lifecycle_reconciliation(temp_provenance_store):
         "EXECUTION_SUCCEEDED"
     ]
 
-    reconciler = ProvenanceReconciler()
+    reconciler = ProvenanceReconciler(authority=auth)
     report = reconciler.reconcile_correlation(corr_id, events, agent_claimed_success=True)
     assert report.valid is True
     assert report.status == "RECONCILED"

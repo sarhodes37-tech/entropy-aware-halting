@@ -3384,6 +3384,12 @@ class AuthorizationAuthority:
         if principal_id is not None and cap.principal_id != "agent_default" and cap.principal_id != principal_id:
             return False, f"HISTORICAL_VERIFICATION_FAILED_PRINCIPAL_MISMATCH: granted '{cap.principal_id}', event '{principal_id}'", cap, None
 
+        # Authoritative executor binding check against capability
+        if dispatched_executor_id is not None and getattr(cap, "executor_id", None):
+            norm_disp = get_callable_identity(dispatched_executor_id)
+            if norm_disp != cap.executor_id:
+                return False, f"HISTORICAL_VERIFICATION_FAILED_EXECUTOR_MISMATCH: capability bound to '{cap.executor_id}', event claims '{norm_disp}'", cap, None
+
         # Retrieve execution record if attempt_id is provided
         exec_record = None
         if execution_attempt_id:
@@ -3391,11 +3397,26 @@ class AuthorizationAuthority:
             if not exec_record:
                 return False, f"HISTORICAL_VERIFICATION_FAILED_NO_DISPATCH_RECORD: execution attempt {execution_attempt_id} was never dispatched by trusted boundary", cap, None
 
-            # Verify executor binding if specified
-            if dispatched_executor_id and exec_record.get("dispatched_executor_id"):
-                rec_exec = exec_record.get("dispatched_executor_id")
-                if rec_exec != dispatched_executor_id:
-                    return False, f"HISTORICAL_VERIFICATION_FAILED_EXECUTOR_MISMATCH: dispatched to '{rec_exec}', event claims '{dispatched_executor_id}'", cap, exec_record
+            # Authoritative Executor Identity Verification:
+            # Compare the executor identity recorded by TrustedExecutionBoundary against the signed capability
+            rec_exec = exec_record.get("dispatched_executor_id")
+            cap_exec = getattr(cap, "executor_id", None)
+            if cap_exec and rec_exec and cap_exec != rec_exec:
+                return False, f"HISTORICAL_VERIFICATION_FAILED_EXECUTOR_MISMATCH: capability bound to '{cap_exec}', dispatched to '{rec_exec}'", cap, exec_record
+
+            if dispatched_executor_id and rec_exec and rec_exec != dispatched_executor_id:
+                return False, f"HISTORICAL_VERIFICATION_FAILED_EXECUTOR_MISMATCH: dispatched to '{rec_exec}', event claims '{dispatched_executor_id}'", cap, exec_record
+
+            # Authoritative Principal and Task Attribution Verification:
+            rec_meta = exec_record.get("details") or {}
+            if isinstance(rec_meta, dict):
+                rec_principal = rec_meta.get("principal_id")
+                if cap.principal_id != "agent_default" and rec_principal and cap.principal_id != rec_principal:
+                    return False, f"HISTORICAL_VERIFICATION_FAILED_PRINCIPAL_MISMATCH: capability bound to '{cap.principal_id}', dispatched for '{rec_principal}'", cap, exec_record
+
+                rec_task = rec_meta.get("task_id")
+                if cap.task_id and rec_task and cap.task_id != rec_task:
+                    return False, f"HISTORICAL_VERIFICATION_FAILED_TASK_ID_MISMATCH: capability bound to '{cap.task_id}', dispatched for '{rec_task}'", cap, exec_record
 
             # Verify terminal outcome match against authoritative record
             if expected_outcome_status:

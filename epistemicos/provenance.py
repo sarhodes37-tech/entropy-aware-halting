@@ -16,7 +16,7 @@ import threading
 from enum import Enum
 from pathlib import Path
 from dataclasses import dataclass, field, asdict
-from typing import Dict, Any, List, Optional, Tuple, Set, Protocol, runtime_checkable
+from typing import Dict, Any, List, Optional, Tuple, Set
 
 from abc import ABCMeta
 from unittest.mock import NonCallableMagicMock
@@ -54,7 +54,7 @@ class FencedResource(metaclass=ABCMeta):
         raise NotImplementedError
 
 
-from epistemicos.audit import _sanitize_sensitive_data, ReceiptGenerator
+from epistemicos.audit import _sanitize_sensitive_data
 from epistemicos.authorization import (
     AuthorizationAuthority,
     CapabilityRegistry,
@@ -984,12 +984,10 @@ class ProvenanceReconciler:
     def __init__(
         self,
         authority: Optional[AuthorizationAuthority] = None,
-        allow_unverified_legacy: Optional[bool] = None
+        allow_unverified_legacy: bool = False
     ):
         self.authority = authority
-        # If authority is provided, default allow_unverified_legacy=False (strict authoritative verification)
-        # If authority is None, default allow_unverified_legacy=True (preserving structural-only legacy compatibility)
-        self.allow_unverified_legacy = (authority is None) if allow_unverified_legacy is None else allow_unverified_legacy
+        self.allow_unverified_legacy = allow_unverified_legacy
 
     def reconcile_correlation(
         self,
@@ -1094,7 +1092,6 @@ class ProvenanceReconciler:
             violations.append("Agent claimed successful disclosure, but egress was blocked by Shower Curtain")
 
         # Rule 9 & 10: Cryptographic Capability and Authoritative Execution Verification
-        allow_legacy = self.allow_unverified_legacy if allow_unverified_legacy is None else allow_unverified_legacy
         has_authoritative_verification = self.authority is not None
 
         if has_authoritative_verification:
@@ -1157,8 +1154,10 @@ class ProvenanceReconciler:
                 if not valid_exec:
                     violations.append(f"Authoritative execution verification failed for attempt {att} (token {tok}): {exec_reason}")
         else:
-            if allow_legacy:
-                details["authoritative_verification"] = "UNVERIFIED_LEGACY_STRUCTURAL_ONLY"
+            # Unconditionally fail closed when authority is missing:
+            # Missing authority MUST produce UNVERIFIED_LEGACY_EVIDENCE with valid=False.
+            # Never produces RECONCILED or valid=True.
+            details["authoritative_verification"] = "UNVERIFIED_LEGACY_STRUCTURAL_ONLY"
 
         # Determine status
         if violations:
@@ -1167,7 +1166,7 @@ class ProvenanceReconciler:
         elif not exec_succeeded and not exec_failed and not exec_interrupted and auth_granted:
             status = "INCOMPLETE_EVIDENCE"
             valid = False
-        elif not has_authoritative_verification and not allow_legacy:
+        elif not has_authoritative_verification:
             status = "UNVERIFIED_LEGACY_EVIDENCE"
             valid = False
             violations.append("Authoritative verification unavailable: No AuthorizationAuthority supplied to reconciler")

@@ -436,9 +436,9 @@ def test_multi_request_interleaved_reconciliation(tmp_path):
     events = store.get_events_for_correlation(corr_id)
     report = reconciler.reconcile_correlation(corr_id, events, agent_claimed_success=True)
 
-    assert report.valid
-    assert report.status == "RECONCILED"
-    assert len(report.violations) == 0
+    # In the absence of an authoritative authority, missing authority produces UNVERIFIED_LEGACY_EVIDENCE with valid=False
+    assert report.valid is False
+    assert report.status == "UNVERIFIED_LEGACY_EVIDENCE"
 
 
 def test_privacy_and_sensitive_payload_redaction(tmp_path):
@@ -921,14 +921,15 @@ def test_reconciliation_report_to_dict_and_single_redacted_auth_fallback():
     )
 
     report = reconciler.reconcile_correlation("c_single_redacted", [auth_redacted, exec_started, exec_succ], agent_claimed_success=True)
-    assert report.valid is True
-    assert report.status == "RECONCILED"
+    # When authority is missing, produces UNVERIFIED_LEGACY_EVIDENCE with valid=False
+    assert report.valid is False
+    assert report.status == "UNVERIFIED_LEGACY_EVIDENCE"
 
     # Line 369: ReconciliationReport.to_dict()
     rep_dict = report.to_dict()
     assert isinstance(rep_dict, dict)
-    assert rep_dict["valid"] is True
-    assert rep_dict["status"] == "RECONCILED"
+    assert rep_dict["valid"] is False
+    assert rep_dict["status"] == "UNVERIFIED_LEGACY_EVIDENCE"
 
 
 def test_execution_context_dataclass():
