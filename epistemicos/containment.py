@@ -1677,16 +1677,18 @@ class ControlledEgressTransport:
                                     )
 
                                 # Enforce cumulative limit in-flight
-                                # alloc already includes committed bytes from prior requests plus the
-                                # current request's initial reservation. To accurately assess multi-hop
-                                # in-flight volume against the cumulative ceiling, compare committed
-                                # cumulative bytes plus all observed bytes across prior redirect hops,
-                                # current hop upload, and current hop stream reception.
+                                # Evaluates in-flight usage against the cumulative ceiling, accounting
+                                # for all committed bytes, other concurrent outstanding reservations,
+                                # and all bytes observed across prior redirect hops, current hop upload,
+                                # and current hop stream reception, while excluding the current transfer's
+                                # own reservation to avoid double counting.
                                 if eff_cumulative_limit is not None and tracker_key:
-                                    prior_committed = (
-                                        self.broker.transfer_policy.get_cumulative_bytes(tracker_key)
+                                    other_allocated = (
+                                        self.broker.transfer_policy.get_in_flight_allocated_bytes(
+                                            tracker_key, exclude_reservation_id=reservation_id
+                                        )
                                     )
-                                    in_flight_chain_total = prior_committed + curr_total
+                                    in_flight_chain_total = other_allocated + curr_total
                                     if in_flight_chain_total > eff_cumulative_limit:
                                         conn.close()
                                         raise PermissionError(

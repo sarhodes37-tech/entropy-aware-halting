@@ -2617,3 +2617,118 @@ def test_multi_hop_chain_combined_volume_aborts_mid_stream_on_second_hop():
                 transfer_context=ctx
             )
         assert "Cumulative volume exceeds ceiling of 50 bytes" in str(exc_info.value)
+
+
+def test_concurrent_transfers_in_flight_cumulative_ceiling_enforcement():
+    """
+    Adversarial concurrency regression test:
+    Proves that when two transfers concurrently execute against the same task ID:
+    - Transfer 1 holds an active reservation of 40 bytes (declared_bytes=40).
+    - Transfer 2 holds an active reservation of 20 bytes (declared_bytes=20).
+    - Cumulative ceiling for the task is 70 bytes.
+    - Transfer 2 begins streaming a response chunk of 35 bytes.
+      Without accounting for Transfer 1's active reservation, Transfer 2's in-flight total
+      would look like 0 committed + 35 = 35 <= 70 (silently allowed).
+      With in-flight accounting of other active concurrent reservations, Transfer 2 evaluates
+      other_allocated (40) + curr_total (35) = 75 > 70 ceiling, and is aborted mid-stream.
+    - Furthermore, Transfer 2's own reservation (20 bytes) is NOT double-counted.
+    """
+    task_id = "task-concurrent-streaming-ceiling"
+    policy = DataTransferPolicy(
+        rules=[
+            TransferRule(
+                rule_id="concurrent-stream-ceiling-rule",
+                allowed_principals={"principal:alice"},
+                destination_service="api",
+                allowed_hosts={"api.corp.internal"},
+                max_cumulative_bytes=70  # Ceiling: 70 bytes
+            )
+        ]
+    )
+    broker = EgressTransportBroker(
+        policy=EgressPolicy(allowed_destinations={"api.corp.internal"}),
+        transfer_policy=policy,
+        resolver_func=lambda h: ["93.184.216.34"]
+    )
+    transport = ControlledEgressTransport(broker=broker)
+
+    # 1. Establish an active, in-flight reservation of 40 bytes for Transfer 1
+    ctx1 = TrustedTransferContextBuilder.create_trusted_context(
+        principal_verifier=TEST_VERIFIER,
+        principal="principal:alice",
+        destination=DestinationIdentity(service="api", host="api.corp.internal"),
+        classification=DataClassification.INTERNAL,
+        direction=TransferDirection.UPLOAD,
+        operation=TransferOperation.WRITE,
+        declared_bytes=40,
+        task_id=task_id,
+        trusted_authority_assertion=make_assertion(
+            "principal:alice", "INTERNAL", destination_host="api.corp.internal",
+            task_id=task_id, declared_bytes=40,
+            explicit_task=True, explicit_bytes=True
+        )
+    )
+    res_transfer1 = policy.evaluate_and_reserve(ctx1, reservation_id="res-transfer-1")
+    assert res_transfer1.allowed is True
+    # Verify Transfer 1 has 40 bytes reserved
+    assert policy.get_allocated_bytes(task_id) == 40
+    assert policy.get_cumulative_bytes(task_id) == 0
+
+    # 2. Transfer 2 has declared_bytes=20 and will stream 35 bytes.
+    # Total allocated when Transfer 2 starts: 40 (T1) + 20 (T2) = 60 <= 70.
+    # When Transfer 2 receives 35 bytes, in-flight calculation is:
+    # other_allocated (T1: 40) + curr_total (T2: 35) = 75 > 70 -> ABORTS!
+    class StreamingChunkConn:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def request(self, method, url, body=None, headers=None):
+            pass
+
+        def getresponse(self):
+            resp = MagicMock()
+            resp.status = 200
+            resp.getheaders.return_value = []
+            # Returns 35 bytes
+            resp.read.side_effect = [b"M" * 35, b""]
+            return resp
+
+        def close(self):
+            pass
+
+    ctx2 = TrustedTransferContextBuilder.create_trusted_context(
+        principal_verifier=TEST_VERIFIER,
+        principal="principal:alice",
+        destination=DestinationIdentity(service="api", host="api.corp.internal"),
+        classification=DataClassification.INTERNAL,
+        direction=TransferDirection.DOWNLOAD,
+        operation=TransferOperation.READ,
+        declared_bytes=20,
+        task_id=task_id,
+        trusted_authority_assertion=make_assertion(
+            "principal:alice", "INTERNAL", destination_host="api.corp.internal",
+            direction=TransferDirection.DOWNLOAD, operation=TransferOperation.READ,
+            task_id=task_id, declared_bytes=20,
+            explicit_task=True, explicit_bytes=True
+        )
+    )
+
+    from unittest.mock import patch
+    with patch("epistemicos.containment.PinnedHTTPConnection", StreamingChunkConn):
+        with pytest.raises(PermissionError) as exc_info:
+            transport.request(
+                method="GET",
+                url="http://api.corp.internal/stream",
+                transfer_context=ctx2
+            )
+        assert "Cumulative volume exceeds ceiling of 70 bytes during stream reception" in str(
+            exc_info.value
+        )
+
+    # 3. Because Transfer 2 observed 35 bytes across the network boundary before aborting,
+    # ControlledEgressTransport commits those 35 observed bytes into cumulative history.
+    # When Transfer 1's active reservation is refunded, the remaining allocated bytes
+    # for the task exactly reflect Transfer 2's committed 35 bytes.
+    policy.refund_reservation("res-transfer-1")
+    assert policy.get_cumulative_bytes(task_id) == 35
+    assert policy.get_allocated_bytes(task_id) == 35

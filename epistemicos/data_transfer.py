@@ -673,6 +673,26 @@ class DataTransferPolicy:
             reserved = self._reserved_bytes_tracker.get(tracker_key, 0)
             return committed + reserved
 
+    def get_in_flight_allocated_bytes(
+        self, tracker_key: str, exclude_reservation_id: Optional[str] = None
+    ) -> int:
+        """
+        Calculates the in-flight cumulative allocated bytes for a given scope, including all
+        committed bytes and other active concurrent reservations, while excluding the current
+        transfer's own reservation (if any) to prevent double counting.
+        """
+        with self._lock:
+            committed = self._cumulative_bytes_tracker.get(tracker_key, 0)
+            reserved = self._reserved_bytes_tracker.get(tracker_key, 0)
+            if (
+                exclude_reservation_id
+                and exclude_reservation_id in self._active_reservations
+            ):
+                res_key, res_amt = self._active_reservations[exclude_reservation_id]
+                if res_key == tracker_key:
+                    reserved = max(0, reserved - res_amt)
+            return committed + reserved
+
     def reserve_bytes(
         self,
         tracker_key: str,
