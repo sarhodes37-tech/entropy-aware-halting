@@ -809,6 +809,11 @@ class TrustedExecutionBoundary:
             raise
 
         end_ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        # GAP-WID-01 Remediation: Enforce credential isolation across execution boundary.
+        # Raw credential-bearing tool output must not cross boundary to untrusted consumers.
+        # Non-destructively sanitize result before return while preserving original executor object.
+        sanitized_result = _sanitize_sensitive_data(result)
+
         ev_ok, ev_msg = _verify_success_evidence(result)
         if not ev_ok:
             fail_ev_event = ProvenanceEvent(
@@ -825,7 +830,7 @@ class TrustedExecutionBoundary:
                 authorization_token_id=auth_token_id,
                 execution_attempt_id=attempt_id,
                 policy_version=pol_version,
-                outcome={"status": "UNVERIFIED_SUCCESS", "reason": ev_msg, "result": _sanitize_sensitive_data(result)}
+                outcome={"status": "UNVERIFIED_SUCCESS", "reason": ev_msg, "result": sanitized_result}
             )
             try:
                 self.store.record_event(fail_ev_event)
@@ -833,7 +838,7 @@ class TrustedExecutionBoundary:
                 pass
             return {
                 "status": "UNVERIFIED_SUCCESS",
-                "result": result,
+                "result": sanitized_result,
                 "attempt_id": attempt_id,
                 "reason": ev_msg
             }
@@ -852,21 +857,21 @@ class TrustedExecutionBoundary:
             authorization_token_id=auth_token_id,
             execution_attempt_id=attempt_id,
             policy_version=pol_version,
-            outcome={"status": "SUCCESS", "result": _sanitize_sensitive_data(result)}
+            outcome={"status": "SUCCESS", "result": sanitized_result}
         )
         try:
             self.store.record_event(success_event)
         except Exception as audit_err:
             return {
                 "status": "EXECUTION_OUTCOME_UNKNOWN",
-                "result": result,
+                "result": sanitized_result,
                 "attempt_id": attempt_id,
                 "audit_recording_failed": True,
                 "recovery_required": True,
                 "reason": f"Execution completed but terminal audit logging failed: {str(audit_err)}"
             }
 
-        return {"status": "SUCCESS", "result": result, "attempt_id": attempt_id}
+        return {"status": "SUCCESS", "result": sanitized_result, "attempt_id": attempt_id}
 
 
 @dataclass
