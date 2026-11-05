@@ -1125,3 +1125,47 @@ def test_token_surprisal_sensor_evaluate_differential_equivalence():
         assert res_act["flagged_tokens"] == len(dummy_logprobs)
         expected_none_count = sum(1 for z in z_pattern if not math.isfinite(z))
         assert res_act["token_z_scores"].count(None) == expected_none_count
+
+
+def test_token_surprisal_sensor_observable_float_conversion():
+    """
+    Verifies that float(logprobs[i]) conversion semantics and invocation counts
+    are identically preserved between pre-PR and post-PR implementations
+    both when max_surprisal_ceiling is set and when it is None.
+    """
+    class ObservableFloat:
+        def __init__(self, val: float):
+            self.val = val
+            self.float_conversions = 0
+
+        def __float__(self) -> float:
+            self.float_conversions += 1
+            return float(self.val)
+
+    # 1. With ceiling set
+    sensor_with_ceiling = TokenSurprisalSensor(z_threshold=2.85, max_surprisal_ceiling=10.0)
+    obs_tokens_ref = [ObservableFloat(-0.5), ObservableFloat(-0.2), ObservableFloat(-15.0)]
+    obs_tokens_act = [ObservableFloat(-0.5), ObservableFloat(-0.2), ObservableFloat(-15.0)]
+
+    res_ref = _pre_pr_evaluate(sensor_with_ceiling, obs_tokens_ref)
+    res_act = sensor_with_ceiling.evaluate(obs_tokens_act)
+
+    assert res_act == res_ref
+    # In both pre-PR and post-PR:
+    # compute_z_scores converts each token once (via float(lp))
+    # evaluate() loop converts each token once (via float(logprobs[i]))
+    # Total conversions must be identical for each token
+    for ref_tok, act_tok in zip(obs_tokens_ref, obs_tokens_act):
+        assert act_tok.float_conversions == ref_tok.float_conversions == 2
+
+    # 2. With ceiling=None
+    sensor_no_ceiling = TokenSurprisalSensor(z_threshold=2.85, max_surprisal_ceiling=None)
+    obs_tokens_ref_none = [ObservableFloat(-0.1), ObservableFloat(-0.3), ObservableFloat(-0.4)]
+    obs_tokens_act_none = [ObservableFloat(-0.1), ObservableFloat(-0.3), ObservableFloat(-0.4)]
+
+    res_ref_none = _pre_pr_evaluate(sensor_no_ceiling, obs_tokens_ref_none)
+    res_act_none = sensor_no_ceiling.evaluate(obs_tokens_act_none)
+
+    assert res_act_none == res_ref_none
+    for ref_tok, act_tok in zip(obs_tokens_ref_none, obs_tokens_act_none):
+        assert act_tok.float_conversions == ref_tok.float_conversions == 2

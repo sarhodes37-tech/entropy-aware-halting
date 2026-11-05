@@ -236,7 +236,11 @@ class TokenSurprisalSensor:
                 break
             if z > max_z:
                 max_z = z
-            if z > z_threshold or (has_ceiling and (-float(logprobs[i])) > ceiling):
+            lp = float(logprobs[i])
+            surprisal = -lp
+            is_z_anomaly = z > z_threshold
+            is_ceiling_anomaly = has_ceiling and surprisal > ceiling
+            if is_z_anomaly or is_ceiling_anomaly:
                 flagged_count += 1
 
         if has_non_finite:
