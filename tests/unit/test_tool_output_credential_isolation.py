@@ -442,3 +442,92 @@ def test_gap_wid_01_custom_objects_dataclasses_and_mappings():
     assert r["headers_map"]["X-Custom"] == "val"
     assert r["custom_inst"]["password"] == "[REDACTED]"
     assert r["custom_inst"]["client_id"] == "CID-001"
+
+
+def test_gap_wid_01_slotted_objects_with_credentials():
+    """Scenario 12: Objects using __slots__ carrying credentials are appropriately redacted."""
+    class SlottedParent:
+        __slots__ = ("parent_secret", "normal_id")
+
+    class SlottedChild(SlottedParent):
+        __slots__ = ("api_key", "public_info")
+
+    def slotted_tool():
+        inst = SlottedChild()
+        inst.parent_secret = "master_password_abc"
+        inst.normal_id = "SVC-99"
+        inst.api_key = "sk-ant-api03-abcdefghijklmnop1234567890"
+        inst.public_info = {"version": "2.1"}
+        return inst
+
+    reg = TrustedToolRegistry()
+    reg.authority.default_policy = _make_open_policy()
+    tool = reg.register_tool(
+        tool_id="slotted_tool",
+        action_name="get_slotted",
+        executor_func=slotted_tool,
+        default_target="/slotted"
+    )
+
+    res = tool()
+    assert res["status"] == "SUCCESS"
+    r = res["result"]
+    assert r["parent_secret"] == "[REDACTED]"
+    assert r["api_key"] == "[REDACTED]"
+    assert r["normal_id"] == "SVC-99"
+    assert r["public_info"]["version"] == "2.1"
+
+
+def test_gap_wid_01_cyclic_references_handled_deterministically():
+    """Scenario 13: Self-referencing structures do not trigger uncontrolled recursion or crash."""
+    # 1. Cyclic dict
+    def cyclic_dict_tool():
+        d = {"status": "ok", "api_key": "sk-ant-api03-abcdefghijklmnop1234567890"}
+        d["self_ref"] = d
+        return d
+
+    reg = TrustedToolRegistry()
+    reg.authority.default_policy = _make_open_policy()
+    t1 = reg.register_tool(
+        tool_id="t_cyc_d", action_name="cyc_d", executor_func=cyclic_dict_tool, default_target="/t"
+    )
+    res1 = t1()
+    assert res1["status"] == "SUCCESS"
+    assert res1["result"]["api_key"] == "[REDACTED]"
+    assert res1["result"]["self_ref"] == "[CIRCULAR_REFERENCE]"
+
+    # 2. Cyclic list
+    def cyclic_list_tool():
+        lst = ["safe", "Bearer secret_bearer_token"]
+        lst.append(lst)
+        return lst
+
+    t2 = reg.register_tool(
+        tool_id="t_cyc_l", action_name="cyc_l", executor_func=cyclic_list_tool, default_target="/t"
+    )
+    res2 = t2()
+    assert res2["status"] == "SUCCESS"
+    assert "Bearer [REDACTED]" in res2["result"][1]
+    assert res2["result"][2] == "[CIRCULAR_REFERENCE]"
+
+
+def test_gap_wid_01_self_returning_serialization_hooks():
+    """Scenario 14: Model serialization hooks returning self do not trigger unbounded recursion."""
+    class CyclicModelHook:
+        def __init__(self):
+            self.password = "secret_pass"
+
+        def model_dump(self):
+            return self
+
+    def model_hook_tool():
+        return CyclicModelHook()
+
+    reg = TrustedToolRegistry()
+    reg.authority.default_policy = _make_open_policy()
+    tool = reg.register_tool(
+        tool_id="t_hook", action_name="hook", executor_func=model_hook_tool, default_target="/t"
+    )
+    res = tool()
+    assert res["status"] == "SUCCESS"
+    assert res["result"]["password"] == "[REDACTED]"
