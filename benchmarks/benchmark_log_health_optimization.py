@@ -604,21 +604,24 @@ def generate_markdown_report(results: Dict[str, Any]):
         "",
         "## Executive Summary",
         (
-            "An architectural bottleneck in EpistemicOS was identified where append-only "
-            "persistence in `LocalProvenanceStore` and `TamperEvidentAuditTrail` performed "
-            "complete linear scans (`_inspect_health` / `inspect_log_health`) from Genesis on "
-            "every single append. This produced an $O(N^2)$ cumulative append cost that accounted "
-            "for >95% of total pipeline latency at operational scale."
+            "In append-only cryptographic persistence (`LocalProvenanceStore` and "
+            "`TamperEvidentAuditTrail`), full linear scans (`_inspect_health` / "
+            "`inspect_log_health`) performed repeated JSON parsing, string allocation, and "
+            "per-record cryptographic hashing from Genesis on every verification pass."
         ),
         "",
         (
             "By implementing **accelerated prefix integrity verification** with raw byte "
-            "streaming SHA-256 validation under existing thread and file locks, historical "
+            "streaming SHA-256 validation under synchronized thread and file locks, historical "
             "entries avoid repetitive Python JSON deserialization, string allocations, and "
             "per-record HMAC calculations. The prefix is validated via fast C-level bulk SHA-256 "
-            "byte hashing ($O(N)$ in bytes with small constants) and newly appended suffix records "
-            "undergo cryptographic chain validation, while immediately detecting same-size "
-            "in-place modifications, truncations, and file replacements."
+            "byte hashing ($O(N)$ in historical bytes) on each inspection, while newly appended "
+            "suffix records undergo $O(Δ)$ parsing and cryptographic chain validation. This "
+            "delivers an ~83–92% speedup in component-level log inspection while preserving "
+            "fail-closed detection of in-place modifications, file swaps, and truncations. "
+            "Synthetic end-to-end pipeline measurements at N=1,000 entries demonstrate that "
+            "whole-pipeline latency is dominated by gate evaluation, schema validation, and disk "
+            "sync, showing modest overall change."
         ),
         "",
         "## 1. Provenance Store Health Inspection Latency Across Log Scales",

@@ -704,10 +704,10 @@ def test_provenance_deterministic_intervening_race_fails_closed(tmp_path):
         )
 
     orig_inspect = store._inspect_health_on_descriptor
+    raced = [False]
 
     def wrapped_inspect(f_raw, should_lock=True):
         orig_readline = f_raw.readline
-        raced = [False]
 
         def hooking_readline(*args, **kwargs):
             if not raced[0]:
@@ -727,9 +727,13 @@ def test_provenance_deterministic_intervening_race_fails_closed(tmp_path):
 
     store._inspect_health_on_descriptor = wrapped_inspect
 
-    # Inspection must detect tampering and fail closed
-    store._inspect_health()
+    # Inspection must detect tampering during this exact call and fail closed
+    active_healthy, last_hash, count, seen_ids = store._inspect_health()
+    assert raced[0] is True, "Hooked mutation was not executed during inspection"
+    assert active_healthy is False, "Active inspection failed to detect mid-inspection tampering"
+    assert store._verified_offset == 0, "Verification cache was not invalidated"
 
+    # Subsequent inspection must also remain fail-closed
     store._inspect_health_on_descriptor = orig_inspect
     h_subsequent, _, _, _ = store._inspect_health()
     assert h_subsequent is False
@@ -774,10 +778,10 @@ def test_audit_deterministic_intervening_race_fails_closed(tmp_path):
         )
 
     orig_inspect = trail._inspect_health_on_descriptor
+    raced = [False]
 
     def wrapped_inspect(f_raw, should_lock=True):
         orig_readline = f_raw.readline
-        raced = [False]
 
         def hooking_readline(*args, **kwargs):
             if not raced[0]:
@@ -797,9 +801,13 @@ def test_audit_deterministic_intervening_race_fails_closed(tmp_path):
 
     trail._inspect_health_on_descriptor = wrapped_inspect
 
-    # Inspection must detect tampering and fail closed
-    trail.inspect_log_health()
+    # Inspection must detect tampering during this exact call and fail closed
+    active_healthy, last_hash, err = trail.inspect_log_health()
+    assert raced[0] is True, "Hooked mutation was not executed during inspection"
+    assert active_healthy is False, "Active inspection failed to detect mid-inspection tampering"
+    assert trail._verified_offset == 0, "Verification cache was not invalidated"
 
+    # Subsequent inspection must also remain fail-closed
     trail._inspect_health_on_descriptor = orig_inspect
     h_subsequent, _, _ = trail.inspect_log_health()
     assert h_subsequent is False
