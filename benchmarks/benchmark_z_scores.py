@@ -21,8 +21,8 @@ def original_post_process(
     """Exact pre-PR multi-pass post-processing implementation."""
     isfinite = math.isfinite
     if any(not isfinite(z) for z in z_scores):
-        non_finite_count = sum(1 for z in z_scores if not isfinite(z))
         sanitized_z_scores = [z if isfinite(z) else None for z in z_scores]
+        non_finite_count = sanitized_z_scores.count(None)
         return {
             "passed": False,
             "reason": "MALFORMED_NON_FINITE_LOGPROBS",
@@ -171,16 +171,18 @@ def run_benchmark():
         ),
     }
 
-    warmup_runs = 20
-    measurement_trials = 10
-    iters_per_trial = 2000
+    warmup_runs = 25
+    measurement_trials = 100
+    iters_per_trial = 500
 
-    print("=" * 115)
+    print("=" * 135)
     print(" TOKEN SURPRISAL SENSOR: PRE-PR MULTI-PASS VS NEW SINGLE-PASS BENCHMARK")
-    print("=" * 115)
+    print(f" Trials: {measurement_trials} paired alternating runs | Warmups: {warmup_runs} | "
+          f"Percentile estimator: Nearest-rank (sorted[ceil(0.95*N)-1])")
+    print("=" * 135)
 
     hdr = (
-        f"{'Scenario':<34} | {'Orig Med (p95) µs':<23} | {'Opt Med (p95) µs':<23} | "
+        f"{'Scenario':<34} | {'Orig Med (p95) ±Std µs':<27} | {'Opt Med (p95) ±Std µs':<27} | "
         f"{'Speedup':<8} | {'Latency Reduction':<18}"
     )
 
@@ -202,46 +204,49 @@ def run_benchmark():
 
         orig_trials = []
         opt_trials = []
+        iters = iters_per_trial if len(z_scores) <= 100 else 100
 
         for trial in range(measurement_trials):
             if trial % 2 == 0:
                 t0 = time.perf_counter()
-                for _ in range(iters_per_trial):
+                for _ in range(iters):
                     original_post_process(sensor, logprobs, z_scores)
                 t1 = time.perf_counter()
-                orig_trials.append((t1 - t0) * 1e6 / iters_per_trial)
+                orig_trials.append((t1 - t0) * 1e6 / iters)
 
                 t0 = time.perf_counter()
-                for _ in range(iters_per_trial):
+                for _ in range(iters):
                     optimized_post_process(sensor, logprobs, z_scores)
                 t1 = time.perf_counter()
-                opt_trials.append((t1 - t0) * 1e6 / iters_per_trial)
+                opt_trials.append((t1 - t0) * 1e6 / iters)
             else:
                 t0 = time.perf_counter()
-                for _ in range(iters_per_trial):
+                for _ in range(iters):
                     optimized_post_process(sensor, logprobs, z_scores)
                 t1 = time.perf_counter()
-                opt_trials.append((t1 - t0) * 1e6 / iters_per_trial)
+                opt_trials.append((t1 - t0) * 1e6 / iters)
 
                 t0 = time.perf_counter()
-                for _ in range(iters_per_trial):
+                for _ in range(iters):
                     original_post_process(sensor, logprobs, z_scores)
                 t1 = time.perf_counter()
-                orig_trials.append((t1 - t0) * 1e6 / iters_per_trial)
+                orig_trials.append((t1 - t0) * 1e6 / iters)
 
         orig_stats = _compute_stats(orig_trials)
         opt_stats = _compute_stats(opt_trials)
         med_orig = orig_stats["median"]
         p95_orig = orig_stats["p95"]
+        std_orig = orig_stats["std"]
         med_opt = opt_stats["median"]
         p95_opt = opt_stats["p95"]
+        std_opt = opt_stats["std"]
         speedup = med_orig / med_opt if med_opt > 0 else 1.0
         pct_reduction = ((med_orig - med_opt) / med_orig) * 100.0 if med_orig > 0 else 0.0
 
-        orig_str = f"{med_orig:6.3f} ({p95_orig:6.3f})"
-        opt_str = f"{med_opt:6.3f} ({p95_opt:6.3f})"
+        orig_str = f"{med_orig:6.3f} ({p95_orig:6.3f}) ±{std_orig:4.2f}"
+        opt_str = f"{med_opt:6.3f} ({p95_opt:6.3f}) ±{std_opt:4.2f}"
         print(
-            f"{name:<34} | {orig_str:<23} | {opt_str:<23} | {speedup:5.2f}x  | "
+            f"{name:<34} | {orig_str:<27} | {opt_str:<27} | {speedup:5.2f}x  | "
             f"{pct_reduction:5.1f}%"
         )
 
@@ -273,7 +278,7 @@ def run_benchmark():
 
         orig_trials = []
         opt_trials = []
-        iters = iters_per_trial if len(logprobs) <= 100 else 500
+        iters = 200 if len(logprobs) <= 100 else 50
 
         for trial in range(measurement_trials):
             if trial % 2 == 0:
@@ -305,15 +310,17 @@ def run_benchmark():
         opt_stats = _compute_stats(opt_trials)
         med_orig = orig_stats["median"]
         p95_orig = orig_stats["p95"]
+        std_orig = orig_stats["std"]
         med_opt = opt_stats["median"]
         p95_opt = opt_stats["p95"]
+        std_opt = opt_stats["std"]
         speedup = med_orig / med_opt if med_opt > 0 else 1.0
         pct_reduction = ((med_orig - med_opt) / med_orig) * 100.0 if med_orig > 0 else 0.0
 
-        orig_str = f"{med_orig:6.3f} ({p95_orig:6.3f})"
-        opt_str = f"{med_opt:6.3f} ({p95_opt:6.3f})"
+        orig_str = f"{med_orig:6.3f} ({p95_orig:6.3f}) ±{std_orig:4.2f}"
+        opt_str = f"{med_opt:6.3f} ({p95_opt:6.3f}) ±{std_opt:4.2f}"
         print(
-            f"{name:<34} | {orig_str:<23} | {opt_str:<23} | {speedup:5.2f}x  | "
+            f"{name:<34} | {orig_str:<27} | {opt_str:<27} | {speedup:5.2f}x  | "
             f"{pct_reduction:5.1f}%"
         )
 
