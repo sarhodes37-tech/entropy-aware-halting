@@ -13,9 +13,10 @@ import json
 import time
 import uuid
 import functools
+import threading
 from pathlib import Path
 import hmac
-from typing import Tuple, Optional, Dict, Any, List
+from typing import Tuple, Optional, Dict, Any, List, Set
 from enum import Enum
 from dataclasses import dataclass
 
@@ -149,59 +150,238 @@ class TamperEvidentAuditTrail:
         else:
             self.genesis_hash = hashlib.sha256(self.GENESIS_SEED).hexdigest()
         self.last_hash = None
+        self._lock = threading.RLock()
 
-    def inspect_log_health(self) -> Tuple[bool, Optional[str], Optional[str]]:
+        # Incremental health verification state (mutated under self._lock)
+        self._verified_offset: int = 0
+        self._verified_last_hash: str = self.genesis_hash
+        self._verified_seen_ids: Set[str] = set()
+        self._verified_ino: Optional[int] = None
+        self._verified_prefix_digest: str = ""
+
+    def inspect_log_health(self, active_f: Optional[Any] = None) -> Tuple[bool, Optional[str], Optional[str]]:
+        with self._lock:
+            return self._inspect_log_health_locked(active_f=active_f)
+
+    def _inspect_log_health_locked(
+        self, active_f: Optional[Any] = None
+    ) -> Tuple[bool, Optional[str], Optional[str]]:
         """
         Inspects the audit log health from Genesis to tail.
         Separates health/integrity status from recovering the last valid entry hash.
+        Employs accelerated full-prefix integrity checking with streaming SHA-256 validation.
+
+        Threat Model & Performance Characteristics:
+        1. Performance Complexity: Hashing prefix bytes in C is O(N) in byte length, but bypasses
+           expensive Python JSON decoding, string allocation, and per-record HMAC calculations.
+           Only newly appended suffix records undergo full JSON deserialization and chain-link
+           cryptographic evaluation.
+        2. Single-Descriptor Consistency: File validation, prefix hashing, suffix parsing, and
+           digest updating occur sequentially across a single open file descriptor under file lock,
+           guaranteeing that the exact prefix validated is the prefix establishing the new state.
+        3. Fail-Closed Invalidation: If file size shrinks, inode changes, prefix digest mismatches,
+           or any JSON/hash anomaly is encountered, cached state is wiped (_verified_offset = 0)
+           and a full re-scan from Genesis is performed.
+        4. Storage Assumption & Limitations: In POSIX filesystems without kernel WORM guarantees,
+           an uncoordinated external writer with raw write access could modify historical bytes
+           outside application locks; such tampering is immediately detected upon the next health check
+           because the streaming prefix SHA-256 digest will diverge, triggering a full fail-closed scan.
         Returns: (is_healthy, last_valid_entry_hash, error_message)
         """
-        if not self.log_path.exists() or self.log_path.stat().st_size == 0:
+        if active_f is not None:
+            # Re-use caller's locked descriptor directly (e.g. from record_event)
+            return self._inspect_health_on_descriptor(active_f, should_lock=False)
+
+        # Standalone call: open descriptor directly without uncoordinated exists() check
+        try:
+            f_raw = open(self.log_path, "rb")
+        except FileNotFoundError:
+            self._verified_offset = 0
+            self._verified_last_hash = self.genesis_hash
+            self._verified_seen_ids = set()
+            self._verified_ino = None
+            self._verified_prefix_digest = ""
+            return True, self.genesis_hash, None
+        except OSError as e:
+            self._verified_offset = 0
+            self._verified_last_hash = self.genesis_hash
+            self._verified_seen_ids = set()
+            self._verified_ino = None
+            self._verified_prefix_digest = ""
+            return False, self.genesis_hash, f"Failed to open log file: {str(e)}"
+
+        with f_raw:
+            return self._inspect_health_on_descriptor(f_raw, should_lock=True)
+
+    def _inspect_health_on_descriptor(self, f_raw: Any, should_lock: bool = True) -> Tuple[bool, Optional[str], Optional[str]]:
+        if should_lock and HAS_FCNTL:
+            try:
+                fcntl.flock(f_raw.fileno(), fcntl.LOCK_SH)
+            except OSError as e:
+                self._verified_offset = 0
+                self._verified_last_hash = self.genesis_hash
+                self._verified_seen_ids = set()
+                self._verified_ino = None
+                self._verified_prefix_digest = ""
+                return False, self.genesis_hash, f"Failed to acquire file lock: {str(e)}"
+
+        try:
+            st = os.fstat(f_raw.fileno())
+        except OSError:
+            self._verified_offset = 0
+            self._verified_last_hash = self.genesis_hash
+            self._verified_seen_ids = set()
+            self._verified_ino = None
+            self._verified_prefix_digest = ""
+            return False, self.genesis_hash, "Failed to fstat log file"
+
+        if st.st_size == 0:
+            self._verified_offset = 0
+            self._verified_last_hash = self.genesis_hash
+            self._verified_seen_ids = set()
+            self._verified_ino = st.st_ino
+            self._verified_prefix_digest = hashlib.sha256(b"").hexdigest()
             return True, self.genesis_hash, None
 
-        expected_prev_hash = self.genesis_hash
-        last_valid_hash = self.genesis_hash
-        seen_event_ids = set()
+        needs_full_rescan = (
+            self._verified_ino != st.st_ino
+            or st.st_size < self._verified_offset
+            or self._verified_offset == 0
+        )
 
-        with open(self.log_path, "r", encoding="utf-8") as f:
-            for line_idx, line in enumerate(f, 1):
-                line_str = line.strip()
-                if not line_str:
-                    continue
+        hasher = hashlib.sha256()
 
-                try:
-                    entry = json.loads(line_str)
-                except json.JSONDecodeError:
-                    return False, last_valid_hash, f"Malformed JSON or corrupted tail at line {line_idx}"
+        if not needs_full_rescan:
+            f_raw.seek(0)
+            prefix_bytes = f_raw.read(self._verified_offset)
+            if not isinstance(prefix_bytes, bytes):
+                prefix_bytes = prefix_bytes.encode("utf-8")
+            if len(prefix_bytes) != self._verified_offset:
+                needs_full_rescan = True
+            else:
+                hasher.update(prefix_bytes)
+                if hasher.hexdigest() != self._verified_prefix_digest:
+                    needs_full_rescan = True
 
-                recorded_id = entry.get("event_id")
-                if recorded_id:
-                    if recorded_id in seen_event_ids:
-                        return False, last_valid_hash, f"Duplicate event_id detected at line {line_idx}: {recorded_id}"
-                    seen_event_ids.add(recorded_id)
+        if needs_full_rescan:
+            f_raw.seek(0)
+            hasher = hashlib.sha256()
+            self._verified_offset = 0
+            self._verified_last_hash = self.genesis_hash
+            self._verified_seen_ids = set()
+            self._verified_ino = st.st_ino
+            self._verified_prefix_digest = hashlib.sha256(b"").hexdigest()
 
-                recorded_hash = entry.get("entry_hash")
-                recorded_prev_hash = entry.get("prev_hash")
+        # If file size unchanged from verified byte offset, prefix digest verified
+        if st.st_size == self._verified_offset:
+            return True, self._verified_last_hash, None
 
-                if recorded_prev_hash != expected_prev_hash:
-                    return (
-                        False,
-                        last_valid_hash,
-                        f"Broken chain link at line {line_idx}. Expected prev_hash {expected_prev_hash}, got {recorded_prev_hash}"
-                    )
+        f_raw.seek(self._verified_offset)
+        expected_prev_hash = self._verified_last_hash
+        last_valid_hash = self._verified_last_hash
+        seen_event_ids = set(self._verified_seen_ids)
 
-                check_data = {k: v for k, v in entry.items() if k != "entry_hash"}
-                computed_hash = self._compute_hash(recorded_prev_hash, check_data)
+        line_idx = 0
+        while True:
+            line = f_raw.readline()
+            if not line:
+                break
+            line_bytes = line if isinstance(line, bytes) else line.encode("utf-8")
+            hasher.update(line_bytes)
+            line_idx += 1
 
-                if computed_hash != recorded_hash:
-                    return (
-                        False,
-                        last_valid_hash,
-                        f"Tampered entry detected at line {line_idx}. Computed {computed_hash}, got {recorded_hash}"
-                    )
+            try:
+                line_str = line_bytes.decode("utf-8").strip()
+            except UnicodeDecodeError:
+                self._verified_offset = 0
+                self._verified_last_hash = self.genesis_hash
+                self._verified_seen_ids = set()
+                self._verified_prefix_digest = ""
+                return False, last_valid_hash, f"Malformed UTF-8 at line {line_idx}"
 
-                expected_prev_hash = recorded_hash
-                last_valid_hash = recorded_hash
+            if not line_str:
+                continue
+
+            try:
+                entry = json.loads(line_str)
+            except json.JSONDecodeError:
+                self._verified_offset = 0
+                self._verified_last_hash = self.genesis_hash
+                self._verified_seen_ids = set()
+                self._verified_prefix_digest = ""
+                return False, last_valid_hash, f"Malformed JSON on line {line_idx}"
+
+            recorded_id = entry.get("event_id")
+            if recorded_id:
+                if recorded_id in seen_event_ids:
+                    self._verified_offset = 0
+                    self._verified_last_hash = self.genesis_hash
+                    self._verified_seen_ids = set()
+                    self._verified_prefix_digest = ""
+                    return False, last_valid_hash, f"Duplicate event_id at line {line_idx}: {recorded_id}"
+                seen_event_ids.add(recorded_id)
+
+            recorded_hash = entry.get("entry_hash")
+            recorded_prev_hash = entry.get("prev_hash")
+
+            if recorded_prev_hash != expected_prev_hash:
+                self._verified_offset = 0
+                self._verified_last_hash = self.genesis_hash
+                self._verified_seen_ids = set()
+                self._verified_prefix_digest = ""
+                return False, last_valid_hash, f"Broken chain link at line {line_idx}"
+
+            check_data = {k: v for k, v in entry.items() if k != "entry_hash"}
+            computed_hash = self._compute_hash(recorded_prev_hash, check_data)
+
+            if computed_hash != recorded_hash:
+                self._verified_offset = 0
+                self._verified_last_hash = self.genesis_hash
+                self._verified_seen_ids = set()
+                self._verified_prefix_digest = ""
+                return False, last_valid_hash, f"Tampered entry at line {line_idx}"
+
+            expected_prev_hash = recorded_hash
+            last_valid_hash = recorded_hash
+
+        new_offset = f_raw.tell()
+        new_prefix_digest = hasher.hexdigest()
+
+        # Re-check file descriptor status before committing cached verification state
+        try:
+            st_post = os.fstat(f_raw.fileno())
+            if st_post.st_ino != st.st_ino or st_post.st_size < new_offset:
+                self._verified_offset = 0
+                self._verified_last_hash = self.genesis_hash
+                self._verified_seen_ids = set()
+                self._verified_prefix_digest = ""
+                return False, last_valid_hash, "File modified or truncated during inspection"
+
+            cur_pos = f_raw.tell()
+            f_raw.seek(0)
+            post_prefix_bytes = f_raw.read(new_offset)
+            if not isinstance(post_prefix_bytes, bytes):
+                post_prefix_bytes = post_prefix_bytes.encode("utf-8")
+            f_raw.seek(cur_pos)
+            if hashlib.sha256(post_prefix_bytes).hexdigest() != new_prefix_digest:
+                self._verified_offset = 0
+                self._verified_last_hash = self.genesis_hash
+                self._verified_seen_ids = set()
+                self._verified_prefix_digest = ""
+                return False, last_valid_hash, "Prefix modified during inspection"
+        except OSError:
+            self._verified_offset = 0
+            self._verified_last_hash = self.genesis_hash
+            self._verified_seen_ids = set()
+            self._verified_prefix_digest = ""
+            return False, last_valid_hash, "Failed to verify file state before committing"
+
+        # Update cached state ONLY upon complete valid pass over the single file stream
+        self._verified_offset = new_offset
+        self._verified_last_hash = last_valid_hash
+        self._verified_seen_ids = seen_event_ids
+        self._verified_ino = st.st_ino
+        self._verified_prefix_digest = new_prefix_digest
 
         return True, last_valid_hash, None
 
@@ -209,12 +389,13 @@ class TamperEvidentAuditTrail:
         """
         Retrieves entry_hash of final entry.
         """
-        if not force_reload and getattr(self, "last_hash", None) is not None:
-            return self.last_hash
+        with self._lock:
+            if not force_reload and getattr(self, "last_hash", None) is not None:
+                return self.last_hash
 
-        is_healthy, last_h, _ = self.inspect_log_health()
-        self.last_hash = last_h
-        return self.last_hash
+            is_healthy, last_h, _ = self._inspect_log_health_locked()
+            self.last_hash = last_h
+            return self.last_hash
 
     def _compute_hash(self, prev_hash: str, payload_data: Dict[str, Any]) -> str:
         """Computes SHA-256 or HMAC-SHA256 over the canonical JSON representation of the entry + prev_hash."""
@@ -258,45 +439,57 @@ class TamperEvidentAuditTrail:
         # Fallback if no latency provided
         final_latency = round(event.execution_latency_ms, 4) if event.execution_latency_ms is not None else 0.0
 
-        with open(self.log_path, "a+", encoding="utf-8") as f:
-            if HAS_FCNTL:
-                fcntl.flock(f, fcntl.LOCK_EX)
-
-            try:
-                is_healthy, last_hash, err = self.inspect_log_health()
-                if not is_healthy:
-                    raise RuntimeError(f"Cannot write to audit trail: Log corruption detected: {err}")
-
-                entry_data = {
-                    "event_id": event_id,
-                    "timestamp": timestamp,
-                    "event_type": event.event_type.value,
-                    "gate_name": _sanitize_sensitive_data(event.gate_name),
-                    "reason": _sanitize_sensitive_data(event.reason),
-                    "model_id": _sanitize_sensitive_data(event.model_id),
-                    "latency_ms": final_latency,
-                    "payload_hash": payload_hash,
-                    "payload_snippet": _sanitize_sensitive_data(event.payload_snippet[:200]),
-                    "metadata": _sanitize_sensitive_data(event_metadata),
-                    "prev_hash": last_hash
-                }
-
-                entry_hash = self._compute_hash(last_hash, entry_data)
-                entry_data["entry_hash"] = entry_hash
-                self.last_hash = entry_hash
-
-                f.write(json.dumps(entry_data) + "\n")
-                f.flush()
-                try:
-                    os.fsync(f.fileno())
-                except OSError:
-                    pass
-
-                return entry_data
-
-            finally:
+        with self._lock:
+            with open(self.log_path, "a+b") as f:
                 if HAS_FCNTL:
-                    fcntl.flock(f, fcntl.LOCK_UN)
+                    try:
+                        fcntl.flock(f, fcntl.LOCK_EX)
+                    except OSError as e:
+                        raise RuntimeError(
+                            f"Failed to acquire exclusive file lock: {str(e)}"
+                        ) from e
+
+                try:
+                    is_healthy, last_hash, err = self._inspect_log_health_locked(active_f=f)
+                    if not is_healthy:
+                        raise RuntimeError(
+                            f"Cannot write to audit trail: Log corruption detected: {err}"
+                        )
+
+                    entry_data = {
+                        "event_id": event_id,
+                        "timestamp": timestamp,
+                        "event_type": event.event_type.value,
+                        "gate_name": _sanitize_sensitive_data(event.gate_name),
+                        "reason": _sanitize_sensitive_data(event.reason),
+                        "model_id": _sanitize_sensitive_data(event.model_id),
+                        "latency_ms": final_latency,
+                        "payload_hash": payload_hash,
+                        "payload_snippet": _sanitize_sensitive_data(event.payload_snippet[:200]),
+                        "metadata": _sanitize_sensitive_data(event_metadata),
+                        "prev_hash": last_hash
+                    }
+
+                    entry_hash = self._compute_hash(last_hash, entry_data)
+                    entry_data["entry_hash"] = entry_hash
+                    self.last_hash = entry_hash
+
+                    entry_bytes = json.dumps(entry_data).encode("utf-8") + b"\n"
+                    f.write(entry_bytes)
+                    f.flush()
+                    try:
+                        os.fsync(f.fileno())
+                    except OSError:
+                        pass
+
+                    return entry_data
+
+                finally:
+                    if HAS_FCNTL:
+                        try:
+                            fcntl.flock(f, fcntl.LOCK_UN)
+                        except OSError:
+                            pass
 
     def verify_chain_integrity(self) -> Tuple[bool, int, Optional[str]]:
         """
