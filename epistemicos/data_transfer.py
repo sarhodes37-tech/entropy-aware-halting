@@ -16,7 +16,6 @@ Motivated by the Silent Ransom Group (SRG / Luna Moth) threat model, where legit
 from __future__ import annotations
 
 import enum
-import hashlib
 import hmac
 import threading
 import time
@@ -189,10 +188,14 @@ class DataTransferContext:
             asserted_dest = assertion.get("destination_host")
             asserted_tenant = assertion.get("tenant_id")
             asserted_account = assertion.get("account_id")
+            asserted_workspace = assertion.get("workspace_id")
+            asserted_endpoint = assertion.get("endpoint_path")
             asserted_class = assertion.get("classification")
             asserted_scope = assertion.get("source_scope")
             asserted_direction = assertion.get("direction")
             asserted_operation = assertion.get("operation")
+            asserted_task = assertion.get("task_id")
+            asserted_bytes = assertion.get("declared_bytes")
             timestamp = assertion.get("timestamp")
             expires_at = assertion.get("expires_at")
 
@@ -200,26 +203,60 @@ class DataTransferContext:
             if not asserted_dest or str(asserted_dest).strip().lower() != dest_host:
                 return False
 
-            if not asserted_principal or str(asserted_principal).strip() != self.initiating_principal.strip():
+            if (
+                not asserted_principal
+                or str(asserted_principal).strip() != self.initiating_principal.strip()
+            ):
                 return False
 
-            if (asserted_tenant or "") != ((self.destination.tenant_id if self.destination else "") or ""):
+            curr_tenant = (self.destination.tenant_id if self.destination else "") or ""
+            if (asserted_tenant or "") != curr_tenant:
                 return False
 
-            if (asserted_account or "") != ((self.destination.account_id if self.destination else "") or ""):
+            curr_account = (self.destination.account_id if self.destination else "") or ""
+            if (asserted_account or "") != curr_account:
                 return False
 
-            if not asserted_class or str(asserted_class).upper() != self.classification.value.upper():
+            curr_ws = (self.destination.workspace_id if self.destination else "") or ""
+            if (asserted_workspace or "") != curr_ws:
+                return False
+
+            curr_ep = (self.destination.endpoint_path if self.destination else "") or ""
+            if (asserted_endpoint or "") != curr_ep:
+                return False
+
+            if (
+                not asserted_class
+                or str(asserted_class).upper() != self.classification.value.upper()
+            ):
                 return False
 
             if (asserted_scope or "") != (self.source_scope or ""):
                 return False
 
-            if not asserted_direction or str(asserted_direction).upper() != self.direction.value.upper():
+            if (
+                not asserted_direction
+                or str(asserted_direction).upper() != self.direction.value.upper()
+            ):
                 return False
 
-            if not asserted_operation or str(asserted_operation).upper() != self.operation.value.upper():
+            if (
+                not asserted_operation
+                or str(asserted_operation).upper() != self.operation.value.upper()
+            ):
                 return False
+
+            # task_id binding: if assertion binds task_id, it cannot be used with a different
+            # task ID or in an unauthenticated context to acquire a fresh cumulative volume bucket.
+            if asserted_task is not None and str(asserted_task).strip():
+                if str(asserted_task).strip() != (self.task_id or "").strip():
+                    return False
+
+            # Volume constraint binding: context cannot exceed asserted volume limit
+            if asserted_bytes is not None:
+                ctx_bytes = self.declared_bytes if self.declared_bytes is not None else 0
+                if not isinstance(asserted_bytes, int) or ctx_bytes > asserted_bytes:
+                    return False
 
             now = time.time()
             if expires_at is None or not isinstance(expires_at, (int, float)) or now >= expires_at:
@@ -234,7 +271,11 @@ class DataTransferContext:
                 dest_str = asserted_dest.strip().lower()
                 tenant_str = asserted_tenant or ""
                 account_str = asserted_account or ""
+                ws_str = asserted_workspace or ""
+                ep_str = asserted_endpoint or ""
                 scope_str = asserted_scope or ""
+                task_str = asserted_task or ""
+                bytes_str = str(asserted_bytes) if asserted_bytes is not None else ""
                 ts_str = (
                     f"{timestamp:.6f}" if isinstance(timestamp, (int, float))
                     else str(timestamp or "")
@@ -243,14 +284,27 @@ class DataTransferContext:
                     f"{expires_at:.6f}" if isinstance(expires_at, (int, float))
                     else str(expires_at or "")
                 )
-                payload = (
+                payload_extended = (
                     f"{asserted_principal.strip()}:{issuer}:{dest_str}:"
-                    f"{tenant_str}:{account_str}:{asserted_class.upper()}:"
-                    f"{scope_str}:{asserted_direction.upper()}:"
-                    f"{asserted_operation.upper()}:{ts_str}:{exp_str}"
+                    f"{tenant_str}:{account_str}:{ws_str}:{ep_str}:"
+                    f"{asserted_class.upper()}:{scope_str}:"
+                    f"{asserted_direction.upper()}:{asserted_operation.upper()}:"
+                    f"{task_str}:{bytes_str}:{ts_str}:{exp_str}"
                 ).encode("utf-8")
 
-                return bool(verify_ed25519_signature(sig_bytes, payload, trusted_pubkey))
+                if verify_ed25519_signature(sig_bytes, payload_extended, trusted_pubkey):
+                    return True
+
+                # Backward compatibility: verify base signature if extended fields are absent
+                if not ws_str and not ep_str and not task_str and not bytes_str:
+                    payload_base = (
+                        f"{asserted_principal.strip()}:{issuer}:{dest_str}:"
+                        f"{tenant_str}:{account_str}:{asserted_class.upper()}:"
+                        f"{scope_str}:{asserted_direction.upper()}:"
+                        f"{asserted_operation.upper()}:{ts_str}:{exp_str}"
+                    ).encode("utf-8")
+                    return bool(verify_ed25519_signature(sig_bytes, payload_base, trusted_pubkey))
+                return False
             except Exception:
                 return False
 
@@ -362,10 +416,14 @@ class TrustedTransferContextBuilder:
                     asserted_dest = trusted_authority_assertion.get("destination_host")
                     asserted_tenant = trusted_authority_assertion.get("tenant_id")
                     asserted_account = trusted_authority_assertion.get("account_id")
+                    asserted_workspace = trusted_authority_assertion.get("workspace_id")
+                    asserted_endpoint = trusted_authority_assertion.get("endpoint_path")
                     asserted_class = trusted_authority_assertion.get("classification")
                     asserted_scope = trusted_authority_assertion.get("source_scope")
                     asserted_direction = trusted_authority_assertion.get("direction")
                     asserted_operation = trusted_authority_assertion.get("operation")
+                    asserted_task = trusted_authority_assertion.get("task_id")
+                    asserted_bytes = trusted_authority_assertion.get("declared_bytes")
                     timestamp = trusted_authority_assertion.get("timestamp")
                     expires_at = trusted_authority_assertion.get("expires_at")
 
@@ -393,6 +451,14 @@ class TrustedTransferContextBuilder:
                         (asserted_account or "") == (destination.account_id or "")
                     )
 
+                    # Workspace and Endpoint match (where applicable)
+                    has_valid_workspace = (
+                        (asserted_workspace or "") == (destination.workspace_id or "")
+                    )
+                    has_valid_endpoint = (
+                        (asserted_endpoint or "") == (destination.endpoint_path or "")
+                    )
+
                     # Classification match
                     has_valid_class = bool(
                         asserted_class
@@ -414,6 +480,19 @@ class TrustedTransferContextBuilder:
                         and str(asserted_operation).upper() == operation.value.upper()
                     )
 
+                    # Task ID binding: if assertion binds task_id, must match context task_id
+                    if asserted_task is not None and str(asserted_task).strip():
+                        has_valid_task = (str(asserted_task).strip() == (task_id or "").strip())
+                    else:
+                        has_valid_task = True
+
+                    # Volume binding constraint: declared_bytes must not exceed asserted_bytes
+                    ctx_bytes = declared_bytes if declared_bytes is not None else 0
+                    has_valid_bytes = (
+                        asserted_bytes is None
+                        or (isinstance(asserted_bytes, int) and ctx_bytes <= asserted_bytes)
+                    )
+
                     # Expiration is MANDATORY: missing expiration or expired fails closed
                     now = time.time()
                     has_valid_expiry = (
@@ -432,10 +511,14 @@ class TrustedTransferContextBuilder:
                         and has_valid_principal
                         and has_valid_tenant
                         and has_valid_account
+                        and has_valid_workspace
+                        and has_valid_endpoint
                         and has_valid_class
                         and has_valid_scope
                         and has_valid_direction
                         and has_valid_operation
+                        and has_valid_task
+                        and has_valid_bytes
                         and has_valid_expiry
                     ):
                         try:
@@ -443,7 +526,11 @@ class TrustedTransferContextBuilder:
                             dest_str = asserted_dest.strip().lower()
                             tenant_str = asserted_tenant or ""
                             account_str = asserted_account or ""
+                            ws_str = asserted_workspace or ""
+                            ep_str = asserted_endpoint or ""
                             scope_str = asserted_scope or ""
+                            task_str = asserted_task or ""
+                            bytes_str = str(asserted_bytes) if asserted_bytes is not None else ""
                             ts_str = (
                                 f"{timestamp:.6f}" if isinstance(timestamp, (int, float))
                                 else str(timestamp or "")
@@ -452,15 +539,29 @@ class TrustedTransferContextBuilder:
                                 f"{expires_at:.6f}" if isinstance(expires_at, (int, float))
                                 else str(expires_at or "")
                             )
-                            payload = (
+                            payload_extended = (
                                 f"{asserted_principal.strip()}:{issuer}:{dest_str}:"
-                                f"{tenant_str}:{account_str}:{asserted_class.upper()}:"
-                                f"{scope_str}:{asserted_direction.upper()}:"
-                                f"{asserted_operation.upper()}:{ts_str}:{exp_str}"
+                                f"{tenant_str}:{account_str}:{ws_str}:{ep_str}:"
+                                f"{asserted_class.upper()}:{scope_str}:"
+                                f"{asserted_direction.upper()}:{asserted_operation.upper()}:"
+                                f"{task_str}:{bytes_str}:{ts_str}:{exp_str}"
                             ).encode("utf-8")
 
-                            if verify_ed25519_signature(sig_bytes, payload, trusted_pubkey):
+                            if verify_ed25519_signature(
+                                sig_bytes, payload_extended, trusted_pubkey
+                            ):
                                 is_trusted = True
+                            elif not ws_str and not ep_str and not task_str and not bytes_str:
+                                payload_base = (
+                                    f"{asserted_principal.strip()}:{issuer}:{dest_str}:"
+                                    f"{tenant_str}:{account_str}:{asserted_class.upper()}:"
+                                    f"{scope_str}:{asserted_direction.upper()}:"
+                                    f"{asserted_operation.upper()}:{ts_str}:{exp_str}"
+                                ).encode("utf-8")
+                                if verify_ed25519_signature(
+                                    sig_bytes, payload_base, trusted_pubkey
+                                ):
+                                    is_trusted = True
                         except Exception:
                             is_trusted = False
             else:

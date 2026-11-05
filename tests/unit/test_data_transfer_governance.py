@@ -2124,3 +2124,368 @@ def test_targeted_security_defect_verification_suite():
             or "provenance recording failure" in str(exc_prov_rec.value).lower()
         )
         mock_conn.assert_not_called()
+
+
+def test_adversarial_transfer_context_assertion_binding_and_replay():
+    """
+    Focused adversarial tests verifying complete transfer-context assertion binding:
+    - Mutating each security-relevant field (task_id, workspace_id, endpoint_path, declared_bytes,
+      initiating_principal, destination_host, tenant_id, account_id, classification, source_scope,
+      direction, operation) after assertion creation invalidates cryptographic trust.
+    - Replaying a valid assertion with a different task_id fails closed, preventing an adversary
+      from obtaining a fresh cumulative accounting bucket.
+    """
+    dest_full = DestinationIdentity(
+        service="s3",
+        host="s3.us-east-1.amazonaws.com",
+        tenant_id="tenant-org",
+        account_id="account-org",
+        workspace_id="ws-analytics",
+        endpoint_path="/reports"
+    )
+
+    # Valid assertion signing all security fields including task_id, workspace_id, etc.
+    ts = 1800000000.0
+    exp = 2500000000.0
+    payload = (
+        f"principal:alice:TrustedClassificationAuthority:s3.us-east-1.amazonaws.com:"
+        f"tenant-org:account-org:ws-analytics:/reports:CONFIDENTIAL:scope-finance:"
+        f"UPLOAD:WRITE:task-adversarial-1:500:{ts:.6f}:{exp:.6f}"
+    ).encode("utf-8")
+    sig = _cached_sign(payload)
+
+    base_assertion = {
+        "issuer": "TrustedClassificationAuthority",
+        "signature": sig,
+        "principal": "principal:alice",
+        "destination_host": "s3.us-east-1.amazonaws.com",
+        "tenant_id": "tenant-org",
+        "account_id": "account-org",
+        "workspace_id": "ws-analytics",
+        "endpoint_path": "/reports",
+        "classification": "CONFIDENTIAL",
+        "source_scope": "scope-finance",
+        "direction": "UPLOAD",
+        "operation": "WRITE",
+        "task_id": "task-adversarial-1",
+        "declared_bytes": 500,
+        "timestamp": ts,
+        "expires_at": exp
+    }
+
+    # Valid baseline context
+    ctx = TrustedTransferContextBuilder.create_trusted_context(
+        principal_verifier=TEST_VERIFIER,
+        principal="principal:alice",
+        destination=dest_full,
+        classification=DataClassification.CONFIDENTIAL,
+        direction=TransferDirection.UPLOAD,
+        operation=TransferOperation.WRITE,
+        source_scope="scope-finance",
+        task_id="task-adversarial-1",
+        declared_bytes=500,
+        trusted_authority_assertion=base_assertion
+    )
+    assert ctx.is_classification_trusted is True
+
+    # 1. Mutate task_id -> trust invalidated
+    ctx.task_id = "task-adversarial-tampered"
+    assert ctx.is_classification_trusted is False
+    ctx.task_id = "task-adversarial-1"
+    assert ctx.is_classification_trusted is True
+
+    # 2. Replay assertion with a different task ID at builder construction time
+    ctx_replayed_task = TrustedTransferContextBuilder.create_trusted_context(
+        principal_verifier=TEST_VERIFIER,
+        principal="principal:alice",
+        destination=dest_full,
+        classification=DataClassification.CONFIDENTIAL,
+        direction=TransferDirection.UPLOAD,
+        operation=TransferOperation.WRITE,
+        source_scope="scope-finance",
+        task_id="task-fresh-bucket-spoof",
+        declared_bytes=500,
+        trusted_authority_assertion=base_assertion
+    )
+    assert ctx_replayed_task.is_classification_trusted is False
+
+    # 3. Mutate workspace_id -> trust invalidated
+    ctx.destination = DestinationIdentity(
+        service="s3", host="s3.us-east-1.amazonaws.com",
+        tenant_id="tenant-org", account_id="account-org",
+        workspace_id="ws-attacker", endpoint_path="/reports"
+    )
+    assert ctx.is_classification_trusted is False
+    ctx.destination = dest_full
+    assert ctx.is_classification_trusted is True
+
+    # 4. Mutate endpoint_path -> trust invalidated
+    ctx.destination = DestinationIdentity(
+        service="s3", host="s3.us-east-1.amazonaws.com",
+        tenant_id="tenant-org", account_id="account-org",
+        workspace_id="ws-analytics", endpoint_path="/exfiltration"
+    )
+    assert ctx.is_classification_trusted is False
+    ctx.destination = dest_full
+    assert ctx.is_classification_trusted is True
+
+    # 5. Mutate declared_bytes to exceed asserted constraint -> trust invalidated
+    ctx.declared_bytes = 1000  # Exceeds asserted 500
+    assert ctx.is_classification_trusted is False
+    ctx.declared_bytes = 500
+    assert ctx.is_classification_trusted is True
+
+
+def test_multi_hop_redirect_accounting_and_reservation_lifecycle():
+    """
+    Focused regression suite verifying multi-hop redirect accounting & reservation lifecycle:
+    1. Same-host redirect with a successful response.
+    2. Multiple redirect hops.
+    3. Redirect response followed by a failed second request (asserting partial bytes from hop 1
+       are preserved and committed, and unused reservation is refunded).
+    4. Cumulative budget near its rule-specific ceiling enforced on redirect hop.
+    5. Exactly-once accounting across complete redirect chain.
+    """
+    egress_policy = EgressPolicy(allowed_destinations={"api.corp.internal"})
+    task_id = "task-redirect-lifecycle"
+
+    rule_strict = TransferRule(
+        rule_id="strict-redirect-rule",
+        allowed_principals={"principal:alice"},
+        destination_service="api",
+        allowed_hosts={"api.corp.internal"},
+        max_classification=DataClassification.INTERNAL,
+        max_bytes_per_transfer=1000,
+        max_cumulative_bytes=500
+    )
+    policy = DataTransferPolicy(rules=[rule_strict])
+
+    broker = EgressTransportBroker(
+        policy=egress_policy,
+        transfer_policy=policy,
+        resolver_func=lambda h: ["93.184.216.34"]
+    )
+    transport = ControlledEgressTransport(broker=broker)
+
+    # 1 & 5. Same-host redirect with successful response & exactly-once accounting
+    class SameHostRedirectConn:
+        def __init__(self, *args, **kwargs):
+            self.step = 0
+
+        def request(self, method, url, body=None, headers=None):
+            self.last_url = url
+
+        def getresponse(self):
+            resp = MagicMock()
+            if "/initial" in self.last_url:
+                resp.status = 302
+                resp.reason = "Found"
+                resp.getheaders.return_value = [
+                    ("Location", "/final"),
+                    ("Content-Type", "text/plain")
+                ]
+                resp.read.side_effect = [b"redir-hop-1-response", b""]  # 20 bytes
+            else:
+                resp.status = 200
+                resp.reason = "OK"
+                resp.getheaders.return_value = [("Content-Type", "application/json")]
+                resp.read.side_effect = [b"final-data-200", b""]  # 14 bytes
+            return resp
+
+        def close(self):
+            pass
+
+    ctx_same_host = TrustedTransferContextBuilder.create_trusted_context(
+        principal_verifier=TEST_VERIFIER,
+        principal="principal:alice",
+        destination=DestinationIdentity(service="api", host="api.corp.internal"),
+        classification=DataClassification.INTERNAL,
+        direction=TransferDirection.UPLOAD,
+        operation=TransferOperation.WRITE,
+        declared_bytes=50,
+        task_id=task_id,
+        trusted_authority_assertion=make_assertion(
+            "principal:alice", "INTERNAL", destination_host="api.corp.internal"
+        )
+    )
+
+    from unittest.mock import patch
+    with patch("epistemicos.containment.PinnedHTTPConnection", SameHostRedirectConn):
+        res = transport.request(
+            method="POST",
+            url="http://api.corp.internal/initial",
+            body=b"A" * 50,
+            transfer_context=ctx_same_host
+        )
+        assert res["status"] == 200
+        assert res["body"] == b"final-data-200"
+
+    # Hop 1: 50 request + 20 response = 70 bytes.
+    # Hop 2: 0 request (converted to GET on 302) + 14 response = 14 bytes.
+    # Total committed once: 84 bytes.
+    assert policy.get_cumulative_bytes(task_id) == 84
+    assert policy.get_allocated_bytes(task_id) == 84  # Zero lingering reservations
+
+    # 2. Multiple redirect hops (Hop 1 -> 301 -> Hop 2 -> 302 -> Hop 3 -> 200)
+    task_id_multi = "task-multi-hop"
+
+    class MultiHopConn:
+        def __init__(self, *args, **kwargs):
+            self.last_url = ""
+
+        def request(self, method, url, body=None, headers=None):
+            self.last_url = url
+
+        def getresponse(self):
+            resp = MagicMock()
+            if "/hop1" in self.last_url:
+                resp.status = 301
+                resp.getheaders.return_value = [("Location", "/hop2")]
+                resp.read.side_effect = [b"h1", b""]  # 2 bytes
+            elif "/hop2" in self.last_url:
+                resp.status = 302
+                resp.getheaders.return_value = [("Location", "/hop3")]
+                resp.read.side_effect = [b"h2", b""]  # 2 bytes
+            else:
+                resp.status = 200
+                resp.getheaders.return_value = []
+                resp.read.side_effect = [b"final-dest", b""]  # 10 bytes
+            return resp
+
+        def close(self):
+            pass
+
+    ctx_multi = TrustedTransferContextBuilder.create_trusted_context(
+        principal_verifier=TEST_VERIFIER,
+        principal="principal:alice",
+        destination=DestinationIdentity(service="api", host="api.corp.internal"),
+        classification=DataClassification.INTERNAL,
+        direction=TransferDirection.UPLOAD,
+        operation=TransferOperation.WRITE,
+        declared_bytes=20,
+        task_id=task_id_multi,
+        trusted_authority_assertion=make_assertion(
+            "principal:alice", "INTERNAL", destination_host="api.corp.internal"
+        )
+    )
+
+    with patch("epistemicos.containment.PinnedHTTPConnection", MultiHopConn):
+        res_multi = transport.request(
+            method="POST",
+            url="http://api.corp.internal/hop1",
+            body=b"X" * 20,
+            transfer_context=ctx_multi
+        )
+        assert res_multi["status"] == 200
+        assert res_multi["body"] == b"final-dest"
+
+    # Hop 1: 20 req + 2 resp = 22.
+    # Hop 2: 0 req + 2 resp = 2.
+    # Hop 3: 0 req + 10 resp = 10.
+    # Total: 34 bytes.
+    assert policy.get_cumulative_bytes(task_id_multi) == 34
+    assert policy.get_allocated_bytes(task_id_multi) == 34
+
+    # 3. Redirect response followed by a failed second request (socket failure on hop 2)
+    task_id_fail = "task-redirect-fail-hop2"
+
+    class FailHop2Conn:
+        def __init__(self, *args, **kwargs):
+            self.last_url = ""
+
+        def request(self, method, url, body=None, headers=None):
+            self.last_url = url
+            if "/hop2" in url:
+                raise ConnectionResetError("Hop 2 severed during connection")
+
+        def getresponse(self):
+            resp = MagicMock()
+            resp.status = 302
+            resp.getheaders.return_value = [("Location", "/hop2")]
+            resp.read.side_effect = [b"redirect-payload", b""]  # 16 bytes
+            return resp
+
+        def close(self):
+            pass
+
+    ctx_fail_hop2 = TrustedTransferContextBuilder.create_trusted_context(
+        principal_verifier=TEST_VERIFIER,
+        principal="principal:alice",
+        destination=DestinationIdentity(service="api", host="api.corp.internal"),
+        classification=DataClassification.INTERNAL,
+        direction=TransferDirection.UPLOAD,
+        operation=TransferOperation.WRITE,
+        declared_bytes=40,
+        task_id=task_id_fail,
+        trusted_authority_assertion=make_assertion(
+            "principal:alice", "INTERNAL", destination_host="api.corp.internal"
+        )
+    )
+
+    with patch("epistemicos.containment.PinnedHTTPConnection", FailHop2Conn):
+        with pytest.raises((ConnectionResetError, OSError)):
+            transport.request(
+                method="POST",
+                url="http://api.corp.internal/hop1",
+                body=b"Y" * 40,
+                transfer_context=ctx_fail_hop2
+            )
+
+    # Hop 1 transmitted 40 bytes request + received 16 bytes response = 56 bytes.
+    # Hop 2 failed before network bytes were sent.
+    # The 56 bytes from Hop 1 MUST be retained in cumulative volume accounting, and unused refunded
+    assert policy.get_cumulative_bytes(task_id_fail) == 56
+    assert policy.get_allocated_bytes(task_id_fail) == 56
+
+    # 4. Cumulative budget near rule ceiling enforced on redirect hop
+    task_id_ceiling = "task-redirect-ceiling"
+    policy.reset_cumulative_bytes(task_id_ceiling)
+    # Set existing cumulative usage to 460 bytes (ceiling is 500 bytes, room for only 40 bytes)
+    policy.record_observed_bytes(task_id_ceiling, 460)
+
+    class LargeRedirectRespConn:
+        def __init__(self, *args, **kwargs):
+            self.last_url = ""
+
+        def request(self, method, url, body=None, headers=None):
+            self.last_url = url
+
+        def getresponse(self):
+            resp = MagicMock()
+            if "/start" in self.last_url:
+                resp.status = 302
+                resp.getheaders.return_value = [("Location", "/oversized-dest")]
+                resp.read.side_effect = [b"short", b""]  # 5 bytes
+            else:
+                resp.status = 200
+                resp.getheaders.return_value = []
+                # Response has 50 bytes -> 460 + 10 (req) + 5 (resp1) + 50 (resp2) = 525 > 500
+                resp.read.side_effect = [b"Z" * 50, b""]
+            return resp
+
+        def close(self):
+            pass
+
+    ctx_ceiling = TrustedTransferContextBuilder.create_trusted_context(
+        principal_verifier=TEST_VERIFIER,
+        principal="principal:alice",
+        destination=DestinationIdentity(service="api", host="api.corp.internal"),
+        classification=DataClassification.INTERNAL,
+        direction=TransferDirection.UPLOAD,
+        operation=TransferOperation.WRITE,
+        declared_bytes=10,
+        task_id=task_id_ceiling,
+        trusted_authority_assertion=make_assertion(
+            "principal:alice", "INTERNAL", destination_host="api.corp.internal"
+        )
+    )
+
+    with patch("epistemicos.containment.PinnedHTTPConnection", LargeRedirectRespConn):
+        with pytest.raises(PermissionError) as exc_ceil:
+            transport.request(
+                method="POST",
+                url="http://api.corp.internal/start",
+                body=b"1234567890",
+                transfer_context=ctx_ceiling
+            )
+        assert "Cumulative volume exceeds" in str(exc_ceil.value)

@@ -1547,6 +1547,9 @@ class ControlledEgressTransport:
     ) -> Dict[str, Any]:
         from urllib.parse import urlsplit, urljoin
         redirect_count = 0
+        hop_encoded_body = encoded_body
+        hop_actual_bytes = actual_bytes
+        prior_hops_bytes = 0
 
         while True:
             allowed, reason, pinned_ip = self.broker.establish_connection(
@@ -1562,24 +1565,26 @@ class ControlledEgressTransport:
             if not allowed:
                 raise PermissionError(f"Egress transport blocked request to '{current_url}': {reason}")
 
+            # Re-evaluate matched_rule for current destination
+            if self.broker.transfer_policy is not None and transfer_context is not None:
+                eval_dec = self.broker.transfer_policy.evaluate_transfer(
+                    context=transfer_context,
+                    capability=capability,
+                    authority=self.broker.authorization_authority,
+                    active_reservation_id=reservation_id
+                )
+                if eval_dec.matched_rule is not None:
+                    matched_rule = eval_dec.matched_rule
+
             if redirect_handler:
                 res = redirect_handler(current_url)
                 resp_data = res.get("body", b"")
                 if isinstance(resp_data, str):
                     resp_data = resp_data.encode("utf-8")
+                hop_total = hop_actual_bytes + len(resp_data)
+                total_observed = prior_hops_bytes + hop_total
                 if transfer_context is not None:
-                    total_observed = actual_bytes + len(resp_data)
                     transfer_context.observed_bytes = total_observed
-                    if self.broker.transfer_policy is not None:
-                        if reservation_id:
-                            self.broker.transfer_policy.commit_reservation(
-                                reservation_id, total_observed
-                            )
-                            reservation_id = None
-                        elif tracker_key:
-                            self.broker.transfer_policy.record_observed_bytes(
-                                tracker_key, total_observed
-                            )
             else:
                 parsed = urlsplit(current_url)
                 scheme = parsed.scheme.lower() or "http"
@@ -1610,18 +1615,18 @@ class ControlledEgressTransport:
                         )
 
                     # Wrap payload body in UploadProgressStream if body is present and tracking is needed
-                    request_body_to_send = encoded_body
-                    if encoded_body is not None and len(encoded_body) > 0 and transfer_context is not None:
+                    request_body_to_send = hop_encoded_body
+                    if hop_encoded_body is not None and len(hop_encoded_body) > 0 and transfer_context is not None:
                         def on_chunk_sent(chunk_len: int):
                             transfer_context.observed_bytes = (
                                 getattr(transfer_context, "observed_bytes", 0) + chunk_len
                             )
 
                         request_body_to_send = UploadProgressStream(
-                            encoded_body, on_read_callback=on_chunk_sent
+                            hop_encoded_body, on_read_callback=on_chunk_sent
                         )
                         if "Content-Length" not in req_headers and "content-length" not in req_headers:
-                            req_headers["Content-Length"] = str(len(encoded_body))
+                            req_headers["Content-Length"] = str(len(hop_encoded_body))
 
                     conn.request(current_method, path_and_query, body=request_body_to_send, headers=req_headers)
                     resp = conn.getresponse()
@@ -1659,15 +1664,13 @@ class ControlledEgressTransport:
                                     break
                                 chunks.append(chunk)
                                 received_bytes += len(chunk)
-                                curr_total = actual_bytes + received_bytes
+                                curr_total = prior_hops_bytes + hop_actual_bytes + received_bytes
                                 if transfer_context is not None:
                                     transfer_context.observed_bytes = curr_total
 
                                 # Enforce per-transfer limit in-flight
                                 if max_resp_limit is not None and curr_total > max_resp_limit:
                                     conn.close()
-                                    if transfer_context is not None:
-                                        transfer_context.observed_bytes = curr_total
                                     raise PermissionError(
                                         f"Egress transport streaming aborted: Response volume ({curr_total} bytes) "
                                         f"exceeds maximum allowed per-transfer limit ({max_resp_limit} bytes)."
@@ -1678,8 +1681,6 @@ class ControlledEgressTransport:
                                     alloc = self.broker.transfer_policy.get_allocated_bytes(tracker_key)
                                     if (alloc + received_bytes) > eff_cumulative_limit:
                                         conn.close()
-                                        if transfer_context is not None:
-                                            transfer_context.observed_bytes = curr_total
                                         raise PermissionError(
                                             f"Egress transport streaming aborted: Cumulative volume exceeds "
                                             f"ceiling of {eff_cumulative_limit} bytes during stream reception."
@@ -1703,20 +1704,10 @@ class ControlledEgressTransport:
                         finally:
                             conn.close()
 
-                    # Account for total received bytes on clean completion
+                    hop_total = hop_actual_bytes + len(resp_data)
+                    total_observed = prior_hops_bytes + hop_total
                     if transfer_context is not None:
-                        total_observed = actual_bytes + len(resp_data)
                         transfer_context.observed_bytes = total_observed
-                        if self.broker.transfer_policy is not None:
-                            if reservation_id:
-                                self.broker.transfer_policy.commit_reservation(
-                                    reservation_id, total_observed
-                                )
-                                reservation_id = None
-                            elif tracker_key:
-                                self.broker.transfer_policy.record_observed_bytes(
-                                    tracker_key, total_observed
-                                )
 
                     res = {
                         "status": resp.status,
@@ -1750,11 +1741,29 @@ class ControlledEgressTransport:
                 if not redir_allowed:
                     raise PermissionError(f"Egress transport blocked redirect to '{next_url}': {redir_reason}")
 
+                # Accumulate bytes from this completed hop into prior_hops_bytes
+                prior_hops_bytes += hop_total
+
                 current_url = next_url
                 if res.get("status") in (301, 302, 303):
                     current_method = "GET"
-                    body = None
+                    hop_encoded_body = None
+                    hop_actual_bytes = 0
                 continue
+
+            # Terminal request completed cleanly: commit total observed bytes across all hops exactly once
+            if transfer_context is not None:
+                final_observed = transfer_context.observed_bytes
+                if self.broker.transfer_policy is not None:
+                    if reservation_id:
+                        self.broker.transfer_policy.commit_reservation(
+                            reservation_id, final_observed
+                        )
+                        reservation_id = None
+                    elif tracker_key:
+                        self.broker.transfer_policy.record_observed_bytes(
+                            tracker_key, final_observed
+                        )
 
             return res
 
