@@ -1430,12 +1430,24 @@ class ControlledEgressTransport:
         # If transfer_context is provided, update observed_bytes and atomically evaluate & reserve
         reservation_id = None
         tracker_key = None
+        matched_rule = None
         if transfer_context is not None:
             transfer_context.observed_bytes = actual_bytes
+            if getattr(transfer_context, "canonical_request_digest", None) is None:
+                if encoded_body:
+                    transfer_context.canonical_request_digest = (
+                        hashlib.sha256(encoded_body).hexdigest()
+                    )
+                else:
+                    transfer_context.canonical_request_digest = (
+                        hashlib.sha256(current_url.encode("utf-8")).hexdigest()
+                    )
+
             if self.broker.transfer_policy is not None:
                 tracker_key = (
                     transfer_context.task_id
-                    or f"{transfer_context.initiating_principal}:{transfer_context.destination.host}"
+                    or f"{transfer_context.initiating_principal}:"
+                    f"{transfer_context.destination.host}"
                 )
                 res_uuid = str(uuid.uuid4())
                 decision = self.broker.transfer_policy.evaluate_and_reserve(
@@ -1449,9 +1461,10 @@ class ControlledEgressTransport:
                         f"Egress transport blocked request to '{current_url}': {decision.reason}"
                     )
                 reservation_id = decision.reservation_id
+                matched_rule = decision.matched_rule
 
         try:
-            return self._execute_request_loop(
+            res = self._execute_request_loop(
                 current_url=current_url,
                 current_method=current_method,
                 current_headers=current_headers,
@@ -1466,8 +1479,15 @@ class ControlledEgressTransport:
                 capability=capability,
                 reservation_id=reservation_id,
                 tracker_key=tracker_key,
-                actual_bytes=actual_bytes
+                actual_bytes=actual_bytes,
+                matched_rule=matched_rule
             )
+            # On successful execution boundary completion, consume single-use capability token
+            if capability is not None and self.broker.authorization_authority is not None:
+                cap_token = getattr(capability, "token_id", None)
+                if cap_token:
+                    self.broker.authorization_authority.registry.consume_token(cap_token)
+            return res
         except Exception:
             if reservation_id and self.broker.transfer_policy is not None:
                 self.broker.transfer_policy.refund_reservation(reservation_id)
@@ -1489,7 +1509,8 @@ class ControlledEgressTransport:
         capability: Optional[Any],
         reservation_id: Optional[str],
         tracker_key: Optional[str],
-        actual_bytes: int
+        actual_bytes: int,
+        matched_rule: Optional[Any] = None
     ) -> Dict[str, Any]:
         from urllib.parse import urlsplit, urljoin
         redirect_count = 0
@@ -1558,25 +1579,21 @@ class ControlledEgressTransport:
                     resp = conn.getresponse()
                     resp_headers = {k: v for k, v in resp.getheaders()}
 
-                    # Determine volume limits for in-flight response streaming
+                    # Determine volume limits for in-flight response streaming using matched rule
                     max_resp_limit = None
                     eff_cumulative_limit = None
-                    if transfer_context is not None and self.broker.transfer_policy is not None:
-                        matched_rule = None
-                        dest_obj = getattr(transfer_context, "destination", None)
-                        for r in self.broker.transfer_policy.rules:
-                            if dest_obj and dest_obj.host in r.allowed_hosts:
-                                matched_rule = r
-                                break
-                        if matched_rule:
-                            max_resp_limit = matched_rule.max_bytes_per_transfer
-                            eff_cumulative_limit = (
-                                matched_rule.max_cumulative_bytes
-                                if matched_rule.max_cumulative_bytes is not None
-                                else self.broker.transfer_policy.default_max_cumulative_bytes
+                    if matched_rule is not None:
+                        max_resp_limit = matched_rule.max_bytes_per_transfer
+                        eff_cumulative_limit = (
+                            matched_rule.max_cumulative_bytes
+                            if matched_rule.max_cumulative_bytes is not None
+                            else (
+                                self.broker.transfer_policy.default_max_cumulative_bytes
+                                if self.broker.transfer_policy else None
                             )
-                        else:
-                            eff_cumulative_limit = self.broker.transfer_policy.default_max_cumulative_bytes
+                        )
+                    elif self.broker.transfer_policy is not None:
+                        eff_cumulative_limit = self.broker.transfer_policy.default_max_cumulative_bytes
 
                     # Read response stream: if limits apply, stream in bounded chunks (1024 bytes)
                     if max_resp_limit is not None or (eff_cumulative_limit is not None and tracker_key):

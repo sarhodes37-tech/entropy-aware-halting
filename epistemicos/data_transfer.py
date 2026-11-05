@@ -149,6 +149,9 @@ class DataTransferContext:
     request_id: str = "DEFAULT-REQ"
     capability_token_id: Optional[str] = None
     is_classification_trusted: bool = False
+    action_name: Optional[str] = None
+    target: Optional[str] = None
+    canonical_request_digest: Optional[str] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self):
@@ -224,60 +227,116 @@ class TrustedTransferContextBuilder:
         correlation_id: str = "DEFAULT-CORR",
         request_id: str = "DEFAULT-REQ",
         capability_token_id: Optional[str] = None,
+        action_name: Optional[str] = None,
+        target: Optional[str] = None,
+        canonical_request_digest: Optional[str] = None,
         trusted_authority_assertion: Optional[Any] = None,
         principal_verifier: Optional[Any] = None
     ) -> DataTransferContext:
         """
         Creates a DataTransferContext with is_classification_trusted=True only if
         an authenticated, cryptographically verified authority assertion is provided.
-        Rejects arbitrary caller objects, expired assertions, and principal/destination mismatches.
+        Binds principal, issuer, destination host, tenant/account identity, classification,
+        source scope, direction, operation, and expiration.
+        Missing destination host, missing expiration, expired assertion, or mismatched fields
+        strictly fail closed (is_classification_trusted=False).
         """
         is_trusted = False
 
         if trusted_authority_assertion is not None:
-            # 1. Check if assertion is an AuthenticatedPrincipal
-            from epistemicos.authorization import AuthenticatedPrincipal, PrincipalVerifier
-            if isinstance(trusted_authority_assertion, AuthenticatedPrincipal):
-                # Verify signature if verifier is provided or configured in environment
-                verifier = principal_verifier or PrincipalVerifier()
-                if verifier.has_trusted_issuers():
-                    valid, reason, _ = verifier.verify_principal(trusted_authority_assertion)
-                    if valid and trusted_authority_assertion.principal_id == principal:
-                        is_trusted = True
-                else:
-                    # If verifier has no configured issuers, do not accept unverified assertions
-                    is_trusted = False
-            # 2. Check if assertion is a typed classification authority dictionary/record
-            elif isinstance(trusted_authority_assertion, dict):
-                # Cryptographic verification required: field presence alone is strictly rejected.
+            if isinstance(trusted_authority_assertion, dict):
                 from epistemicos.authorization import PrincipalVerifier, verify_ed25519_signature
 
                 verifier = principal_verifier or PrincipalVerifier()
-                if not verifier.has_trusted_issuers():
-                    is_trusted = False
-                else:
+                if verifier.has_trusted_issuers():
                     issuer = trusted_authority_assertion.get("issuer")
                     sig_hex = trusted_authority_assertion.get("signature")
                     asserted_principal = trusted_authority_assertion.get("principal")
                     asserted_dest = trusted_authority_assertion.get("destination_host")
+                    asserted_tenant = trusted_authority_assertion.get("tenant_id")
+                    asserted_account = trusted_authority_assertion.get("account_id")
                     asserted_class = trusted_authority_assertion.get("classification")
+                    asserted_scope = trusted_authority_assertion.get("source_scope")
+                    asserted_direction = trusted_authority_assertion.get("direction")
+                    asserted_operation = trusted_authority_assertion.get("operation")
                     timestamp = trusted_authority_assertion.get("timestamp")
                     expires_at = trusted_authority_assertion.get("expires_at")
 
+                    # Destination host binding is MANDATORY: generic or missing destination rejected
+                    has_valid_dest = bool(
+                        asserted_dest
+                        and isinstance(asserted_dest, str)
+                        and asserted_dest.strip().lower() == destination.host.strip().lower()
+                    )
+
+                    # Principal match
+                    has_valid_principal = bool(
+                        asserted_principal
+                        and isinstance(asserted_principal, str)
+                        and asserted_principal.strip() == principal.strip()
+                    )
+
+                    # Tenant match (where applicable)
+                    has_valid_tenant = (
+                        (asserted_tenant or "") == (destination.tenant_id or "")
+                    )
+
+                    # Account match (where applicable)
+                    has_valid_account = (
+                        (asserted_account or "") == (destination.account_id or "")
+                    )
+
+                    # Classification match
+                    has_valid_class = bool(
+                        asserted_class
+                        and str(asserted_class).upper() == classification.value.upper()
+                    )
+
+                    # Source scope match
+                    has_valid_scope = (
+                        (asserted_scope or "") == (source_scope or "")
+                    )
+
+                    # Direction and operation match
+                    has_valid_direction = bool(
+                        asserted_direction
+                        and str(asserted_direction).upper() == direction.value.upper()
+                    )
+                    has_valid_operation = bool(
+                        asserted_operation
+                        and str(asserted_operation).upper() == operation.value.upper()
+                    )
+
+                    # Expiration is MANDATORY: missing expiration or expired fails closed
                     now = time.time()
-                    is_expired = (expires_at is not None and now >= expires_at)
+                    has_valid_expiry = (
+                        expires_at is not None
+                        and isinstance(expires_at, (int, float))
+                        and now < expires_at
+                    )
 
                     trusted_pubkey = verifier._trusted_public_keys.get(issuer) if issuer else None
 
                     if (
-                        issuer and sig_hex and trusted_pubkey and not is_expired and
-                        asserted_principal == principal and
-                        (asserted_dest is None or asserted_dest == destination.host) and
-                        str(asserted_class).upper() == classification.value.upper()
+                        issuer
+                        and sig_hex
+                        and trusted_pubkey
+                        and has_valid_dest
+                        and has_valid_principal
+                        and has_valid_tenant
+                        and has_valid_account
+                        and has_valid_class
+                        and has_valid_scope
+                        and has_valid_direction
+                        and has_valid_operation
+                        and has_valid_expiry
                     ):
                         try:
                             sig_bytes = bytes.fromhex(sig_hex)
-                            dest_str = asserted_dest or ""
+                            dest_str = asserted_dest.strip().lower()
+                            tenant_str = asserted_tenant or ""
+                            account_str = asserted_account or ""
+                            scope_str = asserted_scope or ""
                             ts_str = (
                                 f"{timestamp:.6f}" if isinstance(timestamp, (int, float))
                                 else str(timestamp or "")
@@ -287,15 +346,16 @@ class TrustedTransferContextBuilder:
                                 else str(expires_at or "")
                             )
                             payload = (
-                                f"{asserted_principal}:{issuer}:{asserted_class}:"
-                                f"{dest_str}:{ts_str}:{exp_str}"
+                                f"{asserted_principal.strip()}:{issuer}:{dest_str}:"
+                                f"{tenant_str}:{account_str}:{asserted_class.upper()}:"
+                                f"{scope_str}:{asserted_direction.upper()}:"
+                                f"{asserted_operation.upper()}:{ts_str}:{exp_str}"
                             ).encode("utf-8")
 
                             if verify_ed25519_signature(sig_bytes, payload, trusted_pubkey):
                                 is_trusted = True
                         except Exception:
                             is_trusted = False
-            # 3. Arbitrary objects (like object()) are strictly rejected as untrusted
             else:
                 is_trusted = False
 
@@ -312,7 +372,10 @@ class TrustedTransferContextBuilder:
             correlation_id=correlation_id,
             request_id=request_id,
             capability_token_id=capability_token_id,
-            is_classification_trusted=is_trusted
+            is_classification_trusted=is_trusted,
+            action_name=action_name,
+            target=target,
+            canonical_request_digest=canonical_request_digest
         )
 
 
@@ -328,6 +391,7 @@ class TransferDecision:
     max_permitted_bytes: Optional[int] = None
     reservation_id: Optional[str] = None
     reserved_bytes: int = 0
+    matched_rule: Optional[Any] = None
 
 
 @dataclass
@@ -671,38 +735,6 @@ class DataTransferPolicy:
                         max_permitted_bytes=rule.max_bytes_per_transfer
                     )
 
-            effective_max_cumulative = (
-                rule.max_cumulative_bytes
-                if rule.max_cumulative_bytes is not None
-                else self.default_max_cumulative_bytes
-            )
-            if effective_max_cumulative is not None and volume_to_check is not None:
-                with self._lock:
-                    if reserve and reservation_id and reservation_id in self._active_reservations:
-                        return TransferDecision(
-                            allowed=False,
-                            rule_id=rule.rule_id,
-                            reason=f"Duplicate active reservation ID '{reservation_id}'."
-                        )
-                    current_committed = self._cumulative_bytes_tracker.get(tracker_key, 0)
-                    current_reserved = self._reserved_bytes_tracker.get(tracker_key, 0)
-                    is_held = bool(reservation_id and reservation_id in self._active_reservations)
-                    if not reserve and is_held:
-                        tot_vol = current_committed + current_reserved
-                    else:
-                        tot_vol = current_committed + current_reserved + volume_to_check
-                    if tot_vol > effective_max_cumulative:
-                        return TransferDecision(
-                            allowed=False,
-                            rule_id=rule.rule_id,
-                            reason=(
-                                f"Cumulative transfer volume ({tot_vol} bytes) exceeds "
-                                f"maximum cumulative limit of {effective_max_cumulative} bytes "
-                                f"for scope '{tracker_key}'."
-                            ),
-                            max_permitted_bytes=effective_max_cumulative
-                        )
-
             # 7. Capability & Scope Binding check
             if rule.require_capability:
                 if not capability:
@@ -716,19 +748,81 @@ class DataTransferPolicy:
                         requires_approval=True
                     )
 
+                cap_token = getattr(capability, "token_id", None)
+                cap_sig = getattr(capability, "signature", None)
+                if not cap_token or not cap_sig:
+                    return TransferDecision(
+                        allowed=False,
+                        rule_id=rule.rule_id,
+                        reason="Capability missing valid token_id or cryptographic signature."
+                    )
+
+                # Independently derive expected authorization values from the transfer context
+                if context.action_name:
+                    expected_action = context.action_name
+                elif dest.service:
+                    expected_action = f"{dest.service}_{context.direction.value.lower()}"
+                else:
+                    expected_action = f"data_transfer:{context.operation.value.lower()}"
+
+                if context.target:
+                    expected_target = context.target
+                elif dest.tenant_id:
+                    expected_target = f"{dest.host}/{dest.tenant_id}"
+                else:
+                    expected_target = dest.host
+
+                expected_digest = context.canonical_request_digest
+
+                # Validate expected action independently against granted capability
+                cap_action = getattr(capability, "action_name", "")
+                if cap_action != expected_action:
+                    return TransferDecision(
+                        allowed=False,
+                        rule_id=rule.rule_id,
+                        reason=(
+                            f"Capability action mismatch: capability granted '{cap_action}', "
+                            f"requested transfer operation requires '{expected_action}'."
+                        )
+                    )
+
+                # Validate expected target independently against granted capability
+                cap_target = getattr(capability, "target", "")
+                expected_targets = {expected_target, dest.host}
+                if dest.tenant_id:
+                    expected_targets.add(f"{dest.host}/{dest.tenant_id}")
+                    expected_targets.add(dest.tenant_id)
+
+                if cap_target != "*" and cap_target not in expected_targets:
+                    return TransferDecision(
+                        allowed=False,
+                        rule_id=rule.rule_id,
+                        reason=(
+                            f"Capability target mismatch: authorized target '{cap_target}' "
+                            f"does not match requested target '{expected_target}'."
+                        )
+                    )
+
+                # Validate request digest independently if expected_digest is specified
+                cap_digest = getattr(capability, "canonical_request_digest", "")
+                if expected_digest is not None and cap_digest != expected_digest:
+                    return TransferDecision(
+                        allowed=False,
+                        rule_id=rule.rule_id,
+                        reason=(
+                            f"Capability digest mismatch: capability bound to digest "
+                            f"'{cap_digest}', requested transfer digest is '{expected_digest}'."
+                        )
+                    )
+
                 # If AuthorizationAuthority is provided, perform independent verification
                 if authority is not None:
-                    cap_token = getattr(capability, "token_id", None)
-                    cap_action = getattr(capability, "action_name", "")
-                    cap_target_val = getattr(capability, "target", "")
-                    cap_digest = getattr(capability, "canonical_request_digest", "")
                     cap_executor = getattr(capability, "executor_id", "")
-
                     valid_cap, reason_cap, verified_cap = authority.verify_capability(
                         token_id=cap_token,
-                        action_name=cap_action,
-                        target=cap_target_val,
-                        canonical_request_digest=cap_digest,
+                        action_name=expected_action,
+                        target=cap_target,
+                        canonical_request_digest=expected_digest or cap_digest,
                         executor_id=cap_executor,
                         principal_id=principal,
                         task_id=context.task_id
@@ -739,22 +833,9 @@ class DataTransferPolicy:
                             rule_id=rule.rule_id,
                             reason=f"Capability verification failed: {reason_cap}"
                         )
-                else:
-                    # If capability signature or fields are malformed, reject in protected mode
-                    cap_token = getattr(capability, "token_id", None)
-                    cap_sig = getattr(capability, "signature", None)
-                    if not cap_token or not cap_sig:
-                        return TransferDecision(
-                            allowed=False,
-                            rule_id=rule.rule_id,
-                            reason="Capability missing valid token_id or cryptographic signature."
-                        )
 
-                # Validate capability bindings against context
-                cap_target = getattr(capability, "target", "")
+                # Validate capability principal binding against context
                 cap_principal = getattr(capability, "principal_id", "")
-                cap_task_id = getattr(capability, "task_id", None)
-
                 if cap_principal and cap_principal != principal:
                     return TransferDecision(
                         allowed=False,
@@ -765,6 +846,8 @@ class DataTransferPolicy:
                         )
                     )
 
+                # Validate capability task ID against context
+                cap_task_id = getattr(capability, "task_id", None)
                 if context.task_id and cap_task_id and cap_task_id != context.task_id:
                     return TransferDecision(
                         allowed=False,
@@ -775,36 +858,46 @@ class DataTransferPolicy:
                         )
                     )
 
-                # Canonical target matching
-                if cap_target and cap_target != "*":
-                    expected_targets = {dest.host}
-                    if dest.tenant_id:
-                        expected_targets.add(f"{dest.host}/{dest.tenant_id}")
-                        expected_targets.add(dest.tenant_id)
+            # 8. Indivisible Atomic Cumulative Volume Check & Reservation
+            effective_max_cumulative = (
+                rule.max_cumulative_bytes
+                if rule.max_cumulative_bytes is not None
+                else self.default_max_cumulative_bytes
+            )
+            with self._lock:
+                if reserve and reservation_id and reservation_id in self._active_reservations:
+                    return TransferDecision(
+                        allowed=False,
+                        rule_id=rule.rule_id,
+                        reason=f"Duplicate active reservation ID '{reservation_id}'."
+                    )
+                current_committed = self._cumulative_bytes_tracker.get(tracker_key, 0)
+                current_reserved = self._reserved_bytes_tracker.get(tracker_key, 0)
+                is_held = bool(reservation_id and reservation_id in self._active_reservations)
+                if not reserve and is_held:
+                    tot_vol = current_committed + current_reserved
+                else:
+                    tot_vol = current_committed + current_reserved + (volume_to_check or 0)
 
-                    if cap_target not in expected_targets:
-                        return TransferDecision(
-                            allowed=False,
-                            rule_id=rule.rule_id,
-                            reason=(
-                                f"Capability target mismatch: authorized target '{cap_target}' "
-                                f"does not match destination '{dest.host}' "
-                                f"(tenant: '{dest.tenant_id}')."
-                            )
-                        )
+                if effective_max_cumulative is not None and tot_vol > effective_max_cumulative:
+                    return TransferDecision(
+                        allowed=False,
+                        rule_id=rule.rule_id,
+                        reason=(
+                            f"Cumulative transfer volume ({tot_vol} bytes) exceeds "
+                            f"maximum cumulative limit of {effective_max_cumulative} bytes "
+                            f"for scope '{tracker_key}'."
+                        ),
+                        max_permitted_bytes=effective_max_cumulative
+                    )
 
-            # All constraints satisfied for this rule: perform reservation now if requested
-            if reserve and reservation_id:
-                with self._lock:
-                    if reservation_id in self._active_reservations:
-                        return TransferDecision(
-                            allowed=False,
-                            rule_id=rule.rule_id,
-                            reason=f"Duplicate active reservation ID '{reservation_id}'."
-                        )
-                    current_res = self._reserved_bytes_tracker.get(tracker_key, 0)
-                    self._reserved_bytes_tracker[tracker_key] = current_res + volume_to_check
-                    self._active_reservations[reservation_id] = (tracker_key, volume_to_check)
+                if reserve and reservation_id:
+                    self._reserved_bytes_tracker[tracker_key] = (
+                        current_reserved + (volume_to_check or 0)
+                    )
+                    self._active_reservations[reservation_id] = (
+                        tracker_key, volume_to_check or 0
+                    )
 
             return TransferDecision(
                 allowed=True,
@@ -812,7 +905,8 @@ class DataTransferPolicy:
                 reason=f"Transfer authorized under rule '{rule.rule_id}'.",
                 max_permitted_bytes=rule.max_bytes_per_transfer,
                 reservation_id=reservation_id if reserve else None,
-                reserved_bytes=volume_to_check if reserve else 0
+                reserved_bytes=(volume_to_check or 0) if reserve else 0,
+                matched_rule=rule
             )
 
         # No rule allowed the transfer
