@@ -451,7 +451,8 @@ def test_7_post_execution_expiration_preserves_validity(test_setup):
         request_id=req_id,
         executor_id=exec_func
     )
-    cap.expires_at = now_ts + 0.1
+    # Use ample TTL so boundary.execute_protected_action does not race against expiry on busy CI runners
+    cap.expires_at = now_ts + 1.0
     authority.registry.register_capability(cap)
 
     grant_ev = ProvenanceEvent(
@@ -484,7 +485,7 @@ def test_7_post_execution_expiration_preserves_validity(test_setup):
         context=ctx
     )
 
-    time.sleep(0.15)
+    time.sleep(1.05)
     assert cap.is_expired(time.time()) is True
 
     reconciler = ProvenanceReconciler(authority=authority)
