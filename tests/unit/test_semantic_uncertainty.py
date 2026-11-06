@@ -434,3 +434,48 @@ def test_pairwise_resolver_symmetry_exhaustive():
             assert r_ij.is_contradiction == r_ji.is_contradiction
             assert r_ij.affects_decision == r_ji.affects_decision
             assert r_ij.resolver_confidence == r_ji.resolver_confidence
+
+
+def test_fast_path_feature_extraction_differential_equivalence():
+    """
+    Targeted regression test verifying that ExactAndNormalizedResolver._get_features
+    produces exact output equivalence between the unoptimized baseline implementation
+    and the fast-path guarded implementation across all linguistic categories.
+    """
+    from benchmarks.benchmark_normalize import baseline_unoptimized_get_features
+
+    test_corpus = [
+        # 1. Clean conversational text
+        "Please summarize the quarterly logistics analysis.",
+        "System status normal and healthy.",
+        "The quick brown fox jumps over the lazy dog.",
+        "No special characters here at all just plain english text",
+        # 2. Negations and double negations
+        "This request is not unauthorized.",
+        "The document is not invalid.",
+        "Statement 1 is not false.",
+        "Access was not denied.",
+        "It is not impossible to complete.",
+        "The output is not incorrect.",
+        "Normal negation with not present but not double: this is not good.",
+        "Negative words: never, cannot, neither, nor, deny, rejected.",
+        # 3. Quantities, units, currencies
+        "$100 USD transfer",
+        "Cost is 50.5 eur and 10 percent discount",
+        "Weight: 25 kg or 55 lbs",
+        "Paid 5000 jpy, invoice in gbp, balance in dollars",
+        "Symbol currencies: €500, £250, ¥1000, $75",
+        "Numbers without units: step 1, round 2, batch 42, score 99.8",
+        # 4. Mixed realistic enterprise inputs
+        "Payment of $500 USD to Alice is not unauthorized before 5pm.",
+        "Transfer of 100 EUR to Bob was not denied.",
+        "   Whitespace padded text with \t tabs and \n newlines $25 usd   ",
+        "Special symbols and punctuation: @#$%^&*()_+=-[]{};:'\"\\|/?",
+        "",  # Empty string
+        "   ",  # Whitespace only
+    ]
+
+    for text in test_corpus:
+        expected = baseline_unoptimized_get_features(text)
+        actual = ExactAndNormalizedResolver._get_features(text)
+        assert actual == expected, f"Discrepancy detected for input text: {text!r}"
