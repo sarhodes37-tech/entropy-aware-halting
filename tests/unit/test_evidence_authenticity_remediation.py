@@ -1415,3 +1415,93 @@ def test_21_missing_attribution_fails_closed(test_setup):
     )
     assert valid is True
     assert reason == "HISTORICAL_CAPABILITY_VERIFIED"
+
+
+def test_22_allow_unverified_legacy_true_cannot_return_reconciled_or_valid_or_completed(tmp_path):
+    """Test 22: Regression Test for Comment 6673203392:
+
+    Explicitly verifies that when authority=None, even with allow_unverified_legacy=True,
+    reconciliation cannot return RECONCILED or valid=True, and the Observatory UI
+    cannot display COMPLETED (fails closed to UNVERIFIED).
+    """
+    prov_path = tmp_path / "provenance.jsonl"
+    audit_path = tmp_path / "audit.jsonl"
+    store = LocalProvenanceStore(log_path=str(prov_path))
+
+    corr_id = "corr_legacy_true_no_auth"
+    tok_id = "tok_legacy_true"
+    attempt_id = "att_legacy_true"
+
+    ev1 = ProvenanceEvent(
+        schema_version="1.0.0",
+        event_id=str(uuid.uuid4()),
+        event_type=ProvenanceEventType.AUTHORIZATION_GRANTED.value,
+        provenance_source=ProvenanceSource.GOVERNANCE_GATE.value,
+        correlation_id=corr_id,
+        request_id="req-1",
+        action_name="read_file",
+        target="/data/resource.txt",
+        canonical_request_digest="fake_digest",
+        timestamp="2026-11-03T00:00:00Z",
+        authorization_token_id=tok_id,
+    )
+    ev2 = ProvenanceEvent(
+        schema_version="1.0.0",
+        event_id=str(uuid.uuid4()),
+        event_type=ProvenanceEventType.EXECUTION_STARTED.value,
+        provenance_source=ProvenanceSource.EXECUTOR.value,
+        correlation_id=corr_id,
+        request_id="req-1",
+        action_name="read_file",
+        target="/data/resource.txt",
+        canonical_request_digest="fake_digest",
+        timestamp="2026-11-03T00:00:01Z",
+        authorization_token_id=tok_id,
+        execution_attempt_id=attempt_id,
+    )
+    ev3 = ProvenanceEvent(
+        schema_version="1.0.0",
+        event_id=str(uuid.uuid4()),
+        event_type=ProvenanceEventType.EXECUTION_SUCCEEDED.value,
+        provenance_source=ProvenanceSource.EXECUTOR.value,
+        correlation_id=corr_id,
+        request_id="req-1",
+        action_name="read_file",
+        target="/data/resource.txt",
+        canonical_request_digest="fake_digest",
+        timestamp="2026-11-03T00:00:02Z",
+        authorization_token_id=tok_id,
+        execution_attempt_id=attempt_id,
+        outcome={"status": "SUCCESS"},
+    )
+    for e in (ev1, ev2, ev3):
+        store.record_event(e)
+
+    events = store.get_events_for_correlation(corr_id)
+
+    # 1. Direct call to reconciler with authority=None and allow_unverified_legacy=True
+    reconciler = ProvenanceReconciler(authority=None, allow_unverified_legacy=True)
+    report = reconciler.reconcile_correlation(
+        correlation_id=corr_id,
+        events=events,
+        agent_claimed_success=True,
+        allow_unverified_legacy=True
+    )
+
+    # Invariant: without authority, can NEVER be valid=True or RECONCILED
+    assert report.valid is False
+    assert report.status == "UNVERIFIED_LEGACY_EVIDENCE"
+    assert report.status != "RECONCILED"
+
+    # 2. Downstream Observatory UI Adapter with authority=None
+    adapter = ObservatoryDataAdapter(
+        audit_log_path=str(audit_path),
+        provenance_log_path=str(prov_path),
+        authority=None
+    )
+    trace = adapter.get_execution_trace_by_id(corr_id)
+    assert trace is not None
+    assert trace["status"] == "UNVERIFIED"
+    assert trace["status"] != "COMPLETED"
+    assert trace["reconciliation"]["valid"] is False
+    assert trace["reconciliation"]["status"] == "UNVERIFIED_LEGACY_EVIDENCE"

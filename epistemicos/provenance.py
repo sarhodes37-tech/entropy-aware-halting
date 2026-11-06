@@ -1170,13 +1170,9 @@ class ProvenanceReconciler:
             status = "INCOMPLETE_EVIDENCE"
             valid = False
         elif not has_authoritative_verification:
-            if not effective_allow_legacy:
-                status = "UNVERIFIED_LEGACY_EVIDENCE"
-                valid = False
-                violations.append("Authoritative verification unavailable: No AuthorizationAuthority supplied to reconciler")
-            else:
-                status = "RECONCILED"
-                valid = True
+            status = "UNVERIFIED_LEGACY_EVIDENCE"
+            valid = False
+            violations.append("Authoritative verification unavailable: No AuthorizationAuthority supplied to reconciler")
         else:
             status = "RECONCILED"
             valid = True
