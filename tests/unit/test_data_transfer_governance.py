@@ -3251,3 +3251,259 @@ def test_simultaneous_uploads_budget_contention_prevented():
     final_vol = policy.get_cumulative_bytes(task_id)
     assert final_vol <= 100
     assert final_vol == 80
+
+
+def test_h1_h3_m1_security_remediations():
+    """
+    Direct regression tests for PR #356 findings:
+    - H1: Trusted verifier ownership & caller-supplied verifier substitution prevention.
+    - H2: Transmitted request body to capability/context digest binding.
+    - H3: Atomic single-use capability lifecycle & replay prevention before network I/O.
+    - M1: Response stream premature termination & repetitive chunk preservation.
+    """
+    import http.client
+    import time
+    from unittest.mock import patch, MagicMock
+    from epistemicos.authorization import CapabilityRegistry, AuthorizationAuthority, Policy
+
+    # ---------------------------------------------------------
+    # H1: Caller-controlled verifier substitution
+    # ---------------------------------------------------------
+    corp_idp = ExternalTestIdentityAuthority(issuer_id="CorpIdP")
+    policy_verifier = PrincipalVerifier(trusted_public_keys={"CorpIdP": corp_idp.public_key})
+    policy_h1 = DataTransferPolicy(
+        rules=[TransferRule(rule_id="h1-rule", allowed_principals={"principal:alice"}, destination_service="s3", allowed_hosts={"s3.corp.com"})],
+        principal_verifier=policy_verifier,
+        protected_mode=True
+    )
+    attacker_idp = ExternalTestIdentityAuthority(issuer_id="AttackerIdP")
+    attacker_verifier = PrincipalVerifier(trusted_public_keys={"AttackerIdP": attacker_idp.public_key})
+
+    now = time.time()
+    exp = now + 3600.0
+    payload_h1 = f"principal:alice:AttackerIdP:s3.corp.com:::::PUBLIC::UPLOAD:WRITE:::{now:.6f}:{exp:.6f}".encode("utf-8")
+    sig_attacker = _ed25519_sign(payload_h1, attacker_idp.private_seed, attacker_idp.public_key).hex()
+
+    ctx_h1 = TrustedTransferContextBuilder.create_trusted_context(
+        principal_verifier=attacker_verifier,
+        principal="principal:alice",
+        destination=DestinationIdentity(service="s3", host="s3.corp.com"),
+        classification=DataClassification.PUBLIC,
+        direction=TransferDirection.UPLOAD,
+        operation=TransferOperation.WRITE,
+        trusted_authority_assertion={
+            "issuer": "AttackerIdP",
+            "principal": "principal:alice",
+            "destination_host": "s3.corp.com",
+            "classification": "PUBLIC",
+            "direction": "UPLOAD",
+            "operation": "WRITE",
+            "timestamp": now,
+            "expires_at": exp,
+            "signature": sig_attacker
+        }
+    )
+    dec_h1 = policy_h1.evaluate_transfer(ctx_h1)
+    assert dec_h1.allowed is False
+    assert "assertion issuer 'AttackerIdP' is not trusted by policy PrincipalVerifier" in dec_h1.reason
+
+    # ---------------------------------------------------------
+    # H2: Authorization digest bound to actual transmitted body
+    # ---------------------------------------------------------
+    registry_h2 = CapabilityRegistry(signing_secret=b"cap_key_32_bytes_test_h2_1234567")
+    auth_policy_h2 = Policy(policy_id="p-h2", allowed_operations={"api_upload"}, allowed_resources={"api.corp.internal"})
+    authority_h2 = AuthorizationAuthority(default_policy=auth_policy_h2, registry=registry_h2, principal_provider=TEST_VERIFIER)
+    principal_h2 = TEST_IDP.issue_principal("principal:user")
+
+    policy_h2 = DataTransferPolicy(
+        rules=[TransferRule(rule_id="h2-rule", allowed_principals={"principal:user"}, destination_service="api", allowed_hosts={"api.corp.internal"}, require_capability=True)],
+        principal_verifier=TEST_VERIFIER
+    )
+    broker_h2 = EgressTransportBroker(
+        policy=EgressPolicy(allowed_destinations={"api.corp.internal"}),
+        transfer_policy=policy_h2,
+        authorization_authority=authority_h2,
+        resolver_func=lambda h: ["93.184.216.34"]
+    )
+    transport_h2 = ControlledEgressTransport(broker=broker_h2)
+
+    body_real_a = b"EXACT_PAYLOAD_A_16"
+    body_fake_b = b"EXACT_PAYLOAD_B_16"
+    assert len(body_real_a) == len(body_fake_b)
+
+    digest_real_a = hashlib.sha256(body_real_a).hexdigest()
+    cap_h2, _ = authority_h2.evaluate_and_issue_capability(
+        action_name="api_upload",
+        target="api.corp.internal",
+        canonical_request_digest=digest_real_a,
+        executor_id="transport",
+        principal_id=principal_h2
+    )
+
+    ctx_h2 = create_test_context(
+        principal_verifier=TEST_VERIFIER,
+        principal="principal:user",
+        destination=DestinationIdentity(service="api", host="api.corp.internal"),
+        classification=DataClassification.INTERNAL,
+        direction=TransferDirection.UPLOAD,
+        operation=TransferOperation.WRITE,
+        action_name="api_upload",
+        target="api.corp.internal",
+        declared_bytes=len(body_real_a),
+        trusted_authority_assertion=make_assertion(
+            "principal:user", "INTERNAL", destination_host="api.corp.internal",
+            direction=TransferDirection.UPLOAD, operation=TransferOperation.WRITE, declared_bytes=len(body_real_a)
+        )
+    )
+
+    with patch("epistemicos.containment.PinnedHTTPConnection") as mock_conn_h2:
+        with pytest.raises(PermissionError) as exc_digest_mismatch:
+            transport_h2.request(
+                method="POST",
+                url="http://api.corp.internal/upload",
+                body=body_fake_b,
+                transfer_context=ctx_h2,
+                capability=cap_h2
+            )
+        assert "Capability digest mismatch" in str(exc_digest_mismatch.value)
+        mock_conn_h2.assert_not_called()
+
+    # ---------------------------------------------------------
+    # H3: Single-use capability consumed before network I/O
+    # ---------------------------------------------------------
+    class FailMidUploadH3:
+        def __init__(self, *args, **kwargs):
+            pass
+        def request(self, method, url, body=None, headers=None):
+            if hasattr(body, "read"):
+                body.read(5)
+            raise ConnectionResetError("Connection severed mid-upload")
+        def close(self):
+            pass
+
+    with patch("epistemicos.containment.PinnedHTTPConnection", FailMidUploadH3):
+        with pytest.raises(OSError):
+            transport_h2.request(
+                method="POST",
+                url="http://api.corp.internal/upload",
+                body=body_real_a,
+                transfer_context=ctx_h2,
+                capability=cap_h2
+            )
+
+    # Prove capability was consumed prior to network I/O and cannot be replayed
+    with patch("epistemicos.containment.PinnedHTTPConnection") as mock_conn_replay:
+        with pytest.raises(PermissionError) as exc_replayed:
+            transport_h2.request(
+                method="POST",
+                url="http://api.corp.internal/upload",
+                body=body_real_a,
+                transfer_context=ctx_h2,
+                capability=cap_h2
+            )
+        assert "already been consumed" in str(exc_replayed.value)
+        mock_conn_replay.assert_not_called()
+
+    # ---------------------------------------------------------
+    # M1: Repetitive stream & premature EOF termination
+    # ---------------------------------------------------------
+    policy_m1 = DataTransferPolicy(
+        rules=[TransferRule(rule_id="m1-rule", allowed_principals={"principal:alice"}, destination_service="api", allowed_hosts={"api.corp.internal"}, max_bytes_per_transfer=100000)],
+        principal_verifier=TEST_VERIFIER
+    )
+    broker_m1 = EgressTransportBroker(
+        policy=EgressPolicy(allowed_destinations={"api.corp.internal"}),
+        transfer_policy=policy_m1,
+        resolver_func=lambda h: ["93.184.216.34"]
+    )
+    transport_m1 = ControlledEgressTransport(broker=broker_m1)
+
+    # Repetitive stream beyond 10,000 bytes succeeds in full
+    class RepetitiveConnM1:
+        def __init__(self, *args, **kwargs):
+            self.count = 0
+        def request(self, *args, **kwargs):
+            pass
+        def getresponse(self):
+            resp = MagicMock()
+            resp.status = 200
+            resp.reason = "OK"
+            resp.getheaders.return_value = [("Content-Length", "12000")]
+            def read(amt=1024):
+                if self.count < 12:
+                    self.count += 1
+                    return b"Z" * 1000
+                return b""
+            resp.read = read
+            return resp
+        def close(self):
+            pass
+
+    ctx_rep = create_test_context(
+        principal_verifier=TEST_VERIFIER,
+        principal="principal:alice",
+        destination=DestinationIdentity(service="api", host="api.corp.internal"),
+        classification=DataClassification.INTERNAL,
+        direction=TransferDirection.DOWNLOAD,
+        operation=TransferOperation.READ,
+        declared_bytes=12000,
+        trusted_authority_assertion=make_assertion("principal:alice", "INTERNAL", destination_host="api.corp.internal", direction=TransferDirection.DOWNLOAD, operation=TransferOperation.READ, declared_bytes=12000)
+    )
+    with patch("epistemicos.containment.PinnedHTTPConnection", RepetitiveConnM1):
+        res_rep = transport_m1.request(method="GET", url="http://api.corp.internal/stream", transfer_context=ctx_rep)
+        assert len(res_rep["body"]) == 12000
+
+    # Premature EOF raises IncompleteRead and records partial observed bytes
+    class TruncatedConnM1:
+        def __init__(self, *args, **kwargs):
+            self.count = 0
+        def request(self, *args, **kwargs):
+            pass
+        def getresponse(self):
+            resp = MagicMock()
+            resp.status = 200
+            resp.reason = "OK"
+            resp.getheaders.return_value = [("Content-Length", "8000")]
+            def read(amt=1024):
+                if self.count < 2:
+                    self.count += 1
+                    return b"Y" * 1000
+                return b""
+            resp.read = read
+            return resp
+        def close(self):
+            pass
+
+    ctx_trunc = create_test_context(
+        principal_verifier=TEST_VERIFIER,
+        principal="principal:alice",
+        destination=DestinationIdentity(service="api", host="api.corp.internal"),
+        classification=DataClassification.INTERNAL,
+        direction=TransferDirection.DOWNLOAD,
+        operation=TransferOperation.READ,
+        declared_bytes=8000,
+        trusted_authority_assertion=make_assertion("principal:alice", "INTERNAL", destination_host="api.corp.internal", direction=TransferDirection.DOWNLOAD, operation=TransferOperation.READ, declared_bytes=8000)
+    )
+    with patch("epistemicos.containment.PinnedHTTPConnection", TruncatedConnM1):
+        with pytest.raises(http.client.IncompleteRead) as exc_trunc:
+            transport_m1.request(method="GET", url="http://api.corp.internal/stream", transfer_context=ctx_trunc)
+        assert len(exc_trunc.value.partial) == 2000
+        assert exc_trunc.value.expected == 6000
+        assert ctx_trunc.observed_bytes == 2000
+
+
+def test_dns_resolution_not_invoked_for_empty_policy():
+    """
+    Verifies that DNS resolution is never invoked for an empty or missing policy.
+    """
+    from unittest.mock import MagicMock
+    mock_resolver = MagicMock()
+    empty_policy = EgressPolicy(allowed_destinations=set())
+    broker = EgressTransportBroker(policy=empty_policy, resolver_func=mock_resolver)
+
+    allowed, reason, ip = broker.establish_connection("https://evil.attacker.com/payload")
+    assert allowed is False
+    assert "Absent or empty approved-egress policy" in reason
+    assert ip is None
+    # DNS resolver must NEVER be called
+    mock_resolver.assert_not_called()

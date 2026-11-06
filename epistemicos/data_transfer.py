@@ -649,12 +649,14 @@ class DataTransferPolicy:
         rules: Optional[List[TransferRule]] = None,
         default_max_cumulative_bytes: Optional[int] = None,
         protected_mode: bool = True,
-        authorization_authority: Optional[Any] = None
+        authorization_authority: Optional[Any] = None,
+        principal_verifier: Optional[Any] = None
     ):
         self.rules: List[TransferRule] = list(rules or [])
         self.default_max_cumulative_bytes = default_max_cumulative_bytes
         self.protected_mode = protected_mode
         self.authorization_authority = authorization_authority
+        self.principal_verifier = principal_verifier
         self._cumulative_bytes_tracker: Dict[str, int] = {}
         self._reserved_bytes_tracker: Dict[str, int] = {}
         self._active_reservations: Dict[str, Tuple[str, int]] = {}
@@ -848,7 +850,8 @@ class DataTransferPolicy:
         context: DataTransferContext,
         capability: Optional[Any] = None,
         authority: Optional[Any] = None,
-        active_reservation_id: Optional[str] = None
+        active_reservation_id: Optional[str] = None,
+        allow_consumed_token: bool = False
     ) -> TransferDecision:
         """
         Evaluates DataTransferContext against registered rules without reserving.
@@ -859,7 +862,8 @@ class DataTransferPolicy:
             capability=capability,
             authority=eff_authority,
             reserve=False,
-            reservation_id=active_reservation_id
+            reservation_id=active_reservation_id,
+            allow_consumed_token=allow_consumed_token
         )
 
     def _evaluate_internal(
@@ -868,7 +872,8 @@ class DataTransferPolicy:
         capability: Optional[Any] = None,
         authority: Optional[Any] = None,
         reserve: bool = False,
-        reservation_id: Optional[str] = None
+        reservation_id: Optional[str] = None,
+        allow_consumed_token: bool = False
     ) -> TransferDecision:
         """Internal evaluation routine with atomic evaluation and reservation under lock."""
         if not isinstance(context, DataTransferContext):
@@ -887,14 +892,55 @@ class DataTransferPolicy:
                         "does not originate from a trusted authority or policy-controlled metadata."
                     )
                 )
-            if not context._verify_context_assertion():
-                return TransferDecision(
-                    allowed=False,
-                    reason=(
-                        f"Transfer blocked: Classification '{context.classification.value}' "
-                        "failed cryptographic authority assertion verification or binding mismatch."
+
+            # H1: Verify authority assertion strictly against the policy's configured trusted verifier.
+            # A caller-supplied verifier on the context must never override the policy's trusted trust store.
+            effective_verifier = self.principal_verifier
+            if effective_verifier is None:
+                if authority is not None:
+                    candidate = getattr(authority, "principal_provider", None) or getattr(authority, "verifier", None)
+                    assertion = getattr(context, "trusted_authority_assertion", None)
+                    issuer = assertion.get("issuer") if isinstance(assertion, dict) else None
+                    if candidate is not None and issuer in getattr(candidate, "_trusted_public_keys", {}):
+                        effective_verifier = candidate
+
+            if effective_verifier is not None:
+                if not getattr(effective_verifier, "has_trusted_issuers", lambda: False)():
+                    return TransferDecision(
+                        allowed=False,
+                        reason=(
+                            f"Transfer blocked: Classification '{context.classification.value}' "
+                            "cannot be verified; policy PrincipalVerifier has no trusted issuers."
+                        )
                     )
-                )
+                assertion = getattr(context, "trusted_authority_assertion", None)
+                issuer = assertion.get("issuer") if isinstance(assertion, dict) else None
+                trusted_keys = getattr(effective_verifier, "_trusted_public_keys", {})
+                if issuer not in trusted_keys:
+                    return TransferDecision(
+                        allowed=False,
+                        reason=(
+                            f"Transfer blocked: Classification '{context.classification.value}' "
+                            f"assertion issuer '{issuer}' is not trusted by policy PrincipalVerifier."
+                        )
+                    )
+                if not context._verify_context_assertion(verifier_override=effective_verifier):
+                    return TransferDecision(
+                        allowed=False,
+                        reason=(
+                            f"Transfer blocked: Classification '{context.classification.value}' "
+                            "failed cryptographic authority assertion verification against policy trust store."
+                        )
+                    )
+            else:
+                if not context._verify_context_assertion():
+                    return TransferDecision(
+                        allowed=False,
+                        reason=(
+                            f"Transfer blocked: Classification '{context.classification.value}' "
+                            "failed cryptographic authority assertion verification or binding mismatch."
+                        )
+                    )
 
         dest = context.destination
         principal = context.initiating_principal
@@ -1136,11 +1182,14 @@ class DataTransferPolicy:
                         task_id=context.task_id
                     )
                     if not valid_cap:
-                        return TransferDecision(
-                            allowed=False,
-                            rule_id=rule.rule_id,
-                            reason=f"Capability verification failed: {reason_cap}"
-                        )
+                        if allow_consumed_token and "ALREADY_CONSUMED" in reason_cap:
+                            pass
+                        else:
+                            return TransferDecision(
+                                allowed=False,
+                                rule_id=rule.rule_id,
+                                reason=f"Capability verification failed: {reason_cap}"
+                            )
 
                 # Validate capability principal binding against context
                 cap_principal = getattr(capability, "principal_id", "")

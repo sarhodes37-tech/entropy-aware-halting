@@ -905,7 +905,8 @@ class EgressTransportBroker:
         infrastructure_enforced: bool = False,
         transfer_policy: Optional[Any] = None,
         require_provenance: bool = False,
-        authorization_authority: Optional[Any] = None
+        authorization_authority: Optional[Any] = None,
+        principal_verifier: Optional[Any] = None
     ):
         self.policy = policy or EgressPolicy()
         self.resolver_func = resolver_func or self._default_resolver
@@ -915,6 +916,13 @@ class EgressTransportBroker:
         self.transfer_policy = transfer_policy
         self.require_provenance = require_provenance
         self.authorization_authority = authorization_authority
+        self.principal_verifier = principal_verifier
+        if self.transfer_policy is not None and getattr(self.transfer_policy, "principal_verifier", None) is not None:
+            if self.principal_verifier is None:
+                self.principal_verifier = self.transfer_policy.principal_verifier
+        elif self.principal_verifier is not None and self.transfer_policy is not None:
+            if getattr(self.transfer_policy, "principal_verifier", None) is None:
+                self.transfer_policy.principal_verifier = self.principal_verifier
         self.connection_history: List[EgressConnectionRecord] = []
 
         if self.require_provenance and self.provenance_store is None:
@@ -1054,7 +1062,8 @@ class EgressTransportBroker:
         category: Optional[ActionCategory] = None,
         transfer_context: Optional[Any] = None,
         capability: Optional[Any] = None,
-        reservation_id: Optional[str] = None
+        reservation_id: Optional[str] = None,
+        allow_consumed_token: bool = False
     ) -> Tuple[bool, str, Optional[str]]:
         """
         Validates egress policy at connection time:
@@ -1068,6 +1077,12 @@ class EgressTransportBroker:
         if not norm_host:
             reason = "Egress blocked: Missing or invalid target destination."
             self._record_egress_event(correlation_id, request_id, action_name, target_url, "", None, False, reason)
+            return False, reason, None
+
+        # 1. Pre-flight check: Missing or empty policy fails closed without DNS lookup or socket creation
+        if self.policy is None or (not self.policy.allowed_destinations and not self.policy.allowed_wildcards):
+            reason = "Egress blocked: Absent or empty approved-egress policy."
+            self._record_egress_event(correlation_id, request_id, action_name, target_url, norm_host, None, False, reason)
             return False, reason, None
 
         # Resolve DNS via trusted resolver
@@ -1157,7 +1172,8 @@ class EgressTransportBroker:
                     transfer_context,
                     capability=capability,
                     authority=self.authorization_authority,
-                    active_reservation_id=reservation_id
+                    active_reservation_id=reservation_id,
+                    allow_consumed_token=allow_consumed_token
                 )
                 if not decision.allowed:
                     self._record_egress_event(
@@ -1217,7 +1233,8 @@ class EgressTransportBroker:
             category=category,
             transfer_context=redir_context,
             capability=capability,
-            reservation_id=reservation_id
+            reservation_id=reservation_id,
+            allow_consumed_token=True
         )
 
     def wrap_callable(self, func: Callable[..., Any]) -> Callable[..., Any]:
@@ -1471,21 +1488,21 @@ class ControlledEgressTransport:
         encoded_body = body.encode("utf-8") if isinstance(body, str) else body
         actual_bytes = len(encoded_body) if encoded_body is not None else 0
 
-        # If transfer_context is provided, update observed_bytes and atomically evaluate & reserve
+        # H2: Derive authoritative request body digest independently from the actual transmitted encoded body
+        actual_body_digest = (
+            hashlib.sha256(encoded_body).hexdigest()
+            if (encoded_body is not None and len(encoded_body) > 0)
+            else hashlib.sha256(b"").hexdigest()
+        )
+
+        # If transfer_context is provided, update observed_bytes and set authoritative body digest
         reservation_id = None
         tracker_key = None
         matched_rule = None
         if transfer_context is not None:
             transfer_context.observed_bytes = actual_bytes
-            if getattr(transfer_context, "canonical_request_digest", None) is None:
-                if encoded_body:
-                    transfer_context.canonical_request_digest = (
-                        hashlib.sha256(encoded_body).hexdigest()
-                    )
-                else:
-                    transfer_context.canonical_request_digest = (
-                        hashlib.sha256(current_url.encode("utf-8")).hexdigest()
-                    )
+            # Authoritatively bind the actual body digest to the context for policy evaluation
+            transfer_context.canonical_request_digest = actual_body_digest
 
             if self.broker.transfer_policy is not None:
                 tracker_key = (
@@ -1507,6 +1524,41 @@ class ControlledEgressTransport:
                 reservation_id = decision.reservation_id
                 matched_rule = decision.matched_rule
 
+        # H2: If capability specifies canonical_request_digest, independently verify it against actual_body_digest
+        if capability is not None:
+            cap_digest = getattr(capability, "canonical_request_digest", None)
+            if cap_digest is not None:
+                valid_digests = {actual_body_digest}
+                if encoded_body is None or len(encoded_body) == 0:
+                    valid_digests.add(hashlib.sha256(current_url.encode("utf-8")).hexdigest())
+                if cap_digest not in valid_digests:
+                    if reservation_id and self.broker.transfer_policy is not None:
+                        self.broker.transfer_policy.refund_reservation(reservation_id)
+                    raise PermissionError(
+                        f"Capability digest mismatch: capability bound to digest '{cap_digest}', "
+                        f"requested transfer digest is '{actual_body_digest}'."
+                    )
+
+        # H3: Atomic single-use capability consumption.
+        # After completing all deterministic local validations (destination, policy, rules, digest, authority),
+        # atomically transition the capability from VALID to CONSUMED immediately before the first network I/O.
+        # A single-use capability cannot authorize two concurrent requests, and once consumed before network I/O,
+        # it is NEVER un-consumed / restored on network error, transport failure, or partial execution.
+        cap_token = getattr(capability, "token_id", None) if capability is not None else None
+        if cap_token is not None:
+            effective_authority = self.broker.authorization_authority
+            if effective_authority is None and self.broker.transfer_policy is not None:
+                effective_authority = self.broker.transfer_policy.authorization_authority
+            if effective_authority is not None:
+                consumed_ok = effective_authority.registry.consume_token(cap_token)
+                if not consumed_ok:
+                    if reservation_id and self.broker.transfer_policy is not None:
+                        self.broker.transfer_policy.refund_reservation(reservation_id)
+                    raise PermissionError(
+                        f"Capability '{cap_token}' has already been consumed, revoked, or is invalid."
+                    )
+
+        if transfer_context is not None:
             # Pre-flight passed: reset observed_bytes to 0 until bytes actually cross the network boundary
             transfer_context.observed_bytes = 0
 
@@ -1529,11 +1581,6 @@ class ControlledEgressTransport:
                 actual_bytes=actual_bytes,
                 matched_rule=matched_rule
             )
-            # On successful execution boundary completion, consume single-use capability token
-            if capability is not None and self.broker.authorization_authority is not None:
-                cap_token = getattr(capability, "token_id", None)
-                if cap_token:
-                    self.broker.authorization_authority.registry.consume_token(cap_token)
             return res
         except Exception:
             if reservation_id and self.broker.transfer_policy is not None:
@@ -1580,7 +1627,8 @@ class ControlledEgressTransport:
                 category=category,
                 transfer_context=transfer_context,
                 capability=capability,
-                reservation_id=reservation_id
+                reservation_id=reservation_id,
+                allow_consumed_token=True
             )
             if not allowed:
                 raise PermissionError(f"Egress transport blocked request to '{current_url}': {reason}")
@@ -1591,7 +1639,8 @@ class ControlledEgressTransport:
                     context=transfer_context,
                     capability=capability,
                     authority=self.broker.authorization_authority,
-                    active_reservation_id=reservation_id
+                    active_reservation_id=reservation_id,
+                    allow_consumed_token=True
                 )
                 if eval_dec.matched_rule is not None:
                     matched_rule = eval_dec.matched_rule
@@ -1690,9 +1739,6 @@ class ControlledEgressTransport:
                         chunk_size = 1024
 
                         try:
-                            # Protect against infinite loop if mock returns same non-empty bytes repeatedly
-                            prev_chunk = None
-                            same_chunk_count = 0
                             while True:
                                 chunk = resp.read(chunk_size)
                                 if not chunk:
@@ -1734,14 +1780,22 @@ class ControlledEgressTransport:
                                 if transfer_context is not None:
                                     transfer_context.observed_bytes = curr_total
 
-                                if chunk == prev_chunk:
-                                    same_chunk_count += 1
-                                    if same_chunk_count > 10000:
-                                        conn.close()
-                                        break
-                                else:
-                                    same_chunk_count = 0
-                                prev_chunk = chunk
+                            # Check for premature termination against Content-Length
+                            content_length_header = resp_headers.get("Content-Length") or resp_headers.get("content-length")
+                            expected_content_length = None
+                            if content_length_header is not None:
+                                try:
+                                    expected_content_length = int(content_length_header)
+                                except (ValueError, TypeError):
+                                    expected_content_length = None
+
+                            if expected_content_length is not None and received_bytes < expected_content_length:
+                                conn.close()
+                                partial_data = b"".join(chunks)
+                                raise http.client.IncompleteRead(
+                                    partial_data,
+                                    expected=expected_content_length - received_bytes
+                                )
                         finally:
                             conn.close()
 
@@ -1765,7 +1819,7 @@ class ControlledEgressTransport:
                         "headers": resp_headers,
                         "body": resp_data
                     }
-                except (PermissionError, RuntimeError, ValueError):
+                except (PermissionError, RuntimeError, ValueError, http.client.IncompleteRead):
                     raise
                 except Exception as net_err:
                     raise socket.error(f"Egress transport network I/O error to '{current_url}': {str(net_err)}") from net_err
