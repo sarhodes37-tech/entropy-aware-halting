@@ -976,3 +976,32 @@ def test_shower_curtain_gate_trusted_exception_token_fail_closed_validation():
     # 4. None default initialization
     default_gate = ShowerCurtainGate()
     assert default_gate.trusted_exception_token is None
+
+    # Missing token in context when gate is configured with token
+    res_missing = gate.evaluate(
+        payload={"msg": "Contact Alice at alice@example.com"},
+        context={}
+    )
+    assert res_missing.action == GateAction.HALT
+
+    # Missing token in context when gate is unconfigured (None)
+    res_unconfigured_missing = default_gate.evaluate(
+        payload={"msg": "Contact Alice at alice@example.com"},
+        context={}
+    )
+    assert res_unconfigured_missing.action == GateAction.HALT
+
+    # Caller-controlled context attempting to forge authorization against unconfigured gate
+    res_unconfigured_forged = default_gate.evaluate(
+        payload={"msg": "Contact Alice at alice@example.com"},
+        context={"shower_curtain_exception_token": "FORGED_ATTEMPT"}
+    )
+    assert res_unconfigured_forged.action == GateAction.HALT
+
+    # Credential detections strictly remain blocked under an otherwise valid exception
+    res_cred_blocked = gate.evaluate(
+        payload={"api_key": "sk-proj1234567890abcdef1234567890"},
+        context={"shower_curtain_exception_token": "VALID_EXCEPTION_TOKEN"}
+    )
+    assert res_cred_blocked.action == GateAction.HALT
+    assert "Credentials cannot bypass mandatory privacy protection" in res_cred_blocked.reason
