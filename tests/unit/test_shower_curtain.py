@@ -998,6 +998,37 @@ def test_shower_curtain_gate_trusted_exception_token_fail_closed_validation():
     )
     assert res_unconfigured_forged.action == GateAction.HALT
 
+    # Adversarial test: Configured gate with untrusted caller supplying arbitrary token
+    res_arbitrary_tok = gate.evaluate(
+        payload={"msg": "Contact Alice at alice@example.com"},
+        context={"shower_curtain_exception_token": "ARBITRARY_TOKEN_ATTEMPT"}
+    )
+    assert res_arbitrary_tok.action == GateAction.HALT
+
+    # Adversarial test: Context mutation / token override attempt
+    # If caller context dictionary is mutated prior to gate evaluation, evaluation fails closed
+    mutable_ctx = {"shower_curtain_exception_token": "VALID_EXCEPTION_TOKEN"}
+    mutable_ctx["shower_curtain_exception_token"] = "MUTATED_VALUE"
+    res_mutated = gate.evaluate(
+        payload={"msg": "Contact Alice at alice@example.com"},
+        context=mutable_ctx
+    )
+    assert res_mutated.action == GateAction.HALT
+
+    # Adversarial test: Token replay across separate evaluation contexts
+    # Replay of the valid token across multiple calls succeeds only if the token string matches,
+    # demonstrating bearer credential semantics without ephemeral consumption tracking.
+    res_replay1 = gate.evaluate(
+        payload={"msg": "User 1: user1@example.com"},
+        context={"shower_curtain_exception_token": "VALID_EXCEPTION_TOKEN"}
+    )
+    assert res_replay1.action == GateAction.ALLOW
+    res_replay2 = gate.evaluate(
+        payload={"msg": "User 2: user2@example.com"},
+        context={"shower_curtain_exception_token": "VALID_EXCEPTION_TOKEN"}
+    )
+    assert res_replay2.action == GateAction.ALLOW
+
     # Credential detections strictly remain blocked under an otherwise valid exception
     res_cred_blocked = gate.evaluate(
         payload={"api_key": "sk-proj1234567890abcdef1234567890"},
