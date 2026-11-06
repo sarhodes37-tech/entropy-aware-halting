@@ -573,6 +573,19 @@ def test_keyboard_navigation_and_focus_management_workflows(a11y_comprehensive_s
         )
         assert page.locator("#a11y-status-announcer").text_content() == "Trace search cleared."
 
+        # 3b. Backspace / text clearance in input announces clearance
+        page.keyboard.type("abc")
+        assert page.locator("#trace-search").input_value() == "abc"
+        page.evaluate(
+            "() => { document.getElementById('a11y-status-announcer').textContent = ''; }"
+        )
+        page.locator("#trace-search").fill("")
+        page.wait_for_function(
+            "() => document.getElementById('a11y-status-announcer').textContent === "
+            "'Trace search cleared.'"
+        )
+        assert page.locator("#a11y-status-announcer").text_content() == "Trace search cleared."
+
         # 4. Keyboard Arrow Navigation in Traces Listbox
         first_item = page.locator("#trace-list .trace-item").first
         first_item.focus()

@@ -100,7 +100,11 @@ document.addEventListener('DOMContentLoaded', () => {
       const searchInput = document.getElementById('trace-search');
       if (searchInput) {
         searchInput.addEventListener('input', (e) => {
+          const prevQuery = this.state.traceSearchQuery;
           this.state.traceSearchQuery = e.target.value.toLowerCase().trim();
+          if (prevQuery && !this.state.traceSearchQuery) {
+            this.announce('Trace search cleared.');
+          }
           this.renderTracesList();
         });
         searchInput.addEventListener('keydown', (e) => {
@@ -158,7 +162,11 @@ document.addEventListener('DOMContentLoaded', () => {
       const provSearchInput = document.getElementById('provenance-search');
       if (provSearchInput) {
         provSearchInput.addEventListener('input', (e) => {
+          const prevQuery = this.state.provenanceSearchQuery;
           this.state.provenanceSearchQuery = e.target.value.toLowerCase().trim();
+          if (prevQuery && !this.state.provenanceSearchQuery) {
+            this.announce('Provenance search cleared.');
+          }
           this.renderProvenanceRecordList();
         });
         provSearchInput.addEventListener('keydown', (e) => {
@@ -191,7 +199,11 @@ document.addEventListener('DOMContentLoaded', () => {
       const caseSearchInput = document.getElementById('benchmark-case-search');
       if (caseSearchInput) {
         caseSearchInput.addEventListener('input', (e) => {
+          const prevQuery = this.state.caseSearchQuery;
           this.state.caseSearchQuery = e.target.value.toLowerCase().trim();
+          if (prevQuery && !this.state.caseSearchQuery) {
+            this.announce('Benchmark case search cleared.');
+          }
           this.renderBenchmarkCasesList();
         });
         caseSearchInput.addEventListener('keydown', (e) => {
