@@ -28,7 +28,19 @@ class ShowerCurtainGate(Gate):
     ):
         self.detector = detector or SensitiveDataDetector()
         self.policy = policy or PrivacyPolicy()
-        self.trusted_exception_token = trusted_exception_token
+        if trusted_exception_token is not None:
+            # Enforce fail-closed validation: token must be a non-empty string.
+            if not isinstance(trusted_exception_token, str):
+                raise TypeError(
+                    f"trusted_exception_token must be a string, "
+                    f"got {type(trusted_exception_token).__name__}"
+                )
+            sanitized_token = trusted_exception_token.strip()
+            if not sanitized_token:
+                raise ValueError("trusted_exception_token cannot be empty or whitespace-only")
+            self.trusted_exception_token: Optional[str] = sanitized_token
+        else:
+            self.trusted_exception_token = None
 
     def evaluate(
         self,

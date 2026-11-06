@@ -938,3 +938,41 @@ def test_local_mapping_vault_master_key_fail_closed_validation():
     default_vault = LocalMappingVault()
     assert isinstance(default_vault.master_key, bytes)
     assert len(default_vault.master_key) == 32
+
+
+def test_shower_curtain_gate_trusted_exception_token_fail_closed_validation():
+    """Verifies fail-closed validation for ShowerCurtainGate trusted_exception_token."""
+    # 1. Reject invalid types with TypeError
+    invalid_tokens = [12345, b"secret_bytes", True, False, 3.14, ["token"], {"k": "v"}]
+    for invalid_token in invalid_tokens:
+        with pytest.raises(TypeError, match="trusted_exception_token must be a string"):
+            ShowerCurtainGate(trusted_exception_token=invalid_token)
+
+    # 2. Reject empty or whitespace-only tokens with ValueError
+    empty_tokens = ["", "   ", "\t", "\n", " \t \n "]
+    for empty_tok in empty_tokens:
+        with pytest.raises(ValueError, match="trusted_exception_token cannot be empty"):
+            ShowerCurtainGate(trusted_exception_token=empty_tok)
+
+    # 3. Valid tokens are stripped and function correctly
+    gate = ShowerCurtainGate(trusted_exception_token="  VALID_EXCEPTION_TOKEN  ")
+    assert gate.trusted_exception_token == "VALID_EXCEPTION_TOKEN"
+
+    # Authorized bypass on sensitive non-credential data with matching token
+    res_allowed = gate.evaluate(
+        payload={"msg": "Contact Alice at alice@example.com"},
+        context={"shower_curtain_exception_token": "VALID_EXCEPTION_TOKEN"}
+    )
+    assert res_allowed.action == GateAction.ALLOW
+    assert res_allowed.reason == "EXPLICIT_PRIVACY_EXCEPTION_AUTHORIZED_VIA_TRUSTED_TOKEN"
+
+    # Mismatched token halts
+    res_halted = gate.evaluate(
+        payload={"msg": "Contact Alice at alice@example.com"},
+        context={"shower_curtain_exception_token": "INVALID_TOKEN"}
+    )
+    assert res_halted.action == GateAction.HALT
+
+    # 4. None default initialization
+    default_gate = ShowerCurtainGate()
+    assert default_gate.trusted_exception_token is None
