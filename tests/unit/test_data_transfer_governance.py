@@ -2752,7 +2752,7 @@ def test_simultaneous_streaming_toctou_race_prevented():
         B's check: A's 40 reservation + B's 60 bytes = 100 <= 100 (allowed!)
         Combined actual volume would be 60 + 60 = 120 bytes > 100!
       With claim_in_flight_chunk():
-        The first transfer to claim its 40-byte chunk atomically expands its reservation to 60 bytes.
+        The first transfer to claim its 40-byte chunk atomically expands its reservation.
         The second transfer's atomic check evaluates:
           other_reserved (60) + curr_total (60) = 120 > 100 ceiling, and is ABORTED mid-stream!
     - Verifies:
@@ -2838,23 +2838,37 @@ def test_simultaneous_streaming_toctou_race_prevented():
             def close(self):
                 pass
 
-        from unittest.mock import patch
-        with patch("epistemicos.containment.PinnedHTTPConnection", MockSyncConn):
-            try:
-                res = transport.request(
-                    method="GET",
-                    url=f"http://api.corp.internal/stream/{transfer_name}",
-                    transfer_context=ctx
-                )
-                return True, len(res.get("body", b"")), None
-            except PermissionError as pe:
-                return False, ctx.observed_bytes, str(pe)
+        try:
+            res = transport.request(
+                method="GET",
+                url=f"http://api.corp.internal/stream/{transfer_name}",
+                transfer_context=ctx
+            )
+            return True, len(res.get("body", b"")), None
+        except PermissionError as pe:
+            return False, ctx.observed_bytes, str(pe)
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-        f_a = executor.submit(run_transfer, "transfer_a", "res-a")
-        f_b = executor.submit(run_transfer, "transfer_b", "res-b")
-        res_a = f_a.result()
-        res_b = f_b.result()
+    class ThreadSafeMockSyncConn:
+        def __init__(self, *args, **kwargs):
+            self.last_url = ""
+
+        def request(self, method, url, body=None, headers=None):
+            self.last_url = url
+
+        def getresponse(self):
+            t_name = "transfer_a" if "transfer_a" in self.last_url else "transfer_b"
+            return SynchronizedChunkResponse(t_name)
+
+        def close(self):
+            pass
+
+    from unittest.mock import patch
+    with patch("epistemicos.containment.PinnedHTTPConnection", ThreadSafeMockSyncConn):
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+            f_a = executor.submit(run_transfer, "transfer_a", "res-a")
+            f_b = executor.submit(run_transfer, "transfer_b", "res-b")
+            res_a = f_a.result()
+            res_b = f_b.result()
 
     success_count = sum(1 for r in (res_a, res_b) if r[0] is True)
     abort_count = sum(1 for r in (res_a, res_b) if r[0] is False)

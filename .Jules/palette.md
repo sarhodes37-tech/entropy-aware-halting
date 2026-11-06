@@ -21,3 +21,7 @@
 ## 2025-05-18 - Focus Restoration Upon Dynamic Control Destruction
 **Learning:** When a user clicks a dynamic button inside an empty state container (such as "Clear Filters") that subsequently destroys or removes the button from the DOM during list re-rendering, keyboard focus drops to `document.body` or is lost entirely. Explicitly calling `focus()` on the corresponding search input upon resetting search/filter state preserves logical focus context for keyboard navigation.
 **Action:** When destroying dynamic action triggers during state reset or list re-rendering, explicitly transfer focus to a logical persistent anchor element (such as the search input).
+
+## 2026-11-03 - Focus Restoration for Cross-Surface Record Transitions
+**Learning:** In split-view and multi-tab investigative dashboards, activating a cross-surface navigation link (such as clicking an Overview table row or "View Related Trace" in Provenance Explorer) switches the active tab and triggers asynchronous record fetching, but leaves focus orphaned on the deactivated surface or `document.body`. Awaiting record selection and programmatically shifting focus to the newly active item (`.trace-item.active`) preserves seamless keyboard context and screen reader position.
+**Action:** Always await async record selection on cross-surface jumps and explicitly shift focus to the active record item in the target listbox.
