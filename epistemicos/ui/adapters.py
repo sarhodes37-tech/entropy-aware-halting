@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
 
 from epistemicos.audit import TamperEvidentAuditTrail
+from epistemicos.authorization import AuthorizationAuthority
 from epistemicos.provenance import (
     LocalProvenanceStore,
     ProvenanceEvent,
@@ -30,12 +31,17 @@ class ObservatoryDataAdapter:
         audit_log_path: str = "logs/epistemic_audit.jsonl",
         provenance_log_path: str = "logs/provenance_audit.jsonl",
         ablation_table_path: str = "results/ablation_table.json",
-        per_case_results_path: str = "results/per_case_results.json"
+        per_case_results_path: str = "results/per_case_results.json",
+        authority: Optional[AuthorizationAuthority] = None,
+        allow_unverified_legacy: Optional[bool] = None
     ):
         self.audit_log_path = Path(audit_log_path)
         self.provenance_log_path = Path(provenance_log_path)
         self.ablation_table_path = Path(ablation_table_path)
         self.per_case_results_path = Path(per_case_results_path)
+        self.authority = authority
+        # Default allow_unverified_legacy=False unconditionally
+        self.allow_unverified_legacy = False if allow_unverified_legacy is None else allow_unverified_legacy
 
     # -------------------------------------------------------------------------
     # Overview View Adapter
@@ -110,7 +116,10 @@ class ObservatoryDataAdapter:
             corr = pe.get("correlation_id") or "UNKNOWN_CORRELATION"
             grouped.setdefault(corr, []).append(pe)
 
-        reconciler = ProvenanceReconciler()
+        reconciler = ProvenanceReconciler(
+            authority=self.authority,
+            allow_unverified_legacy=self.allow_unverified_legacy
+        )
         traces = []
 
         for corr_id, pe_list in grouped.items():
@@ -130,7 +139,7 @@ class ObservatoryDataAdapter:
             reconciliation = reconciler.reconcile_correlation(corr_id, typed_events)
 
             # Determine lifecycle execution status
-            status = self._determine_execution_status(pe_list)
+            status = self._determine_execution_status(pe_list, reconciliation=reconciliation)
 
             # Collect gate decisions and evidence
             gate_decisions = []
@@ -249,21 +258,22 @@ class ObservatoryDataAdapter:
         traces = self.get_execution_traces() if events else []
         incomplete_traces = [
             t for t in traces
-            if not t.get("reconciliation", {}).get("valid", True) or t.get("status") == "OUTCOME_UNKNOWN"
+            if (not t.get("reconciliation", {}).get("valid", True) or t.get("status") in ("OUTCOME_UNKNOWN", "MISMATCH"))
+            and t.get("reconciliation", {}).get("status") != "UNVERIFIED_LEGACY_EVIDENCE"
         ]
 
         if not file_exists or len(events) == 0:
             coverage_status = "UNAVAILABLE"
             coverage_msg = "No provenance records available to assess event coverage."
-        elif incomplete_traces:
-            coverage_status = "INCOMPLETE"
-            coverage_msg = f"{len(incomplete_traces)} of {len(traces)} execution trace(s) have missing terminal outcome events or reconciliation violations."
         elif integrity.get("status") == "CORRUPTED":
             coverage_status = "UNVERIFIED"
             coverage_msg = "Cryptographic sequence chaining corruption positively detected; log continuity and trace completeness cannot be established."
         elif integrity.get("status") != "VERIFIED":
             coverage_status = "UNVERIFIED"
             coverage_msg = "Cryptographic sequence chaining integrity unverified; log continuity and trace completeness cannot be established."
+        elif incomplete_traces:
+            coverage_status = "INCOMPLETE"
+            coverage_msg = f"{len(incomplete_traces)} of {len(traces)} execution trace(s) have missing terminal outcome events or reconciliation violations."
         else:
             coverage_status = "UNVERIFIED"
             coverage_msg = "Valid local cryptographic sequence chaining verifies log continuity, but cannot establish whether unrecorded external actions occurred."
@@ -553,20 +563,50 @@ class ObservatoryDataAdapter:
                 "message": f"Verification execution failed: {str(e)}"
             }
 
-    def _determine_execution_status(self, events: List[Dict[str, Any]]) -> str:
+    def _determine_execution_status(
+        self,
+        events: List[Dict[str, Any]],
+        reconciliation: Optional[ReconciliationReport] = None
+    ) -> str:
         """
         Determines execution outcome state:
-        DENIED, HALTED, COMPLETED, FAILED, or OUTCOME_UNKNOWN.
+        DENIED, HALTED, COMPLETED, FAILED, UNVERIFIED, MISMATCH, or OUTCOME_UNKNOWN.
+        Never masks evidence mismatches as executor FAILED.
         """
         event_types = [e.get("event_type") for e in events]
 
+        # Explicit priority: Governance decisions (denials and halts)
         if "AUTHORIZATION_DENIED" in event_types:
             return "DENIED"
         if "EGRESS_BLOCKED" in event_types:
             return "HALTED"
+
+        # Gate 1: Evidence reconciliation mismatch or forgery maps to MISMATCH
+        # (Evidence-integrity failures must remain distinguishable from verified executor failures)
+        if reconciliation is not None:
+            if reconciliation.status == "RECONCILIATION_MISMATCH":
+                # If execution started but terminal outcome is missing, map to OUTCOME_UNKNOWN
+                if "EXECUTION_STARTED" in event_types and not any(t in event_types for t in ("EXECUTION_SUCCEEDED", "EXECUTION_FAILED", "EXECUTION_INTERRUPTED")):
+                    return "OUTCOME_UNKNOWN"
+                return "MISMATCH"
+
+        # Authenticated executor failure -> FAILED (as long as there is no evidence mismatch)
         if "EXECUTION_FAILED" in event_types or "EXECUTION_INTERRUPTED" in event_types:
             return "FAILED"
+
+        # Gate 2: COMPLETED requires verified reconciliation AND genuine EXECUTION_SUCCEEDED
         if "EXECUTION_SUCCEEDED" in event_types:
-            return "COMPLETED"
+            if reconciliation is not None and reconciliation.status == "RECONCILED" and reconciliation.valid:
+                return "COMPLETED"
+            elif reconciliation is not None and reconciliation.status == "UNVERIFIED_LEGACY_EVIDENCE":
+                return "UNVERIFIED"
+            elif reconciliation is not None and reconciliation.status == "INCOMPLETE_EVIDENCE":
+                return "UNVERIFIED"
+            elif reconciliation is not None and not reconciliation.valid:
+                return "MISMATCH"
+            return "UNVERIFIED"
+
+        if "EXECUTION_STARTED" in event_types:
+            return "OUTCOME_UNKNOWN"
 
         return "OUTCOME_UNKNOWN"

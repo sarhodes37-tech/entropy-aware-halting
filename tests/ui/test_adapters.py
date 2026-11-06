@@ -564,11 +564,12 @@ def test_coverage_for_failed_execution_with_complete_evidence(mock_logs):
 
     adapter = ObservatoryDataAdapter(audit_log_path=mock_logs["audit"], provenance_log_path=mock_logs["provenance"])
 
-    # Trace status should be FAILED, but reconciliation should be valid
+    # Trace status should be FAILED; when authority is missing, reconciliation is unverified
     traces = adapter.get_execution_traces()
     assert len(traces) == 1
     assert traces[0]["status"] == "FAILED"
-    assert traces[0]["reconciliation"]["valid"] is True
+    assert traces[0]["reconciliation"]["valid"] is False
+    assert traces[0]["reconciliation"]["status"] == "UNVERIFIED_LEGACY_EVIDENCE"
 
     # Coverage panel should NOT report incomplete trace
     data = adapter.get_provenance_explorer_data()
@@ -913,7 +914,8 @@ def test_execution_traces_audit_event_matching_and_precedence(tmp_path):
     assert len(trace_map["c1"]["gate_decisions"]) == 1
     assert trace_map["c1"]["gate_decisions"][0]["source"] == "AuditGate1"
 
-    assert trace_map["c2"]["status"] == "COMPLETED"
+    # In the absence of authoritative verification, unauthenticated trace c2 must never display COMPLETED
+    assert trace_map["c2"]["status"] == "UNVERIFIED"
     assert len(trace_map["c2"]["gate_decisions"]) == 2
     # Check decision fallback when decision is None in event
     auth_decision = [g for g in trace_map["c2"]["gate_decisions"] if g["source"] == "GOVERNANCE_GATE"][0]

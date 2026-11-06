@@ -693,6 +693,49 @@ class AuthorizationStore(ABC):
         pass
 
     @abstractmethod
+    def consume_token_and_record_dispatch(
+        self,
+        token_id: str,
+        attempt_id: str,
+        dispatched_executor_id: str,
+        started_at: float,
+        expected_fencing_token: Optional[int] = None,
+        dispatch_metadata: Optional[Dict[str, Any]] = None
+    ) -> Tuple[bool, str, Optional[Dict[str, Any]]]:
+        """
+        Atomically consumes the capability token and records the execution attempt dispatch
+        as a single indivisible transaction under exclusive lock.
+        Validates token existence, revocation, replay, and expiration at started_at.
+        Returns (success, reason_code, execution_record).
+        """
+        pass
+
+    @abstractmethod
+    def record_execution_outcome(
+        self,
+        token_id: str,
+        attempt_id: str,
+        outcome_status: str,
+        terminal_ts: float,
+        details: Optional[Dict[str, Any]] = None
+    ) -> Tuple[bool, str, Optional[Dict[str, Any]]]:
+        """
+        Atomically records terminal execution outcome. Outcomes are immutable once committed.
+        Returns (success, reason_code, updated_record).
+        """
+        pass
+
+    @abstractmethod
+    def get_execution_record(self, token_id: str, attempt_id: str) -> Optional[Dict[str, Any]]:
+        """Retrieves authoritative execution attempt record."""
+        pass
+
+    @abstractmethod
+    def get_revocation_record(self, token_id: str) -> Optional[Dict[str, Any]]:
+        """Retrieves authoritative revocation record including ordering sequence and timestamp."""
+        pass
+
+    @abstractmethod
     def revoke_capability(self, token_id: str, reason: str = "") -> Tuple[bool, str]:
         """
         Atomically revokes a capability token.
@@ -724,11 +767,15 @@ class InMemoryAuthorizationStore(AuthorizationStore):
 
     def __init__(self):
         self._lock = threading.RLock()
+        self._seq: int = 0
         self._capabilities: Dict[str, Any] = {}
         self._consumed_tokens: Set[str] = set()
         self._revoked_tokens: Set[str] = set()
+        self._revocation_records: Dict[str, Dict[str, Any]] = {}
         self._consumed_approvals: Set[str] = set()
         self._scope_fencing_generations: Dict[str, int] = {}
+        self._execution_attempts: Dict[str, Dict[str, Any]] = {}
+        self._token_to_attempts: Dict[str, Set[str]] = {}
 
     def issue_and_register_capability(self, cap: Any, signing_func: Any) -> Any:
         with self._lock:
@@ -807,10 +854,134 @@ class InMemoryAuthorizationStore(AuthorizationStore):
                 if approval_id and approval_id in self._consumed_approvals:
                     return False, "CAPABILITY_CONSUMPTION_FAILED_APPROVAL_REPLAYED"
 
+            self._seq += 1
             self._consumed_tokens.add(token_id)
             if approval_id:
                 self._consumed_approvals.add(approval_id)
             return True, "CAPABILITY_CONSUMED_SUCCESSFULLY"
+
+    def consume_token_and_record_dispatch(
+        self,
+        token_id: str,
+        attempt_id: str,
+        dispatched_executor_id: str,
+        started_at: float,
+        expected_fencing_token: Optional[int] = None,
+        dispatch_metadata: Optional[Dict[str, Any]] = None
+    ) -> Tuple[bool, str, Optional[Dict[str, Any]]]:
+        with self._lock:
+            if not token_id or not isinstance(token_id, str):
+                return False, "CAPABILITY_CONSUMPTION_FAILED_INVALID_TOKEN_ID", None
+            if not attempt_id or not isinstance(attempt_id, str):
+                return False, "CAPABILITY_CONSUMPTION_FAILED_INVALID_ATTEMPT_ID", None
+
+            if attempt_id in self._execution_attempts:
+                return False, f"EXECUTION_DISPATCH_FAILED_DUPLICATE_ATTEMPT_ID: attempt {attempt_id} already exists", None
+
+            if token_id in self._revoked_tokens:
+                return False, "CAPABILITY_CONSUMPTION_FAILED_REVOKED", None
+
+            if token_id in self._consumed_tokens:
+                return False, "CAPABILITY_CONSUMPTION_FAILED_ALREADY_CONSUMED", None
+
+            cap_obj = self._capabilities.get(token_id)
+            if not cap_obj:
+                return False, "CAPABILITY_CONSUMPTION_FAILED_UNKNOWN_TOKEN", None
+
+            # Expiration check at dispatch time
+            is_expired = False
+            if hasattr(cap_obj, "is_expired"):
+                is_expired = cap_obj.is_expired(started_at)
+            elif isinstance(cap_obj, dict):
+                exp = cap_obj.get("expires_at")
+                if exp is not None and float(started_at) > float(exp):
+                    is_expired = True
+            if is_expired:
+                return False, "CAPABILITY_CONSUMPTION_FAILED_EXPIRED_TOKEN", None
+
+            scope_key = getattr(cap_obj, "scope_key", None) or (cap_obj.get("scope_key") if isinstance(cap_obj, dict) else None)
+            cap_fence = getattr(cap_obj, "fencing_token", None) or (cap_obj.get("fencing_token") if isinstance(cap_obj, dict) else 1)
+            if expected_fencing_token is not None and expected_fencing_token != cap_fence:
+                return False, f"CAPABILITY_CONSUMPTION_FAILED_FENCING_TOKEN_MISMATCH: expected {expected_fencing_token}, got {cap_fence}", None
+
+            if scope_key:
+                auth_fence = self._scope_fencing_generations.get(scope_key, 0)
+                if cap_fence < auth_fence:
+                    return False, f"CAPABILITY_CONSUMPTION_FAILED_STALE_FENCING_TOKEN: token generation {cap_fence} < authoritative scope generation {auth_fence}", None
+                if cap_fence > auth_fence:
+                    return False, f"CAPABILITY_CONSUMPTION_FAILED_FUTURE_FENCING_TOKEN: token generation {cap_fence} > authoritative scope generation {auth_fence}", None
+
+            approval_id = None
+            human_app = getattr(cap_obj, "human_approval", None) or (cap_obj.get("human_approval") if isinstance(cap_obj, dict) else None)
+            if human_app:
+                approval_id = getattr(human_app, "approval_id", None) or (human_app.get("approval_id") if isinstance(human_app, dict) else None)
+                if approval_id and approval_id in self._consumed_approvals:
+                    return False, "CAPABILITY_CONSUMPTION_FAILED_APPROVAL_REPLAYED", None
+
+            # Atomic transaction commit
+            self._seq += 1
+            self._consumed_tokens.add(token_id)
+            if approval_id:
+                self._consumed_approvals.add(approval_id)
+
+            rec = {
+                "token_id": token_id,
+                "attempt_id": attempt_id,
+                "dispatched_executor_id": dispatched_executor_id,
+                "started_at": float(started_at),
+                "fencing_token": cap_fence,
+                "scope_key": scope_key,
+                "dispatch_seq": self._seq,
+                "outcome_status": "DISPATCHED",
+                "terminal_ts": None,
+                "details": dispatch_metadata or {}
+            }
+            self._execution_attempts[attempt_id] = rec
+            self._token_to_attempts.setdefault(token_id, set()).add(attempt_id)
+            return True, "DISPATCH_RECORDED_SUCCESSFULLY", dict(rec)
+
+    def record_execution_outcome(
+        self,
+        token_id: str,
+        attempt_id: str,
+        outcome_status: str,
+        terminal_ts: float,
+        details: Optional[Dict[str, Any]] = None
+    ) -> Tuple[bool, str, Optional[Dict[str, Any]]]:
+        with self._lock:
+            rec = self._execution_attempts.get(attempt_id)
+            if not rec:
+                return False, f"EXECUTION_OUTCOME_FAILED_UNKNOWN_ATTEMPT: attempt {attempt_id} not found", None
+            if rec.get("token_id") != token_id:
+                return False, f"EXECUTION_OUTCOME_FAILED_TOKEN_MISMATCH: attempt bound to token {rec.get('token_id')}, got {token_id}", None
+
+            existing_outcome = rec.get("outcome_status")
+            if existing_outcome in ("SUCCESS", "FAILED", "INTERRUPTED", "UNVERIFIED_SUCCESS"):
+                return False, f"EXECUTION_OUTCOME_FAILED_ALREADY_COMMITTED: attempt {attempt_id} outcome is immutable ({existing_outcome})", None
+
+            self._seq += 1
+            rec["outcome_status"] = outcome_status
+            rec["terminal_ts"] = float(terminal_ts)
+            rec["terminal_seq"] = self._seq
+            if details:
+                rec_details = rec.setdefault("details", {})
+                if isinstance(rec_details, dict):
+                    rec_details["outcome_details"] = details
+            return True, "OUTCOME_RECORDED_SUCCESSFULLY", dict(rec)
+
+    def get_execution_record(self, token_id: str, attempt_id: str) -> Optional[Dict[str, Any]]:
+        with self._lock:
+            rec = self._execution_attempts.get(attempt_id)
+            if rec and rec.get("token_id") == token_id:
+                return dict(rec)
+            return None
+
+    def get_revocation_record(self, token_id: str) -> Optional[Dict[str, Any]]:
+        with self._lock:
+            rec = self._revocation_records.get(token_id)
+            if rec:
+                return dict(rec)
+            return None
 
     def revoke_capability(self, token_id: str, reason: str = "") -> Tuple[bool, str]:
         with self._lock:
@@ -818,7 +989,15 @@ class InMemoryAuthorizationStore(AuthorizationStore):
                 return False, "CAPABILITY_REVOCATION_REJECTED_ALREADY_CONSUMED"
             if token_id in self._revoked_tokens:
                 return True, "CAPABILITY_ALREADY_REVOKED"
+            self._seq += 1
+            now_ts = time.time()
             self._revoked_tokens.add(token_id)
+            self._revocation_records[token_id] = {
+                "token_id": token_id,
+                "reason": reason,
+                "timestamp": now_ts,
+                "seq": self._seq
+            }
             return True, "CAPABILITY_REVOKED_SUCCESSFULLY"
 
     def get_scope_fencing_token(self, scope_key: str) -> int:
@@ -864,11 +1043,15 @@ class FileAuthorizationStore(AuthorizationStore):
         self._lock_file = None
         self._lock_depth = 0
 
+        self._seq: int = 0
         self._capabilities: Dict[str, Any] = {}
         self._consumed_tokens: Set[str] = set()
         self._revoked_tokens: Set[str] = set()
+        self._revocation_records: Dict[str, Dict[str, Any]] = {}
         self._consumed_approvals: Set[str] = set()
         self._scope_fencing_generations: Dict[str, int] = {}
+        self._execution_attempts: Dict[str, Dict[str, Any]] = {}
+        self._token_to_attempts: Dict[str, Set[str]] = {}
 
         os.makedirs(os.path.dirname(os.path.abspath(store_path)) or ".", exist_ok=True)
         self._sync_from_disk(acquire_lock=True)
@@ -933,8 +1116,12 @@ class FileAuthorizationStore(AuthorizationStore):
                 caps: Dict[str, Any] = {}
                 consumed: Set[str] = set()
                 revoked: Set[str] = set()
+                revocation_recs: Dict[str, Dict[str, Any]] = {}
                 approvals: Set[str] = set()
                 fencing: Dict[str, int] = {}
+                attempts: Dict[str, Dict[str, Any]] = {}
+                token_attempts: Dict[str, Set[str]] = {}
+                max_seq = 0
 
                 with open(self.store_path, "r", encoding="utf-8") as f:
                     for line_idx, line in enumerate(f, start=1):
@@ -949,6 +1136,10 @@ class FileAuthorizationStore(AuthorizationStore):
                             if self.fail_closed:
                                 raise RuntimeError(f"Corrupted or ambiguous authorization journal record at line {line_idx} in {self.store_path}: {l}") from e
                             continue
+
+                        rec_seq = rec.get("seq", line_idx)
+                        if isinstance(rec_seq, int):
+                            max_seq = max(max_seq, rec_seq)
 
                         rec_type = rec.get("type")
                         if rec_type == "ISSUE_CAPABILITY":
@@ -978,6 +1169,47 @@ class FileAuthorizationStore(AuthorizationStore):
                             app_id = rec.get("approval_id")
                             if app_id:
                                 approvals.add(app_id)
+                        elif rec_type == "CONSUME_AND_DISPATCH":
+                            tok = rec.get("token_id")
+                            att_id = rec.get("attempt_id")
+                            if not tok or not att_id:
+                                if self.fail_closed:
+                                    raise RuntimeError(f"Corrupted CONSUME_AND_DISPATCH at line {line_idx}")
+                                continue
+                            consumed.add(tok)
+                            app_id = rec.get("approval_id")
+                            if app_id:
+                                approvals.add(app_id)
+                            attempts[att_id] = {
+                                "token_id": tok,
+                                "attempt_id": att_id,
+                                "dispatched_executor_id": rec.get("dispatched_executor_id"),
+                                "started_at": float(rec.get("started_at", 0.0)),
+                                "fencing_token": rec.get("fencing_token"),
+                                "scope_key": rec.get("scope_key"),
+                                "dispatch_seq": rec_seq,
+                                "outcome_status": "DISPATCHED",
+                                "terminal_ts": None,
+                                "details": rec.get("details") or {}
+                            }
+                            token_attempts.setdefault(tok, set()).add(att_id)
+                        elif rec_type == "RECORD_OUTCOME":
+                            tok = rec.get("token_id")
+                            att_id = rec.get("attempt_id")
+                            status = rec.get("outcome_status")
+                            if not tok or not att_id or not status:
+                                if self.fail_closed:
+                                    raise RuntimeError(f"Corrupted RECORD_OUTCOME at line {line_idx}")
+                                continue
+                            att_rec = attempts.get(att_id)
+                            if att_rec:
+                                att_rec["outcome_status"] = status
+                                att_rec["terminal_ts"] = float(rec.get("terminal_ts", 0.0))
+                                att_rec["terminal_seq"] = rec_seq
+                                if rec.get("details"):
+                                    d = att_rec.setdefault("details", {})
+                                    if isinstance(d, dict):
+                                        d["outcome_details"] = rec.get("details")
                         elif rec_type == "REVOKE":
                             tok = rec.get("token_id")
                             if not tok:
@@ -985,6 +1217,12 @@ class FileAuthorizationStore(AuthorizationStore):
                                     raise RuntimeError(f"Corrupted REVOKE missing token_id at line {line_idx}")
                                 continue
                             revoked.add(tok)
+                            revocation_recs[tok] = {
+                                "token_id": tok,
+                                "reason": rec.get("reason", ""),
+                                "timestamp": float(rec.get("timestamp", 0.0)),
+                                "seq": rec_seq
+                            }
                         elif rec_type == "FENCE":
                             sk = rec.get("scope_key")
                             tok = rec.get("fencing_token")
@@ -1000,11 +1238,15 @@ class FileAuthorizationStore(AuthorizationStore):
                             if self.fail_closed:
                                 raise RuntimeError(f"Unknown or ambiguous record type '{rec_type}' at line {line_idx} in {self.store_path}")
 
+                self._seq = max_seq
                 self._capabilities = caps
                 self._consumed_tokens = consumed
                 self._revoked_tokens = revoked
+                self._revocation_records = revocation_recs
                 self._consumed_approvals = approvals
                 self._scope_fencing_generations = fencing
+                self._execution_attempts = attempts
+                self._token_to_attempts = token_attempts
             finally:
                 if acquire_lock:
                     self._release_flock()
@@ -1213,6 +1455,173 @@ class FileAuthorizationStore(AuthorizationStore):
             finally:
                 self._release_flock()
 
+    def consume_token_and_record_dispatch(
+        self,
+        token_id: str,
+        attempt_id: str,
+        dispatched_executor_id: str,
+        started_at: float,
+        expected_fencing_token: Optional[int] = None,
+        dispatch_metadata: Optional[Dict[str, Any]] = None
+    ) -> Tuple[bool, str, Optional[Dict[str, Any]]]:
+        with self._thread_lock:
+            self._acquire_flock()
+            try:
+                self._sync_from_disk(acquire_lock=False)
+                if not token_id or not isinstance(token_id, str):
+                    return False, "CAPABILITY_CONSUMPTION_FAILED_INVALID_TOKEN_ID", None
+                if not attempt_id or not isinstance(attempt_id, str):
+                    return False, "CAPABILITY_CONSUMPTION_FAILED_INVALID_ATTEMPT_ID", None
+
+                if attempt_id in self._execution_attempts:
+                    return False, f"EXECUTION_DISPATCH_FAILED_DUPLICATE_ATTEMPT_ID: attempt {attempt_id} already exists", None
+
+                if token_id in self._revoked_tokens:
+                    return False, "CAPABILITY_CONSUMPTION_FAILED_REVOKED", None
+
+                if token_id in self._consumed_tokens:
+                    return False, "CAPABILITY_CONSUMPTION_FAILED_ALREADY_CONSUMED", None
+
+                cap_data = self._capabilities.get(token_id)
+                if not cap_data:
+                    return False, "CAPABILITY_CONSUMPTION_FAILED_UNKNOWN_TOKEN", None
+
+                # Expiration check at dispatch time
+                expires_at_val = None
+                if isinstance(cap_data, dict):
+                    expires_at_val = cap_data.get("expires_at")
+                else:
+                    expires_at_val = getattr(cap_data, "expires_at", None)
+                if expires_at_val is not None and float(started_at) > float(expires_at_val):
+                    return False, "CAPABILITY_CONSUMPTION_FAILED_EXPIRED_TOKEN", None
+
+                scope_key = cap_data.get("scope_key") if isinstance(cap_data, dict) else getattr(cap_data, "scope_key", None)
+                cap_fence = int(cap_data.get("fencing_token", 1) if isinstance(cap_data, dict) else getattr(cap_data, "fencing_token", 1))
+                if expected_fencing_token is not None and expected_fencing_token != cap_fence:
+                    return False, f"CAPABILITY_CONSUMPTION_FAILED_FENCING_TOKEN_MISMATCH: expected {expected_fencing_token}, got {cap_fence}", None
+
+                if scope_key:
+                    auth_fence = self._scope_fencing_generations.get(scope_key, 0)
+                    if cap_fence < auth_fence:
+                        return False, f"CAPABILITY_CONSUMPTION_FAILED_STALE_FENCING_TOKEN: token generation {cap_fence} < authoritative scope generation {auth_fence}", None
+                    if cap_fence > auth_fence:
+                        return False, f"CAPABILITY_CONSUMPTION_FAILED_FUTURE_FENCING_TOKEN: token generation {cap_fence} > authoritative scope generation {auth_fence}", None
+
+                approval_id = None
+                human_app = cap_data.get("human_approval") if isinstance(cap_data, dict) else getattr(cap_data, "human_approval", None)
+                if human_app:
+                    approval_id = human_app.get("approval_id") if isinstance(human_app, dict) else getattr(human_app, "approval_id", None)
+                    if approval_id and approval_id in self._consumed_approvals:
+                        return False, "CAPABILITY_CONSUMPTION_FAILED_APPROVAL_REPLAYED", None
+
+                next_seq = self._seq + 1
+                rec = {
+                    "type": "CONSUME_AND_DISPATCH",
+                    "seq": next_seq,
+                    "token_id": token_id,
+                    "attempt_id": attempt_id,
+                    "dispatched_executor_id": dispatched_executor_id,
+                    "started_at": float(started_at),
+                    "approval_id": approval_id,
+                    "fencing_token": cap_fence,
+                    "scope_key": scope_key,
+                    "details": dispatch_metadata or {},
+                    "timestamp": time.time()
+                }
+                self._append_record_under_lock(rec)
+                self._seq = next_seq
+                self._consumed_tokens.add(token_id)
+                if approval_id:
+                    self._consumed_approvals.add(approval_id)
+
+                stored_rec = {
+                    "token_id": token_id,
+                    "attempt_id": attempt_id,
+                    "dispatched_executor_id": dispatched_executor_id,
+                    "started_at": float(started_at),
+                    "fencing_token": cap_fence,
+                    "scope_key": scope_key,
+                    "dispatch_seq": next_seq,
+                    "outcome_status": "DISPATCHED",
+                    "terminal_ts": None,
+                    "details": dispatch_metadata or {}
+                }
+                self._execution_attempts[attempt_id] = stored_rec
+                self._token_to_attempts.setdefault(token_id, set()).add(attempt_id)
+                return True, "DISPATCH_RECORDED_SUCCESSFULLY", dict(stored_rec)
+            finally:
+                self._release_flock()
+
+    def record_execution_outcome(
+        self,
+        token_id: str,
+        attempt_id: str,
+        outcome_status: str,
+        terminal_ts: float,
+        details: Optional[Dict[str, Any]] = None
+    ) -> Tuple[bool, str, Optional[Dict[str, Any]]]:
+        with self._thread_lock:
+            self._acquire_flock()
+            try:
+                self._sync_from_disk(acquire_lock=False)
+                rec = self._execution_attempts.get(attempt_id)
+                if not rec:
+                    return False, f"EXECUTION_OUTCOME_FAILED_UNKNOWN_ATTEMPT: attempt {attempt_id} not found", None
+                if rec.get("token_id") != token_id:
+                    return False, f"EXECUTION_OUTCOME_FAILED_TOKEN_MISMATCH: attempt bound to token {rec.get('token_id')}, got {token_id}", None
+
+                existing_outcome = rec.get("outcome_status")
+                if existing_outcome in ("SUCCESS", "FAILED", "INTERRUPTED", "UNVERIFIED_SUCCESS"):
+                    return False, f"EXECUTION_OUTCOME_FAILED_ALREADY_COMMITTED: attempt {attempt_id} outcome is immutable ({existing_outcome})", None
+
+                next_seq = self._seq + 1
+                journal_rec = {
+                    "type": "RECORD_OUTCOME",
+                    "seq": next_seq,
+                    "token_id": token_id,
+                    "attempt_id": attempt_id,
+                    "outcome_status": outcome_status,
+                    "terminal_ts": float(terminal_ts),
+                    "details": details or {},
+                    "timestamp": time.time()
+                }
+                self._append_record_under_lock(journal_rec)
+                self._seq = next_seq
+                rec["outcome_status"] = outcome_status
+                rec["terminal_ts"] = float(terminal_ts)
+                rec["terminal_seq"] = next_seq
+                if details:
+                    d = rec.setdefault("details", {})
+                    if isinstance(d, dict):
+                        d["outcome_details"] = details
+                return True, "OUTCOME_RECORDED_SUCCESSFULLY", dict(rec)
+            finally:
+                self._release_flock()
+
+    def get_execution_record(self, token_id: str, attempt_id: str) -> Optional[Dict[str, Any]]:
+        with self._thread_lock:
+            self._acquire_flock()
+            try:
+                self._sync_from_disk(acquire_lock=False)
+                rec = self._execution_attempts.get(attempt_id)
+                if rec and rec.get("token_id") == token_id:
+                    return dict(rec)
+                return None
+            finally:
+                self._release_flock()
+
+    def get_revocation_record(self, token_id: str) -> Optional[Dict[str, Any]]:
+        with self._thread_lock:
+            self._acquire_flock()
+            try:
+                self._sync_from_disk(acquire_lock=False)
+                rec = self._revocation_records.get(token_id)
+                if rec:
+                    return dict(rec)
+                return None
+            finally:
+                self._release_flock()
+
     def revoke_capability(self, token_id: str, reason: str = "") -> Tuple[bool, str]:
         with self._thread_lock:
             self._acquire_flock()
@@ -1223,14 +1632,24 @@ class FileAuthorizationStore(AuthorizationStore):
                 if token_id in self._revoked_tokens:
                     return True, "CAPABILITY_ALREADY_REVOKED"
 
+                next_seq = self._seq + 1
+                now_ts = time.time()
                 rec = {
                     "type": "REVOKE",
+                    "seq": next_seq,
                     "token_id": token_id,
                     "reason": reason,
-                    "timestamp": time.time()
+                    "timestamp": now_ts
                 }
                 self._append_record_under_lock(rec)
+                self._seq = next_seq
                 self._revoked_tokens.add(token_id)
+                self._revocation_records[token_id] = {
+                    "token_id": token_id,
+                    "reason": reason,
+                    "timestamp": now_ts,
+                    "seq": next_seq
+                }
                 return True, "CAPABILITY_REVOKED_SUCCESSFULLY"
             finally:
                 self._release_flock()
@@ -2124,6 +2543,60 @@ class CapabilityRegistry:
             ok, _ = self.storage.consume_capability(token_id, expected_fencing_token=expected_fencing_token)
             return ok
 
+    def consume_token_and_record_dispatch(
+        self,
+        token_id: str,
+        attempt_id: str,
+        dispatched_executor_id: str,
+        started_at: float,
+        expected_fencing_token: Optional[int] = None,
+        dispatch_metadata: Optional[Dict[str, Any]] = None
+    ) -> Tuple[bool, str, Optional[Dict[str, Any]]]:
+        """
+        Atomically consumes capability and records execution dispatch under exclusive storage lock.
+        """
+        with self._lock:
+            self._check_poisoned()
+            return self.storage.consume_token_and_record_dispatch(
+                token_id=token_id,
+                attempt_id=attempt_id,
+                dispatched_executor_id=dispatched_executor_id,
+                started_at=started_at,
+                expected_fencing_token=expected_fencing_token,
+                dispatch_metadata=dispatch_metadata
+            )
+
+    def record_execution_outcome(
+        self,
+        token_id: str,
+        attempt_id: str,
+        outcome_status: str,
+        terminal_ts: float,
+        details: Optional[Dict[str, Any]] = None
+    ) -> Tuple[bool, str, Optional[Dict[str, Any]]]:
+        """
+        Atomically records terminal execution outcome in authoritative storage.
+        """
+        with self._lock:
+            self._check_poisoned()
+            return self.storage.record_execution_outcome(
+                token_id=token_id,
+                attempt_id=attempt_id,
+                outcome_status=outcome_status,
+                terminal_ts=terminal_ts,
+                details=details
+            )
+
+    def get_execution_record(self, token_id: str, attempt_id: str) -> Optional[Dict[str, Any]]:
+        with self._lock:
+            self._check_poisoned()
+            return self.storage.get_execution_record(token_id, attempt_id)
+
+    def get_revocation_record(self, token_id: str) -> Optional[Dict[str, Any]]:
+        with self._lock:
+            self._check_poisoned()
+            return self.storage.get_revocation_record(token_id)
+
     def revoke_token(self, token_id: str, reason: str = "") -> Tuple[bool, str]:
         with self._lock:
             self._check_poisoned()
@@ -2877,3 +3350,146 @@ class AuthorizationAuthority:
                 return False, f"CAPABILITY_VERIFICATION_FAILED_HUMAN_APPROVAL_REQUEST_ID_MISMATCH: approval '{human_app.request_id}' != capability '{cap.request_id}'", cap
 
         return True, "CAPABILITY_VERIFIED", cap
+
+    def verify_historical_capability(
+        self,
+        token_id: str,
+        action_name: str,
+        target: str,
+        canonical_request_digest: str,
+        execution_attempt_id: Optional[str] = None,
+        dispatched_executor_id: Optional[str] = None,
+        execution_start_time: Optional[float] = None,
+        expected_outcome_status: Optional[str] = None,
+        correlation_id: Optional[str] = None,
+        request_id: Optional[str] = None,
+        task_id: Optional[str] = None,
+        principal_id: Optional[str] = None
+    ) -> Tuple[bool, str, Optional[Capability], Optional[Dict[str, Any]]]:
+        """
+        Historical verification of an issued capability and its execution lifecycle.
+        Verifies:
+        1. Authoritative issuance in registry storage.
+        2. Cryptographic HMAC signature integrity.
+        3. Immutable field bindings (action_name, target, canonical_request_digest, correlation_id, request_id, task_id).
+        4. Temporal validity: evaluates expiration and revocation status AT EXECUTION TIME using monotonic journal ordering
+           or execution start timestamp, ensuring post-execution revocation/expiration does not invalidate past executions.
+        5. Execution attempt and terminal outcome binding against authoritative storage.
+        Returns: (is_valid, reason, capability_obj, execution_record)
+        """
+        if not token_id or not isinstance(token_id, str):
+            return False, "HISTORICAL_VERIFICATION_FAILED_INVALID_TOKEN_ID", None, None
+
+        cap = self.registry.get_capability(token_id)
+        if not cap:
+            return False, f"HISTORICAL_VERIFICATION_FAILED_UNKNOWN_TOKEN: token {token_id} was never issued by authoritative registry", None, None
+
+        # Verify cryptographic HMAC signature
+        expected_sig = self.registry.sign_capability(cap)
+        if not cap.signature or not hmac.compare_digest(cap.signature, expected_sig):
+            return False, f"HISTORICAL_VERIFICATION_FAILED_INVALID_SIGNATURE: token {token_id} has invalid cryptographic signature", None, None
+
+        # Field binding verification
+        if cap.action_name != action_name:
+            return False, f"HISTORICAL_VERIFICATION_FAILED_ACTION_MISMATCH: granted '{cap.action_name}', event '{action_name}'", cap, None
+
+        if cap.target != target:
+            return False, f"HISTORICAL_VERIFICATION_FAILED_TARGET_MISMATCH: granted '{cap.target}', event '{target}'", cap, None
+
+        if cap.canonical_request_digest != canonical_request_digest:
+            return False, f"HISTORICAL_VERIFICATION_FAILED_DIGEST_MISMATCH: granted '{cap.canonical_request_digest}', event '{canonical_request_digest}'", cap, None
+
+        if correlation_id is not None and cap.correlation_id != correlation_id:
+            return False, f"HISTORICAL_VERIFICATION_FAILED_CORRELATION_ID_MISMATCH: granted '{cap.correlation_id}', event '{correlation_id}'", cap, None
+
+        if request_id is not None and cap.request_id != request_id:
+            return False, f"HISTORICAL_VERIFICATION_FAILED_REQUEST_ID_MISMATCH: granted '{cap.request_id}', event '{request_id}'", cap, None
+
+        if task_id is not None and cap.task_id and cap.task_id != task_id:
+            return False, f"HISTORICAL_VERIFICATION_FAILED_TASK_ID_MISMATCH: granted '{cap.task_id}', event '{task_id}'", cap, None
+
+        if principal_id is not None and cap.principal_id != "agent_default" and cap.principal_id != principal_id:
+            return False, f"HISTORICAL_VERIFICATION_FAILED_PRINCIPAL_MISMATCH: granted '{cap.principal_id}', event '{principal_id}'", cap, None
+
+        # Authoritative executor binding check against capability
+        if dispatched_executor_id is not None and getattr(cap, "executor_id", None):
+            norm_disp = get_callable_identity(dispatched_executor_id)
+            if norm_disp != cap.executor_id:
+                return False, f"HISTORICAL_VERIFICATION_FAILED_EXECUTOR_MISMATCH: capability bound to '{cap.executor_id}', event claims '{norm_disp}'", cap, None
+
+        # Retrieve execution record if attempt_id is provided
+        exec_record = None
+        if execution_attempt_id:
+            exec_record = self.registry.get_execution_record(token_id, execution_attempt_id)
+            if not exec_record:
+                return False, f"HISTORICAL_VERIFICATION_FAILED_NO_DISPATCH_RECORD: execution attempt {execution_attempt_id} was never dispatched by trusted boundary", cap, None
+
+            # Authoritative Executor Identity Verification:
+            # Compare the executor identity recorded by TrustedExecutionBoundary against the signed capability
+            rec_exec = exec_record.get("dispatched_executor_id")
+            cap_exec = getattr(cap, "executor_id", None)
+            if cap_exec and cap_exec != "default_executor":
+                if not rec_exec:
+                    return False, f"HISTORICAL_VERIFICATION_FAILED_EXECUTOR_MISSING: capability bound to '{cap_exec}', but dispatch record is missing dispatched_executor_id", cap, exec_record
+                if cap_exec != rec_exec:
+                    return False, f"HISTORICAL_VERIFICATION_FAILED_EXECUTOR_MISMATCH: capability bound to '{cap_exec}', dispatched to '{rec_exec}'", cap, exec_record
+            elif cap_exec and rec_exec and cap_exec != rec_exec:
+                return False, f"HISTORICAL_VERIFICATION_FAILED_EXECUTOR_MISMATCH: capability bound to '{cap_exec}', dispatched to '{rec_exec}'", cap, exec_record
+
+            if dispatched_executor_id and rec_exec and rec_exec != dispatched_executor_id:
+                return False, f"HISTORICAL_VERIFICATION_FAILED_EXECUTOR_MISMATCH: dispatched to '{rec_exec}', event claims '{dispatched_executor_id}'", cap, exec_record
+
+            # Authoritative Principal and Task Attribution Verification:
+            rec_meta = exec_record.get("details") or {}
+            if not isinstance(rec_meta, dict):
+                rec_meta = {}
+
+            # Principal attribution verification:
+            if cap.principal_id and cap.principal_id != "agent_default":
+                rec_principal = rec_meta.get("principal_id")
+                if not rec_principal:
+                    return False, f"HISTORICAL_VERIFICATION_FAILED_PRINCIPAL_MISSING: capability bound to principal '{cap.principal_id}', but dispatch record is missing principal_id attribution", cap, exec_record
+                if cap.principal_id != rec_principal:
+                    return False, f"HISTORICAL_VERIFICATION_FAILED_PRINCIPAL_MISMATCH: capability bound to '{cap.principal_id}', dispatched for '{rec_principal}'", cap, exec_record
+
+            # Task attribution verification:
+            if cap.task_id:
+                rec_task = rec_meta.get("task_id")
+                if not rec_task:
+                    return False, f"HISTORICAL_VERIFICATION_FAILED_TASK_ID_MISSING: capability bound to task_id '{cap.task_id}', but dispatch record is missing task_id attribution", cap, exec_record
+                if cap.task_id != rec_task:
+                    return False, f"HISTORICAL_VERIFICATION_FAILED_TASK_ID_MISMATCH: capability bound to '{cap.task_id}', dispatched for '{rec_task}'", cap, exec_record
+
+            # Verify terminal outcome match against authoritative record
+            if expected_outcome_status:
+                rec_status = exec_record.get("outcome_status")
+                if expected_outcome_status == "SUCCESS" and rec_status != "SUCCESS":
+                    return False, f"HISTORICAL_VERIFICATION_FAILED_OUTCOME_CONTRADICTION: event claims SUCCESS, but authoritative boundary recorded '{rec_status}'", cap, exec_record
+                elif expected_outcome_status in ("FAILED", "INTERRUPTED") and rec_status not in ("FAILED", "INTERRUPTED", "DISPATCHED"):
+                    return False, f"HISTORICAL_VERIFICATION_FAILED_OUTCOME_MISMATCH: event claims '{expected_outcome_status}', but authoritative boundary recorded '{rec_status}'", cap, exec_record
+
+        # Temporal validity verification (Revocation and Expiration at Execution Time)
+        exec_time = execution_start_time
+        if exec_time is None and exec_record:
+            exec_time = exec_record.get("started_at")
+
+        # 1. Expiration check at execution time
+        if exec_time is not None and cap.expires_at is not None:
+            if float(exec_time) > float(cap.expires_at):
+                return False, f"HISTORICAL_VERIFICATION_FAILED_EXPIRED_BEFORE_EXECUTION: capability expired at {cap.expires_at}, execution started at {exec_time}", cap, exec_record
+
+        # 2. Revocation ordering check
+        rev_record = self.registry.get_revocation_record(token_id)
+        if rev_record:
+            # Check monotonic journal sequence ordering first if available
+            rev_seq = rev_record.get("seq")
+            dispatch_seq = exec_record.get("dispatch_seq") if exec_record else None
+            if rev_seq is not None and dispatch_seq is not None:
+                if rev_seq <= dispatch_seq:
+                    return False, f"HISTORICAL_VERIFICATION_FAILED_REVOKED_BEFORE_DISPATCH: revocation seq {rev_seq} <= dispatch seq {dispatch_seq}", cap, exec_record
+            elif exec_time is not None:
+                rev_ts = float(rev_record.get("timestamp", 0.0))
+                if rev_ts <= float(exec_time):
+                    return False, f"HISTORICAL_VERIFICATION_FAILED_REVOKED_BEFORE_EXECUTION: revoked at {rev_ts} <= execution at {exec_time}", cap, exec_record
+
+        return True, "HISTORICAL_CAPABILITY_VERIFIED", cap, exec_record
