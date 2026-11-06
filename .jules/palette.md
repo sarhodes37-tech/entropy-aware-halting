@@ -23,3 +23,7 @@
 ## 2026-11-06 - Polite Live Announcements on Dropdown Filter Selection
 **Learning:** In asynchronous single-page dashboards where `<select>` dropdown controls filter stream lists in-place without full-page navigation, visual elements update instantly but screen reader users receive no feedback indicating what filter was applied or that the filter was reset back to all records. Emitting polite live region announcements on select `change` events gives non-visual users confirmation of their active filtering criteria.
 **Action:** Always route dropdown filter changes through polite live announcers (`this.announce(...)`), distinguishing between applied filters and resets to 'ALL'.
+
+## 2026-11-06 - Live Region Announcements on Input Backspace and Text Clearance
+**Learning:** While clearing filters via explicit buttons or Escape key handlers often triggers live announcements, users frequently clear search filters incrementally by backspacing or selecting all text and deleting it. When the search query transitions from non-empty to empty via standard input events, visual stream lists restore immediately but screen reader users receive zero confirmation that the query was cleared. Detecting non-empty to empty string transitions in input event handlers and emitting polite live region announcements ensures parity for all clearance mechanisms.
+**Action:** Whenever listening to real-time search inputs that filter content in-place, announce query clearance when an active query transitions from non-empty to empty.
