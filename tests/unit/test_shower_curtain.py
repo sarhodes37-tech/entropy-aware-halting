@@ -1036,3 +1036,50 @@ def test_shower_curtain_gate_trusted_exception_token_fail_closed_validation():
     )
     assert res_cred_blocked.action == GateAction.HALT
     assert "Credentials cannot bypass mandatory privacy protection" in res_cred_blocked.reason
+
+
+def test_luhn_check_correctness_and_boundaries():
+    """Validates _luhn_check across valid/invalid checksums, lengths, and formatted inputs."""
+    from epistemicos.shower_curtain.detector import _luhn_check
+
+    # Valid cards of varying lengths
+    assert _luhn_check("4532015112830366") is True  # 16 digits
+    assert _luhn_check("4532-0151-1283-0366") is True  # Formatted with dashes
+    assert _luhn_check("4532 0151 1283 0366") is True  # Formatted with spaces
+    assert _luhn_check("49927398716") is False  # 11-digit valid checksum but length < 13 -> False
+    assert _luhn_check("4000000000006") is True  # 13 digits valid Luhn
+    assert _luhn_check("4000000000000000006") is True  # 19 digits valid Luhn
+
+    # Invalid checksum
+    assert _luhn_check("4532015112830367") is False
+
+    # Length boundaries (< 13 or > 19 digits)
+    assert _luhn_check("12345") is False  # Too short
+    assert _luhn_check("123456789012") is False  # 12 digits
+    assert _luhn_check("12345678901234567890") is False  # 20 digits (too long)
+    assert _luhn_check("") is False
+    assert _luhn_check("abcdefghijk") is False
+
+    # Differential fuzzing against reference specification
+    import random
+    rng = random.Random(1337)
+    chars = "0123456789 -abcXYZ"
+
+    def reference_luhn(card_number: str) -> bool:
+        digits = [int(c) for c in card_number if c.isdigit()]
+        if len(digits) < 13 or len(digits) > 19:
+            return False
+        checksum = 0
+        reverse_digits = digits[::-1]
+        for idx, digit in enumerate(reverse_digits):
+            if idx % 2 == 1:
+                doubled = digit * 2
+                checksum += doubled - 9 if doubled > 9 else doubled
+            else:
+                checksum += digit
+        return checksum % 10 == 0
+
+    for _ in range(500):
+        length = rng.randint(0, 25)
+        sample = "".join(rng.choice(chars) for _ in range(length))
+        assert _luhn_check(sample) == reference_luhn(sample), f"Mismatch for sample: {sample}"
