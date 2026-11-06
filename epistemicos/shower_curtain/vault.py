@@ -42,7 +42,19 @@ class LocalMappingVault:
     def __init__(
         self, master_key: Optional[bytes] = None, persistence_dir: Optional[str] = None
     ):
-        self.master_key = master_key or secrets.token_bytes(32)
+        if master_key is not None:
+            # Enforce fail-closed key validation: master_key must be non-empty bytes/bytearray.
+            # Defensively cast bytearray to immutable bytes to prevent external mutation.
+            if not isinstance(master_key, (bytes, bytearray)):
+                raise TypeError(
+                    f"master_key must be bytes or bytearray, got {type(master_key).__name__}"
+                )
+            if len(master_key) == 0:
+                raise ValueError("master_key cannot be empty")
+            self.master_key: bytes = bytes(master_key)
+        else:
+            self.master_key = secrets.token_bytes(32)
+
         self.persistence_dir = Path(persistence_dir) if persistence_dir else None
         if self.persistence_dir:
             self.persistence_dir.mkdir(parents=True, exist_ok=True)
