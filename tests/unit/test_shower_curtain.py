@@ -902,3 +902,39 @@ def test_detector_fast_path_guard_boundaries():
     assert spy_bearer.call_count == 0
     assert spy_priv.call_count == 0
     assert spy_path.call_count == 0
+
+
+def test_local_mapping_vault_master_key_fail_closed_validation():
+    """Verifies fail-closed validation and immutability for LocalMappingVault master_key."""
+    # 1. Reject invalid types with TypeError
+    invalid_keys = ["str_key", 12345, True, False, 3.14, ["bytes"], {"k": b"v"}]
+    for invalid_key in invalid_keys:
+        with pytest.raises(TypeError, match="master_key must be bytes or bytearray"):
+            LocalMappingVault(master_key=invalid_key)
+
+    # 2. Reject empty byte sequences with ValueError
+    with pytest.raises(ValueError, match="master_key cannot be empty"):
+        LocalMappingVault(master_key=b"")
+
+    with pytest.raises(ValueError, match="master_key cannot be empty"):
+        LocalMappingVault(master_key=bytearray())
+
+    # 3. Defensively cast mutable bytearray to immutable bytes
+    mutable_key = bytearray(b"M" * 32)
+    vault = LocalMappingVault(master_key=mutable_key)
+    assert isinstance(vault.master_key, bytes)
+    assert vault.master_key == b"M" * 32
+
+    # Verify mutating source bytearray does not alter vault master_key or derived session HMAC keys
+    sid = "test_session_defense"
+    session_key_before = vault._get_session_key(sid)
+    mutable_key[0] = ord("Z")
+    session_key_after = vault._get_session_key(sid)
+
+    assert vault.master_key == b"M" * 32
+    assert session_key_before == session_key_after
+
+    # 4. Default generation produces 32-byte immutable bytes
+    default_vault = LocalMappingVault()
+    assert isinstance(default_vault.master_key, bytes)
+    assert len(default_vault.master_key) == 32
