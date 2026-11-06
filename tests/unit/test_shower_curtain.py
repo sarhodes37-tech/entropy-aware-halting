@@ -1083,3 +1083,28 @@ def test_luhn_check_correctness_and_boundaries():
         length = rng.randint(0, 25)
         sample = "".join(rng.choice(chars) for _ in range(length))
         assert _luhn_check(sample) == reference_luhn(sample), f"Mismatch for sample: {sample}"
+
+
+def test_credit_card_regex_unicode_ascii_isolation():
+    """
+    Verifies that the production _CREDIT_CARD_REGEX pattern strictly restricts matches
+    to ASCII [0-9], preventing non-ASCII Unicode digits from reaching _luhn_check.
+    """
+    from epistemicos.shower_curtain.detector import _CREDIT_CARD_REGEX, SensitiveDataDetector
+
+    # Fullwidth Unicode digits (e.g. U+FF10 through U+FF19)
+    fullwidth_card = "４５３２０１５１１２８３０３６６"
+    assert fullwidth_card.isdigit() is True
+    # The production credit card regex must not match non-ASCII digits
+    assert _CREDIT_CARD_REGEX.search(fullwidth_card) is None
+
+    # Arabic-Indic Unicode digits (e.g. U+0660 through U+0669)
+    arabic_card = "٤٥٣٢٠١٥١١٢٨٣٠٣٦٦"
+    assert arabic_card.isdigit() is True
+    assert _CREDIT_CARD_REGEX.search(arabic_card) is None
+
+    # SensitiveDataDetector does not classify fullwidth numbers as credit cards
+    detector = SensitiveDataDetector()
+    results = detector.detect(f"Customer payment method: {fullwidth_card}")
+    card_results = [r for r in results if r.metadata.get("subtype") == "credit_card"]
+    assert len(card_results) == 0
