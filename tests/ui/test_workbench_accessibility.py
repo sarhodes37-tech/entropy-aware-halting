@@ -745,6 +745,17 @@ def test_live_region_announcements(a11y_comprehensive_server):
             page.wait_for_function("() => document.getElementById('a11y-status-announcer').textContent.length > 0")
             assert "Trace filters cleared" in announcer.text_content()
 
+        # 3b. Dropdown filter change announcements: select status and reset
+        page.evaluate("() => { document.getElementById('a11y-status-announcer').textContent = ''; }")
+        page.select_option("#trace-status-filter", "DENIED")
+        page.wait_for_function("() => document.getElementById('a11y-status-announcer').textContent.length > 0")
+        assert "Trace status filter applied: DENIED." in announcer.text_content()
+
+        page.evaluate("() => { document.getElementById('a11y-status-announcer').textContent = ''; }")
+        page.select_option("#trace-status-filter", "ALL")
+        page.wait_for_function("() => document.getElementById('a11y-status-announcer').textContent.length > 0")
+        assert "Trace status filter reset: showing all statuses." in announcer.text_content()
+
         # 4. Provenance Navigation and Selection
         page.evaluate("() => { document.getElementById('a11y-status-announcer').textContent = ''; }")
         page.click("#tab-provenance")
