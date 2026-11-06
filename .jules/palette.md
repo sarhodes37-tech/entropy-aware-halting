@@ -19,3 +19,7 @@
 ## 2026-11-06 - Live Region Announcements for Keyboard Shortcut Filter Reset
 **Learning:** When users clear search query filters using keyboard shortcuts (like `Escape`), the visual input resets and underlying streams re-render, but screen reader users receive zero auditory confirmation that their input was cleared or that the full list has been restored. Emitting polite live region status announcements on Escape key clears (mirroring explicit 'Clear Filters' button behavior) gives screen reader users immediate confirmation without altering DOM focus.
 **Action:** Whenever implementing Escape-key query clearance or keyboard shortcuts that reset active filter state, always pair the state reset with an auditory polite live region announcement.
+
+## 2026-11-06 - Polite Live Announcements on Dropdown Filter Selection
+**Learning:** In asynchronous single-page dashboards where `<select>` dropdown controls filter stream lists in-place without full-page navigation, visual elements update instantly but screen reader users receive no feedback indicating what filter was applied or that the filter was reset back to all records. Emitting polite live region announcements on select `change` events gives non-visual users confirmation of their active filtering criteria.
+**Action:** Always route dropdown filter changes through polite live announcers (`this.announce(...)`), distinguishing between applied filters and resets to 'ALL'.

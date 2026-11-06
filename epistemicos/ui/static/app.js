@@ -121,6 +121,10 @@ document.addEventListener('DOMContentLoaded', () => {
       if (statusFilter) {
         statusFilter.addEventListener('change', (e) => {
           this.state.traceFilterStatus = e.target.value;
+          const msg = e.target.value === 'ALL'
+            ? 'Trace status filter reset: showing all statuses.'
+            : `Trace status filter applied: ${e.target.value}.`;
+          this.announce(msg);
           this.renderTracesList();
         });
       }
@@ -175,6 +179,10 @@ document.addEventListener('DOMContentLoaded', () => {
       if (provTypeFilter) {
         provTypeFilter.addEventListener('change', (e) => {
           this.state.provenanceFilterType = e.target.value;
+          const msg = e.target.value === 'ALL'
+            ? 'Provenance event type filter reset: showing all event types.'
+            : `Provenance event type filter applied: ${e.target.value}.`;
+          this.announce(msg);
           this.renderProvenanceRecordList();
         });
       }
@@ -204,6 +212,10 @@ document.addEventListener('DOMContentLoaded', () => {
       if (caseBaseFilterSelect) {
         caseBaseFilterSelect.addEventListener('change', (e) => {
           this.state.caseBaselineFilter = e.target.value;
+          const msg = e.target.value === 'ALL'
+            ? 'Benchmark baseline filter reset: showing all baselines.'
+            : `Benchmark baseline filter applied: ${e.target.value}.`;
+          this.announce(msg);
           this.renderBenchmarkCasesList();
         });
       }
@@ -212,6 +224,10 @@ document.addEventListener('DOMContentLoaded', () => {
       if (caseFamilyFilterSelect) {
         caseFamilyFilterSelect.addEventListener('change', (e) => {
           this.state.caseFamilyFilter = e.target.value;
+          const msg = e.target.value === 'ALL'
+            ? 'Benchmark scenario family filter reset: showing all families.'
+            : `Benchmark scenario family filter applied: ${e.target.value}.`;
+          this.announce(msg);
           this.renderBenchmarkCasesList();
         });
       }
@@ -220,6 +236,10 @@ document.addEventListener('DOMContentLoaded', () => {
       if (caseOutcomeFilterSelect) {
         caseOutcomeFilterSelect.addEventListener('change', (e) => {
           this.state.caseOutcomeFilter = e.target.value;
+          const msg = e.target.value === 'ALL'
+            ? 'Benchmark outcome filter reset: showing all outcomes.'
+            : `Benchmark outcome filter applied: ${e.target.value}.`;
+          this.announce(msg);
           this.renderBenchmarkCasesList();
         });
       }
