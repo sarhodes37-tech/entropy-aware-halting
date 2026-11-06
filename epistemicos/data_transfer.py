@@ -693,6 +693,51 @@ class DataTransferPolicy:
                     reserved = max(0, reserved - res_amt)
             return committed + reserved
 
+    def claim_in_flight_chunk(
+        self,
+        tracker_key: str,
+        curr_transfer_total: int,
+        reservation_id: Optional[str] = None,
+        limit: Optional[int] = None
+    ) -> bool:
+        """
+        Atomically checks and claims in-flight observed bytes for a streaming transfer under lock.
+        Accounts for committed bytes, other concurrent active reservations, and the current
+        transfer's total observed bytes across all hops. Dynamically expands or adjusts the
+        active reservation under the policy lock so that any concurrent transfer immediately
+        observes the newly claimed bytes, eliminating simultaneous streaming TOCTOU races.
+        """
+        if curr_transfer_total < 0:
+            raise ValueError("curr_transfer_total must be non-negative.")
+        with self._lock:
+            committed = self._cumulative_bytes_tracker.get(tracker_key, 0)
+            total_reserved = self._reserved_bytes_tracker.get(tracker_key, 0)
+
+            # Compute reservations held by OTHER transfers
+            current_res_amt = 0
+            if reservation_id and reservation_id in self._active_reservations:
+                res_key, current_res_amt = self._active_reservations[reservation_id]
+                if res_key != tracker_key:
+                    current_res_amt = 0
+
+            other_reserved = max(0, total_reserved - current_res_amt)
+            eff_limit = limit if limit is not None else self.default_max_cumulative_bytes
+
+            if (
+                eff_limit is not None
+                and (committed + other_reserved + curr_transfer_total) > eff_limit
+            ):
+                return False
+
+            # Atomically update this transfer's active reservation to hold observed volume
+            if reservation_id and reservation_id in self._active_reservations:
+                # Update reservation amount to max of initial declared bytes and observed bytes
+                new_res_amt = max(current_res_amt, curr_transfer_total)
+                self._active_reservations[reservation_id] = (tracker_key, new_res_amt)
+                delta_res = new_res_amt - current_res_amt
+                self._reserved_bytes_tracker[tracker_key] = total_reserved + delta_res
+            return True
+
     def reserve_bytes(
         self,
         tracker_key: str,

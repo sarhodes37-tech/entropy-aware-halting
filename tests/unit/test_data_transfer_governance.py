@@ -2725,10 +2725,152 @@ def test_concurrent_transfers_in_flight_cumulative_ceiling_enforcement():
             exc_info.value
         )
 
-    # 3. Because Transfer 2 observed 35 bytes across the network boundary before aborting,
-    # ControlledEgressTransport commits those 35 observed bytes into cumulative history.
-    # When Transfer 1's active reservation is refunded, the remaining allocated bytes
-    # for the task exactly reflect Transfer 2's committed 35 bytes.
+    # 3. Because the chunk was aborted before consumption, zero bytes were accepted into
+    # the response buffer. When Transfer 1's active reservation is refunded, total allocated
+    # bytes for the task returns to 0.
     policy.refund_reservation("res-transfer-1")
-    assert policy.get_cumulative_bytes(task_id) == 35
-    assert policy.get_allocated_bytes(task_id) == 35
+    assert policy.get_cumulative_bytes(task_id) == 0
+    assert policy.get_allocated_bytes(task_id) == 0
+
+
+def test_simultaneous_streaming_toctou_race_prevented():
+    """
+    Adversarial concurrency regression test:
+    Demonstrates that simultaneous streaming transfers reaching the accounting boundary
+    together cannot exceed the shared cumulative ceiling.
+
+    Setup:
+    - Shared cumulative ceiling: 100 bytes for task 'task-simultaneous-streaming-toctou'.
+    - Transfer A and Transfer B each hold a 40-byte initial reservation (total initial: 80 <= 100).
+    - Both transfers simultaneously observe 20 bytes initially (each reaching 20 bytes).
+    - Then, both transfers reach a synchronization barrier right before streaming their next chunk.
+    - Each transfer attempts to stream an additional 40-byte chunk:
+      Transfer A would reach 20 + 40 = 60 bytes.
+      Transfer B would reach 20 + 40 = 60 bytes.
+      Without atomic chunk reservation under lock:
+        A's check: B's 40 reservation + A's 60 bytes = 100 <= 100 (allowed!)
+        B's check: A's 40 reservation + B's 60 bytes = 100 <= 100 (allowed!)
+        Combined actual volume would be 60 + 60 = 120 bytes > 100!
+      With claim_in_flight_chunk():
+        The first transfer to claim its 40-byte chunk atomically expands its reservation to 60 bytes.
+        The second transfer's atomic check evaluates:
+          other_reserved (60) + curr_total (60) = 120 > 100 ceiling, and is ABORTED mid-stream!
+    - Verifies:
+      1. Exactly one transfer succeeds and one transfer is aborted with PermissionError.
+      2. The final committed cumulative volume never exceeds the 100-byte ceiling.
+    """
+    task_id = "task-simultaneous-streaming-toctou"
+    policy = DataTransferPolicy(
+        rules=[
+            TransferRule(
+                rule_id="simultaneous-streaming-ceiling-rule",
+                allowed_principals={"principal:alice"},
+                destination_service="api",
+                allowed_hosts={"api.corp.internal"},
+                max_cumulative_bytes=100  # Ceiling: 100 bytes
+            )
+        ]
+    )
+    broker = EgressTransportBroker(
+        policy=EgressPolicy(allowed_destinations={"api.corp.internal"}),
+        transfer_policy=policy,
+        resolver_func=lambda h: ["93.184.216.34"]
+    )
+    transport = ControlledEgressTransport(broker=broker)
+
+    barrier = threading.Barrier(2)
+
+    class SynchronizedChunkResponse:
+        def __init__(self, transfer_name: str):
+            self.transfer_name = transfer_name
+            self.step = 0
+            self.status = 200
+            self.reason = "OK"
+
+        def getheaders(self):
+            return [("Content-Type", "application/octet-stream")]
+
+        def read(self, amt=1024):
+            if self.step == 0:
+                self.step += 1
+                # First chunk: 20 bytes
+                return b"X" * 20
+            elif self.step == 1:
+                self.step += 1
+                # Synchronize both transfers right before streaming the second chunk
+                barrier.wait(timeout=5.0)
+                # Second chunk: 40 bytes (total 60 bytes observed for this transfer)
+                return b"Y" * 40
+            else:
+                return b""
+
+        def close(self):
+            pass
+
+    def run_transfer(transfer_name: str, res_id: str):
+        ctx = TrustedTransferContextBuilder.create_trusted_context(
+            principal_verifier=TEST_VERIFIER,
+            principal="principal:alice",
+            destination=DestinationIdentity(service="api", host="api.corp.internal"),
+            classification=DataClassification.INTERNAL,
+            direction=TransferDirection.DOWNLOAD,
+            operation=TransferOperation.READ,
+            declared_bytes=40,
+            task_id=task_id,
+            trusted_authority_assertion=make_assertion(
+                "principal:alice", "INTERNAL", destination_host="api.corp.internal",
+                direction=TransferDirection.DOWNLOAD, operation=TransferOperation.READ,
+                task_id=task_id, declared_bytes=40,
+                explicit_task=True, explicit_bytes=True
+            )
+        )
+
+        class MockSyncConn:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def request(self, method, url, body=None, headers=None):
+                pass
+
+            def getresponse(self):
+                return SynchronizedChunkResponse(transfer_name)
+
+            def close(self):
+                pass
+
+        from unittest.mock import patch
+        with patch("epistemicos.containment.PinnedHTTPConnection", MockSyncConn):
+            try:
+                res = transport.request(
+                    method="GET",
+                    url=f"http://api.corp.internal/stream/{transfer_name}",
+                    transfer_context=ctx
+                )
+                return True, len(res.get("body", b"")), None
+            except PermissionError as pe:
+                return False, ctx.observed_bytes, str(pe)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        f_a = executor.submit(run_transfer, "transfer_a", "res-a")
+        f_b = executor.submit(run_transfer, "transfer_b", "res-b")
+        res_a = f_a.result()
+        res_b = f_b.result()
+
+    success_count = sum(1 for r in (res_a, res_b) if r[0] is True)
+    abort_count = sum(1 for r in (res_a, res_b) if r[0] is False)
+
+    # Exactly one transfer must succeed, and one must be aborted mid-stream!
+    assert success_count == 1, f"Expected 1 success, got {success_count}: A={res_a}, B={res_b}"
+    assert abort_count == 1, f"Expected 1 abort, got {abort_count}: A={res_a}, B={res_b}"
+
+    # Verify the aborted transfer has an explicit cumulative ceiling error message
+    aborted_res = res_a if not res_a[0] else res_b
+    assert "Cumulative volume exceeds ceiling of 100 bytes" in aborted_res[2]
+
+    # Verify that the total cumulative bytes committed never exceeds the 100-byte ceiling!
+    final_committed = policy.get_cumulative_bytes(task_id)
+    # The successful transfer committed 60 bytes.
+    # The aborted transfer committed the 20 bytes it observed before aborting.
+    # Total committed: 60 + 20 = 80 <= 100 ceiling!
+    assert final_committed <= 100, f"Committed bytes {final_committed} exceeded 100 ceiling!"
+    assert final_committed == 80
