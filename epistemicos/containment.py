@@ -1459,7 +1459,6 @@ class ControlledEgressTransport:
         Validates initial destination, performs real HTTP network I/O bound to the pinned IP,
         and re-validates every redirect hop before opening subsequent connections.
         """
-        from urllib.parse import urlsplit, urljoin
 
         eff_timeout = timeout if timeout is not None else self.timeout
         if eff_timeout is not None and eff_timeout <= 0:
@@ -1468,7 +1467,6 @@ class ControlledEgressTransport:
         current_url = url
         current_method = method.upper()
         current_headers = dict(headers or {})
-        redirect_count = 0
 
         encoded_body = body.encode("utf-8") if isinstance(body, str) else body
         actual_bytes = len(encoded_body) if encoded_body is not None else 0

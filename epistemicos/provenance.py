@@ -16,7 +16,7 @@ import threading
 from enum import Enum
 from pathlib import Path
 from dataclasses import dataclass, field, asdict
-from typing import Dict, Any, List, Optional, Tuple, Set, Protocol, runtime_checkable
+from typing import Dict, Any, List, Optional, Tuple, Set
 
 from abc import ABCMeta
 from unittest.mock import NonCallableMagicMock
@@ -54,7 +54,7 @@ class FencedResource(metaclass=ABCMeta):
         raise NotImplementedError
 
 
-from epistemicos.audit import _sanitize_sensitive_data, ReceiptGenerator
+from epistemicos.audit import _sanitize_sensitive_data
 from epistemicos.authorization import (
     AuthorizationAuthority,
     CapabilityRegistry,
@@ -200,11 +200,19 @@ class LocalProvenanceStore(ProvenanceStore):
             self.hmac_key: Optional[bytes] = bytes(hmac_key)
         else:
             self.hmac_key = None
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         if self.hmac_key is not None:
             self.genesis_hash = hmac.new(self.hmac_key, self.GENESIS_SEED, hashlib.sha256).hexdigest()
         else:
             self.genesis_hash = hashlib.sha256(self.GENESIS_SEED).hexdigest()
+
+        # Incremental health verification state (tracked under self._lock)
+        self._verified_offset: int = 0
+        self._verified_last_hash: str = self.genesis_hash
+        self._verified_count: int = 0
+        self._verified_seen_ids: Set[str] = set()
+        self._verified_ino: Optional[int] = None
+        self._verified_prefix_digest: str = ""
 
     def _compute_chain_hash(self, prev_hash: str, payload: Dict[str, Any]) -> str:
         serialized = json.dumps(payload, sort_keys=True)
@@ -227,11 +235,16 @@ class LocalProvenanceStore(ProvenanceStore):
                     raise ValueError(f"Unsupported provenance_source: {event.provenance_source}")
 
                 # Acquire file lock FIRST before inspecting health and reading tail hash to avoid multi-process race conditions
-                with open(self.log_path, "a+", encoding="utf-8") as f:
+                with open(self.log_path, "a+b") as f:
                     if HAS_FCNTL:
-                        fcntl.flock(f, fcntl.LOCK_EX)
+                        try:
+                            fcntl.flock(f, fcntl.LOCK_EX)
+                        except OSError as e:
+                            raise RuntimeError(
+                                f"Failed to acquire exclusive file lock: {str(e)}"
+                            ) from e
                     try:
-                        healthy, last_hash, seq, seen_ids = self._inspect_health()
+                        healthy, last_hash, seq, seen_ids = self._inspect_health_locked(active_f=f)
                         if not healthy:
                             raise RuntimeError("Provenance log corruption detected")
 
@@ -245,7 +258,7 @@ class LocalProvenanceStore(ProvenanceStore):
                         entry_hash = self._compute_chain_hash(last_hash, event_dict)
                         event_dict["entry_hash"] = entry_hash
 
-                        f.write(json.dumps(event_dict) + "\n")
+                        f.write(json.dumps(event_dict).encode("utf-8") + b"\n")
                         f.flush()
                         os.fsync(f.fileno())
                         return event_dict
@@ -257,45 +270,239 @@ class LocalProvenanceStore(ProvenanceStore):
                     raise RuntimeError(f"Provenance recording failed (fail-closed enforced): {str(e)}") from e
                 return {}
 
-    def _inspect_health(self) -> Tuple[bool, str, int, Set[str]]:
-        if not self.log_path.exists() or self.log_path.stat().st_size == 0:
+    def _inspect_health(self, active_f: Optional[Any] = None) -> Tuple[bool, str, int, Set[str]]:
+        with self._lock:
+            return self._inspect_health_locked(active_f=active_f)
+
+    def _inspect_health_locked(
+        self, active_f: Optional[Any] = None
+    ) -> Tuple[bool, str, int, Set[str]]:
+        """
+        Inspects provenance log health from genesis to tail.
+        Employs accelerated full-prefix integrity checking with streaming SHA-256 validation.
+
+        Threat Model & Performance Characteristics:
+        1. Performance Complexity: Hashing prefix bytes in C is O(N) in byte length, but bypasses
+           expensive Python JSON decoding, string allocation, and per-record HMAC calculations.
+           Only newly appended suffix records undergo full JSON deserialization and chain-link
+           cryptographic evaluation.
+        2. Single-Descriptor Consistency: File validation, prefix hashing, suffix parsing, and
+           digest updating occur sequentially across a single open file descriptor under file lock,
+           guaranteeing that the exact prefix validated is the prefix establishing the new state.
+        3. Fail-Closed Invalidation: If file size shrinks, inode changes, prefix digest mismatches,
+           or any JSON/hash anomaly is encountered, cached state is wiped (_verified_offset = 0)
+           and a full re-scan from Genesis is performed.
+        4. Storage Assumption & Limitations: In POSIX filesystems without kernel WORM guarantees,
+           an uncoordinated external writer with raw write access could modify historical bytes
+           outside application locks; such tampering is immediately detected upon the next health check
+           because the streaming prefix SHA-256 digest will diverge, triggering a full fail-closed scan.
+        """
+        if active_f is not None:
+            return self._inspect_health_on_descriptor(active_f, should_lock=False)
+
+        # Standalone call: open descriptor directly without uncoordinated exists() check
+        try:
+            f_raw = open(self.log_path, "rb")
+        except FileNotFoundError:
+            self._verified_offset = 0
+            self._verified_last_hash = self.genesis_hash
+            self._verified_count = 0
+            self._verified_seen_ids = set()
+            self._verified_ino = None
+            self._verified_prefix_digest = ""
+            return True, self.genesis_hash, 0, set()
+        except OSError:
+            self._verified_offset = 0
+            self._verified_last_hash = self.genesis_hash
+            self._verified_count = 0
+            self._verified_seen_ids = set()
+            self._verified_ino = None
+            self._verified_prefix_digest = ""
+            return False, self.genesis_hash, 0, set()
+
+        with f_raw:
+            return self._inspect_health_on_descriptor(f_raw, should_lock=True)
+
+    def _inspect_health_on_descriptor(
+        self, f_raw: Any, should_lock: bool = True
+    ) -> Tuple[bool, str, int, Set[str]]:
+        if should_lock and HAS_FCNTL:
+            try:
+                fcntl.flock(f_raw.fileno(), fcntl.LOCK_SH)
+            except OSError:
+                self._verified_offset = 0
+                self._verified_last_hash = self.genesis_hash
+                self._verified_count = 0
+                self._verified_seen_ids = set()
+                self._verified_ino = None
+                self._verified_prefix_digest = ""
+                return False, self.genesis_hash, 0, set()
+
+        try:
+            st = os.fstat(f_raw.fileno())
+        except OSError:
+            self._verified_offset = 0
+            self._verified_last_hash = self.genesis_hash
+            self._verified_count = 0
+            self._verified_seen_ids = set()
+            self._verified_ino = None
+            self._verified_prefix_digest = ""
+            return False, self.genesis_hash, 0, set()
+
+        if st.st_size == 0:
+            self._verified_offset = 0
+            self._verified_last_hash = self.genesis_hash
+            self._verified_count = 0
+            self._verified_seen_ids = set()
+            self._verified_ino = st.st_ino
+            self._verified_prefix_digest = hashlib.sha256(b"").hexdigest()
             return True, self.genesis_hash, 0, set()
 
-        expected_prev = self.genesis_hash
-        seen_ids = set()
-        count = 0
+        needs_full_rescan = (
+            self._verified_ino != st.st_ino
+            or st.st_size < self._verified_offset
+            or self._verified_offset == 0
+        )
 
-        with open(self.log_path, "r", encoding="utf-8") as f:
-            for line_idx, line in enumerate(f, 1):
-                line_str = line.strip()
-                if not line_str:
-                    continue
-                try:
-                    entry = json.loads(line_str)
-                except json.JSONDecodeError:
+        hasher = hashlib.sha256()
+
+        if not needs_full_rescan:
+            f_raw.seek(0)
+            prefix_bytes = f_raw.read(self._verified_offset)
+            if len(prefix_bytes) != self._verified_offset:
+                needs_full_rescan = True
+            else:
+                hasher.update(prefix_bytes)
+                if hasher.hexdigest() != self._verified_prefix_digest:
+                    needs_full_rescan = True
+
+        if needs_full_rescan:
+            f_raw.seek(0)
+            hasher = hashlib.sha256()
+            self._verified_offset = 0
+            self._verified_last_hash = self.genesis_hash
+            self._verified_count = 0
+            self._verified_seen_ids = set()
+            self._verified_ino = st.st_ino
+            self._verified_prefix_digest = hashlib.sha256(b"").hexdigest()
+
+        # If file size unchanged from verified byte offset, prefix digest verified
+        if st.st_size == self._verified_offset:
+            return True, self._verified_last_hash, self._verified_count, set(self._verified_seen_ids)
+
+        f_raw.seek(self._verified_offset)
+        expected_prev = self._verified_last_hash
+        seen_ids = set(self._verified_seen_ids)
+        count = self._verified_count
+
+        line_idx = 0
+        while True:
+            line_bytes = f_raw.readline()
+            if not line_bytes:
+                break
+            hasher.update(line_bytes)
+            line_idx += 1
+
+            try:
+                line_str = line_bytes.decode("utf-8").strip()
+            except UnicodeDecodeError:
+                self._verified_offset = 0
+                self._verified_last_hash = self.genesis_hash
+                self._verified_count = 0
+                self._verified_seen_ids = set()
+                self._verified_prefix_digest = ""
+                return False, expected_prev, count, seen_ids
+
+            if not line_str:
+                continue
+
+            try:
+                entry = json.loads(line_str)
+            except json.JSONDecodeError:
+                self._verified_offset = 0
+                self._verified_last_hash = self.genesis_hash
+                self._verified_count = 0
+                self._verified_seen_ids = set()
+                self._verified_prefix_digest = ""
+                return False, expected_prev, count, seen_ids
+
+            recorded_id = entry.get("event_id")
+            if recorded_id:
+                if recorded_id in seen_ids:
+                    self._verified_offset = 0
+                    self._verified_last_hash = self.genesis_hash
+                    self._verified_count = 0
+                    self._verified_seen_ids = set()
+                    self._verified_prefix_digest = ""
                     return False, expected_prev, count, seen_ids
+                seen_ids.add(recorded_id)
 
-                recorded_id = entry.get("event_id")
-                if recorded_id:
-                    if recorded_id in seen_ids:
-                        return False, expected_prev, count, seen_ids
-                    seen_ids.add(recorded_id)
+            recorded_prev = entry.get("prev_hash")
+            recorded_hash = entry.get("entry_hash")
 
-                recorded_prev = entry.get("prev_hash")
-                recorded_hash = entry.get("entry_hash")
+            if recorded_prev != expected_prev:
+                self._verified_offset = 0
+                self._verified_last_hash = self.genesis_hash
+                self._verified_count = 0
+                self._verified_seen_ids = set()
+                self._verified_prefix_digest = ""
+                return False, expected_prev, count, seen_ids
 
-                if recorded_prev != expected_prev:
-                    return False, expected_prev, count, seen_ids
+            check_data = {k: v for k, v in entry.items() if k != "entry_hash"}
+            computed_hash = self._compute_chain_hash(recorded_prev, check_data)
+            if computed_hash != recorded_hash:
+                self._verified_offset = 0
+                self._verified_last_hash = self.genesis_hash
+                self._verified_count = 0
+                self._verified_seen_ids = set()
+                self._verified_prefix_digest = ""
+                return False, expected_prev, count, seen_ids
 
-                check_data = {k: v for k, v in entry.items() if k != "entry_hash"}
-                computed_hash = self._compute_chain_hash(recorded_prev, check_data)
-                if computed_hash != recorded_hash:
-                    return False, expected_prev, count, seen_ids
+            expected_prev = recorded_hash
+            count += 1
 
-                expected_prev = recorded_hash
-                count += 1
+        new_offset = f_raw.tell()
+        new_prefix_digest = hasher.hexdigest()
 
-        return True, expected_prev, count, seen_ids
+        # Re-check file descriptor status before committing cached verification state
+        try:
+            st_post = os.fstat(f_raw.fileno())
+            if st_post.st_ino != st.st_ino or st_post.st_size < new_offset:
+                self._verified_offset = 0
+                self._verified_last_hash = self.genesis_hash
+                self._verified_count = 0
+                self._verified_seen_ids = set()
+                self._verified_prefix_digest = ""
+                return False, expected_prev, count, seen_ids
+
+            cur_pos = f_raw.tell()
+            f_raw.seek(0)
+            post_prefix_bytes = f_raw.read(new_offset)
+            f_raw.seek(cur_pos)
+            if hashlib.sha256(post_prefix_bytes).hexdigest() != new_prefix_digest:
+                self._verified_offset = 0
+                self._verified_last_hash = self.genesis_hash
+                self._verified_count = 0
+                self._verified_seen_ids = set()
+                self._verified_prefix_digest = ""
+                return False, expected_prev, count, seen_ids
+        except OSError:
+            self._verified_offset = 0
+            self._verified_last_hash = self.genesis_hash
+            self._verified_count = 0
+            self._verified_seen_ids = set()
+            self._verified_prefix_digest = ""
+            return False, expected_prev, count, seen_ids
+
+        # Update cached state on successful validation over the single stream
+        self._verified_offset = new_offset
+        self._verified_last_hash = expected_prev
+        self._verified_count = count
+        self._verified_seen_ids = seen_ids
+        self._verified_ino = st.st_ino
+        self._verified_prefix_digest = new_prefix_digest
+
+        return True, expected_prev, count, set(seen_ids)
 
     def get_events_for_correlation(self, correlation_id: str) -> List[ProvenanceEvent]:
         """
@@ -356,7 +563,7 @@ class TrustedExecutionBoundary:
         self.registry = self.authority.registry
         self._consumed_tokens: Set[str] = set()
         self._consumed_attempts: Set[str] = set()
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
 
     def compute_canonical_digest(self, payload: Any) -> str:
         if isinstance(payload, bytes):
@@ -393,18 +600,23 @@ class TrustedExecutionBoundary:
         emitting trusted EXECUTION_STARTED, EXECUTION_SUCCEEDED, EXECUTION_FAILED, or EXECUTION_INTERRUPTED events.
         Accepts parameters via an `ExecutionContext` instance or individual arguments for backward compatibility.
         """
-        if isinstance(correlation_id, ExecutionContext):
+        if isinstance(correlation_id, ExecutionContext) or (
+            hasattr(correlation_id, "correlation_id")
+            and hasattr(correlation_id, "authorization_token_id")
+            and hasattr(correlation_id, "authorized_digest")
+        ):
             context = correlation_id
             if executor_func is None and callable(request_id):
                 executor_func = request_id
 
+        caller_attempt_id = execution_attempt_id
         if context is not None:
             corr_id = context.correlation_id
             req_id = context.request_id
             auth_token_id = context.authorization_token_id
             auth_digest = context.authorized_digest
             auth_granted = context.authorization_granted
-            attempt_id = execution_attempt_id or context.execution_attempt_id or str(uuid.uuid4())
+            caller_attempt_id = caller_attempt_id or context.execution_attempt_id
             pol_version = policy_version if policy_version != "1.0.0" else context.policy_version
             auth_principal = getattr(context, "authenticated_principal", None) or authenticated_principal
         else:
@@ -413,9 +625,15 @@ class TrustedExecutionBoundary:
             auth_token_id = authorization_token_id
             auth_digest = authorized_digest
             auth_granted = authorization_granted
-            attempt_id = execution_attempt_id or str(uuid.uuid4())
             pol_version = policy_version
             auth_principal = authenticated_principal
+
+        # Check for caller-supplied attempt ID duplication
+        if caller_attempt_id and caller_attempt_id in self._consumed_attempts:
+            raise ValueError(f"Execution attempt ID {caller_attempt_id} has already been processed")
+
+        # Authoritative attempt ID generated internally by boundary
+        attempt_id = str(uuid.uuid4())
 
         # Enforce strict validation of authorization evidence, token ID, digest, and executor
         if auth_granted is not True:
@@ -478,19 +696,41 @@ class TrustedExecutionBoundary:
             else:
                 raise PermissionError(f"Execution rejected: Unregistered callable object cannot execute capability bound to '{cap.executor_id if cap else executor_id}'")
 
-        # Atomic token consumption and retry check against authoritative storage
+        # Atomic token consumption and execution-attempt dispatch recording in authoritative storage
         with self._lock:
             expected_fence = getattr(cap, "fencing_token", None) if cap else getattr(context, "fencing_token", None)
-            if not self.registry.consume_token(auth_token_id, expected_fencing_token=expected_fence):
-                if self.registry.is_revoked(auth_token_id):
-                    raise PermissionError(f"Authorization token {auth_token_id} has been revoked")
-                raise PermissionError(f"Authorization token {auth_token_id} has already been consumed (replay attempt)")
+            now_epoch = time.time()
+            dispatch_meta = {
+                "correlation_id": corr_id,
+                "request_id": req_id,
+                "action_name": action_name,
+                "target": target,
+                "caller_attempt_id": caller_attempt_id,
+                "task_id": getattr(cap, "task_id", None),
+                "principal_id": getattr(cap, "principal_id", None)
+            }
 
-            if attempt_id in self._consumed_attempts:
-                raise ValueError(f"Execution attempt ID {attempt_id} has already been processed")
+            ok, reason, _ = self.registry.consume_token_and_record_dispatch(
+                token_id=auth_token_id,
+                attempt_id=attempt_id,
+                dispatched_executor_id=executor_id,
+                started_at=now_epoch,
+                expected_fencing_token=expected_fence,
+                dispatch_metadata=dispatch_meta
+            )
+            if not ok:
+                if "REVOKED" in reason:
+                    raise PermissionError(f"Authorization token {auth_token_id} has been revoked")
+                if "ALREADY_CONSUMED" in reason:
+                    raise PermissionError(f"Authorization token {auth_token_id} has already been consumed (replay attempt)")
+                if "EXPIRED" in reason:
+                    raise PermissionError(f"Authorization token {auth_token_id} has expired prior to execution")
+                raise PermissionError(f"Execution rejected by authoritative storage: {reason}")
 
             self._consumed_tokens.add(auth_token_id)
             self._consumed_attempts.add(attempt_id)
+            if caller_attempt_id:
+                self._consumed_attempts.add(caller_attempt_id)
 
         # Emit EXECUTION_STARTED
         start_event = ProvenanceEvent(
@@ -553,6 +793,18 @@ class TrustedExecutionBoundary:
                 result = executor_func()
         except Exception as e:
             end_ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            end_epoch = time.time()
+            try:
+                self.registry.record_execution_outcome(
+                    token_id=auth_token_id,
+                    attempt_id=attempt_id,
+                    outcome_status="FAILED",
+                    terminal_ts=end_epoch,
+                    details={"error": str(e)}
+                )
+            except Exception:
+                pass
+
             fail_event = ProvenanceEvent(
                 schema_version="1.0.0",
                 event_id=str(uuid.uuid4()),
@@ -576,6 +828,18 @@ class TrustedExecutionBoundary:
             raise
         except BaseException as be:
             end_ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            end_epoch = time.time()
+            try:
+                self.registry.record_execution_outcome(
+                    token_id=auth_token_id,
+                    attempt_id=attempt_id,
+                    outcome_status="INTERRUPTED",
+                    terminal_ts=end_epoch,
+                    details={"reason": str(be)}
+                )
+            except Exception:
+                pass
+
             interrupt_event = ProvenanceEvent(
                 schema_version="1.0.0",
                 event_id=str(uuid.uuid4()),
@@ -599,8 +863,30 @@ class TrustedExecutionBoundary:
             raise
 
         end_ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        # GAP-WID-01 Remediation: Enforce credential isolation across execution boundary.
+        # Raw credential-bearing tool output must not cross boundary to untrusted consumers.
+        # Non-destructively sanitize result before return while preserving original executor object.
+        # If sanitization raises an unexpected error, fail closed by returning a safe error representation
+        # rather than returning the raw unsanitized result or discarding that execution occurred.
+        try:
+            sanitized_result = _sanitize_sensitive_data(result)
+        except Exception as san_err:
+            sanitized_result = f"[SANITIZATION_FAILED: {type(san_err).__name__}]"
+
         ev_ok, ev_msg = _verify_success_evidence(result)
+        end_epoch = time.time()
         if not ev_ok:
+            try:
+                self.registry.record_execution_outcome(
+                    token_id=auth_token_id,
+                    attempt_id=attempt_id,
+                    outcome_status="UNVERIFIED_SUCCESS",
+                    terminal_ts=end_epoch,
+                    details={"reason": ev_msg}
+                )
+            except Exception:
+                pass
+
             fail_ev_event = ProvenanceEvent(
                 schema_version="1.0.0",
                 event_id=str(uuid.uuid4()),
@@ -615,7 +901,7 @@ class TrustedExecutionBoundary:
                 authorization_token_id=auth_token_id,
                 execution_attempt_id=attempt_id,
                 policy_version=pol_version,
-                outcome={"status": "UNVERIFIED_SUCCESS", "reason": ev_msg, "result": _sanitize_sensitive_data(result)}
+                outcome={"status": "UNVERIFIED_SUCCESS", "reason": ev_msg, "result": sanitized_result}
             )
             try:
                 self.store.record_event(fail_ev_event)
@@ -623,9 +909,28 @@ class TrustedExecutionBoundary:
                 pass
             return {
                 "status": "UNVERIFIED_SUCCESS",
-                "result": result,
+                "result": sanitized_result,
                 "attempt_id": attempt_id,
                 "reason": ev_msg
+            }
+
+        # Record authoritative SUCCESS outcome in registry
+        try:
+            ok_out, out_reason, _ = self.registry.record_execution_outcome(
+                token_id=auth_token_id,
+                attempt_id=attempt_id,
+                outcome_status="SUCCESS",
+                terminal_ts=end_epoch
+            )
+            if not ok_out:
+                raise RuntimeError(out_reason)
+        except Exception as outcome_err:
+            return {
+                "status": "EXECUTION_OUTCOME_UNKNOWN",
+                "result": sanitized_result,
+                "attempt_id": attempt_id,
+                "recovery_required": True,
+                "reason": f"Execution completed but authoritative outcome persistence failed: {str(outcome_err)}"
             }
 
         success_event = ProvenanceEvent(
@@ -642,21 +947,21 @@ class TrustedExecutionBoundary:
             authorization_token_id=auth_token_id,
             execution_attempt_id=attempt_id,
             policy_version=pol_version,
-            outcome={"status": "SUCCESS", "result": _sanitize_sensitive_data(result)}
+            outcome={"status": "SUCCESS", "result": sanitized_result}
         )
         try:
             self.store.record_event(success_event)
         except Exception as audit_err:
             return {
                 "status": "EXECUTION_OUTCOME_UNKNOWN",
-                "result": result,
+                "result": sanitized_result,
                 "attempt_id": attempt_id,
                 "audit_recording_failed": True,
                 "recovery_required": True,
                 "reason": f"Execution completed but terminal audit logging failed: {str(audit_err)}"
             }
 
-        return {"status": "SUCCESS", "result": result, "attempt_id": attempt_id}
+        return {"status": "SUCCESS", "result": sanitized_result, "attempt_id": attempt_id}
 
 
 @dataclass
@@ -674,15 +979,27 @@ class ProvenanceReconciler:
     """
     Reconciles proposed actions, control-plane authorization decisions, and executor activity.
     Detects unauthorized execution, target/digest mismatches, false success claims,
-    egress bypasses, and missing/interrupted execution traces.
+    egress bypasses, missing/interrupted execution traces, and fabricated execution evidence.
     """
+
+    def __init__(
+        self,
+        authority: Optional[AuthorizationAuthority] = None,
+        allow_unverified_legacy: bool = False
+    ):
+        self.authority = authority
+        self.allow_unverified_legacy = allow_unverified_legacy
 
     def reconcile_correlation(
         self,
         correlation_id: str,
         events: List[ProvenanceEvent],
-        agent_claimed_success: bool = False
+        agent_claimed_success: bool = False,
+        allow_unverified_legacy: Optional[bool] = None
     ) -> ReconciliationReport:
+        effective_allow_legacy = (
+            allow_unverified_legacy if allow_unverified_legacy is not None else self.allow_unverified_legacy
+        )
         violations: List[str] = []
         details: Dict[str, Any] = {
             "correlation_id": correlation_id,
@@ -758,6 +1075,15 @@ class ProvenanceReconciler:
             if token_exec_counts[tok] > 1:
                 violations.append(f"Multiple execution attempts detected for single-use authorization token: {tok}")
 
+        # Rule 6b: Duplicate terminal events for the same execution attempt
+        terminal_attempt_counts: Dict[str, int] = {}
+        for e in (exec_succeeded + exec_failed + exec_interrupted):
+            att = e.execution_attempt_id
+            if att:
+                terminal_attempt_counts[att] = terminal_attempt_counts.get(att, 0) + 1
+                if terminal_attempt_counts[att] > 1:
+                    violations.append(f"Multiple terminal outcome events detected for execution attempt: {att}")
+
         # Rule 7: Missing or interrupted execution records (started but no terminal event)
         started_attempts = {s.execution_attempt_id for s in exec_started if s.execution_attempt_id}
         ended_attempts = {e.execution_attempt_id for e in (exec_succeeded + exec_failed + exec_interrupted) if e.execution_attempt_id}
@@ -769,6 +1095,74 @@ class ProvenanceReconciler:
         if egress_blocked and agent_claimed_success:
             violations.append("Agent claimed successful disclosure, but egress was blocked by Shower Curtain")
 
+        # Rule 9 & 10: Cryptographic Capability and Authoritative Execution Verification
+        has_authoritative_verification = self.authority is not None
+
+        if has_authoritative_verification:
+            # Authoritative Verification Path
+            for g in auth_granted:
+                tok = g.authorization_token_id
+                if not tok or tok == "[REDACTED]":
+                    violations.append("Authorization grant event missing valid authorization_token_id")
+                    continue
+
+                valid_hist, hist_reason, cap_obj, _ = self.authority.verify_historical_capability(
+                    token_id=tok,
+                    action_name=g.action_name,
+                    target=g.target,
+                    canonical_request_digest=g.canonical_request_digest,
+                    correlation_id=correlation_id,
+                    request_id=g.request_id
+                )
+                if not valid_hist:
+                    violations.append(f"Authoritative capability verification failed for token {tok}: {hist_reason}")
+
+            for s in exec_started:
+                tok = s.authorization_token_id
+                att = s.execution_attempt_id
+                if not tok or tok == "[REDACTED]":
+                    violations.append("Execution started event missing valid authorization_token_id")
+                    continue
+                if not att:
+                    violations.append(f"Execution started event for token {tok} missing execution_attempt_id")
+                    continue
+
+                # Determine expected terminal outcome status from events
+                expected_outcome = None
+                for succ in exec_succeeded:
+                    if succ.execution_attempt_id == att or (not succ.execution_attempt_id and succ.authorization_token_id == tok):
+                        expected_outcome = "SUCCESS"
+                        break
+                if not expected_outcome:
+                    for fl in exec_failed:
+                        if fl.execution_attempt_id == att or (not fl.execution_attempt_id and fl.authorization_token_id == tok):
+                            expected_outcome = "FAILED"
+                            break
+                if not expected_outcome:
+                    for intr in exec_interrupted:
+                        if intr.execution_attempt_id == att or (not intr.execution_attempt_id and intr.authorization_token_id == tok):
+                            expected_outcome = "INTERRUPTED"
+                            break
+
+                valid_exec, exec_reason, _, _ = self.authority.verify_historical_capability(
+                    token_id=tok,
+                    action_name=s.action_name,
+                    target=s.target,
+                    canonical_request_digest=s.canonical_request_digest,
+                    execution_attempt_id=att,
+                    dispatched_executor_id=None,
+                    expected_outcome_status=expected_outcome,
+                    correlation_id=correlation_id,
+                    request_id=s.request_id
+                )
+                if not valid_exec:
+                    violations.append(f"Authoritative execution verification failed for attempt {att} (token {tok}): {exec_reason}")
+        else:
+            # Unconditionally fail closed when authority is missing:
+            # Missing authority MUST produce UNVERIFIED_LEGACY_EVIDENCE with valid=False.
+            # Never produces RECONCILED or valid=True.
+            details["authoritative_verification"] = "UNVERIFIED_LEGACY_STRUCTURAL_ONLY"
+
         # Determine status
         if violations:
             status = "RECONCILIATION_MISMATCH"
@@ -776,6 +1170,10 @@ class ProvenanceReconciler:
         elif not exec_succeeded and not exec_failed and not exec_interrupted and auth_granted:
             status = "INCOMPLETE_EVIDENCE"
             valid = False
+        elif not has_authoritative_verification:
+            status = "UNVERIFIED_LEGACY_EVIDENCE"
+            valid = False
+            violations.append("Authoritative verification unavailable: No AuthorizationAuthority supplied to reconciler")
         else:
             status = "RECONCILED"
             valid = True

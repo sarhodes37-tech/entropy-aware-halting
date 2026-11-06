@@ -15,6 +15,7 @@ import uuid
 import os
 import pytest
 from pathlib import Path
+from epistemicos.authorization import AuthorizationAuthority, Policy
 from epistemicos.provenance import (
     LocalProvenanceStore,
     ProvenanceEvent,
@@ -129,12 +130,34 @@ def test_provenance_valid_control_cannot_compensate_for_missing_attack_correlati
     invalid or missing attack correlation when evaluating overall scenario provenance.
     """
     prov_store = LocalProvenanceStore(log_path=str(tmp_path / "test_prov.jsonl"))
-    reconciler = ProvenanceReconciler()
 
     attack_corr_id = f"ATTACK-CORR-{uuid.uuid4()}"
     legit_corr_id = f"LEGIT-CORR-{uuid.uuid4()}"
     req_id = f"REQ-{uuid.uuid4()}"
-    token_id = f"TOKEN-{uuid.uuid4()}"
+
+    policy = Policy(policy_id="test_p", allowed_operations={"read"}, allowed_resources={"public_repo"})
+    authority = AuthorizationAuthority(default_policy=policy)
+    cap, _ = authority.evaluate_and_issue_capability(
+        action_name="read",
+        target="public_repo",
+        canonical_request_digest="digest_123",
+        correlation_id=legit_corr_id,
+        request_id=req_id
+    )
+    token_id = cap.token_id
+    authority.registry.consume_token_and_record_dispatch(
+        token_id=token_id,
+        attempt_id="attempt_1",
+        dispatched_executor_id="default_executor",
+        started_at=1735689601.0
+    )
+    authority.registry.record_execution_outcome(
+        token_id=token_id,
+        attempt_id="attempt_1",
+        outcome_status="SUCCESS",
+        terminal_ts=1735689602.0
+    )
+    reconciler = ProvenanceReconciler(authority=authority)
 
     grant_event = ProvenanceEvent(
         schema_version="1.0.0",

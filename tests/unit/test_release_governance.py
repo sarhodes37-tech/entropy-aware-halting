@@ -1255,3 +1255,943 @@ def test_wrapper_revoke_release_approval_validation_and_audit():
     assert rec.reason == "Discovered critical CVE in dependencies"
     assert rev_registry.is_revoked("appr-wrapped") is True
     assert rev_registry.get_revocation_record("appr-wrapped") == rec
+
+
+# Direct RevocationRecord validation failure tests
+def test_direct_revocation_record_validation():
+    from epistemicos.release.revocation import RevocationRecord
+    for bad_id in [None, "", "   ", 12345, object()]:
+        with pytest.raises(ValueError, match="RevocationRecord: approval_id must be a non-empty string"):
+            RevocationRecord(approval_id=bad_id, revoked_by_principal="admin", reason="compromised")
+
+    for bad_p in [None, "", "   ", 12345, object()]:
+        with pytest.raises(ValueError, match="RevocationRecord: revoked_by_principal must be a non-empty string"):
+            RevocationRecord(approval_id="appr-1", revoked_by_principal=bad_p, reason="compromised")
+
+    for bad_r in [None, "", "   ", 12345, object()]:
+        with pytest.raises(ValueError, match="RevocationRecord: reason must be a non-empty string"):
+            RevocationRecord(approval_id="appr-1", revoked_by_principal="admin", reason=bad_r)
+
+
+# ==============================================================================
+# Models Coverage Expansion: ComponentSpec, ReleaseManifest,
+# VerificationEvidenceRecord, ReleaseApprovalRecord
+# ==============================================================================
+
+def test_component_spec_validation_and_canonicalization():
+    valid_digest = "1" * 64
+    valid_cfg_digest = "2" * 64
+
+    # Empty, whitespace, invalid types for component_id
+    for bad_id in [None, "", "   ", 123, object(), [], {}]:
+        with pytest.raises(ValueError, match="ComponentSpec: component_id must be a non-empty string"):
+            ComponentSpec(component_id=bad_id, component_type="model", version="1.0.0", digest=valid_digest)
+
+    # Empty, whitespace, invalid types for component_type
+    for bad_type in [None, "", "   ", 123, object(), [], {}]:
+        with pytest.raises(ValueError, match="ComponentSpec: component_type must be a non-empty string"):
+            ComponentSpec(component_id="c1", component_type=bad_type, version="1.0.0", digest=valid_digest)
+
+    # Empty, whitespace, invalid types for version
+    for bad_ver in [None, "", "   ", 123, object(), [], {}]:
+        with pytest.raises(ValueError, match="ComponentSpec: version must be a non-empty string"):
+            ComponentSpec(component_id="c1", component_type="model", version=bad_ver, digest=valid_digest)
+
+    # Invalid artifact digest
+    for bad_dig in [None, "", "short", "z" * 64, 123]:
+        with pytest.raises(ValueError, match="ComponentSpec.digest must be a valid 64-character hexadecimal"):
+            ComponentSpec(component_id="c1", component_type="model", version="1.0.0", digest=bad_dig)
+
+    # Invalid optional config_digest (when truthy/non-None)
+    for bad_cfg in ["short", "g" * 64, 123]:
+        with pytest.raises(ValueError, match="ComponentSpec.config_digest must be a valid 64-character hexadecimal"):
+            ComponentSpec(component_id="c1", component_type="model", version="1.0.0", digest=valid_digest, config_digest=bad_cfg)
+
+    # Trimming and lowercase normalization
+    spec = ComponentSpec(
+        component_id="  c1  ",
+        component_type="  model  ",
+        version="  1.0.0  ",
+        digest=valid_digest.upper(),
+        config_digest=valid_cfg_digest.upper()
+    )
+    canon = spec.to_canonical_dict()
+    assert canon["component_id"] == "c1"
+    assert canon["component_type"] == "model"
+    assert canon["version"] == "1.0.0"
+    assert canon["digest"] == valid_digest.lower()
+    assert canon["config_digest"] == valid_cfg_digest.lower()
+
+    # compute_spec_digest stability
+    d1 = spec.compute_spec_digest()
+    spec_clean = ComponentSpec(
+        component_id="c1",
+        component_type="model",
+        version="1.0.0",
+        digest=valid_digest.lower(),
+        config_digest=valid_cfg_digest.lower()
+    )
+    assert d1 == spec_clean.compute_spec_digest()
+    assert len(d1) == 64
+
+
+def test_release_manifest_validation_and_lookup():
+    valid_digest = "1" * 64
+
+    # Invalid schema_version
+    for bad in [None, "", "   ", 123]:
+        with pytest.raises(ValueError, match="ReleaseManifest: schema_version must be a non-empty string"):
+            ReleaseManifest(schema_version=bad, release_id="rel-1", target_environment="prod")
+
+    # Invalid release_id
+    for bad in [None, "", "   ", 123]:
+        with pytest.raises(ValueError, match="ReleaseManifest: release_id must be a non-empty string"):
+            ReleaseManifest(schema_version="1.0", release_id=bad, target_environment="prod")
+
+    # Invalid target_environment
+    for bad in [None, "", "   ", 123]:
+        with pytest.raises(ValueError, match="ReleaseManifest: target_environment must be a non-empty string"):
+            ReleaseManifest(schema_version="1.0", release_id="rel-1", target_environment=bad)
+
+    # Non-ComponentSpec entry in components
+    with pytest.raises(TypeError, match="ReleaseManifest: components must contain ComponentSpec instances, got dict"):
+        ReleaseManifest(
+            schema_version="1.0",
+            release_id="rel-1",
+            target_environment="prod",
+            components=[{"component_id": "c1"}]  # type: ignore
+        )
+
+    # get_component success and failure
+    c1 = ComponentSpec("c1", "model", "1.0", valid_digest)
+    c2 = ComponentSpec("c2", "runtime", "1.0", "2" * 64)
+    manifest = ReleaseManifest(
+        schema_version="1.0",
+        release_id="rel-1",
+        target_environment="prod",
+        components=[c1, c2],
+        policy_digest="3" * 64
+    )
+    assert manifest.get_component("c1") == c1
+    assert manifest.get_component("c2") == c2
+    assert manifest.get_component("nonexistent") is None
+
+
+def test_verification_evidence_record_validation_and_payload_sensitivity():
+    m_digest = "a" * 64
+    art_digest = "b" * 64
+
+    # Invalid evidence_id
+    for bad in [None, "", "   ", 123]:
+        with pytest.raises(ValueError, match="VerificationEvidenceRecord: evidence_id must be a non-empty string"):
+            VerificationEvidenceRecord(
+                evidence_id=bad,
+                manifest_digest=m_digest,
+                evidence_type="audit",
+                status=EvidenceVerificationStatus.PASS,
+                artifact_digest=art_digest
+            )
+
+    # Invalid evidence_type
+    for bad in [None, "", "   ", 123]:
+        with pytest.raises(ValueError, match="VerificationEvidenceRecord: evidence_type must be a non-empty string"):
+            VerificationEvidenceRecord(
+                evidence_id="ev1",
+                manifest_digest=m_digest,
+                evidence_type=bad,
+                status=EvidenceVerificationStatus.PASS,
+                artifact_digest=art_digest
+            )
+
+    # String status conversion and invalid status
+    ev_str_pass = VerificationEvidenceRecord(
+        evidence_id="ev1",
+        manifest_digest=m_digest,
+        evidence_type="audit",
+        status="PASS",  # string converted to enum
+        artifact_digest=art_digest
+    )
+    assert ev_str_pass.status == EvidenceVerificationStatus.PASS
+
+    with pytest.raises(ValueError):
+        VerificationEvidenceRecord(
+            evidence_id="ev1",
+            manifest_digest=m_digest,
+            evidence_type="audit",
+            status="UNKNOWN_STATUS",  # type: ignore
+            artifact_digest=art_digest
+        )
+
+    # is_valid_for_manifest behavior
+    assert ev_str_pass.is_valid_for_manifest(m_digest) is True
+    assert ev_str_pass.is_valid_for_manifest(m_digest.upper()) is True
+    assert ev_str_pass.is_valid_for_manifest("c" * 64) is False
+
+    ev_str_fail = VerificationEvidenceRecord(
+        evidence_id="ev2",
+        manifest_digest=m_digest,
+        evidence_type="audit",
+        status=EvidenceVerificationStatus.FAIL,
+        artifact_digest=art_digest
+    )
+    assert ev_str_fail.is_valid_for_manifest(m_digest) is False
+
+    # Signature payload sensitivity: changing metadata, component IDs, issuer, timestamp, status, or artifact digest
+    base_ev = VerificationEvidenceRecord(
+        evidence_id="ev-base",
+        manifest_digest=m_digest,
+        evidence_type="audit",
+        status=EvidenceVerificationStatus.PASS,
+        artifact_digest=art_digest,
+        evaluated_component_ids={"c1"},
+        evaluator_id="eval-1",
+        evaluator_issuer="IdP-1",
+        evaluated_at_utc="2026-05-01T00:00:00Z",
+        metadata={"key": "val1"}
+    )
+    base_payload = base_ev.compute_signature_payload()
+
+    # Component IDs change
+    ev_mod1 = VerificationEvidenceRecord(
+        evidence_id="ev-base",
+        manifest_digest=m_digest,
+        evidence_type="audit",
+        status=EvidenceVerificationStatus.PASS,
+        artifact_digest=art_digest,
+        evaluated_component_ids={"c1", "c2"},
+        evaluator_id="eval-1",
+        evaluator_issuer="IdP-1",
+        evaluated_at_utc="2026-05-01T00:00:00Z",
+        metadata={"key": "val1"}
+    )
+    assert ev_mod1.compute_signature_payload() != base_payload
+
+    # Metadata change
+    ev_mod2 = VerificationEvidenceRecord(
+        evidence_id="ev-base",
+        manifest_digest=m_digest,
+        evidence_type="audit",
+        status=EvidenceVerificationStatus.PASS,
+        artifact_digest=art_digest,
+        evaluated_component_ids={"c1"},
+        evaluator_id="eval-1",
+        evaluator_issuer="IdP-1",
+        evaluated_at_utc="2026-05-01T00:00:00Z",
+        metadata={"key": "val2"}
+    )
+    assert ev_mod2.compute_signature_payload() != base_payload
+
+    # Evaluator issuer change
+    ev_mod3 = VerificationEvidenceRecord(
+        evidence_id="ev-base",
+        manifest_digest=m_digest,
+        evidence_type="audit",
+        status=EvidenceVerificationStatus.PASS,
+        artifact_digest=art_digest,
+        evaluated_component_ids={"c1"},
+        evaluator_id="eval-1",
+        evaluator_issuer="IdP-2",
+        evaluated_at_utc="2026-05-01T00:00:00Z",
+        metadata={"key": "val1"}
+    )
+    assert ev_mod3.compute_signature_payload() != base_payload
+
+    # Evaluated at timestamp change
+    ev_mod4 = VerificationEvidenceRecord(
+        evidence_id="ev-base",
+        manifest_digest=m_digest,
+        evidence_type="audit",
+        status=EvidenceVerificationStatus.PASS,
+        artifact_digest=art_digest,
+        evaluated_component_ids={"c1"},
+        evaluator_id="eval-1",
+        evaluator_issuer="IdP-1",
+        evaluated_at_utc="2026-05-02T00:00:00Z",
+        metadata={"key": "val1"}
+    )
+    assert ev_mod4.compute_signature_payload() != base_payload
+
+    # Status change
+    ev_mod5 = VerificationEvidenceRecord(
+        evidence_id="ev-base",
+        manifest_digest=m_digest,
+        evidence_type="audit",
+        status=EvidenceVerificationStatus.PARTIAL,
+        artifact_digest=art_digest,
+        evaluated_component_ids={"c1"},
+        evaluator_id="eval-1",
+        evaluator_issuer="IdP-1",
+        evaluated_at_utc="2026-05-01T00:00:00Z",
+        metadata={"key": "val1"}
+    )
+    assert ev_mod5.compute_signature_payload() != base_payload
+
+    # Artifact digest change
+    ev_mod6 = VerificationEvidenceRecord(
+        evidence_id="ev-base",
+        manifest_digest=m_digest,
+        evidence_type="audit",
+        status=EvidenceVerificationStatus.PASS,
+        artifact_digest="f" * 64,
+        evaluated_component_ids={"c1"},
+        evaluator_id="eval-1",
+        evaluator_issuer="IdP-1",
+        evaluated_at_utc="2026-05-01T00:00:00Z",
+        metadata={"key": "val1"}
+    )
+    assert ev_mod6.compute_signature_payload() != base_payload
+
+
+def test_release_approval_record_validation_and_expiration():
+    m_digest = "a" * 64
+    ev_digest1 = "1" * 64
+    ev_digest2 = "2" * 64
+
+    # Validation of fields
+    for bad in [None, "", "   ", 123]:
+        with pytest.raises(ValueError, match="ReleaseApprovalRecord: approval_id must be a non-empty string"):
+            ReleaseApprovalRecord(
+                approval_id=bad,
+                manifest_digest=m_digest,
+                approver_id="alice",
+                approver_issuer="IdP",
+                policy_version="1.0",
+                required_evidence_digests=[ev_digest1]
+            )
+
+        with pytest.raises(ValueError, match="ReleaseApprovalRecord: approver_id must be a non-empty string"):
+            ReleaseApprovalRecord(
+                approval_id="appr-1",
+                manifest_digest=m_digest,
+                approver_id=bad,
+                approver_issuer="IdP",
+                policy_version="1.0",
+                required_evidence_digests=[ev_digest1]
+            )
+
+        with pytest.raises(ValueError, match="ReleaseApprovalRecord: approver_issuer must be a non-empty string"):
+            ReleaseApprovalRecord(
+                approval_id="appr-1",
+                manifest_digest=m_digest,
+                approver_id="alice",
+                approver_issuer=bad,
+                policy_version="1.0",
+                required_evidence_digests=[ev_digest1]
+            )
+
+        with pytest.raises(ValueError, match="ReleaseApprovalRecord: policy_version must be a non-empty string"):
+            ReleaseApprovalRecord(
+                approval_id="appr-1",
+                manifest_digest=m_digest,
+                approver_id="alice",
+                approver_issuer="IdP",
+                policy_version=bad,
+                required_evidence_digests=[ev_digest1]
+            )
+
+    # Evidence digest ordering in payload
+    appr_order1 = ReleaseApprovalRecord(
+        approval_id="appr-1",
+        manifest_digest=m_digest,
+        approver_id="alice",
+        approver_issuer="IdP",
+        policy_version="1.0",
+        required_evidence_digests=[ev_digest1, ev_digest2],
+        timestamp=1000.0,
+        expires_at=2000.0
+    )
+    appr_order2 = ReleaseApprovalRecord(
+        approval_id="appr-1",
+        manifest_digest=m_digest,
+        approver_id="alice",
+        approver_issuer="IdP",
+        policy_version="1.0",
+        required_evidence_digests=[ev_digest2, ev_digest1],
+        timestamp=1000.0,
+        expires_at=2000.0
+    )
+    assert appr_order1.compute_signature_payload() == appr_order2.compute_signature_payload()
+
+    # is_expired behavior: no expiry, before expiry, at/after expiry
+    appr_no_exp = ReleaseApprovalRecord(
+        approval_id="appr-no-exp",
+        manifest_digest=m_digest,
+        approver_id="alice",
+        approver_issuer="IdP",
+        policy_version="1.0",
+        required_evidence_digests=[ev_digest1],
+        expires_at=None
+    )
+    assert appr_no_exp.is_expired() is False
+    assert appr_no_exp.is_expired(current_time=999999999.0) is False
+
+    appr_with_exp = ReleaseApprovalRecord(
+        approval_id="appr-exp",
+        manifest_digest=m_digest,
+        approver_id="alice",
+        approver_issuer="IdP",
+        policy_version="1.0",
+        required_evidence_digests=[ev_digest1],
+        expires_at=1500.0
+    )
+    assert appr_with_exp.is_expired(current_time=1499.9) is False
+    assert appr_with_exp.is_expired(current_time=1500.0) is True  # exact boundary
+    assert appr_with_exp.is_expired(current_time=1500.1) is True
+
+    # to_dict serialization
+    d = appr_with_exp.to_dict()
+    assert isinstance(d, dict)
+    assert d["approval_id"] == "appr-exp"
+    assert d["expires_at"] == 1500.0
+
+
+# ==============================================================================
+# Invalidation Coverage Expansion: EvidenceInvalidator
+# ==============================================================================
+
+def test_evidence_invalidator_comprehensive():
+    # 1. Identical manifests: test can_authorize_without_rerun (True and False)
+    m_base = create_sample_manifest()
+    m_digest = m_base.compute_manifest_digest()
+
+    ev_pass1 = VerificationEvidenceRecord(
+        evidence_id="ev-pass1",
+        manifest_digest=m_digest,
+        evidence_type="layer4_security_audit",
+        status=EvidenceVerificationStatus.PASS,
+        artifact_digest="1" * 64
+    )
+    ev_pass2 = VerificationEvidenceRecord(
+        evidence_id="ev-pass2",
+        manifest_digest=m_digest,
+        evidence_type="clinical_diagnostic_benchmark",
+        status=EvidenceVerificationStatus.PASS,
+        artifact_digest="2" * 64
+    )
+    # Both required evidence types provided -> can_authorize_without_rerun = True
+    report_identical_complete = EvidenceInvalidator.analyze_change(m_base, m_base, [ev_pass1, ev_pass2])
+    assert report_identical_complete.is_identical is True
+    assert report_identical_complete.can_authorize_without_rerun is True
+    assert len(report_identical_complete.missing_evidence_types) == 0
+    assert len(report_identical_complete.retained_evidence) == 2
+    assert len(report_identical_complete.invalidated_evidence) == 0
+
+    # Missing one required type -> can_authorize_without_rerun = False
+    report_identical_partial = EvidenceInvalidator.analyze_change(m_base, m_base, [ev_pass1])
+    assert report_identical_partial.is_identical is True
+    assert report_identical_partial.can_authorize_without_rerun is False
+    assert report_identical_partial.missing_evidence_types == {"clinical_diagnostic_benchmark"}
+    assert len(report_identical_partial.retained_evidence) == 1
+
+    # 2. Manifest deltas: policy change, runtime identity change, added component, removed component
+    # Also modified component across all types: model, runtime, dependency, infrastructure, config_change
+    c_model = ComponentSpec("c_model", "model", "1.0.0", "1" * 64)
+    c_runtime = ComponentSpec("c_runtime", "runtime", "1.0.0", "2" * 64)
+    c_dep = ComponentSpec("c_dep", "dependency", "1.0.0", "3" * 64)
+    c_infra = ComponentSpec("c_infra", "infrastructure", "1.0.0", "4" * 64)
+    c_other = ComponentSpec("c_other", "dataset", "1.0.0", "5" * 64, config_digest="a" * 64)
+    c_removed = ComponentSpec("c_removed", "tool", "1.0.0", "6" * 64)
+
+    m_old = ReleaseManifest(
+        schema_version="1.0.0",
+        release_id="rel-old",
+        target_environment="prod",
+        components=[c_model, c_runtime, c_dep, c_infra, c_other, c_removed],
+        runtime_identity="runtime-v1",
+        policy_version="1.0.0",
+        policy_digest="7" * 64,
+        required_evidence_types={"layer4_security_audit", "clinical_diagnostic_benchmark"}
+    )
+
+    c_model_new = ComponentSpec("c_model", "model", "1.0.1", "1" * 64)
+    c_runtime_new = ComponentSpec("c_runtime", "runtime", "1.0.0", "8" * 64)
+    c_dep_new = ComponentSpec("c_dep", "dependency", "1.0.0", "9" * 64)
+    c_infra_new = ComponentSpec("c_infra", "infrastructure", "1.0.0", "0" * 64)
+    c_other_new = ComponentSpec("c_other", "dataset", "1.0.0", "5" * 64, config_digest="b" * 64)
+    c_added = ComponentSpec("c_added", "tool", "1.0.0", "e" * 64)
+
+    m_new = ReleaseManifest(
+        schema_version="1.0.0",
+        release_id="rel-new",
+        target_environment="prod",
+        components=[c_model_new, c_runtime_new, c_dep_new, c_infra_new, c_other_new, c_added],
+        runtime_identity="runtime-v2",
+        policy_version="2.0.0",
+        policy_digest="f" * 64,
+        required_evidence_types={"layer4_security_audit", "clinical_diagnostic_benchmark"}
+    )
+
+    new_digest = m_new.compute_manifest_digest()
+    old_digest = m_old.compute_manifest_digest()
+
+    ev_touches_affected = VerificationEvidenceRecord(
+        evidence_id="ev-touches",
+        manifest_digest=new_digest,
+        evidence_type="clinical_diagnostic_benchmark",
+        status=EvidenceVerificationStatus.PASS,
+        artifact_digest="1" * 64,
+        evaluated_component_ids={"c_model"}
+    )
+    ev_bound_old = VerificationEvidenceRecord(
+        evidence_id="ev-bound-old",
+        manifest_digest=old_digest,
+        evidence_type="layer4_security_audit",
+        status=EvidenceVerificationStatus.PASS,
+        artifact_digest="2" * 64,
+        evaluated_component_ids=set()
+    )
+    ev_bound_new_pass = VerificationEvidenceRecord(
+        evidence_id="ev-bound-new-pass",
+        manifest_digest=new_digest,
+        evidence_type="layer4_security_audit",
+        status=EvidenceVerificationStatus.PASS,
+        artifact_digest="3" * 64,
+        evaluated_component_ids=set()
+    )
+    ev_bound_new_fail = VerificationEvidenceRecord(
+        evidence_id="ev-bound-new-fail",
+        manifest_digest=new_digest,
+        evidence_type="clinical_diagnostic_benchmark",
+        status=EvidenceVerificationStatus.FAIL,
+        artifact_digest="4" * 64,
+        evaluated_component_ids=set()
+    )
+    ev_foreign = VerificationEvidenceRecord(
+        evidence_id="ev-foreign",
+        manifest_digest="9" * 64,
+        evidence_type="clinical_diagnostic_benchmark",
+        status=EvidenceVerificationStatus.PASS,
+        artifact_digest="5" * 64,
+        evaluated_component_ids=set()
+    )
+
+    report = EvidenceInvalidator.analyze_change(
+        m_old,
+        m_new,
+        [ev_touches_affected, ev_bound_old, ev_bound_new_pass, ev_bound_new_fail, ev_foreign]
+    )
+
+    assert report.is_identical is False
+    delta_cats = {d.component_id: d.change_category for d in report.component_deltas}
+    assert delta_cats["policy"] == ChangeCategory.POLICY_CHANGE
+    assert delta_cats["runtime"] == ChangeCategory.RUNTIME_CHANGE
+    assert delta_cats["c_removed"] == ChangeCategory.COMPONENT_REMOVED
+    assert delta_cats["c_added"] == ChangeCategory.COMPONENT_ADDED
+    assert delta_cats["c_model"] == ChangeCategory.MODEL_CHANGE
+    assert delta_cats["c_runtime"] == ChangeCategory.RUNTIME_CHANGE
+    assert delta_cats["c_dep"] == ChangeCategory.DEPENDENCY_CHANGE
+    assert delta_cats["c_infra"] == ChangeCategory.INFRASTRUCTURE_CHANGE
+    assert delta_cats["c_other"] == ChangeCategory.CONFIG_CHANGE
+
+    assert report.affected_component_ids == {
+        "policy", "runtime", "c_removed", "c_added", "c_model",
+        "c_runtime", "c_dep", "c_infra", "c_other"
+    }
+
+    assert ev_bound_new_pass in report.retained_evidence
+    assert ev_touches_affected in report.invalidated_evidence
+    assert ev_bound_old in report.invalidated_evidence
+    assert ev_bound_new_fail in report.invalidated_evidence
+    assert ev_foreign in report.invalidated_evidence
+
+    assert report.can_authorize_without_rerun is False
+    assert "clinical_diagnostic_benchmark" in report.missing_evidence_types
+
+
+# ==============================================================================
+# Engine Coverage Expansion: verify_single_evidence, verify_release_approval,
+# Audit Behavior, and analyze_change_impact
+# ==============================================================================
+
+def test_engine_verify_single_evidence_coverage():
+    import base64
+    auth = MockReleaseAuthority(issuer_id="EvaluatorIdP")
+    verifier = PrincipalVerifier(trusted_public_keys={"EvaluatorIdP": auth.public_key})
+    manifest = create_sample_manifest()
+    m_digest = manifest.compute_manifest_digest()
+
+    art_bytes = b"TEST ART BYTES"
+    art_digest = hashlib.sha256(art_bytes).hexdigest()
+
+    # 1. require_artifact_bytes_verification=False with optional provider
+    engine_no_art_req = ReleaseGovernanceEngine(
+        principal_verifier=verifier,
+        require_artifact_bytes_verification=False,
+        require_evaluator_signatures=False
+    )
+    ev = VerificationEvidenceRecord(
+        evidence_id="ev-1",
+        manifest_digest=m_digest,
+        evidence_type="layer4_security_audit",
+        status=EvidenceVerificationStatus.PASS,
+        artifact_digest=art_digest
+    )
+
+    # Optional provider returning matching bytes
+    res_match = engine_no_art_req.verify_single_evidence(
+        m_digest, ev, artifact_bytes_provider=lambda eid: art_bytes
+    )
+    assert res_match.status == EvidenceValidationResultStatus.VERIFIED
+    assert res_match.artifact_bytes_verified is True
+
+    # Optional provider returning mismatched bytes
+    res_mismatch = engine_no_art_req.verify_single_evidence(
+        m_digest, ev, artifact_bytes_provider=lambda eid: b"WRONG BYTES"
+    )
+    assert res_mismatch.status == EvidenceValidationResultStatus.REJECTED
+    assert "artifact byte digest mismatch" in res_mismatch.reason
+
+    # Optional provider returning None
+    res_none = engine_no_art_req.verify_single_evidence(
+        m_digest, ev, artifact_bytes_provider=lambda eid: None
+    )
+    assert res_none.status == EvidenceValidationResultStatus.VERIFIED
+    assert res_none.artifact_bytes_verified is False
+
+    # 2. Evaluator signatures under mandatory policy:
+    # - Missing PrincipalVerifier on engine
+    engine_no_verifier = ReleaseGovernanceEngine(
+        principal_verifier=None,
+        require_artifact_bytes_verification=False,
+        require_evaluator_signatures=True
+    )
+    ev_signed = VerificationEvidenceRecord(
+        evidence_id="ev-signed",
+        manifest_digest=m_digest,
+        evidence_type="layer4_security_audit",
+        status=EvidenceVerificationStatus.PASS,
+        artifact_digest=art_digest,
+        evaluator_issuer="EvaluatorIdP"
+    )
+    auth.sign_evidence(ev_signed)
+    res_no_ver = engine_no_verifier.verify_single_evidence(m_digest, ev_signed)
+    assert res_no_ver.status == EvidenceValidationResultStatus.REJECTED
+    assert "engine has no PrincipalVerifier" in res_no_ver.reason
+
+    # - Malformed signature encoding (e.g. 128 non-hex chars)
+    engine_with_ver = ReleaseGovernanceEngine(
+        principal_verifier=verifier,
+        require_artifact_bytes_verification=False,
+        require_evaluator_signatures=True
+    )
+    ev_malformed_sig = VerificationEvidenceRecord(
+        evidence_id="ev-mal",
+        manifest_digest=m_digest,
+        evidence_type="layer4_security_audit",
+        status=EvidenceVerificationStatus.PASS,
+        artifact_digest=art_digest,
+        evaluator_issuer="EvaluatorIdP",
+        signature="Z" * 128
+    )
+    res_mal = engine_with_ver.verify_single_evidence(m_digest, ev_malformed_sig)
+    assert res_mal.status == EvidenceValidationResultStatus.REJECTED
+    assert "malformed signature encoding" in res_mal.reason
+
+    # - Valid signature in Base64 encoding
+    ev_b64 = VerificationEvidenceRecord(
+        evidence_id="ev-b64",
+        manifest_digest=m_digest,
+        evidence_type="layer4_security_audit",
+        status=EvidenceVerificationStatus.PASS,
+        artifact_digest=art_digest,
+        evaluator_issuer="EvaluatorIdP"
+    )
+    payload = ev_b64.compute_signature_payload()
+    sig_raw = _ed25519_sign(payload, auth.private_seed, auth.public_key)
+    ev_b64.signature = base64.b64encode(sig_raw).decode("utf-8")
+    res_b64 = engine_with_ver.verify_single_evidence(m_digest, ev_b64)
+    assert res_b64.status == EvidenceValidationResultStatus.VERIFIED
+    assert res_b64.evaluator_signature_verified is True
+
+    # 3. Evaluator signatures under optional policy (require_evaluator_signatures=False)
+    # - Declares evaluator_issuer but no signature
+    engine_opt_sig = ReleaseGovernanceEngine(
+        principal_verifier=verifier,
+        require_artifact_bytes_verification=False,
+        require_evaluator_signatures=False
+    )
+    ev_opt_issuer_no_sig = VerificationEvidenceRecord(
+        evidence_id="ev-opt-1",
+        manifest_digest=m_digest,
+        evidence_type="layer4_security_audit",
+        status=EvidenceVerificationStatus.PASS,
+        artifact_digest=art_digest,
+        evaluator_issuer="EvaluatorIdP",
+        signature=None
+    )
+    res_opt1 = engine_opt_sig.verify_single_evidence(m_digest, ev_opt_issuer_no_sig)
+    assert res_opt1.status == EvidenceValidationResultStatus.REJECTED
+    assert "declares evaluator_issuer but has no signature" in res_opt1.reason
+
+    # - Has signature but engine has no PrincipalVerifier
+    engine_opt_no_ver = ReleaseGovernanceEngine(
+        principal_verifier=None,
+        require_artifact_bytes_verification=False,
+        require_evaluator_signatures=False
+    )
+    ev_opt_has_sig = VerificationEvidenceRecord(
+        evidence_id="ev-opt-2",
+        manifest_digest=m_digest,
+        evidence_type="layer4_security_audit",
+        status=EvidenceVerificationStatus.PASS,
+        artifact_digest=art_digest,
+        evaluator_issuer="EvaluatorIdP",
+        signature="a" * 128
+    )
+    res_opt2 = engine_opt_no_ver.verify_single_evidence(m_digest, ev_opt_has_sig)
+    assert res_opt2.status == EvidenceValidationResultStatus.REJECTED
+    assert "engine has no PrincipalVerifier" in res_opt2.reason
+
+    # - Has signature but missing evaluator_issuer
+    ev_opt_no_iss = VerificationEvidenceRecord(
+        evidence_id="ev-opt-3",
+        manifest_digest=m_digest,
+        evidence_type="layer4_security_audit",
+        status=EvidenceVerificationStatus.PASS,
+        artifact_digest=art_digest,
+        evaluator_issuer=None,
+        signature="a" * 128
+    )
+    res_opt3 = engine_opt_sig.verify_single_evidence(m_digest, ev_opt_no_iss)
+    assert res_opt3.status == EvidenceValidationResultStatus.REJECTED
+    assert "missing evaluator_issuer" in res_opt3.reason
+
+    # - Untrusted evaluator issuer
+    ev_opt_untrusted = VerificationEvidenceRecord(
+        evidence_id="ev-opt-4",
+        manifest_digest=m_digest,
+        evidence_type="layer4_security_audit",
+        status=EvidenceVerificationStatus.PASS,
+        artifact_digest=art_digest,
+        evaluator_issuer="UntrustedIdP",
+        signature="a" * 128
+    )
+    res_opt4 = engine_opt_sig.verify_single_evidence(m_digest, ev_opt_untrusted)
+    assert res_opt4.status == EvidenceValidationResultStatus.REJECTED
+    assert "untrusted evaluator issuer 'UntrustedIdP'" in res_opt4.reason
+
+    # - Malformed signature encoding under optional policy
+    ev_opt_mal = VerificationEvidenceRecord(
+        evidence_id="ev-opt-5",
+        manifest_digest=m_digest,
+        evidence_type="layer4_security_audit",
+        status=EvidenceVerificationStatus.PASS,
+        artifact_digest=art_digest,
+        evaluator_issuer="EvaluatorIdP",
+        signature="Z" * 128
+    )
+    res_opt5 = engine_opt_sig.verify_single_evidence(m_digest, ev_opt_mal)
+    assert res_opt5.status == EvidenceValidationResultStatus.REJECTED
+    assert "malformed signature encoding" in res_opt5.reason
+
+    # - Cryptographic signature verification failed under optional policy
+    ev_opt_bad_crypto = VerificationEvidenceRecord(
+        evidence_id="ev-opt-6",
+        manifest_digest=m_digest,
+        evidence_type="layer4_security_audit",
+        status=EvidenceVerificationStatus.PASS,
+        artifact_digest=art_digest,
+        evaluator_issuer="EvaluatorIdP",
+        signature="0" * 128
+    )
+    res_opt6 = engine_opt_sig.verify_single_evidence(m_digest, ev_opt_bad_crypto)
+    assert res_opt6.status == EvidenceValidationResultStatus.REJECTED
+    assert "cryptographic evaluator signature verification failed" in res_opt6.reason
+
+    # - Valid signature in optional policy verifies successfully
+    auth.sign_evidence(ev_opt_bad_crypto)  # produces valid signature
+    res_opt_ok = engine_opt_sig.verify_single_evidence(m_digest, ev_opt_bad_crypto)
+    assert res_opt_ok.status == EvidenceValidationResultStatus.VERIFIED
+    assert res_opt_ok.evaluator_signature_verified is True
+
+
+def test_engine_verify_release_approval_rejection_boundaries():
+    import base64
+    auth = MockReleaseAuthority(issuer_id="TrustedCorpIdP")
+    verifier = PrincipalVerifier(trusted_public_keys={"TrustedCorpIdP": auth.public_key})
+    manifest = create_sample_manifest()
+    m_digest = manifest.compute_manifest_digest()
+
+    ev1 = VerificationEvidenceRecord(
+        evidence_id="ev-1",
+        manifest_digest=m_digest,
+        evidence_type="layer4_security_audit",
+        status=EvidenceVerificationStatus.PASS,
+        artifact_digest="1" * 64
+    )
+    ev2 = VerificationEvidenceRecord(
+        evidence_id="ev-2",
+        manifest_digest=m_digest,
+        evidence_type="clinical_diagnostic_benchmark",
+        status=EvidenceVerificationStatus.PASS,
+        artifact_digest="2" * 64
+    )
+    ev_digests = [ev1.compute_evidence_digest(), ev2.compute_evidence_digest()]
+
+    engine = ReleaseGovernanceEngine(
+        principal_verifier=verifier,
+        allowed_approver_principals=["reviewer_alice"],
+        require_artifact_bytes_verification=False,
+        require_evaluator_signatures=False,
+        fail_closed_audit=False
+    )
+
+    # 1. Approval expired check
+    appr_expired = ReleaseApprovalRecord(
+        approval_id="appr-exp",
+        manifest_digest=m_digest,
+        approver_id="reviewer_alice",
+        approver_issuer="TrustedCorpIdP",
+        policy_version="1.0.0",
+        required_evidence_digests=ev_digests,
+        expires_at=1000.0
+    )
+    auth.sign_approval(appr_expired)
+    res_exp = engine.verify_release_approval(
+        manifest, appr_expired, [ev1, ev2], current_time=1000.0
+    )
+    assert res_exp.is_verified is False
+    assert "has expired" in res_exp.reason
+
+    # 2. Approval references an unresolved evidence digest
+    appr_unresolved = ReleaseApprovalRecord(
+        approval_id="appr-unres",
+        manifest_digest=m_digest,
+        approver_id="reviewer_alice",
+        approver_issuer="TrustedCorpIdP",
+        policy_version="1.0.0",
+        required_evidence_digests=[ev_digests[0], "f" * 64]
+    )
+    auth.sign_approval(appr_unresolved)
+    res_unres = engine.verify_release_approval(manifest, appr_unresolved, [ev1, ev2])
+    assert res_unres.is_verified is False
+    assert "Approval references evidence digests not present in verified records" in res_unres.reason
+
+    # 3. Missing or invalid signature (None or non-string)
+    appr_no_sig = ReleaseApprovalRecord(
+        approval_id="appr-no-sig",
+        manifest_digest=m_digest,
+        approver_id="reviewer_alice",
+        approver_issuer="TrustedCorpIdP",
+        policy_version="1.0.0",
+        required_evidence_digests=ev_digests,
+        signature=None
+    )
+    res_no_sig = engine.verify_release_approval(manifest, appr_no_sig, [ev1, ev2])
+    assert res_no_sig.is_verified is False
+    assert "Missing or invalid signature" in res_no_sig.reason
+
+    appr_non_str_sig = ReleaseApprovalRecord(
+        approval_id="appr-non-str-sig",
+        manifest_digest=m_digest,
+        approver_id="reviewer_alice",
+        approver_issuer="TrustedCorpIdP",
+        policy_version="1.0.0",
+        required_evidence_digests=ev_digests,
+        signature=12345  # type: ignore
+    )
+    res_non_str = engine.verify_release_approval(manifest, appr_non_str_sig, [ev1, ev2])
+    assert res_non_str.is_verified is False
+    assert "Missing or invalid signature" in res_non_str.reason
+
+    # 4. Engine has no configured PrincipalVerifier
+    engine_no_ver = ReleaseGovernanceEngine(
+        principal_verifier=None,
+        allowed_approver_principals=["reviewer_alice"],
+        require_artifact_bytes_verification=False,
+        require_evaluator_signatures=False,
+        fail_closed_audit=False
+    )
+    appr_valid_sig = ReleaseApprovalRecord(
+        approval_id="appr-ok",
+        manifest_digest=m_digest,
+        approver_id="reviewer_alice",
+        approver_issuer="TrustedCorpIdP",
+        policy_version="1.0.0",
+        required_evidence_digests=ev_digests
+    )
+    auth.sign_approval(appr_valid_sig)
+    res_no_eng_ver = engine_no_ver.verify_release_approval(manifest, appr_valid_sig, [ev1, ev2])
+    assert res_no_eng_ver.is_verified is False
+    assert "ReleaseGovernanceEngine has no configured PrincipalVerifier to verify signature" in res_no_eng_ver.reason
+
+    # 5. Untrusted approver issuer
+    appr_untrusted_iss = ReleaseApprovalRecord(
+        approval_id="appr-untrusted-iss",
+        manifest_digest=m_digest,
+        approver_id="reviewer_alice",
+        approver_issuer="RogueIdP",
+        policy_version="1.0.0",
+        required_evidence_digests=ev_digests
+    )
+    auth.sign_approval(appr_untrusted_iss)
+    res_untrusted = engine.verify_release_approval(manifest, appr_untrusted_iss, [ev1, ev2])
+    assert res_untrusted.is_verified is False
+    assert "Untrusted identity issuer 'RogueIdP'" in res_untrusted.reason
+
+    # 6. Malformed signature encoding (e.g. 128 non-hex chars)
+    appr_malformed = ReleaseApprovalRecord(
+        approval_id="appr-malformed",
+        manifest_digest=m_digest,
+        approver_id="reviewer_alice",
+        approver_issuer="TrustedCorpIdP",
+        policy_version="1.0.0",
+        required_evidence_digests=ev_digests,
+        signature="Z" * 128
+    )
+    res_malformed = engine.verify_release_approval(manifest, appr_malformed, [ev1, ev2])
+    assert res_malformed.is_verified is False
+    assert "Malformed signature encoding" in res_malformed.reason
+
+    # 7. Signature length invalid (!= 64 bytes)
+    # Valid base64 encoding of 32 bytes (instead of 64 bytes)
+    appr_bad_len = ReleaseApprovalRecord(
+        approval_id="appr-bad-len",
+        manifest_digest=m_digest,
+        approver_id="reviewer_alice",
+        approver_issuer="TrustedCorpIdP",
+        policy_version="1.0.0",
+        required_evidence_digests=ev_digests,
+        signature=base64.b64encode(b"A" * 32).decode("utf-8")
+    )
+    res_bad_len = engine.verify_release_approval(manifest, appr_bad_len, [ev1, ev2])
+    assert res_bad_len.is_verified is False
+    assert "Signature length invalid (32 bytes, expected 64)" in res_bad_len.reason
+
+    # 8. Valid signature in Base64 encoding succeeds
+    payload = appr_valid_sig.compute_signature_payload()
+    sig_raw = _ed25519_sign(payload, auth.private_seed, auth.public_key)
+    appr_valid_sig.signature = base64.b64encode(sig_raw).decode("utf-8")
+    res_b64_ok = engine.verify_release_approval(manifest, appr_valid_sig, [ev1, ev2])
+    assert res_b64_ok.is_verified is True
+    assert "successfully verified" in res_b64_ok.reason
+
+
+def test_engine_audit_behavior_and_change_impact_wrapper():
+    # 1. Non-fail-closed audit with no configured audit_trail
+    engine_no_trail = ReleaseGovernanceEngine(
+        audit_trail=None,
+        fail_closed_audit=False
+    )
+    # Should not raise any error when logging
+    engine_no_trail._log_event(AuditLogLevel.INFO, "TEST_EVENT", {"reason": "test"})
+
+    # 2. Non-fail-closed audit with audit_trail that raises an exception -> swallowed
+    class FaultyAuditTrail:
+        def record_event(self, *args, **kwargs):
+            raise OSError("Simulated disk error")
+
+    engine_faulty = ReleaseGovernanceEngine(
+        audit_trail=FaultyAuditTrail(),  # type: ignore
+        fail_closed_audit=False
+    )
+    # Swallowed without raising
+    engine_faulty._log_event(AuditLogLevel.INFO, "TEST_EVENT", {"reason": "test"})
+
+    # 3. analyze_change_impact wrapper delegation
+    m1 = create_sample_manifest()
+    m2 = create_sample_manifest(model_digest="9" * 64)
+    report = engine_no_trail.analyze_change_impact(m1, m2, available_evidence=[])
+    assert isinstance(report, ChangeImpactReport)
+    assert report.is_identical is False
+    assert "diagnostic_model" in report.affected_component_ids

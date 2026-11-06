@@ -57,6 +57,7 @@ class Case6DestructiveRecoveryScenario(IncidentScenario):
             audit_log_path=str(self.audit_dir / "s6_audit.jsonl"),
             execution_boundary=boundary
         )
+        self.reconciler = ProvenanceReconciler(authority=orchestrator.authority)
         orchestrator.gates[0] = PermissionGate(trusted_scope=scope)
 
         variants = {}

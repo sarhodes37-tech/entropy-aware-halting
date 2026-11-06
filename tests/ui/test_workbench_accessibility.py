@@ -617,6 +617,23 @@ def test_keyboard_navigation_and_focus_management_workflows(a11y_comprehensive_s
         page.wait_for_selector("#provenance-inspector-content:not(.hidden)")
         assert page.locator("#provenance-inspector-content").is_visible()
 
+        # 5b. Provenance to Trace "View Related Trace" Shortcut & Focus Restoration
+        trace_shortcut_btn = page.locator(
+            "#provenance-inspector-content button:has-text('View Related Trace')"
+        ).first
+        if trace_shortcut_btn.is_visible():
+            trace_shortcut_btn.focus()
+            page.keyboard.press("Enter")
+            page.wait_for_function(
+                "() => document.getElementById('a11y-status-announcer')"
+                ".textContent.includes('Selected execution trace')"
+            )
+            assert page.evaluate("() => window.ObservatoryApp.state.currentTab") == "traces"
+            focused_classes_prov = page.evaluate(
+                "() => document.activeElement ? Array.from(document.activeElement.classList) : []"
+            )
+            assert "trace-item" in focused_classes_prov and "active" in focused_classes_prov
+
         # 6. Keyboard Navigation in Benchmark Cases Listbox
         page.click("#tab-benchmarks")
         page.wait_for_selector("#benchmark-case-list .trace-item")
@@ -1143,5 +1160,319 @@ def test_target_size_wcag_258(a11y_comprehensive_server):
 
         if failures:
             pytest.fail(f"WCAG 2.5.8 target size failures detected:\n" + "\n".join(failures))
+
+        browser.close()
+
+
+@pytest.mark.skipif(not PLAYWRIGHT_AVAILABLE, reason="playwright not installed")
+def test_execute_with_retry_feedback_lifecycle_and_edge_cases(a11y_comprehensive_server):
+    """
+    Focused browser regression suite for executeWithRetryFeedback:
+    - Normal asynchronous completion with loading state inspection and exact restoration
+    - Rejected action promise ensures exact state restoration
+    - Synchronous exception from actionFn triggers cleanup
+    - Announcement failure triggers cleanup
+    - Initially disabled button does not execute actionFn
+    - Existing aria-busy and title values are preserved exactly
+    - Missing original attributes remain absent after restoration
+    - Detached button before resolution completes cleanly without throwing
+    - Concurrent invocation while already loading does not execute a duplicate action
+    """
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        page = browser.new_page(viewport={"width": 1440, "height": 900})
+        page.goto(f"{a11y_comprehensive_server}/index.html")
+        page.wait_for_selector("#tab-overview")
+
+        results = page.evaluate("""async () => {
+            const app = window.ObservatoryApp;
+            const log = [];
+
+            function makeDeferred() {
+                let resolve, reject;
+                const promise = new Promise((res, rej) => {
+                    resolve = res;
+                    reject = rej;
+                });
+                return { promise, resolve, reject };
+            }
+
+            // 1. Normal asynchronous completion
+            {
+                const btn = document.createElement('button');
+                btn.textContent = 'Retry Normal';
+                document.body.appendChild(btn);
+
+                const deferred = makeDeferred();
+                let executed = false;
+                const taskPromise = app.executeWithRetryFeedback(btn, 'Loading...', () => {
+                    executed = true;
+                    return deferred.promise;
+                });
+
+                log.push({
+                    test: 'normal_async_loading',
+                    executed,
+                    disabled: btn.disabled,
+                    ariaBusy: btn.getAttribute('aria-busy'),
+                    text: btn.textContent,
+                    title: btn.getAttribute('title')
+                });
+
+                deferred.resolve('ok');
+                await taskPromise;
+
+                log.push({
+                    test: 'normal_async_restored',
+                    disabled: btn.disabled,
+                    hasAriaBusy: btn.hasAttribute('aria-busy'),
+                    hasTitle: btn.hasAttribute('title'),
+                    text: btn.textContent
+                });
+                btn.remove();
+            }
+
+            // 2. Rejected action promise
+            {
+                const btn = document.createElement('button');
+                btn.textContent = 'Retry Error';
+                document.body.appendChild(btn);
+
+                const deferred = makeDeferred();
+                const taskPromise = app.executeWithRetryFeedback(
+                    btn, 'Failing...', () => deferred.promise
+                );
+                deferred.reject(new Error('simulated_async_failure'));
+
+                let caught = false;
+                try {
+                    await taskPromise;
+                } catch (e) {
+                    caught = true;
+                }
+
+                log.push({
+                    test: 'rejected_promise_restored',
+                    caught,
+                    disabled: btn.disabled,
+                    hasAriaBusy: btn.hasAttribute('aria-busy'),
+                    hasTitle: btn.hasAttribute('title'),
+                    text: btn.textContent
+                });
+                btn.remove();
+            }
+
+            // 3. Synchronous exception from actionFn
+            {
+                const btn = document.createElement('button');
+                btn.textContent = 'Retry Sync Error';
+                document.body.appendChild(btn);
+
+                let caught = false;
+                try {
+                    await app.executeWithRetryFeedback(btn, 'Throwing...', () => {
+                        throw new Error('simulated_sync_throw');
+                    });
+                } catch (e) {
+                    caught = true;
+                }
+
+                log.push({
+                    test: 'sync_throw_restored',
+                    caught,
+                    disabled: btn.disabled,
+                    hasAriaBusy: btn.hasAttribute('aria-busy'),
+                    hasTitle: btn.hasAttribute('title'),
+                    text: btn.textContent
+                });
+                btn.remove();
+            }
+
+            // 4. Announcement failure
+            {
+                const btn = document.createElement('button');
+                btn.textContent = 'Retry Announce Throw';
+                document.body.appendChild(btn);
+
+                const origAnnounce = app.announce;
+                app.announce = () => { throw new Error('simulated_announce_failure'); };
+
+                let caught = false;
+                try {
+                    await app.executeWithRetryFeedback(
+                        btn, 'Announce Fail...', () => Promise.resolve()
+                    );
+                } catch (e) {
+                    caught = true;
+                } finally {
+                    app.announce = origAnnounce;
+                }
+
+                log.push({
+                    test: 'announce_failure_restored',
+                    caught,
+                    disabled: btn.disabled,
+                    hasAriaBusy: btn.hasAttribute('aria-busy'),
+                    hasTitle: btn.hasAttribute('title'),
+                    text: btn.textContent
+                });
+                btn.remove();
+            }
+
+            // 5. Initially disabled button (must not execute)
+            {
+                const btn = document.createElement('button');
+                btn.textContent = 'Disabled Button';
+                btn.disabled = true;
+                document.body.appendChild(btn);
+
+                let executed = false;
+                await app.executeWithRetryFeedback(
+                    btn, 'Should Not Run', () => {
+                        executed = true;
+                        return Promise.resolve();
+                    }
+                );
+
+                log.push({
+                    test: 'initially_disabled_not_executed',
+                    executed,
+                    disabled: btn.disabled,
+                    text: btn.textContent
+                });
+                btn.remove();
+            }
+
+            // 6. Existing aria-busy and title values are restored exactly
+            {
+                const btn = document.createElement('button');
+                btn.textContent = 'Existing Attrs';
+                btn.setAttribute('aria-busy', 'false');
+                btn.setAttribute('title', 'Original Tooltip');
+                document.body.appendChild(btn);
+
+                await app.executeWithRetryFeedback(btn, 'Custom Loading', () => Promise.resolve());
+
+                log.push({
+                    test: 'existing_attrs_restored',
+                    ariaBusy: btn.getAttribute('aria-busy'),
+                    title: btn.getAttribute('title'),
+                    text: btn.textContent
+                });
+                btn.remove();
+            }
+
+            // 7. Button detached before resolution
+            {
+                const btn = document.createElement('button');
+                btn.textContent = 'Detach Button';
+                document.body.appendChild(btn);
+
+                const deferred = makeDeferred();
+                const taskPromise = app.executeWithRetryFeedback(
+                    btn, 'Detaching...', () => deferred.promise
+                );
+
+                // Detach from DOM while running
+                btn.remove();
+
+                deferred.resolve('detached_done');
+                let completedWithoutThrow = false;
+                try {
+                    await taskPromise;
+                    completedWithoutThrow = true;
+                } catch (e) {
+                    completedWithoutThrow = false;
+                }
+
+                log.push({
+                    test: 'detached_before_resolution',
+                    completedWithoutThrow,
+                    isConnected: btn.isConnected
+                });
+            }
+
+            // 8. Concurrent invocation while already loading (no duplicate execution)
+            {
+                const btn = document.createElement('button');
+                btn.textContent = 'Double Invocation';
+                document.body.appendChild(btn);
+
+                const deferred = makeDeferred();
+                let callCount = 0;
+
+                const firstPromise = app.executeWithRetryFeedback(btn, 'First Call...', () => {
+                    callCount++;
+                    return deferred.promise;
+                });
+
+                // Immediate second invocation while first is in-flight
+                const secondPromise = app.executeWithRetryFeedback(btn, 'Second Call...', () => {
+                    callCount++;
+                    return Promise.resolve();
+                });
+
+                await secondPromise;
+                deferred.resolve('first_done');
+                await firstPromise;
+
+                log.push({
+                    test: 'concurrent_invocation_prevented',
+                    callCount,
+                    disabled: btn.disabled,
+                    text: btn.textContent
+                });
+                btn.remove();
+            }
+
+            return log;
+        }""")
+
+        res_map = {r["test"]: r for r in results}
+
+        # Assertions
+        assert res_map["normal_async_loading"]["executed"] is True
+        assert res_map["normal_async_loading"]["disabled"] is True
+        assert res_map["normal_async_loading"]["ariaBusy"] == "true"
+        assert res_map["normal_async_loading"]["text"] == "Loading..."
+        assert res_map["normal_async_loading"]["title"] == "Loading..."
+
+        assert res_map["normal_async_restored"]["disabled"] is False
+        assert res_map["normal_async_restored"]["hasAriaBusy"] is False
+        assert res_map["normal_async_restored"]["hasTitle"] is False
+        assert res_map["normal_async_restored"]["text"] == "Retry Normal"
+
+        assert res_map["rejected_promise_restored"]["caught"] is True
+        assert res_map["rejected_promise_restored"]["disabled"] is False
+        assert res_map["rejected_promise_restored"]["hasAriaBusy"] is False
+        assert res_map["rejected_promise_restored"]["hasTitle"] is False
+        assert res_map["rejected_promise_restored"]["text"] == "Retry Error"
+
+        assert res_map["sync_throw_restored"]["caught"] is True
+        assert res_map["sync_throw_restored"]["disabled"] is False
+        assert res_map["sync_throw_restored"]["hasAriaBusy"] is False
+        assert res_map["sync_throw_restored"]["hasTitle"] is False
+        assert res_map["sync_throw_restored"]["text"] == "Retry Sync Error"
+
+        assert res_map["announce_failure_restored"]["caught"] is True
+        assert res_map["announce_failure_restored"]["disabled"] is False
+        assert res_map["announce_failure_restored"]["hasAriaBusy"] is False
+        assert res_map["announce_failure_restored"]["hasTitle"] is False
+        assert res_map["announce_failure_restored"]["text"] == "Retry Announce Throw"
+
+        assert res_map["initially_disabled_not_executed"]["executed"] is False
+        assert res_map["initially_disabled_not_executed"]["disabled"] is True
+        assert res_map["initially_disabled_not_executed"]["text"] == "Disabled Button"
+
+        assert res_map["existing_attrs_restored"]["ariaBusy"] == "false"
+        assert res_map["existing_attrs_restored"]["title"] == "Original Tooltip"
+        assert res_map["existing_attrs_restored"]["text"] == "Existing Attrs"
+
+        assert res_map["detached_before_resolution"]["completedWithoutThrow"] is True
+        assert res_map["detached_before_resolution"]["isConnected"] is False
+
+        assert res_map["concurrent_invocation_prevented"]["callCount"] == 1
+        assert res_map["concurrent_invocation_prevented"]["disabled"] is False
+        assert res_map["concurrent_invocation_prevented"]["text"] == "Double Invocation"
 
         browser.close()
