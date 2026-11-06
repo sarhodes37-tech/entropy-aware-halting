@@ -1798,7 +1798,7 @@ def test_targeted_security_defect_verification_suite():
             allowed_hosts={"s3.us-east-1.amazonaws.com"},
             max_classification=DataClassification.INTERNAL
         )
-        policy = DataTransferPolicy(rules=[rule])
+        policy = DataTransferPolicy(rules=[rule], principal_verifier=TEST_VERIFIER)
         decision = policy.evaluate_transfer(ctx)
         assert decision.allowed is False
         assert (
@@ -1816,7 +1816,7 @@ def test_targeted_security_defect_verification_suite():
         max_classification=DataClassification.INTERNAL,
         require_capability=True
     )
-    cap_policy = DataTransferPolicy(rules=[cap_rule])
+    cap_policy = DataTransferPolicy(rules=[cap_rule], principal_verifier=TEST_VERIFIER)
     dummy_cap = Capability(
         token_id="tok-dummy",
         principal_id="principal:alice",

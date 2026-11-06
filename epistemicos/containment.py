@@ -22,9 +22,12 @@ from functools import lru_cache
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union
-from epistemicos.gates import ControlPlaneGate, GateConfig, GateInput, GateOutcome, GateDecision, GateAction, GateResult
+from epistemicos.gates import ControlPlaneGate, GateConfig, GateInput, GateOutcome, GateDecision
 
 import errno
+import http.client
+import io
+import ssl
 import threading
 
 # Maximum bounds for URLs, hostnames, and numeric IPv4 input representations.
@@ -1352,9 +1355,6 @@ class EgressTransportBroker:
                     socket.socket.connect_ex = _orig_socket_connect_ex
 
 
-import http.client
-import ssl
-import io
 
 
 class UploadProgressStream(io.BytesIO):
