@@ -1486,7 +1486,7 @@ class CapabilityRegistry:
 
     def __init__(
         self,
-        signing_secret: Optional[Union[bytes, bytearray]] = None,
+        signing_secret: Optional[bytes] = None,
         denial_log_path: str = "logs/denial_registry.jsonl",
         fail_closed_persistence: bool = True,
         storage_backend: Optional[AuthorizationStore] = None
@@ -1504,24 +1504,7 @@ class CapabilityRegistry:
 
         self.storage = storage_backend if storage_backend is not None else InMemoryAuthorizationStore()
 
-        # Fail-closed signing secret validation and secure environment variable resolution
-        import os
-        if signing_secret is None:
-            env_cap_sec = os.getenv("EPISTEMICOS_CAP_SECRET")
-            if env_cap_sec is not None:
-                signing_secret = env_cap_sec.encode("utf-8")
-
-        if signing_secret is not None:
-            if not isinstance(signing_secret, (bytes, bytearray)):
-                sec_type = type(signing_secret).__name__
-                raise TypeError(f"signing_secret must be bytes or bytearray, got {sec_type}")
-            if len(signing_secret) == 0:
-                raise ValueError("signing_secret cannot be empty")
-            self.signing_secret = bytes(signing_secret)
-        else:
-            entropy_tag = f"EPISTEMICOS_CAP_KEY_{uuid.uuid4()}".encode("utf-8")
-            self.signing_secret = hashlib.sha256(entropy_tag).digest()
-
+        self.signing_secret = signing_secret or hashlib.sha256(f"EPISTEMICOS_CAP_KEY_{uuid.uuid4()}".encode("utf-8")).digest()
         self._load_persistent_denials()
 
     def _check_poisoned(self) -> None:

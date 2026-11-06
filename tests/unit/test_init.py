@@ -8,13 +8,11 @@ from epistemicos import AuditLogLevel
 
 
 def test_package_exports():
-    """Validates top-level package exports including AuditLogLevel and SemanticAdapter."""
+    """Validates top-level package exports including AuditLogLevel."""
     assert hasattr(epistemicos, "AuditLogLevel")
     assert "AuditLogLevel" in epistemicos.__all__
     assert AuditLogLevel.__name__ == "AuditLogLevel"
     assert issubclass(epistemicos.AuditLogLevel, epistemicos.audit.AuditLogLevel.__mro__[1])
-    assert hasattr(epistemicos, "SemanticAdapter")
-    assert "SemanticAdapter" in epistemicos.__all__
 
 
 @patch("epistemicos.utils.get_optimal_device")

@@ -339,34 +339,6 @@ document.addEventListener('DOMContentLoaded', () => {
     },
 
     // -------------------------------------------------------------------------
-    // Helper: Async Action Execution with Accessible Loading State
-    // -------------------------------------------------------------------------
-    async executeWithRetryFeedback(btn, loadingText, actionFn) {
-      if (!btn || btn.disabled) return;
-      const origDisabled = btn.disabled;
-      const origAriaBusy = btn.getAttribute('aria-busy');
-      const origTitle = btn.getAttribute('title');
-      const origText = btn.textContent;
-      btn.disabled = true;
-      btn.setAttribute('aria-busy', 'true');
-      btn.textContent = loadingText;
-      btn.setAttribute('title', loadingText);
-      try {
-        this.announce(loadingText);
-        await actionFn();
-      } finally {
-        if (btn && btn.isConnected) {
-          btn.disabled = origDisabled;
-          if (origAriaBusy !== null) btn.setAttribute('aria-busy', origAriaBusy);
-          else btn.removeAttribute('aria-busy');
-          if (origTitle !== null) btn.setAttribute('title', origTitle);
-          else btn.removeAttribute('title');
-          btn.textContent = origText;
-        }
-      }
-    },
-
-    // -------------------------------------------------------------------------
     // Helper: Clipboard Copy Action
     // -------------------------------------------------------------------------
     copyToClipboard(text, btnElement) {
@@ -1176,14 +1148,10 @@ document.addEventListener('DOMContentLoaded', () => {
         tr.setAttribute('role', 'button');
         tr.setAttribute('aria-label', `Inspect execution trace ${trace.correlation_id || 'UNKNOWN'}`);
 
-        const handleActivate = async () => {
+        const handleActivate = () => {
           this.state.selectedTraceId = trace.correlation_id;
           this.switchTab('traces');
-          await this.selectTrace(trace.correlation_id);
-          const activeItem = document.querySelector('#trace-list .trace-item.active');
-          if (activeItem) {
-            activeItem.focus();
-          }
+          this.selectTrace(trace.correlation_id);
         };
 
         tr.addEventListener('click', handleActivate);
@@ -1294,7 +1262,7 @@ document.addEventListener('DOMContentLoaded', () => {
       retryBtn.textContent = 'Retry Loading Traces';
       retryBtn.setAttribute('aria-label', 'Retry loading execution traces');
       retryBtn.setAttribute('title', 'Retry loading execution traces');
-      retryBtn.addEventListener('click', () => this.executeWithRetryFeedback(retryBtn, 'Retrying Traces...', () => this.loadTraces()));
+      retryBtn.addEventListener('click', () => this.loadTraces());
 
       errLi.appendChild(msgSpan);
       errLi.appendChild(detailSpan);
@@ -1520,7 +1488,7 @@ document.addEventListener('DOMContentLoaded', () => {
       retryBtn.textContent = 'Retry Selection';
       retryBtn.setAttribute('aria-label', `Retry selection for trace ${correlationId}`);
       retryBtn.setAttribute('title', `Retry selection for trace ${correlationId}`);
-      retryBtn.addEventListener('click', () => this.executeWithRetryFeedback(retryBtn, 'Retrying Selection...', () => this.selectTrace(correlationId)));
+      retryBtn.addEventListener('click', () => this.selectTrace(correlationId));
 
       errCard.appendChild(errHeader);
       errCard.appendChild(h3);
@@ -2155,7 +2123,7 @@ document.addEventListener('DOMContentLoaded', () => {
         retryBtn.textContent = 'Retry Loading Provenance';
         retryBtn.setAttribute('aria-label', 'Retry loading provenance records');
         retryBtn.setAttribute('title', 'Retry loading provenance records');
-        retryBtn.addEventListener('click', () => this.executeWithRetryFeedback(retryBtn, 'Retrying Provenance...', () => this.loadProvenance()));
+        retryBtn.addEventListener('click', () => this.loadProvenance());
 
         errLi.appendChild(msgSpan);
         errLi.appendChild(detailSpan);
@@ -2528,14 +2496,10 @@ document.addEventListener('DOMContentLoaded', () => {
         traceBtn.setAttribute('aria-label', `Navigate to related execution trace ${corrId}`);
         traceBtn.setAttribute('title', `Navigate to related execution trace ${corrId}`);
         traceBtn.innerHTML = `<span>View Related Trace</span> <span class="arrow" aria-hidden="true">➔</span>`;
-        traceBtn.addEventListener('click', async () => {
+        traceBtn.addEventListener('click', () => {
           this.state.selectedTraceId = corrId;
           this.switchTab('traces');
-          await this.selectTrace(corrId);
-          const activeItem = document.querySelector('#trace-list .trace-item.active');
-          if (activeItem) {
-            activeItem.focus();
-          }
+          this.selectTrace(corrId);
         });
         actionBtnGroup.appendChild(traceBtn);
       }
@@ -2771,7 +2735,7 @@ document.addEventListener('DOMContentLoaded', () => {
         retryBtn.textContent = 'Retry Loading Benchmarks';
         retryBtn.setAttribute('aria-label', 'Retry loading benchmark artifacts');
         retryBtn.setAttribute('title', 'Retry loading benchmark artifacts');
-        retryBtn.addEventListener('click', () => this.executeWithRetryFeedback(retryBtn, 'Retrying Benchmarks...', () => this.loadBenchmarks()));
+        retryBtn.addEventListener('click', () => this.loadBenchmarks());
 
         errLi.appendChild(msgSpan);
         errLi.appendChild(detailSpan);

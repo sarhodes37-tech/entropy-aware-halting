@@ -1343,16 +1343,36 @@ import io
 class UploadProgressStream(io.BytesIO):
     """
     Byte stream wrapper tracking actual bytes read by the transport during transmission.
-    Invokes callback immediately as chunks are dispatched to the socket.
+    Atomically claims chunk allocation before returning bytes to the socket, and invokes
+    progress callback immediately as chunks are dispatched to the socket.
     """
-    def __init__(self, data: bytes, on_read_callback: Optional[Callable[[int], None]] = None):
+    def __init__(
+        self,
+        data: bytes,
+        on_read_callback: Optional[Callable[[int], None]] = None,
+        on_claim_callback: Optional[Callable[[int], bool]] = None
+    ):
         super().__init__(data)
         self._on_read_callback = on_read_callback
+        self._on_claim_callback = on_claim_callback
 
     def read(self, size: int = -1) -> bytes:
+        # Peak next chunk from buffer position to atomically claim volume before dispatching
+        pos = self.tell()
         chunk = super().read(size)
-        if chunk and self._on_read_callback:
-            self._on_read_callback(len(chunk))
+        if chunk:
+            chunk_len = len(chunk)
+            if self._on_claim_callback:
+                allowed = self._on_claim_callback(chunk_len)
+                if not allowed:
+                    # Rewind position so uncommitted bytes are not counted
+                    self.seek(pos)
+                    raise PermissionError(
+                        f"Egress transport upload aborted: Chunk volume ({chunk_len} bytes) "
+                        "exceeds authorized cumulative ceiling."
+                    )
+            if self._on_read_callback:
+                self._on_read_callback(chunk_len)
         return chunk
 
 
@@ -1616,25 +1636,7 @@ class ControlledEgressTransport:
                             timeout=eff_timeout
                         )
 
-                    # Wrap payload body in UploadProgressStream if body is present and tracking is needed
-                    request_body_to_send = hop_encoded_body
-                    if hop_encoded_body is not None and len(hop_encoded_body) > 0 and transfer_context is not None:
-                        def on_chunk_sent(chunk_len: int):
-                            transfer_context.observed_bytes = (
-                                getattr(transfer_context, "observed_bytes", 0) + chunk_len
-                            )
-
-                        request_body_to_send = UploadProgressStream(
-                            hop_encoded_body, on_read_callback=on_chunk_sent
-                        )
-                        if "Content-Length" not in req_headers and "content-length" not in req_headers:
-                            req_headers["Content-Length"] = str(len(hop_encoded_body))
-
-                    conn.request(current_method, path_and_query, body=request_body_to_send, headers=req_headers)
-                    resp = conn.getresponse()
-                    resp_headers = {k: v for k, v in resp.getheaders()}
-
-                    # Determine volume limits for in-flight response streaming using matched rule
+                    # Determine volume limits for upload and in-flight response streaming using matched rule
                     max_resp_limit = None
                     eff_cumulative_limit = None
                     if matched_rule is not None:
@@ -1649,6 +1651,39 @@ class ControlledEgressTransport:
                         )
                     elif self.broker.transfer_policy is not None:
                         eff_cumulative_limit = self.broker.transfer_policy.default_max_cumulative_bytes
+
+                    # Wrap payload body in UploadProgressStream if body is present and tracking is needed
+                    request_body_to_send = hop_encoded_body
+                    hop_upload_sent = [0]
+                    if hop_encoded_body is not None and len(hop_encoded_body) > 0 and transfer_context is not None:
+                        def on_upload_chunk_claim(chunk_len: int) -> bool:
+                            new_upload_total = prior_hops_bytes + hop_upload_sent[0] + chunk_len
+                            if max_resp_limit is not None and new_upload_total > max_resp_limit:
+                                return False
+                            if eff_cumulative_limit is not None and tracker_key:
+                                return self.broker.transfer_policy.claim_in_flight_chunk(
+                                    tracker_key=tracker_key,
+                                    curr_transfer_total=new_upload_total,
+                                    reservation_id=reservation_id,
+                                    limit=eff_cumulative_limit
+                                )
+                            return True
+
+                        def on_chunk_sent(chunk_len: int):
+                            hop_upload_sent[0] += chunk_len
+                            transfer_context.observed_bytes = prior_hops_bytes + hop_upload_sent[0]
+
+                        request_body_to_send = UploadProgressStream(
+                            hop_encoded_body,
+                            on_read_callback=on_chunk_sent,
+                            on_claim_callback=on_upload_chunk_claim
+                        )
+                        if "Content-Length" not in req_headers and "content-length" not in req_headers:
+                            req_headers["Content-Length"] = str(len(hop_encoded_body))
+
+                    conn.request(current_method, path_and_query, body=request_body_to_send, headers=req_headers)
+                    resp = conn.getresponse()
+                    resp_headers = {k: v for k, v in resp.getheaders()}
 
                     # Read response stream: if limits apply, stream in bounded chunks (1024 bytes)
                     if max_resp_limit is not None or (eff_cumulative_limit is not None and tracker_key):

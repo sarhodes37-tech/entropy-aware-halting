@@ -133,11 +133,7 @@ def make_assertion(
     }
 
 
-_real_create_trusted_context = TrustedTransferContextBuilder.create_trusted_context
-
-
-@classmethod
-def _test_create_trusted_context(cls, *args, **kwargs):
+def create_test_context(*args, **kwargs):
     assertion = kwargs.get("trusted_authority_assertion")
     task_id = kwargs.get("task_id")
     declared_bytes = kwargs.get("declared_bytes")
@@ -177,10 +173,7 @@ def _test_create_trusted_context(cls, *args, **kwargs):
                 explicit_task=False,
                 explicit_bytes=False
             )
-    return _real_create_trusted_context(*args, **kwargs)
-
-
-TrustedTransferContextBuilder.create_trusted_context = _test_create_trusted_context
+    return TrustedTransferContextBuilder.create_trusted_context(*args, **kwargs)
 
 
 @pytest.fixture
@@ -256,7 +249,7 @@ def test_requirement_a_approved_org_destination_succeeds(org_policy):
     Requirement A: Approved organizational cloud destination + authorized principal +
     permitted classification + permitted volume succeeds.
     """
-    ctx = TrustedTransferContextBuilder.create_trusted_context(
+    ctx = create_test_context(
         principal_verifier=TEST_VERIFIER,
         principal="principal:alice",
         destination=DestinationIdentity(
@@ -291,7 +284,7 @@ def test_requirement_b_unapproved_tenant_or_consumer_account_denied(org_policy):
     """
     Requirement B: Same provider, different/unapproved tenant or consumer account is denied.
     """
-    ctx_consumer = TrustedTransferContextBuilder.create_trusted_context(
+    ctx_consumer = create_test_context(
         principal_verifier=TEST_VERIFIER,
         principal="principal:alice",
         destination=DestinationIdentity(
@@ -333,7 +326,7 @@ def test_requirement_c_approved_hostname_does_not_override_destination_identity(
         resolver_func=lambda h: ["20.190.159.0"]
     )
 
-    ctx_unapproved_tenant = TrustedTransferContextBuilder.create_trusted_context(
+    ctx_unapproved_tenant = create_test_context(
         principal_verifier=TEST_VERIFIER,
         principal="principal:alice",
         destination=DestinationIdentity(
@@ -371,7 +364,7 @@ def test_requirement_d_confidential_data_to_unapproved_destination_denied(org_po
     Requirement D: Confidential/restricted data to an unapproved destination is denied.
     """
     # Google Drive rule only permits up to INTERNAL classification
-    ctx = TrustedTransferContextBuilder.create_trusted_context(
+    ctx = create_test_context(
         principal_verifier=TEST_VERIFIER,
         principal="principal:alice",
         destination=DestinationIdentity(
@@ -406,7 +399,7 @@ def test_requirement_e_unauthorized_initiating_principal_denied(org_policy):
     """
     Requirement E: Unauthorized or mismatched initiating principal is denied.
     """
-    ctx = TrustedTransferContextBuilder.create_trusted_context(
+    ctx = create_test_context(
         principal_verifier=TEST_VERIFIER,
         principal="principal:unauthorized-mallory",
         destination=DestinationIdentity(
@@ -470,7 +463,7 @@ def test_requirement_g_declared_volume_under_limit_but_actual_bytes_exceed(org_p
     )
     transport = ControlledEgressTransport(broker=broker)
 
-    ctx = TrustedTransferContextBuilder.create_trusted_context(
+    ctx = create_test_context(
         principal_verifier=TEST_VERIFIER,
         principal="principal:alice",
         destination=DestinationIdentity(
@@ -524,7 +517,7 @@ def test_requirement_h_barrier_synchronized_atomic_reservations(org_policy):
     results = []
 
     def worker(worker_id):
-        c = TrustedTransferContextBuilder.create_trusted_context(
+        c = create_test_context(
             principal_verifier=TEST_VERIFIER,
             principal="principal:backup-agent",
             destination=DestinationIdentity(
@@ -591,7 +584,7 @@ def test_requirement_i_strict_capability_binding(org_policy):
     assert cap is not None, f"Failed to issue cap: {status}"
 
     # 1. Matching target and task succeeds
-    ctx_s3 = TrustedTransferContextBuilder.create_trusted_context(
+    ctx_s3 = create_test_context(
         principal_verifier=TEST_VERIFIER,
         principal="principal:admin",
         destination=DestinationIdentity(
@@ -622,7 +615,7 @@ def test_requirement_i_strict_capability_binding(org_policy):
     assert decision.allowed is True
 
     # 2. Destination host mismatch fails closed
-    ctx_diff_dest = TrustedTransferContextBuilder.create_trusted_context(
+    ctx_diff_dest = create_test_context(
         principal_verifier=TEST_VERIFIER,
         principal="principal:admin",
         destination=DestinationIdentity(
@@ -654,7 +647,7 @@ def test_requirement_i_strict_capability_binding(org_policy):
     assert "Capability target mismatch" in dec_diff.reason or "not in approved" in dec_diff.reason
 
     # 3. Task ID mismatch fails closed
-    ctx_diff_task = TrustedTransferContextBuilder.create_trusted_context(
+    ctx_diff_task = create_test_context(
         principal_verifier=TEST_VERIFIER,
         principal="principal:admin",
         destination=DestinationIdentity(
@@ -714,7 +707,7 @@ def test_requirement_j_legitimate_tools_not_globally_blocked():
         ]
     )
 
-    ctx_rclone = TrustedTransferContextBuilder.create_trusted_context(
+    ctx_rclone = create_test_context(
         principal_verifier=TEST_VERIFIER,
         principal="principal:backup-svc",
         destination=DestinationIdentity(
@@ -751,7 +744,7 @@ def test_requirement_k_existing_egress_and_host_binding_intact(org_policy):
     )
 
     # 1. Host in transfer context must match the actual request target host
-    ctx_mismatch = TrustedTransferContextBuilder.create_trusted_context(
+    ctx_mismatch = create_test_context(
         principal_verifier=TEST_VERIFIER,
         principal="principal:alice",
         destination=DestinationIdentity(
@@ -804,7 +797,7 @@ def test_requirement_l_fail_closed_provenance_and_clean_records(org_policy):
         sensitive_token = "Bearer secret-access-token-998877"
         corr_id = "corr-audit-test-123"
 
-        ctx = TrustedTransferContextBuilder.create_trusted_context(
+        ctx = create_test_context(
             principal_verifier=TEST_VERIFIER,
             principal="principal:alice",
             destination=DestinationIdentity(
@@ -901,7 +894,7 @@ def test_concurrency_barrier_production_transport(org_policy):
     results = []
 
     def transport_worker(i):
-        ctx = TrustedTransferContextBuilder.create_trusted_context(
+        ctx = create_test_context(
             principal_verifier=TEST_VERIFIER,
             principal="principal:backup-agent",
             destination=DestinationIdentity(
@@ -968,7 +961,7 @@ def test_response_streaming_oversized_response_aborts_mid_stream(org_policy):
     transport = ControlledEgressTransport(broker=broker)
 
     # Rule max_bytes_per_transfer is 10,000 bytes.
-    ctx = TrustedTransferContextBuilder.create_trusted_context(
+    ctx = create_test_context(
         principal_verifier=TEST_VERIFIER,
         principal="principal:alice",
         destination=DestinationIdentity(
@@ -1048,7 +1041,7 @@ def test_trusted_context_assertion_negative_cases():
     dest = DestinationIdentity(service="s", host="h")
 
     # 1. Arbitrary object strictly rejected
-    ctx_obj = TrustedTransferContextBuilder.create_trusted_context(
+    ctx_obj = create_test_context(
         principal_verifier=TEST_VERIFIER,
         principal="alice",
         destination=dest,
@@ -1063,7 +1056,7 @@ def test_trusted_context_assertion_negative_cases():
     valid_assert = make_assertion("alice", "PUBLIC", destination_host="h")
     forged_assert = dict(valid_assert)
     forged_assert["signature"] = "00" * 64
-    ctx_forged = TrustedTransferContextBuilder.create_trusted_context(
+    ctx_forged = create_test_context(
         principal_verifier=TEST_VERIFIER,
         principal="alice",
         destination=dest,
@@ -1077,7 +1070,7 @@ def test_trusted_context_assertion_negative_cases():
     # 3. Altered payload content (tampering with classification after signing) rejected
     tampered_assert = dict(valid_assert)
     tampered_assert["classification"] = "CONFIDENTIAL"
-    ctx_tampered = TrustedTransferContextBuilder.create_trusted_context(
+    ctx_tampered = create_test_context(
         principal_verifier=TEST_VERIFIER,
         principal="alice",
         destination=dest,
@@ -1092,7 +1085,7 @@ def test_trusted_context_assertion_negative_cases():
     unknown_issuer_assert = make_assertion(
         "alice", "PUBLIC", destination_host="h", issuer="AttackerIssuer"
     )
-    ctx_unknown = TrustedTransferContextBuilder.create_trusted_context(
+    ctx_unknown = create_test_context(
         principal_verifier=TEST_VERIFIER,
         principal="alice",
         destination=dest,
@@ -1107,7 +1100,7 @@ def test_trusted_context_assertion_negative_cases():
     mismatched_dest_assert = make_assertion(
         "alice", "PUBLIC", destination_host="different-host.com"
     )
-    ctx_dest_mismatch = TrustedTransferContextBuilder.create_trusted_context(
+    ctx_dest_mismatch = create_test_context(
         principal_verifier=TEST_VERIFIER,
         principal="alice",
         destination=dest,
@@ -1120,7 +1113,7 @@ def test_trusted_context_assertion_negative_cases():
 
     # 6. Expired assertion strictly rejected
     expired_assert = make_assertion("alice", "PUBLIC", destination_host="h", expires_at=100.0)
-    ctx_expired = TrustedTransferContextBuilder.create_trusted_context(
+    ctx_expired = create_test_context(
         principal_verifier=TEST_VERIFIER,
         principal="alice",
         destination=dest,
@@ -1133,7 +1126,7 @@ def test_trusted_context_assertion_negative_cases():
 
     # 7. Unconfigured verifier (no trusted issuers) fails closed
     empty_verifier = PrincipalVerifier(trusted_public_keys={})
-    ctx_no_verifier = TrustedTransferContextBuilder.create_trusted_context(
+    ctx_no_verifier = create_test_context(
         principal_verifier=empty_verifier,
         principal="alice",
         destination=dest,
@@ -1184,7 +1177,7 @@ def test_capability_authority_verification_transport(org_policy):
     )
     assert cap is not None
 
-    ctx = TrustedTransferContextBuilder.create_trusted_context(
+    ctx = create_test_context(
         principal_verifier=TEST_VERIFIER,
         principal="principal:admin",
         destination=DestinationIdentity(service="s3", host="s3.us-east-1.amazonaws.com"),
@@ -1230,7 +1223,7 @@ def test_cross_host_redirect_rejection(org_policy):
         resolver_func=lambda h: ["20.190.159.0"]
     )
 
-    ctx = TrustedTransferContextBuilder.create_trusted_context(
+    ctx = create_test_context(
         principal_verifier=TEST_VERIFIER,
         principal="principal:alice",
         destination=DestinationIdentity(
@@ -1282,7 +1275,7 @@ def test_provenance_failure_proves_zero_network_io(org_policy):
     )
     transport = ControlledEgressTransport(broker=broker)
 
-    ctx = TrustedTransferContextBuilder.create_trusted_context(
+    ctx = create_test_context(
         principal_verifier=TEST_VERIFIER,
         principal="principal:alice",
         destination=DestinationIdentity(
@@ -1342,7 +1335,7 @@ def test_atomic_reservation_under_concurrency_contention():
     barrier = threading.Barrier(num_threads)
 
     def worker(idx):
-        ctx = TrustedTransferContextBuilder.create_trusted_context(
+        ctx = create_test_context(
             principal_verifier=TEST_VERIFIER,
             principal="principal:worker",
             destination=DestinationIdentity(service="s3", host="s3.us-west-2.amazonaws.com"),
@@ -1395,7 +1388,7 @@ def test_cross_tenant_and_cross_operation_assertion_replay_rejected():
     )
 
     # Replaying assertion signed for Tenant A in a context targeting Tenant B fails closed
-    ctx_replayed_tenant = TrustedTransferContextBuilder.create_trusted_context(
+    ctx_replayed_tenant = create_test_context(
         principal_verifier=TEST_VERIFIER,
         principal="principal:alice",
         destination=dest_tenant_b,
@@ -1407,7 +1400,7 @@ def test_cross_tenant_and_cross_operation_assertion_replay_rejected():
     assert ctx_replayed_tenant.is_classification_trusted is False
 
     # 2. Replaying assertion signed for WRITE/UPLOAD in context with READ/DOWNLOAD fails closed
-    ctx_replayed_op = TrustedTransferContextBuilder.create_trusted_context(
+    ctx_replayed_op = create_test_context(
         principal_verifier=TEST_VERIFIER,
         principal="principal:alice",
         destination=dest_tenant_a,
@@ -1421,7 +1414,7 @@ def test_cross_tenant_and_cross_operation_assertion_replay_rejected():
     # 3. Missing destination_host fails closed (rejects generic unanchored assertions)
     generic_assert = dict(valid_assert_a)
     generic_assert["destination_host"] = ""
-    ctx_generic_dest = TrustedTransferContextBuilder.create_trusted_context(
+    ctx_generic_dest = create_test_context(
         principal_verifier=TEST_VERIFIER,
         principal="principal:alice",
         destination=dest_tenant_a,
@@ -1435,7 +1428,7 @@ def test_cross_tenant_and_cross_operation_assertion_replay_rejected():
     # 4. Missing expires_at fails closed
     no_exp_assert = dict(valid_assert_a)
     no_exp_assert["expires_at"] = None
-    ctx_no_exp = TrustedTransferContextBuilder.create_trusted_context(
+    ctx_no_exp = create_test_context(
         principal_verifier=TEST_VERIFIER,
         principal="principal:alice",
         destination=dest_tenant_a,
@@ -1509,7 +1502,7 @@ def test_capability_parameter_mismatches_and_replay_at_execution_boundary():
 
     def make_ctx(op=TransferOperation.WRITE, target_override=None, action_override=None,
                  digest_override=None, tenant="approved-tenant"):
-        return TrustedTransferContextBuilder.create_trusted_context(
+        return create_test_context(
             principal_verifier=TEST_VERIFIER,
             principal="principal:admin",
             destination=DestinationIdentity(
@@ -1676,7 +1669,7 @@ def test_overlapping_host_different_tenant_streaming_limits():
     from unittest.mock import patch
 
     # 1. Restricted tenant: 100-byte response exceeds the 50-byte limit -> streaming aborted
-    ctx_restricted = TrustedTransferContextBuilder.create_trusted_context(
+    ctx_restricted = create_test_context(
         principal_verifier=TEST_VERIFIER,
         principal="principal:alice",
         destination=DestinationIdentity(
@@ -1712,7 +1705,7 @@ def test_overlapping_host_different_tenant_streaming_limits():
         assert "exceeds maximum allowed per-transfer limit (50 bytes)" in str(exc_restricted.value)
 
     # 2. Standard tenant: 100-byte response is within the 5000-byte limit -> succeeds
-    ctx_standard = TrustedTransferContextBuilder.create_trusted_context(
+    ctx_standard = create_test_context(
         principal_verifier=TEST_VERIFIER,
         principal="principal:alice",
         destination=DestinationIdentity(
@@ -1775,7 +1768,7 @@ def test_targeted_security_defect_verification_suite():
         ("direction", TransferDirection.DOWNLOAD),
         ("operation", TransferOperation.READ),
     ]:
-        ctx = TrustedTransferContextBuilder.create_trusted_context(
+        ctx = create_test_context(
             principal_verifier=TEST_VERIFIER,
             principal="principal:alice",
             destination=DestinationIdentity(service="s3", host="s3.us-east-1.amazonaws.com"),
@@ -1835,7 +1828,7 @@ def test_targeted_security_defect_verification_suite():
         expires_at=200.0,
         signature="aa" * 32
     )
-    clean_ctx = TrustedTransferContextBuilder.create_trusted_context(
+    clean_ctx = create_test_context(
         principal_verifier=TEST_VERIFIER,
         principal="principal:alice",
         destination=DestinationIdentity(service="s3", host="s3.us-east-1.amazonaws.com"),
@@ -2003,7 +1996,7 @@ def test_targeted_security_defect_verification_suite():
         def __init__(self, *args, **kwargs):
             raise ConnectionError("DNS or TLS connect failure")
 
-    ctx_pre = TrustedTransferContextBuilder.create_trusted_context(
+    ctx_pre = create_test_context(
         principal_verifier=TEST_VERIFIER,
         principal="principal:alice",
         destination=DestinationIdentity(service="s3", host="s3.us-east-1.amazonaws.com"),
@@ -2040,7 +2033,7 @@ def test_targeted_security_defect_verification_suite():
         def close(self):
             pass
 
-    ctx_part_up = TrustedTransferContextBuilder.create_trusted_context(
+    ctx_part_up = create_test_context(
         principal_verifier=TEST_VERIFIER,
         principal="principal:alice",
         destination=DestinationIdentity(service="s3", host="s3.us-east-1.amazonaws.com"),
@@ -2096,7 +2089,7 @@ def test_targeted_security_defect_verification_suite():
         def close(self):
             pass
 
-    ctx_stream = TrustedTransferContextBuilder.create_trusted_context(
+    ctx_stream = create_test_context(
         principal_verifier=TEST_VERIFIER,
         principal="principal:alice",
         destination=DestinationIdentity(service="s3", host="s3.us-east-1.amazonaws.com"),
@@ -2139,7 +2132,7 @@ def test_targeted_security_defect_verification_suite():
         def close(self):
             pass
 
-    ctx_success = TrustedTransferContextBuilder.create_trusted_context(
+    ctx_success = create_test_context(
         principal_verifier=TEST_VERIFIER,
         principal="principal:alice",
         destination=DestinationIdentity(service="s3", host="s3.us-east-1.amazonaws.com"),
@@ -2232,7 +2225,7 @@ def test_adversarial_transfer_context_assertion_binding_and_replay():
     )
 
     # Valid baseline context
-    ctx = TrustedTransferContextBuilder.create_trusted_context(
+    ctx = create_test_context(
         principal_verifier=TEST_VERIFIER,
         principal="principal:alice",
         destination=dest_full,
@@ -2253,7 +2246,7 @@ def test_adversarial_transfer_context_assertion_binding_and_replay():
     assert ctx.is_classification_trusted is True
 
     # 2. Replay assertion with a different task ID at builder construction time
-    ctx_replayed_task = TrustedTransferContextBuilder.create_trusted_context(
+    ctx_replayed_task = create_test_context(
         principal_verifier=TEST_VERIFIER,
         principal="principal:alice",
         destination=dest_full,
@@ -2353,7 +2346,7 @@ def test_multi_hop_redirect_accounting_and_reservation_lifecycle():
         def close(self):
             pass
 
-    ctx_same_host = TrustedTransferContextBuilder.create_trusted_context(
+    ctx_same_host = create_test_context(
         principal_verifier=TEST_VERIFIER,
         principal="principal:alice",
         destination=DestinationIdentity(service="api", host="api.corp.internal"),
@@ -2409,7 +2402,7 @@ def test_multi_hop_redirect_accounting_and_reservation_lifecycle():
         def close(self):
             pass
 
-    ctx_multi = TrustedTransferContextBuilder.create_trusted_context(
+    ctx_multi = create_test_context(
         principal_verifier=TEST_VERIFIER,
         principal="principal:alice",
         destination=DestinationIdentity(service="api", host="api.corp.internal"),
@@ -2461,7 +2454,7 @@ def test_multi_hop_redirect_accounting_and_reservation_lifecycle():
         def close(self):
             pass
 
-    ctx_fail_hop2 = TrustedTransferContextBuilder.create_trusted_context(
+    ctx_fail_hop2 = create_test_context(
         principal_verifier=TEST_VERIFIER,
         principal="principal:alice",
         destination=DestinationIdentity(service="api", host="api.corp.internal"),
@@ -2519,7 +2512,7 @@ def test_multi_hop_redirect_accounting_and_reservation_lifecycle():
         def close(self):
             pass
 
-    ctx_ceiling = TrustedTransferContextBuilder.create_trusted_context(
+    ctx_ceiling = create_test_context(
         principal_verifier=TEST_VERIFIER,
         principal="principal:alice",
         destination=DestinationIdentity(service="api", host="api.corp.internal"),
@@ -2593,7 +2586,7 @@ def test_multi_hop_chain_combined_volume_aborts_mid_stream_on_second_hop():
         def close(self):
             pass
 
-    ctx = TrustedTransferContextBuilder.create_trusted_context(
+    ctx = create_test_context(
         principal_verifier=TEST_VERIFIER,
         principal="principal:alice",
         destination=DestinationIdentity(service="api", host="api.corp.internal"),
@@ -2653,7 +2646,7 @@ def test_concurrent_transfers_in_flight_cumulative_ceiling_enforcement():
     transport = ControlledEgressTransport(broker=broker)
 
     # 1. Establish an active, in-flight reservation of 40 bytes for Transfer 1
-    ctx1 = TrustedTransferContextBuilder.create_trusted_context(
+    ctx1 = create_test_context(
         principal_verifier=TEST_VERIFIER,
         principal="principal:alice",
         destination=DestinationIdentity(service="api", host="api.corp.internal"),
@@ -2696,7 +2689,7 @@ def test_concurrent_transfers_in_flight_cumulative_ceiling_enforcement():
         def close(self):
             pass
 
-    ctx2 = TrustedTransferContextBuilder.create_trusted_context(
+    ctx2 = create_test_context(
         principal_verifier=TEST_VERIFIER,
         principal="principal:alice",
         destination=DestinationIdentity(service="api", host="api.corp.internal"),
@@ -2808,7 +2801,7 @@ def test_simultaneous_streaming_toctou_race_prevented():
             pass
 
     def run_transfer(transfer_name: str, res_id: str):
-        ctx = TrustedTransferContextBuilder.create_trusted_context(
+        ctx = create_test_context(
             principal_verifier=TEST_VERIFIER,
             principal="principal:alice",
             destination=DestinationIdentity(service="api", host="api.corp.internal"),
@@ -2888,3 +2881,370 @@ def test_simultaneous_streaming_toctou_race_prevented():
     # Total committed: 60 + 20 = 80 <= 100 ceiling!
     assert final_committed <= 100, f"Committed bytes {final_committed} exceeded 100 ceiling!"
     assert final_committed == 80
+
+
+def test_post_307_redirect_repeated_body_aborts_before_transmission():
+    """
+    Regression test:
+    Under a 100-byte cumulative ceiling, a 60-byte POST request receives an HTTP 307 redirect.
+    HTTP 307 mandates that the request method and body must be repeated on the second hop.
+    60 bytes (Hop 1) + 60 bytes (Hop 2) = 120 bytes > 100 bytes ceiling!
+    The transport must abort the second hop before any chunk of the repeated body is transmitted,
+    and exactly the 60 bytes sent on Hop 1 must be committed into cumulative usage.
+    """
+    task_id = "task-post-307-redirect-repeat"
+    policy = DataTransferPolicy(
+        rules=[
+            TransferRule(
+                rule_id="post-307-rule",
+                allowed_principals={"principal:alice"},
+                destination_service="api",
+                allowed_hosts={"api.corp.internal"},
+                max_cumulative_bytes=100
+            )
+        ]
+    )
+    broker = EgressTransportBroker(
+        policy=EgressPolicy(allowed_destinations={"api.corp.internal"}),
+        transfer_policy=policy,
+        resolver_func=lambda h: ["93.184.216.34"]
+    )
+    transport = ControlledEgressTransport(broker=broker)
+
+    class Mock307Conn:
+        def __init__(self, *args, **kwargs):
+            self.last_url = ""
+
+        def request(self, method, url, body=None, headers=None):
+            self.last_url = url
+            if hasattr(body, "read"):
+                # Read all body chunks to simulate socket transmission
+                while True:
+                    chunk = body.read(1024)
+                    if not chunk:
+                        break
+
+        def getresponse(self):
+            resp = MagicMock()
+            if "/start" in self.last_url:
+                resp.status = 307
+                resp.getheaders.return_value = [("Location", "/redirected")]
+                resp.read.side_effect = [b""]  # Empty redirect body
+            else:
+                resp.status = 200
+                resp.getheaders.return_value = []
+                resp.read.side_effect = [b""]
+            return resp
+
+        def close(self):
+            pass
+
+    ctx = create_test_context(
+        principal_verifier=TEST_VERIFIER,
+        principal="principal:alice",
+        destination=DestinationIdentity(service="api", host="api.corp.internal"),
+        classification=DataClassification.INTERNAL,
+        direction=TransferDirection.UPLOAD,
+        operation=TransferOperation.WRITE,
+        declared_bytes=60,
+        task_id=task_id,
+        trusted_authority_assertion=make_assertion(
+            "principal:alice", "INTERNAL", destination_host="api.corp.internal",
+            task_id=task_id, declared_bytes=60,
+            explicit_task=True, explicit_bytes=True
+        )
+    )
+
+    from unittest.mock import patch
+    with patch("epistemicos.containment.PinnedHTTPConnection", Mock307Conn):
+        with pytest.raises(PermissionError) as exc_info:
+            transport.request(
+                method="POST",
+                url="http://api.corp.internal/start",
+                body=b"A" * 60,
+                transfer_context=ctx
+            )
+        assert (
+            "exceeds authorized cumulative ceiling" in str(exc_info.value)
+            or "Cumulative volume exceeds ceiling" in str(exc_info.value)
+        )
+
+    # Exactly 60 bytes were transmitted on Hop 1; Hop 2 was aborted before transmitting
+    assert policy.get_cumulative_bytes(task_id) == 60
+
+
+def test_post_308_redirect_repeated_body_aborts_before_transmission():
+    """
+    Regression test:
+    HTTP 308 Permanent Redirect replaying a 60-byte body under a 100-byte cumulative ceiling.
+    Verifies that the second hop is blocked before transmission and Hop 1 bytes are committed.
+    """
+    task_id = "task-post-308-redirect-repeat"
+    policy = DataTransferPolicy(
+        rules=[
+            TransferRule(
+                rule_id="post-308-rule",
+                allowed_principals={"principal:alice"},
+                destination_service="api",
+                allowed_hosts={"api.corp.internal"},
+                max_cumulative_bytes=100
+            )
+        ]
+    )
+    broker = EgressTransportBroker(
+        policy=EgressPolicy(allowed_destinations={"api.corp.internal"}),
+        transfer_policy=policy,
+        resolver_func=lambda h: ["93.184.216.34"]
+    )
+    transport = ControlledEgressTransport(broker=broker)
+
+    class Mock308Conn:
+        def __init__(self, *args, **kwargs):
+            self.last_url = ""
+
+        def request(self, method, url, body=None, headers=None):
+            self.last_url = url
+            if hasattr(body, "read"):
+                while True:
+                    chunk = body.read(1024)
+                    if not chunk:
+                        break
+
+        def getresponse(self):
+            resp = MagicMock()
+            if "/initial" in self.last_url:
+                resp.status = 308
+                resp.getheaders.return_value = [("Location", "/permanent-target")]
+                resp.read.side_effect = [b""]
+            else:
+                resp.status = 200
+                resp.getheaders.return_value = []
+                resp.read.side_effect = [b""]
+            return resp
+
+        def close(self):
+            pass
+
+    ctx = create_test_context(
+        principal_verifier=TEST_VERIFIER,
+        principal="principal:alice",
+        destination=DestinationIdentity(service="api", host="api.corp.internal"),
+        classification=DataClassification.INTERNAL,
+        direction=TransferDirection.UPLOAD,
+        operation=TransferOperation.WRITE,
+        declared_bytes=60,
+        task_id=task_id,
+        trusted_authority_assertion=make_assertion(
+            "principal:alice", "INTERNAL", destination_host="api.corp.internal",
+            task_id=task_id, declared_bytes=60,
+            explicit_task=True, explicit_bytes=True
+        )
+    )
+
+    from unittest.mock import patch
+    with patch("epistemicos.containment.PinnedHTTPConnection", Mock308Conn):
+        with pytest.raises(PermissionError) as exc_info:
+            transport.request(
+                method="POST",
+                url="http://api.corp.internal/initial",
+                body=b"B" * 60,
+                transfer_context=ctx
+            )
+        assert (
+            "exceeds authorized cumulative ceiling" in str(exc_info.value)
+            or "Cumulative volume exceeds ceiling" in str(exc_info.value)
+        )
+
+    assert policy.get_cumulative_bytes(task_id) == 60
+
+
+def test_empty_final_response_body_commits_upload_bytes():
+    """
+    Regression test:
+    Upload with an empty terminal response body (e.g. HTTP 204 No Content).
+    Verifies that the absence of response chunks still correctly and authoritatively commits
+    the transmitted upload bytes exactly once without leaking reservations.
+    """
+    task_id = "task-empty-response-commit"
+    policy = DataTransferPolicy(
+        rules=[
+            TransferRule(
+                rule_id="empty-resp-rule",
+                allowed_principals={"principal:alice"},
+                destination_service="api",
+                allowed_hosts={"api.corp.internal"},
+                max_cumulative_bytes=500
+            )
+        ]
+    )
+    broker = EgressTransportBroker(
+        policy=EgressPolicy(allowed_destinations={"api.corp.internal"}),
+        transfer_policy=policy,
+        resolver_func=lambda h: ["93.184.216.34"]
+    )
+    transport = ControlledEgressTransport(broker=broker)
+
+    class MockEmptyRespConn:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def request(self, method, url, body=None, headers=None):
+            if hasattr(body, "read"):
+                while body.read(1024):
+                    pass
+
+        def getresponse(self):
+            resp = MagicMock()
+            resp.status = 204
+            resp.reason = "No Content"
+            resp.getheaders.return_value = []
+            resp.read.side_effect = [b""]
+            return resp
+
+        def close(self):
+            pass
+
+    ctx = create_test_context(
+        principal_verifier=TEST_VERIFIER,
+        principal="principal:alice",
+        destination=DestinationIdentity(service="api", host="api.corp.internal"),
+        classification=DataClassification.INTERNAL,
+        direction=TransferDirection.UPLOAD,
+        operation=TransferOperation.WRITE,
+        declared_bytes=150,
+        task_id=task_id,
+        trusted_authority_assertion=make_assertion(
+            "principal:alice", "INTERNAL", destination_host="api.corp.internal",
+            task_id=task_id, declared_bytes=150,
+            explicit_task=True, explicit_bytes=True
+        )
+    )
+
+    from unittest.mock import patch
+    with patch("epistemicos.containment.PinnedHTTPConnection", MockEmptyRespConn):
+        res = transport.request(
+            method="POST",
+            url="http://api.corp.internal/items",
+            body=b"K" * 150,
+            transfer_context=ctx
+        )
+        assert res["status"] == 204
+        assert res["body"] == b""
+
+    # Exactly 150 bytes were uploaded and committed
+    assert policy.get_cumulative_bytes(task_id) == 150
+    assert policy.get_allocated_bytes(task_id) == 150
+
+
+def test_simultaneous_uploads_budget_contention_prevented():
+    """
+    Adversarial concurrency regression test:
+    Two simultaneous upload transfers against the same task budget.
+    - Cumulative ceiling: 100 bytes.
+    - Upload A and Upload B each attempt to send 40 bytes (initial total: 80 <= 100).
+    - Synchronized via barrier before Upload 1 attempts an HTTP 307 redirect replaying 40 bytes.
+    - Proves that no chunk is transmitted when its atomic claim would exceed the shared ceiling.
+    - Verifies that Upload 2 succeeds, Upload 1's replay aborts, and final volume is 80 <= 100.
+    """
+    task_id = "task-concurrent-upload-contention"
+    policy = DataTransferPolicy(
+        rules=[
+            TransferRule(
+                rule_id="concurrent-upload-rule",
+                allowed_principals={"principal:alice"},
+                destination_service="api",
+                allowed_hosts={"api.corp.internal"},
+                max_cumulative_bytes=100
+            )
+        ]
+    )
+    broker = EgressTransportBroker(
+        policy=EgressPolicy(allowed_destinations={"api.corp.internal"}),
+        transfer_policy=policy,
+        resolver_func=lambda h: ["93.184.216.34"]
+    )
+    transport = ControlledEgressTransport(broker=broker)
+
+    barrier = threading.Barrier(2)
+
+    class SynchronizedUploadConn:
+        def __init__(self, *args, **kwargs):
+            self.last_url = ""
+
+        def request(self, method, url, body=None, headers=None):
+            self.last_url = url
+            if hasattr(body, "read"):
+                while body.read(1024):
+                    pass
+
+        def getresponse(self):
+            resp = MagicMock()
+            if "/upload/up1" in self.last_url:
+                # Synchronize here so both are active before Upload 1 attempts 307 replay
+                barrier.wait(timeout=5.0)
+                resp.status = 307
+                resp.getheaders.return_value = [("Location", "/upload/up1-redirect")]
+                resp.read.side_effect = [b""]
+            elif "/upload/up2" in self.last_url:
+                barrier.wait(timeout=5.0)
+                resp.status = 200
+                resp.reason = "OK"
+                resp.getheaders.return_value = []
+                resp.read.side_effect = [b""]
+            else:
+                resp.status = 200
+                resp.reason = "OK"
+                resp.getheaders.return_value = []
+                resp.read.side_effect = [b""]
+            return resp
+
+        def close(self):
+            pass
+
+    def run_upload(name: str):
+        ctx = create_test_context(
+            principal_verifier=TEST_VERIFIER,
+            principal="principal:alice",
+            destination=DestinationIdentity(service="api", host="api.corp.internal"),
+            classification=DataClassification.INTERNAL,
+            direction=TransferDirection.UPLOAD,
+            operation=TransferOperation.WRITE,
+            declared_bytes=40,
+            task_id=task_id,
+            trusted_authority_assertion=make_assertion(
+                "principal:alice", "INTERNAL", destination_host="api.corp.internal",
+                task_id=task_id, declared_bytes=40,
+                explicit_task=True, explicit_bytes=True
+            )
+        )
+        try:
+            transport.request(
+                method="POST",
+                url=f"http://api.corp.internal/upload/{name}",
+                body=b"U" * 40,
+                transfer_context=ctx
+            )
+            return True, ctx.observed_bytes, None
+        except PermissionError as pe:
+            return False, ctx.observed_bytes, str(pe)
+
+    # Patch outer scope so worker threads cleanly share the mock
+    from unittest.mock import patch
+    with patch("epistemicos.containment.PinnedHTTPConnection", SynchronizedUploadConn):
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+            f1 = executor.submit(run_upload, "up1")
+            f2 = executor.submit(run_upload, "up2")
+            res1 = f1.result()
+            res2 = f2.result()
+
+    # Upload 2 cleanly finishes sending its 40 bytes.
+    # Upload 1 sent 40 bytes on hop 1, but its 307 redirect would require sending another 40 bytes.
+    # Because Upload 2 is active (40 bytes), 40 (hop 1) + 40 (Up 2) + 40 (hop 2) = 120 > 100!
+    # Upload 1 is aborted on hop 2 before transmitting, and 40 bytes from hop 1 are committed.
+    assert res2[0] is True, f"Upload 2 should have succeeded, got: {res2}"
+    assert res1[0] is False, f"Upload 1 should have been aborted on 307 replay, got: {res1}"
+
+    # Total committed volume across both uploads: 40 (Up 2) + 40 (Up 1 hop 1) = 80 <= 100
+    final_vol = policy.get_cumulative_bytes(task_id)
+    assert final_vol <= 100
+    assert final_vol == 80

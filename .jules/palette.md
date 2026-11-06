@@ -11,7 +11,3 @@
 ## 2026-11-02 - Live Region Announcements & Focus Management for Cross-Tab Filters and Clipboard Operations
 **Learning:** When jumping between investigative dashboard tabs using pre-filtered shortcut buttons (such as Overview entry points targeting Execution Traces by status), keyboard users suffer focus abandonment if focus remains on the deactivated tab trigger, and screen reader users lack context on what filter was applied upon landing. Furthermore, clipboard copy actions that only update visual button text (`✓ Copied!`) leave screen reader users without immediate auditory confirmation of success or failure.
 **Action:** Always pair cross-tab navigation shortcuts with target focus shifting to the active filter/search control, and route clipboard copy feedback through polite live status announcers (`#a11y-status-announcer`).
-
-## 2026-11-03 - Focus Restoration for Cross-Surface Record Transitions
-**Learning:** In split-view and multi-tab investigative dashboards, activating a cross-surface navigation link (such as clicking an Overview table row or "View Related Trace" in Provenance Explorer) switches the active tab and triggers asynchronous record fetching, but leaves focus orphaned on the deactivated surface or `document.body`. Awaiting record selection and programmatically shifting focus to the newly active item (`.trace-item.active`) preserves seamless keyboard context and screen reader position.
-**Action:** Always await async record selection on cross-surface jumps and explicitly shift focus to the active record item in the target listbox.

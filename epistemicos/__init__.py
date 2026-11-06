@@ -131,11 +131,6 @@ from epistemicos.semantic_uncertainty import (
     Candidate,
     ClusterInfo
 )
-from epistemicos.semantic_adapter import (
-    SemanticAdapter,
-    SemanticSchedulerAdapter,
-    DualUncertaintyStepMetrics
-)
 
 __all__.extend([
     "ShowerCurtainEngine",
@@ -160,9 +155,6 @@ __all__.extend([
     "ExactAndNormalizedResolver",
     "Candidate",
     "ClusterInfo",
-    "SemanticAdapter",
-    "SemanticSchedulerAdapter",
-    "DualUncertaintyStepMetrics",
     "ContainmentGuard",
     "ContainmentReceipt",
     "ContainmentViolationType",
