@@ -562,11 +562,16 @@ def test_keyboard_navigation_and_focus_management_workflows(a11y_comprehensive_s
         page.keyboard.press("/")
         assert page.evaluate("() => document.activeElement.id") == "trace-search"
 
-        # 3. Escape key clears search query or blurs
+        # 3. Escape key clears search query or blurs and announces clearance
         page.keyboard.type("test query")
         assert page.locator("#trace-search").input_value() == "test query"
         page.keyboard.press("Escape")
         assert page.locator("#trace-search").input_value() == ""
+        page.wait_for_function(
+            "() => document.getElementById('a11y-status-announcer').textContent === "
+            "'Trace search cleared.'"
+        )
+        assert page.locator("#a11y-status-announcer").text_content() == "Trace search cleared."
 
         # 4. Keyboard Arrow Navigation in Traces Listbox
         first_item = page.locator("#trace-list .trace-item").first

@@ -108,6 +108,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (searchInput.value) {
               searchInput.value = '';
               this.state.traceSearchQuery = '';
+              this.announce('Trace search cleared.');
               this.renderTracesList();
             } else {
               searchInput.blur();
@@ -161,6 +162,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (provSearchInput.value) {
               provSearchInput.value = '';
               this.state.provenanceSearchQuery = '';
+              this.announce('Provenance search cleared.');
               this.renderProvenanceRecordList();
             } else {
               provSearchInput.blur();
@@ -189,6 +191,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (caseSearchInput.value) {
               caseSearchInput.value = '';
               this.state.caseSearchQuery = '';
+              this.announce('Benchmark case search cleared.');
               this.renderBenchmarkCasesList();
             } else {
               caseSearchInput.blur();
