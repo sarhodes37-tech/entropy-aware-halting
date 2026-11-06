@@ -335,13 +335,33 @@ def run_end_to_end_estimate_benchmarks(
         w_subresults = {}
         print(f"  Workload: {w_name}")
 
+        # Alphabetic tokens for candidate uniqueness without leaking numeric digits
+        # into clean or negation-heavy workloads
+        alpha_tokens = [
+            "alpha", "bravo", "charlie", "delta", "echo", "foxtrot",
+            "golf", "hotel", "india", "juliet", "kilo", "lima",
+            "mike", "november", "oscar", "papa", "quebec", "romeo",
+            "sierra", "tango", "uniform", "victor", "whiskey", "xray"
+        ]
+        batch_tokens = [
+            "first", "second", "third", "fourth", "fifth", "sixth",
+            "seventh", "eighth", "ninth", "tenth", "eleventh", "twelfth",
+            "primary", "secondary", "tertiary", "interim", "provisional",
+            "supplementary", "additional", "final", "standard", "baseline",
+            "verified", "routine", "auxiliary"
+        ]
+
         for k in candidate_counts:
             # Generate k distinct candidate items per batch from the workload domain
             batches = []
             for b in range(batches_per_count):
+                b_tok = batch_tokens[b % len(batch_tokens)]
                 batch_cands = [
                     Candidate(
-                        text=f"{base_texts[i % len(base_texts)]} [Variation {i} batch {b}]",
+                        text=(
+                            f"{base_texts[i % len(base_texts)]} "
+                            f"(variation {alpha_tokens[i % len(alpha_tokens)]} {b_tok})"
+                        ),
                         probability=1.0 / k,
                         action="APPROVE" if i % 2 == 0 else "DENY"
                     )
