@@ -9,10 +9,15 @@ Addresses PR #368 review criteria:
    - Negation-heavy text (not, no, never, cannot, double negations)
    - Quantity/unit-heavy text (currencies, numbers, units, percentages)
    - Mixed realistic enterprise inputs
-4. Statistical reporting:
-   - Sample count, p50, p95, p99, mean, stddev, min, max, delta, speedup
-   - Distinguishes per-candidate latency from per-batch and complete estimate() latency.
-5. Saves machine-readable results to results/semantic_feature_benchmark_results.json
+4. Statistical reporting semantics:
+   - Explicitly reports run-level aggregate timing statistics (median p50, p95, mean, stddev,
+     min, max) across repeated paired trial observations.
+   - Distinguishes isolated feature-extraction speedup from complete estimator speedup,
+     avoiding claims regarding end-to-end EpistemicOS task latency.
+5. Workload-specific end-to-end evaluation:
+   - Evaluates complete SemanticUncertaintyEstimator.estimate() cold-cache performance across
+     all 4 linguistic workloads for candidate counts K=6, 12, 24.
+6. Saves machine-readable results to results/semantic_feature_benchmark_results.json
 """
 
 import functools
@@ -26,6 +31,7 @@ from pathlib import Path
 from typing import Any, Dict, FrozenSet, List, Tuple
 
 from epistemicos.semantic_uncertainty import (
+    Candidate,
     ExactAndNormalizedResolver,
     SemanticUncertaintyEstimator,
 )
@@ -72,7 +78,6 @@ class BaselineExactAndNormalizedResolver(ExactAndNormalizedResolver):
         return baseline_unoptimized_get_features(text)
 
 
-# Workload Definitions (10 unique strings per workload, covering varied lengths and semantics)
 WORKLOAD_CLEAN_TEXTS = [
     "Please summarize the quarterly logistics analysis.",
     "System status normal and healthy.",
@@ -153,21 +158,20 @@ def get_environment_info() -> Dict[str, Any]:
 
 
 def compute_statistics(values: List[float]) -> Dict[str, float]:
+    """Computes descriptive run-level aggregate timing statistics across trial observations."""
     if not values:
         return {}
     s = sorted(values)
     n = len(s)
     p50_idx = int(0.50 * n)
     p95_idx = int(0.95 * n)
-    p99_idx = int(0.99 * n)
 
     return {
-        "samples": n,
+        "run_level_observations": n,
         "mean": round(statistics.mean(values), 4),
         "stddev": round(statistics.stdev(values), 4) if n > 1 else 0.0,
         "median_p50": round(s[min(p50_idx, n - 1)], 4),
         "p95": round(s[min(p95_idx, n - 1)], 4),
-        "p99": round(s[min(p99_idx, n - 1)], 4),
         "min": round(s[0], 4),
         "max": round(s[-1], 4),
     }
@@ -181,6 +185,8 @@ def run_feature_extraction_benchmarks(
     Separates:
     - Cold-Cache: invoking un-cached kernel logic directly (wrapped function)
     - Warm-Cache: invoking cached @lru_cache kernel with pre-warmed entries
+    Statistics represent run-level aggregates over N=25 paired timing observations
+    (each observation aggregates 10,000 function calls).
     """
     results = {}
 
@@ -237,7 +243,6 @@ def run_feature_extraction_benchmarks(
         ) * 100.0
 
         # 2. WARM-CACHE (Cached function calls)
-        # Pre-warm caches
         for t in texts:
             BaselineExactAndNormalizedResolver._get_features(t)
             ExactAndNormalizedResolver._get_features(t)
@@ -287,12 +292,14 @@ def run_feature_extraction_benchmarks(
             "unique_inputs": len(texts),
             "input_lengths": [len(t) for t in texts],
             "cold_cache_us_per_eval": {
+                "semantics": "Run-level aggregate timing per call across N=25 paired observations",
                 "baseline": stats_base_cold,
                 "optimized": stats_opt_cold,
                 "speedup_ratio": round(speedup_cold, 2),
                 "latency_reduction_pct": round(reduction_cold, 1),
             },
             "warm_cache_us_per_eval": {
+                "semantics": "Run-level aggregate timing per call across N=25 paired observations",
                 "baseline": stats_base_warm,
                 "optimized": stats_opt_warm,
                 "speedup_ratio": round(speedup_warm, 2),
@@ -311,91 +318,103 @@ def run_feature_extraction_benchmarks(
 
 
 def run_end_to_end_estimate_benchmarks(
-    candidate_counts: List[int] = [6, 12, 24], batches_per_count: int = 30
+    candidate_counts: List[int] = [6, 12, 24], batches_per_count: int = 25
 ) -> Dict[str, Any]:
     """
-    Evaluates full end-to-end SemanticUncertaintyEstimator.estimate() calls.
-    Tests cold-cache batch evaluation by clearing the LRU cache before each batch of candidates.
+    Evaluates full end-to-end SemanticUncertaintyEstimator.estimate() calls across all 4 workloads.
+    Cold-cache: clears LRU cache before each batch of candidates.
+    Reported percentiles represent run-level aggregate batch latencies across 20 trials.
     """
-    print("\n--- Part 2: End-to-End estimate() Cold-Cache Candidate Batches ---")
+    print("\n--- Part 2: End-to-End estimate() Cold-Cache Candidate Batches Across Workloads ---")
     est_base = SemanticUncertaintyEstimator(resolver=BaselineExactAndNormalizedResolver())
     est_opt = SemanticUncertaintyEstimator(resolver=ExactAndNormalizedResolver())
 
-    results = {}
+    workload_results = {}
 
-    for k in candidate_counts:
-        batches = [
-            [
-                f"Candidate option {i} analyzing proposal outcome variation for batch {b}"
-                for i in range(k)
-            ]
-            for b in range(batches_per_count)
-        ]
+    for w_name, base_texts in WORKLOADS.items():
+        w_subresults = {}
+        print(f"  Workload: {w_name}")
 
-        # Verify equivalence
-        for b in batches:
-            res_b = est_base.estimate(b)
-            res_o = est_opt.estimate(b)
-            assert res_b.to_dict() == res_o.to_dict(), f"estimate() output mismatch on size {k}"
+        for k in candidate_counts:
+            # Generate k distinct candidate items per batch from the workload domain
+            batches = []
+            for b in range(batches_per_count):
+                batch_cands = [
+                    Candidate(
+                        text=f"{base_texts[i % len(base_texts)]} [Variation {i} batch {b}]",
+                        probability=1.0 / k,
+                        action="APPROVE" if i % 2 == 0 else "DENY"
+                    )
+                    for i in range(k)
+                ]
+                batches.append(batch_cands)
 
-        base_batch_ms = []
-        opt_batch_ms = []
-        trials = 20
+            # Strict equivalence check
+            for b in batches:
+                res_b = est_base.estimate(b)
+                res_o = est_opt.estimate(b)
+                assert res_b.to_dict() == res_o.to_dict(), f"Mismatch in {w_name} on size {k}"
 
-        for rep in range(trials):
-            if rep % 2 == 0:
-                t0 = time.perf_counter()
-                for b in batches:
-                    BaselineExactAndNormalizedResolver._get_features.cache_clear()
-                    est_base.estimate(b)
-                t1 = time.perf_counter()
-                base_batch_ms.append(((t1 - t0) / batches_per_count) * 1000.0)
+            base_batch_ms = []
+            opt_batch_ms = []
+            trials = 20
 
-                t0 = time.perf_counter()
-                for b in batches:
-                    ExactAndNormalizedResolver._get_features.cache_clear()
-                    est_opt.estimate(b)
-                t1 = time.perf_counter()
-                opt_batch_ms.append(((t1 - t0) / batches_per_count) * 1000.0)
-            else:
-                t0 = time.perf_counter()
-                for b in batches:
-                    ExactAndNormalizedResolver._get_features.cache_clear()
-                    est_opt.estimate(b)
-                t1 = time.perf_counter()
-                opt_batch_ms.append(((t1 - t0) / batches_per_count) * 1000.0)
+            for rep in range(trials):
+                if rep % 2 == 0:
+                    t0 = time.perf_counter()
+                    for b in batches:
+                        BaselineExactAndNormalizedResolver._get_features.cache_clear()
+                        est_base.estimate(b)
+                    t1 = time.perf_counter()
+                    base_batch_ms.append(((t1 - t0) / batches_per_count) * 1000.0)
 
-                t0 = time.perf_counter()
-                for b in batches:
-                    BaselineExactAndNormalizedResolver._get_features.cache_clear()
-                    est_base.estimate(b)
-                t1 = time.perf_counter()
-                base_batch_ms.append(((t1 - t0) / batches_per_count) * 1000.0)
+                    t0 = time.perf_counter()
+                    for b in batches:
+                        ExactAndNormalizedResolver._get_features.cache_clear()
+                        est_opt.estimate(b)
+                    t1 = time.perf_counter()
+                    opt_batch_ms.append(((t1 - t0) / batches_per_count) * 1000.0)
+                else:
+                    t0 = time.perf_counter()
+                    for b in batches:
+                        ExactAndNormalizedResolver._get_features.cache_clear()
+                        est_opt.estimate(b)
+                    t1 = time.perf_counter()
+                    opt_batch_ms.append(((t1 - t0) / batches_per_count) * 1000.0)
 
-        stats_base = compute_statistics(base_batch_ms)
-        stats_opt = compute_statistics(opt_batch_ms)
-        speedup = stats_base["median_p50"] / (stats_opt["median_p50"] or 1e-6)
-        reduction = (1.0 - (stats_opt["median_p50"] / stats_base["median_p50"])) * 100.0
+                    t0 = time.perf_counter()
+                    for b in batches:
+                        BaselineExactAndNormalizedResolver._get_features.cache_clear()
+                        est_base.estimate(b)
+                    t1 = time.perf_counter()
+                    base_batch_ms.append(((t1 - t0) / batches_per_count) * 1000.0)
 
-        results[f"candidates_{k}"] = {
-            "candidate_count": k,
-            "batches_evaluated": batches_per_count,
-            "cold_cache_batch_latency_ms": {
-                "baseline": stats_base,
-                "optimized": stats_opt,
-                "speedup_ratio": round(speedup, 2),
-                "latency_reduction_pct": round(reduction, 1),
+            stats_base = compute_statistics(base_batch_ms)
+            stats_opt = compute_statistics(opt_batch_ms)
+            speedup = stats_base["median_p50"] / (stats_opt["median_p50"] or 1e-6)
+            reduction = (1.0 - (stats_opt["median_p50"] / stats_base["median_p50"])) * 100.0
+
+            w_subresults[f"candidates_{k}"] = {
+                "candidate_count": k,
+                "batches_evaluated": batches_per_count,
+                "cold_cache_batch_latency_ms": {
+                    "semantics": "Run-level aggregate batch latency across N=20 trials",
+                    "baseline": stats_base,
+                    "optimized": stats_opt,
+                    "speedup_ratio": round(speedup, 2),
+                    "latency_reduction_pct": round(reduction, 1),
+                }
             }
-        }
 
-        print(
-            f"  [Candidates K={k:2d}] Cold Batch Latency: "
-            f"Base p50={stats_base['median_p50']:.3f}ms, "
-            f"Opt p50={stats_opt['median_p50']:.3f}ms | "
-            f"Speedup: {speedup:.2f}x ({reduction:.1f}% reduction)"
-        )
+            print(
+                f"    [K={k:2d}] Cold Batch Latency: "
+                f"Base p50={stats_base['median_p50']:.3f}ms, "
+                f"Opt p50={stats_opt['median_p50']:.3f}ms | "
+                f"Speedup: {speedup:.2f}x ({reduction:.1f}% reduction)"
+            )
+        workload_results[w_name] = w_subresults
 
-    return results
+    return workload_results
 
 
 def main():
@@ -410,7 +429,7 @@ def main():
 
     feat_results = run_feature_extraction_benchmarks(repetitions=25, calls_per_rep=1000)
     e2e_results = run_end_to_end_estimate_benchmarks(
-        candidate_counts=[6, 12, 24], batches_per_count=30
+        candidate_counts=[6, 12, 24], batches_per_count=25
     )
 
     full_report = {
@@ -419,11 +438,18 @@ def main():
         "methodology": {
             "repetitions": 25,
             "alternating_order": True,
-            "metrics": ["mean", "stddev", "median_p50", "p95", "p99", "min", "max"],
-            "cache_separation": "Cold-cache (isolated kernel calls) vs warm-cache (pre-warmed LRU)",
+            "sample_semantics": "Run-level aggregate timing observations across repeated trials",
+            "scope_clarification": (
+                "Speedups reflect isolated feature extraction and complete "
+                "SemanticUncertaintyEstimator.estimate() evaluations, "
+                "not end-to-end EpistemicOS task latency."
+            ),
+            "cache_separation": (
+                "Cold-cache (un-cached kernel execution) vs warm-cache (pre-warmed LRU hits)"
+            ),
         },
         "feature_extraction_workloads": feat_results,
-        "end_to_end_estimate_batches": e2e_results,
+        "end_to_end_estimate_by_workload": e2e_results,
     }
 
     RESULTS_PATH.parent.mkdir(parents=True, exist_ok=True)
