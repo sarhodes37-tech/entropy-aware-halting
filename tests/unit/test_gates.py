@@ -11,7 +11,9 @@ from epistemicos.gates import (
     TriangulationGate,
     GateResult,
     GateAction,
-    GateConfig
+    GateConfig,
+    GateInput,
+    GateDecision
 )
 from epistemicos.models import CanonicalProblemRepresentation
 
@@ -254,6 +256,100 @@ def test_crypto_attestation_gate():
     res_dep = gate.evaluate({}, deprecated_crypto)
     assert res_dep["passed"] is False
     assert "Deprecated" in res_dep["reason"]
+
+
+def test_crypto_attestation_gate_revoked_keys_validation(monkeypatch):
+    """Validates CryptoAttestationGate revoked_keys validation and env resolution."""
+    # Invalid container type
+    with pytest.raises(TypeError, match="revoked_keys must be a collection"):
+        CryptoAttestationGate(revoked_keys=123)
+
+    with pytest.raises(TypeError, match="revoked_keys must be a collection"):
+        CryptoAttestationGate(revoked_keys="not_a_collection")
+
+    # Invalid element type
+    with pytest.raises(TypeError, match="revoked key elements must be strings"):
+        CryptoAttestationGate(revoked_keys=["VALID_KEY", 12345])
+
+    # Direct list/set normalization and whitespace stripping
+    gate_list = CryptoAttestationGate(revoked_keys=[" KEY-1 ", "KEY-2", "", "   "])
+    assert gate_list.revoked_keys == frozenset({"KEY-1", "KEY-2"})
+
+    # Environment variable resolution
+    monkeypatch.setenv("EPISTEMICOS_REVOKED_KEYS", " KEY-ENV-1, KEY-ENV-2 ,,   ,KEY-ENV-3 ")
+    gate_env = CryptoAttestationGate()
+    assert gate_env.revoked_keys == frozenset({"KEY-ENV-1", "KEY-ENV-2", "KEY-ENV-3"})
+
+    # Evaluate revoked key from environment variable
+    crypto_payload = {"cryptography": {"algorithm": "ML-DSA", "key_id": "KEY-ENV-2"}}
+    res_env = gate_env.evaluate({}, crypto_payload)
+    assert res_env["passed"] is False
+    assert "REVOKED" in res_env["reason"]
+
+    # Evaluate whitespace-padded key ID from environment variable
+    padded_crypto_payload = {"cryptography": {"algorithm": "ML-DSA", "key_id": "  KEY-ENV-2  "}}
+    res_padded = gate_env.evaluate({}, padded_crypto_payload)
+    assert res_padded["passed"] is False
+    assert "REVOKED" in res_padded["reason"]
+    # Verify contract evaluation returns HALT directly
+    contract_res = gate_env.evaluate_contract(
+        GateInput(payload={}, context=padded_crypto_payload)
+    )
+    assert contract_res.decision == GateDecision.HALT
+    assert "REVOKED" in contract_res.reason_code
+
+    # Malformed key_id types: unhashable list, unhashable dict, int, bool
+    for malformed_id in [["KEY-ENV-2"], {"id": "KEY-ENV-2"}, 12345, True]:
+        malformed_payload = {"cryptography": {"algorithm": "ML-DSA", "key_id": malformed_id}}
+        res_malformed = gate_env.evaluate({}, malformed_payload)
+        assert res_malformed["passed"] is False
+        assert "Malformed key_id type" in res_malformed["reason"]
+
+        outcome_malformed = gate_env.evaluate_contract(
+            GateInput(payload={}, context=malformed_payload)
+        )
+        assert outcome_malformed.decision == GateDecision.HALT
+        assert "Malformed key_id type" in outcome_malformed.reason_code
+
+    # Empty string and whitespace-only key_id explicitly rejected
+    for empty_id in ["", "   ", "\t\n"]:
+        empty_payload = {"cryptography": {"algorithm": "ML-DSA", "key_id": empty_id}}
+        res_empty = gate_env.evaluate({}, empty_payload)
+        assert res_empty["passed"] is False
+        assert "Empty or whitespace-only" in res_empty["reason"]
+
+        outcome_empty = gate_env.evaluate_contract(
+            GateInput(payload={}, context=empty_payload)
+        )
+        assert outcome_empty.decision == GateDecision.HALT
+        assert "Empty or whitespace-only" in outcome_empty.reason_code
+
+    # Genuinely absent key_id uses fallback "UNKNOWN_KEY" and passes if not revoked
+    missing_key_payload = {"cryptography": {"algorithm": "ML-DSA"}}
+    res_missing = gate_env.evaluate({}, missing_key_payload)
+    assert res_missing["passed"] is True
+    outcome_missing = gate_env.evaluate_contract(
+        GateInput(payload={}, context=missing_key_payload)
+    )
+    assert outcome_missing.decision == GateDecision.ALLOW
+
+    # Ordinary valid unrevoked key passes
+    valid_key_payload = {"cryptography": {"algorithm": "ML-DSA", "key_id": "KEY-LEGIT-100"}}
+    res_valid = gate_env.evaluate({}, valid_key_payload)
+    assert res_valid["passed"] is True
+    outcome_valid = gate_env.evaluate_contract(
+        GateInput(payload={}, context=valid_key_payload)
+    )
+    assert outcome_valid.decision == GateDecision.ALLOW
+
+    # Explicit revoked_keys overrides environment variable
+    gate_override = CryptoAttestationGate(revoked_keys=["KEY-CUSTOM"])
+    assert gate_override.revoked_keys == frozenset({"KEY-CUSTOM"})
+
+    # Unset environment variable defaults to empty frozenset
+    monkeypatch.delenv("EPISTEMICOS_REVOKED_KEYS", raising=False)
+    gate_none = CryptoAttestationGate()
+    assert gate_none.revoked_keys == frozenset()
 
 
 def test_entropy_gate_strict_mode():
