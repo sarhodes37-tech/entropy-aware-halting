@@ -211,8 +211,9 @@ class BaselineUncachedSensitiveDataDetector(SensitiveDataDetector):
                 suggested_treatment="GENERALIZE"
             ))
 
-        # 12. Custom Entities Dictionary
-        for entity, pattern in self.custom_entities_compiled:
+        # 12. Custom Entities Dictionary (Unconditional regex execution baseline)
+        for item in self.custom_entities_compiled:
+            entity, pattern = item[0], item[1]
             for m in pattern.finditer(text):
                 _add_result(DetectionResult(
                     category=SensitivityCategory.CUSTOM_ENTITY,
@@ -433,8 +434,25 @@ def run_benchmark():
         calls_per_run=1000
     )
 
-    # 3. Shannon Entropy isolated comparison
-    print("\n3. Shannon Entropy Isolated Evaluation (100k calls, 20 reps):")
+    # 3. Custom Entities Workload (8 configured entities)
+    custom_entities_list = [
+        "ProjectFalcon", "Acme Corp", "TopSecret", "OmegaKey",
+        "SuperServer", "DatabaseProd", "UserZero", "SpecialAlpha"
+    ]
+    det_custom_base = BaselineUncachedSensitiveDataDetector(custom_entities=custom_entities_list)
+    det_custom_opt = SensitiveDataDetector(custom_entities=custom_entities_list)
+
+    benchmark_workload(
+        "3. Custom Entities Workload (Clean text, 8 configured entities)",
+        CLEAN_TEXTS,
+        det_custom_base,
+        det_custom_opt,
+        num_runs=20,
+        calls_per_run=1000
+    )
+
+    # 4. Shannon Entropy isolated comparison
+    print("\n4. Shannon Entropy Isolated Evaluation (100k calls, 20 reps):")
     test_word = "aB39kLpQ0zWsX7vB1mZ9wK2yTx4rNv6q"
     base_ent_times = []
     curr_ent_times = []
