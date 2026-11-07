@@ -11,7 +11,9 @@ from epistemicos.gates import (
     TriangulationGate,
     GateResult,
     GateAction,
-    GateConfig
+    GateConfig,
+    GateInput,
+    GateDecision
 )
 from epistemicos.models import CanonicalProblemRepresentation
 
@@ -283,6 +285,31 @@ def test_crypto_attestation_gate_revoked_keys_validation(monkeypatch):
     res_env = gate_env.evaluate({}, crypto_payload)
     assert res_env["passed"] is False
     assert "REVOKED" in res_env["reason"]
+
+    # Evaluate whitespace-padded key ID from environment variable
+    padded_crypto_payload = {"cryptography": {"algorithm": "ML-DSA", "key_id": "  KEY-ENV-2  "}}
+    res_padded = gate_env.evaluate({}, padded_crypto_payload)
+    assert res_padded["passed"] is False
+    assert "REVOKED" in res_padded["reason"]
+    # Verify contract evaluation returns HALT directly
+    contract_res = gate_env.evaluate_contract(
+        GateInput(payload={}, context=padded_crypto_payload)
+    )
+    assert contract_res.decision == GateDecision.HALT
+    assert "REVOKED" in contract_res.reason_code
+
+    # Malformed key_id types: unhashable list, unhashable dict, int, bool
+    for malformed_id in [["KEY-ENV-2"], {"id": "KEY-ENV-2"}, 12345, True]:
+        malformed_payload = {"cryptography": {"algorithm": "ML-DSA", "key_id": malformed_id}}
+        res_malformed = gate_env.evaluate({}, malformed_payload)
+        assert res_malformed["passed"] is False
+        assert "Malformed key_id type" in res_malformed["reason"]
+
+        outcome_malformed = gate_env.evaluate_contract(
+            GateInput(payload={}, context=malformed_payload)
+        )
+        assert outcome_malformed.decision == GateDecision.HALT
+        assert "Malformed key_id type" in outcome_malformed.reason_code
 
     # Explicit revoked_keys overrides environment variable
     gate_override = CryptoAttestationGate(revoked_keys=["KEY-CUSTOM"])
