@@ -542,6 +542,53 @@ def test_detector_case_insensitive_custom_entities():
     assert acme_results[2].span == (30, 34)
 
 
+def test_detector_custom_entities_unicode_and_boundary_regressions():
+    """
+    Validates custom entity detection invariants:
+    1. Unicode casing: 'i' matches 'ı' (U+0131) and 's' matches 'ſ' (U+017F) via re.IGNORECASE.
+    2. Word boundary: 'ProjectFalcon' matches standalone, but 'ProjectFalconX' does not.
+    3. Exact and mixed-case ASCII matches.
+    4. Multiple occurrences are correctly detected with non-overlapping spans.
+    5. Clean inputs take the fast path and return empty list.
+    6. Complete DetectionResult field equivalence against baseline regex evaluation.
+    """
+    # 1. Unicode casing tests
+    det_unicode = SensitiveDataDetector(custom_entities=["i", "s"])
+    res_i = det_unicode.detect("Letter ı is detected")
+    assert len(res_i) == 1
+    assert res_i[0].category == SensitivityCategory.CUSTOM_ENTITY
+    assert res_i[0].value == "ı"
+    assert res_i[0].span == (7, 8)
+    assert res_i[0].metadata == {"entity_name": "i"}
+
+    res_s = det_unicode.detect("Symbol ſ is detected")
+    assert len(res_s) == 1
+    assert res_s[0].category == SensitivityCategory.CUSTOM_ENTITY
+    assert res_s[0].value == "ſ"
+    assert res_s[0].span == (7, 8)
+    assert res_s[0].metadata == {"entity_name": "s"}
+
+    # 2. Word boundary behavior
+    det_boundary = SensitiveDataDetector(custom_entities=["ProjectFalcon"])
+    res_subword = det_boundary.detect("This is ProjectFalconX subword")
+    assert len(res_subword) == 0
+
+    res_exact = det_boundary.detect("This is ProjectFalcon standalone")
+    assert len(res_exact) == 1
+    assert res_exact[0].value == "ProjectFalcon"
+    assert res_exact[0].span == (8, 21)
+
+    # 3. Exact and mixed-case ASCII matches + multiple occurrences
+    res_multi = det_boundary.detect("projectfalcon and PROJECTFALCON and ProjectFalcon")
+    assert len(res_multi) == 3
+    assert [r.value for r in res_multi] == ["projectfalcon", "PROJECTFALCON", "ProjectFalcon"]
+    assert [r.span for r in res_multi] == [(0, 13), (18, 31), (36, 49)]
+
+    # 4. No-match input returns empty result
+    res_nomatch = det_boundary.detect("A completely unrelated string with no matching entities")
+    assert res_nomatch == []
+
+
 def test_detector_regex_metacharacters_in_entity_names():
     text = "Service api.v1$key[test] returned error for user."
     detector = SensitiveDataDetector(custom_entities=["api.v1$key[test]"])

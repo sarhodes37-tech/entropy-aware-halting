@@ -165,12 +165,13 @@ class SensitiveDataDetector:
         min_entropy_len: int = 20
     ):
         self.custom_entities = set(custom_entities or [])
-        # Pre-compile regex and cache case-folded entity strings for fast-path substring checks
+        # Pre-compile regex and cache case-folded entity strings and ASCII flags for fast paths
         self.custom_entities_compiled = [
             (
                 entity,
                 _get_compiled_regex(r"(?<!\w)" + re.escape(entity) + r"(?!\w)", re.IGNORECASE),
-                entity.lower()
+                entity.lower(),
+                entity.isascii()
             )
             for entity in sorted(self.custom_entities)
             if entity
@@ -388,14 +389,19 @@ class SensitiveDataDetector:
         # 12. Custom Entities Dictionary
         # Fast-path case-folded substring pre-filter (~33x speedup on custom entity scans):
         # skips expensive regex scans when the entity literal cannot be present in target text.
+        # Safe ASCII guard: Only applied when both input text and entity are ASCII to prevent
+        # Unicode casing false negatives (e.g. 'i' vs 'ı', 's' vs 'ſ' under re.IGNORECASE).
         text_lower = None
+        text_is_ascii = text.isascii()
         for item in self.custom_entities_compiled:
             entity, pattern = item[0], item[1]
             e_lower = item[2] if len(item) > 2 else entity.lower()
-            if text_lower is None:
-                text_lower = text.lower()
-            if e_lower not in text_lower:
-                continue
+            e_is_ascii = item[3] if len(item) > 3 else entity.isascii()
+            if text_is_ascii and e_is_ascii:
+                if text_lower is None:
+                    text_lower = text.lower()
+                if e_lower not in text_lower:
+                    continue
             for m in pattern.finditer(text):
                 _add_result(DetectionResult(
                     category=SensitivityCategory.CUSTOM_ENTITY,
