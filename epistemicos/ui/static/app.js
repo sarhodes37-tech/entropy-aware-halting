@@ -138,6 +138,7 @@ document.addEventListener('DOMContentLoaded', () => {
       if (btnBackToList) {
         btnBackToList.addEventListener('click', () => {
           this.updateMobileTraceView('list');
+          this.announce('Returned to execution trace list.');
           // Return focus to selected trace item if possible
           if (this.state.selectedTraceId) {
             const selectedItem = document.querySelector('#trace-list .trace-item.active');
@@ -150,6 +151,7 @@ document.addEventListener('DOMContentLoaded', () => {
       if (btnBackToDetail) {
         btnBackToDetail.addEventListener('click', () => {
           this.updateMobileTraceView('detail');
+          this.announce('Returned to trace lifecycle overview.');
           // Return focus to selected stage card if possible
           if (this.state.selectedEventSeq !== null && this.state.selectedEventSeq !== undefined) {
             const selectedStage = document.querySelector('.lifecycle-stage.selected .lifecycle-stage-card');
@@ -890,6 +892,7 @@ document.addEventListener('DOMContentLoaded', () => {
         btnRefresh.disabled = true;
         btnRefresh.setAttribute('aria-busy', 'true');
         btnRefresh.setAttribute('title', 'Refreshing overview metrics...');
+        this.announce('Refreshing overview metrics...');
       }
       if (refreshIcon) {
         refreshIcon.classList.add('spin');

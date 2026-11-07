@@ -4279,17 +4279,23 @@ def test_cumulative_limit_chunk_rejection_accounts_consumed_bytes():
     transport = ControlledEgressTransport(broker=broker)
 
     # Server sends 1024 bytes (chunk 1 <= 1500), then 1024 bytes (chunk 2: total 2048 > 1500)
+    conn_instances = []
+
     class CumChunkConn:
         def __init__(self, *args, **kwargs):
             self.step = 0
             self.closed = False
+            conn_instances.append(self)
+
         def request(self, *args, **kwargs):
             pass
+
         def getresponse(self):
             resp = MagicMock()
             resp.status = 200
             resp.reason = "OK"
             resp.getheaders.return_value = []
+
             def read(amt=1024):
                 if self.step == 0:
                     self.step += 1
@@ -4298,8 +4304,10 @@ def test_cumulative_limit_chunk_rejection_accounts_consumed_bytes():
                     self.step += 1
                     return b"B" * 1024
                 return b""
+
             resp.read = read
             return resp
+
         def close(self):
             self.closed = True
 
@@ -4316,9 +4324,13 @@ def test_cumulative_limit_chunk_rejection_accounts_consumed_bytes():
             transport.request("GET", "http://api.corp.com/stream-cum", transfer_context=ctx)
         assert "Cumulative volume exceeds ceiling of 1500 bytes during stream reception" in str(exc_cum.value)
 
-    # 1. Chunk 1 (1024) + Chunk 2 (1024) = 2048 physically read off the wire
+    # 1. Connection was explicitly closed upon cumulative-limit rejection
+    assert len(conn_instances) == 1
+    assert conn_instances[0].closed is True
+
+    # 2. Chunk 1 (1024) + Chunk 2 (1024) = 2048 physically read off the wire
     assert ctx.observed_bytes == 2048
-    # 2. Policy cumulative tracker commits those bytes exactly once
+    # 3. Policy cumulative tracker commits those bytes exactly once
     assert policy.get_cumulative_bytes(task_id) == 2048
-    # 3. Active reservation has been cleared
+    # 4. Active reservation has been cleared
     assert policy.get_allocated_bytes(task_id) == 2048
