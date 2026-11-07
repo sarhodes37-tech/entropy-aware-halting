@@ -387,31 +387,32 @@ class SensitiveDataDetector:
                 ))
 
         # 12. Custom Entities Dictionary
-        # Fast-path case-folded substring pre-filter (~33x speedup on custom entity scans):
+        # Fast-path case-folded substring pre-filter (3.01x on clean text, 2.00x on matching):
         # skips expensive regex scans when the entity literal cannot be present in target text.
         # Safe ASCII guard: Only applied when both input text and entity are ASCII to prevent
         # Unicode casing false negatives (e.g. 'i' vs 'ı', 's' vs 'ſ' under re.IGNORECASE).
-        text_lower = None
-        text_is_ascii = text.isascii()
-        for item in self.custom_entities_compiled:
-            entity, pattern = item[0], item[1]
-            e_lower = item[2] if len(item) > 2 else entity.lower()
-            e_is_ascii = item[3] if len(item) > 3 else entity.isascii()
-            if text_is_ascii and e_is_ascii:
-                if text_lower is None:
-                    text_lower = text.lower()
-                if e_lower not in text_lower:
-                    continue
-            for m in pattern.finditer(text):
-                _add_result(DetectionResult(
-                    category=SensitivityCategory.CUSTOM_ENTITY,
-                    value=m.group(0),
-                    span=(m.start(), m.end()),
-                    confidence=1.0,
-                    detector_type="dictionary",
-                    suggested_treatment="PSEUDONYMIZE",
-                    metadata={"entity_name": entity}
-                ))
+        if self.custom_entities_compiled:
+            text_lower = None
+            text_is_ascii = text.isascii()
+            for item in self.custom_entities_compiled:
+                entity, pattern = item[0], item[1]
+                e_lower = item[2] if len(item) > 2 else entity.lower()
+                e_is_ascii = item[3] if len(item) > 3 else entity.isascii()
+                if text_is_ascii and e_is_ascii:
+                    if text_lower is None:
+                        text_lower = text.lower()
+                    if e_lower not in text_lower:
+                        continue
+                for m in pattern.finditer(text):
+                    _add_result(DetectionResult(
+                        category=SensitivityCategory.CUSTOM_ENTITY,
+                        value=m.group(0),
+                        span=(m.start(), m.end()),
+                        confidence=1.0,
+                        detector_type="dictionary",
+                        suggested_treatment="PSEUDONYMIZE",
+                        metadata={"entity_name": entity}
+                    ))
 
         # 13. Custom Regex Patterns
         for name, pat_compiled in self.custom_compiled.items():
