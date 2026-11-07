@@ -77,8 +77,17 @@ class EpistemicOrchestrator:
         self._trajectory_locks: Dict[str, threading.Lock] = {}
         self._schedulers: Dict[str, EntropyAwareScheduler] = {}
 
-        audit_hmac_key = os.getenv("EPISTEMICOS_AUDIT_HMAC_KEY", "").encode("utf-8") if os.getenv("EPISTEMICOS_AUDIT_HMAC_KEY") else None
-        prov_hmac_key = os.getenv("EPISTEMICOS_PROVENANCE_HMAC_KEY", "").encode("utf-8") if os.getenv("EPISTEMICOS_PROVENANCE_HMAC_KEY") else None
+        # Fail-closed HMAC key resolution: explicit empty string env vars must not
+        # degrade to unkeyed None
+        raw_audit_key = os.getenv("EPISTEMICOS_AUDIT_HMAC_KEY")
+        audit_hmac_key = (
+            raw_audit_key.encode("utf-8") if raw_audit_key is not None else None
+        )
+
+        raw_prov_key = os.getenv("EPISTEMICOS_PROVENANCE_HMAC_KEY")
+        prov_hmac_key = (
+            raw_prov_key.encode("utf-8") if raw_prov_key is not None else None
+        )
 
         self.audit_logger = TamperEvidentAuditTrail(log_file_path=self.audit_log_path, hmac_key=audit_hmac_key)
 

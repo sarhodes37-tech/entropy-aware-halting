@@ -1,5 +1,6 @@
 import tempfile
 from unittest.mock import MagicMock
+import pytest
 
 from epistemicos.authorization import AuthorizationAuthority, Policy
 from epistemicos.core import EpistemicOrchestrator
@@ -523,3 +524,39 @@ class TestCoreCoverageOrchestratorEnforcement:
             assert "Execution boundary verification failed" in res_unverified["reason"]
             assert res_unverified["execution_outcome"] == valid_unverified
             assert res_unverified["vectors_revoked"] >= 0
+
+
+def test_orchestrator_hmac_key_resolution_fail_closed(monkeypatch, tmp_path):
+    """
+    Verifies fail-closed environment variable resolution for HMAC keys in EpistemicOrchestrator.
+    Explicit empty string environment variables must raise ValueError rather than silently
+    falling back to unkeyed None.
+    """
+    audit_file = str(tmp_path / "audit_hmac_test.jsonl")
+
+    # 1. Explicit empty string for EPISTEMICOS_AUDIT_HMAC_KEY -> ValueError
+    monkeypatch.setenv("EPISTEMICOS_AUDIT_HMAC_KEY", "")
+    monkeypatch.delenv("EPISTEMICOS_PROVENANCE_HMAC_KEY", raising=False)
+    with pytest.raises(ValueError, match="hmac_key cannot be empty"):
+        EpistemicOrchestrator(audit_log_path=audit_file)
+
+    # 2. Explicit empty string for EPISTEMICOS_PROVENANCE_HMAC_KEY -> ValueError
+    monkeypatch.delenv("EPISTEMICOS_AUDIT_HMAC_KEY", raising=False)
+    monkeypatch.setenv("EPISTEMICOS_PROVENANCE_HMAC_KEY", "")
+    with pytest.raises(ValueError, match="hmac_key cannot be empty"):
+        EpistemicOrchestrator(audit_log_path=audit_file)
+
+    # 3. Valid non-empty environment variables -> loaded as bytes and configured
+    monkeypatch.setenv("EPISTEMICOS_AUDIT_HMAC_KEY", "secret_audit_key_123")
+    monkeypatch.setenv("EPISTEMICOS_PROVENANCE_HMAC_KEY", "secret_prov_key_456")
+    orch_keyed = EpistemicOrchestrator(audit_log_path=audit_file)
+    assert orch_keyed.audit_logger.hmac_key == b"secret_audit_key_123"
+    assert orch_keyed.execution_boundary.store.hmac_key == b"secret_prov_key_456"
+
+    # 4. Unset environment variables -> default to None (unkeyed mode)
+    monkeypatch.delenv("EPISTEMICOS_AUDIT_HMAC_KEY", raising=False)
+    monkeypatch.delenv("EPISTEMICOS_PROVENANCE_HMAC_KEY", raising=False)
+    orch_unkeyed = EpistemicOrchestrator(audit_log_path=audit_file)
+    assert orch_keyed.audit_logger.hmac_key is not None
+    assert orch_unkeyed.audit_logger.hmac_key is None
+    assert orch_unkeyed.execution_boundary.store.hmac_key is None
