@@ -311,6 +311,37 @@ def test_crypto_attestation_gate_revoked_keys_validation(monkeypatch):
         assert outcome_malformed.decision == GateDecision.HALT
         assert "Malformed key_id type" in outcome_malformed.reason_code
 
+    # Empty string and whitespace-only key_id explicitly rejected
+    for empty_id in ["", "   ", "\t\n"]:
+        empty_payload = {"cryptography": {"algorithm": "ML-DSA", "key_id": empty_id}}
+        res_empty = gate_env.evaluate({}, empty_payload)
+        assert res_empty["passed"] is False
+        assert "Empty or whitespace-only" in res_empty["reason"]
+
+        outcome_empty = gate_env.evaluate_contract(
+            GateInput(payload={}, context=empty_payload)
+        )
+        assert outcome_empty.decision == GateDecision.HALT
+        assert "Empty or whitespace-only" in outcome_empty.reason_code
+
+    # Genuinely absent key_id uses fallback "UNKNOWN_KEY" and passes if not revoked
+    missing_key_payload = {"cryptography": {"algorithm": "ML-DSA"}}
+    res_missing = gate_env.evaluate({}, missing_key_payload)
+    assert res_missing["passed"] is True
+    outcome_missing = gate_env.evaluate_contract(
+        GateInput(payload={}, context=missing_key_payload)
+    )
+    assert outcome_missing.decision == GateDecision.ALLOW
+
+    # Ordinary valid unrevoked key passes
+    valid_key_payload = {"cryptography": {"algorithm": "ML-DSA", "key_id": "KEY-LEGIT-100"}}
+    res_valid = gate_env.evaluate({}, valid_key_payload)
+    assert res_valid["passed"] is True
+    outcome_valid = gate_env.evaluate_contract(
+        GateInput(payload={}, context=valid_key_payload)
+    )
+    assert outcome_valid.decision == GateDecision.ALLOW
+
     # Explicit revoked_keys overrides environment variable
     gate_override = CryptoAttestationGate(revoked_keys=["KEY-CUSTOM"])
     assert gate_override.revoked_keys == frozenset({"KEY-CUSTOM"})

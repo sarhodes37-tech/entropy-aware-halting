@@ -792,6 +792,15 @@ class CryptoAttestationGate(ControlPlaneGate):
             )
 
         key_id = key_id.strip()
+        if not key_id:
+            return GateOutcome(
+                decision=GateDecision.HALT,
+                reason_code="CRITICAL: Empty or whitespace-only key_id identifier",
+                gate_name=self.gate_name,
+                gate_version=self.config.version,
+                evidence={"confidence": 0.0},
+                latency_ms=(time.perf_counter() - t0) * 1000
+            )
 
         if self._check_ocsp_revocation(key_id):
             return GateOutcome(
