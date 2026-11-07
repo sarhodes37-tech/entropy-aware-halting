@@ -110,16 +110,47 @@ The `ShowerCurtainOpenAIAdapter` wraps model inference requests:
 
 ---
 
-## 6. Deployment Boundary & Infrastructure Requirements
+## 6. Context-Aware Data Transfer Governance (SRG / Luna Moth Threat Model)
 
-### 6.1 Application-Level Checks vs. Deployment Infrastructure (GAP-03 Status: PARTIAL)
+### 6.1 Threat Model & Governing Principle
+The motivating threat model is **Silent Ransom Group (SRG / Luna Moth)**, known for utilizing legitimate administration tools (e.g., Rclone, WinSCP) and approved, reputable cloud storage services (e.g., Microsoft OneDrive, Google Drive) as unauthorized exfiltration conduits.
+
+The governing principle of EpistemicOS data transfer governance is:
+> **A legitimate executable or approved destination hostname does not make a particular data transfer legitimate.**
+
+Egress governance cannot rely solely on destination allowlisting or malware signatures. A hostname allowlist granting access to `graph.microsoft.com` or `www.googleapis.com` must not permit an agent or tool to exfiltrate confidential records to an employee's personal account or an attacker-controlled workspace.
+
+### 6.2 The Typed Transfer Context (`DataTransferContext`)
+Data movement decisions are evaluated against a typed, validated contract:
+1. **Initiating Principal**: The authenticated identity initiating the transfer.
+2. **Destination Identity (`DestinationIdentity`)**: The fine-grained destination target—including the provider service (`onedrive`, `google_drive`, `s3`), specific approved `tenant_id`, `account_id`, or `workspace_id`, alongside the normalized host and endpoint.
+3. **Data Classification (`DataClassification`)**: Ordered sensitivity (`PUBLIC`, `INTERNAL`, `CONFIDENTIAL`, `RESTRICTED`). Classification must originate from trusted policy or verified metadata, not arbitrary agent assertions (`is_classification_trusted=True`).
+4. **Operation & Direction**: Specific transfer verbs (`READ`, `WRITE`, `SYNC`, `BACKUP`, `EXPORT`) and directions (`UPLOAD`, `DOWNLOAD`, `SYNCHRONIZE`, `REPLICATE`).
+5. **Transfer Volume**: Both declared byte count and actual observed/transmitted bytes, bounded by per-transfer limits and cumulative task/request budgets.
+6. **Explicit Authorization**: Verification that capability tokens bind exactly to the authorized destination tenant and scope, preventing cross-destination capability reuse.
+
+### 6.3 In-Process vs. Deployment Enforcement Boundaries
+- **In-Process Python Boundary**:
+  - `ControlledEgressTransport` and `EgressTransportBroker` enforce pre-flight and in-flight payload byte inspection, destination tenant validation, and capability binding for managed Python HTTP/HTTPS connections.
+  - Declared sizes are validated against actual observed payload lengths; transfers are aborted before or during transmission if limits are breached.
+- **Deployment-Level Boundary (Residual Gap)**:
+  - Application-level Python middleware cannot inspect or terminate unmanaged native binaries, subprocesses (e.g. standalone CLI `rclone` or `winscp` invocations outside Python tool wrappers), or raw C-extensions bypassing Python socket boundaries.
+  - OS-level network isolation (iptables/nftables, network namespaces `netns`, or mandatory egress proxying with TLS interception and tenant-header enforcement) remains mandatory in untrusted execution environments.
+- **Provider Identity Limitations**:
+  - When cloud providers do not expose verifiable tenant or account identifiers within unauthenticated network connection requests (e.g., standard generic HTTPS calls prior to OAuth token exchange), policy must require either an authenticated capability asserting the destination tenant or fail closed.
+
+---
+
+## 7. Deployment Boundary & Infrastructure Requirements
+
+### 7.1 Application-Level Checks vs. Deployment Infrastructure (GAP-03 Status: PARTIAL)
 - **Enforced Outbound Paths**: Application-level Python HTTP requests (`ControlledEgressTransport`, `ShowerCurtainOpenAIAdapter`), `EgressTransportBroker` connections, `ContainmentGuard.inspect_network_egress()` / `wrap_tool_execution()`, and direct `socket.connect` calls within `enforce_socket_boundary()` protected execution scope.
 - **Deployment Infrastructure Requirements**: OS-level network isolation, egress firewall rules (iptables/nftables), enforced HTTP egress proxy, or network namespaces (`netns`). Application-level Python code cannot replace OS-level process isolation.
 
-### 6.2 Deployment Enforcement Invariants
+### 7.2 Deployment Enforcement Invariants
 When deployed in protected mode with `require_infrastructure_enforcement=True`, `EgressTransportBroker` verifies the presence of infrastructure-level network enforcement (`infrastructure_enforced=True`) and fails startup if missing.
 
-### 6.3 Remaining Library-Level Bypass Routes & Status Verdict
+### 7.3 Remaining Library-Level Bypass Routes & Status Verdict
 The overall GAP-03 status remains `PARTIAL` (and `PARTIAL_GATING_DEFENSE` in Incident Lab evidence reports) because:
 - Direct Python socket calls and HTTP transports are authoritatively enforced at the transport boundary within the process.
 - Subprocesses (`curl`/`wget`/raw shell execution) and raw C-extensions bypassing Python's `socket` module require container/OS-level network isolation (iptables or netns).
