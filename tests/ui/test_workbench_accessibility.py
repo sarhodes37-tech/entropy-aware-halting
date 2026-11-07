@@ -800,21 +800,25 @@ def test_live_region_announcements(a11y_comprehensive_server):
         page.wait_for_function("() => document.getElementById('a11y-status-announcer').textContent === 'Overview metrics updated.'")
 
         # Test successful refresh path
-        page.evaluate("() => { document.getElementById('a11y-status-announcer').textContent = ''; }")
+        page.evaluate("() => { window.__announcements = []; const ann = document.getElementById('a11y-status-announcer'); const mo = new MutationObserver(() => { if (ann.textContent) window.__announcements.push(ann.textContent); }); mo.observe(ann, { childList: true, characterData: true, subtree: true }); }")
         page.wait_for_selector("#btn-refresh-overview:not([disabled])")
         page.click("#btn-refresh-overview")
         page.wait_for_function("() => document.getElementById('a11y-status-announcer').textContent === 'Overview metrics updated.'")
         assert announcer.text_content() == "Overview metrics updated."
+        announcements = page.evaluate("() => window.__announcements")
+        assert "Refreshing overview metrics..." in announcements
 
         # Wait for button to be re-enabled
         page.wait_for_selector("#btn-refresh-overview:not([disabled])")
 
         # Test failed refresh path: route /api/overview to fail
         page.route("**/api/overview", lambda route: route.abort())
-        page.evaluate("() => { document.getElementById('a11y-status-announcer').textContent = ''; }")
+        page.evaluate("() => { window.__announcements = []; const ann = document.getElementById('a11y-status-announcer'); ann.textContent = ''; }")
         page.click("#btn-refresh-overview")
         page.wait_for_function("() => document.getElementById('a11y-status-announcer').textContent.length > 0")
         assert announcer.text_content() == "Failed to update overview metrics."
+        announcements_fail = page.evaluate("() => window.__announcements")
+        assert "Refreshing overview metrics..." in announcements_fail
         page.unroute("**/api/overview")
 
         # 7. Investigative shortcuts on Overview with focus and announcements

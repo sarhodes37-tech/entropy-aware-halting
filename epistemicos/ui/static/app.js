@@ -892,6 +892,7 @@ document.addEventListener('DOMContentLoaded', () => {
         btnRefresh.disabled = true;
         btnRefresh.setAttribute('aria-busy', 'true');
         btnRefresh.setAttribute('title', 'Refreshing overview metrics...');
+        this.announce('Refreshing overview metrics...');
       }
       if (refreshIcon) {
         refreshIcon.classList.add('spin');

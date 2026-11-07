@@ -479,6 +479,7 @@ def test_search_input_keyboard_shortcut_aria_attributes():
     assert "searchInput.value = '';" in js_content
 
     # Overview refresh live announcements
+    assert "this.announce('Refreshing overview metrics...');" in js_content
     assert "this.announce('Overview metrics updated.');" in js_content
     assert "this.announce('Failed to update overview metrics.');" in js_content
 
