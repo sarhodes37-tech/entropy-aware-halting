@@ -1844,9 +1844,13 @@ class ControlledEgressTransport:
                                     break
                                 new_total = prior_hops_bytes + hop_actual_bytes + received_bytes + len(chunk)
 
-                                # Enforce per-transfer limit in-flight before consuming chunk
+                                # Enforce per-transfer limit in-flight before accepting chunk into response buffer.
+                                # Account for the physically read chunk in transfer_context.observed_bytes so that
+                                # the failure handler and policy accurately reflect every consumed byte.
                                 if max_resp_limit is not None and new_total > max_resp_limit:
                                     conn.close()
+                                    if transfer_context is not None:
+                                        transfer_context.observed_bytes = new_total
                                     raise PermissionError(
                                         f"Egress transport streaming aborted: Response volume ({new_total} bytes) "
                                         f"exceeds maximum allowed per-transfer limit ({max_resp_limit} bytes)."

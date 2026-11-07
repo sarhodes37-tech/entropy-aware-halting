@@ -4124,3 +4124,118 @@ def test_endpoint_path_destination_binding_and_capability_target():
 
     # Capability is now consumed
     assert registry.is_consumed(cap.token_id) is True
+
+
+def test_over_limit_chunk_accounted_in_observed_bytes():
+    """
+    Over-Limit Chunk Accounting Test:
+    Proves that when a response chunk causes a transfer to exceed the per-transfer limit:
+    1. PermissionError is raised.
+    2. The entire chunk read from the wire is included in transfer_context.observed_bytes.
+    3. The policy cumulative tracking commits the full volume of read bytes.
+    """
+    from unittest.mock import patch, MagicMock
+
+    policy = DataTransferPolicy(
+        rules=[
+            TransferRule(
+                rule_id="r-chunk-wire-acc",
+                allowed_principals={"principal:alice"},
+                destination_service="api",
+                allowed_hosts={"api.corp.com"},
+                max_bytes_per_transfer=1500  # limit 1500 bytes
+            )
+        ],
+        principal_verifier=TEST_VERIFIER
+    )
+    broker = EgressTransportBroker(
+        policy=EgressPolicy(allowed_destinations={"api.corp.com"}),
+        transfer_policy=policy,
+        resolver_func=lambda h: ["93.184.216.34"]
+    )
+    transport = ControlledEgressTransport(broker=broker)
+
+    class OverLimitConn:
+        def __init__(self, *args, **kwargs):
+            self.step = 0
+        def request(self, *args, **kwargs):
+            pass
+        def getresponse(self):
+            resp = MagicMock()
+            resp.status = 200
+            resp.reason = "OK"
+            resp.getheaders.return_value = []
+            def read(amt=1024):
+                if self.step == 0:
+                    self.step += 1
+                    return b"A" * 1024  # 1024 <= 1500
+                elif self.step == 1:
+                    self.step += 1
+                    return b"B" * 1024  # 1024 + 1024 = 2048 > 1500
+                return b""
+            resp.read = read
+            return resp
+        def close(self):
+            pass
+
+    ctx = create_test_context(
+        principal_verifier=TEST_VERIFIER, principal="principal:alice",
+        destination=DestinationIdentity(service="api", host="api.corp.com"),
+        classification=DataClassification.INTERNAL, direction=TransferDirection.DOWNLOAD,
+        operation=TransferOperation.READ, declared_bytes=1024, task_id="task-over-limit-chunk",
+        trusted_authority_assertion=make_assertion("principal:alice", "INTERNAL", destination_host="api.corp.com", direction=TransferDirection.DOWNLOAD, operation=TransferOperation.READ, declared_bytes=1024)
+    )
+
+    with patch("epistemicos.containment.PinnedHTTPConnection", OverLimitConn):
+        with pytest.raises(PermissionError) as exc_info:
+            transport.request("GET", "http://api.corp.com/data", transfer_context=ctx)
+        assert "exceeds maximum allowed per-transfer limit" in str(exc_info.value)
+
+    # 1024 (chunk 1) + 1024 (chunk 2) = 2048 physically read off the wire
+    assert ctx.observed_bytes == 2048
+    assert policy.get_cumulative_bytes("task-over-limit-chunk") == 2048
+
+
+def test_endpoint_scoped_context_rejects_host_only_capability():
+    """
+    Tightened Endpoint Authorization Test:
+    Proves that an endpoint-scoped context (/v1/upload) strictly REJECTS a host-only capability (api.corp.com),
+    preventing unauthorized operations on unapproved paths.
+    """
+    from epistemicos.authorization import CapabilityRegistry, AuthorizationAuthority, Policy
+
+    registry = CapabilityRegistry(signing_secret=b"endpoint_scoping_secret_1234567")
+    auth_policy = Policy(policy_id="p-host-only", allowed_operations={"api_upload"}, allowed_resources={"api.corp.com"})
+    authority = AuthorizationAuthority(default_policy=auth_policy, registry=registry, principal_provider=TEST_VERIFIER)
+    principal = TEST_IDP.issue_principal("principal:alice")
+
+    payload_digest = hashlib.sha256(b"DATA").hexdigest()
+
+    # Issue host-only capability
+    cap_host_only, _ = authority.evaluate_and_issue_capability(
+        action_name="api_upload",
+        target="api.corp.com",
+        canonical_request_digest=payload_digest,
+        executor_id="transport",
+        principal_id=principal
+    )
+
+    policy = DataTransferPolicy(
+        rules=[TransferRule(rule_id="r-ep-strict", allowed_principals={"principal:alice"}, destination_service="api", allowed_hosts={"api.corp.com"}, require_capability=True)],
+        principal_verifier=TEST_VERIFIER
+    )
+
+    # Context specifies endpoint_path="/v1/sensitive"
+    ctx_ep = create_test_context(
+        principal_verifier=TEST_VERIFIER, principal="principal:alice",
+        destination=DestinationIdentity(service="api", host="api.corp.com", endpoint_path="/v1/sensitive"),
+        classification=DataClassification.INTERNAL, direction=TransferDirection.UPLOAD,
+        operation=TransferOperation.WRITE, action_name="api_upload",
+        canonical_request_digest=payload_digest,
+        trusted_authority_assertion=make_assertion("principal:alice", "INTERNAL", destination_host="api.corp.com", endpoint_path="/v1/sensitive", direction=TransferDirection.UPLOAD, operation=TransferOperation.WRITE)
+    )
+
+    dec = policy.evaluate_transfer(ctx_ep, capability=cap_host_only, authority=authority)
+    assert dec.allowed is False
+    assert "Capability target mismatch" in dec.reason
+    assert "api.corp.com/v1/sensitive" in dec.reason

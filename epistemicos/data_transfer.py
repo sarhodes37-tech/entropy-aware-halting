@@ -1119,13 +1119,16 @@ class DataTransferPolicy:
 
                 # Validate expected target independently against granted capability
                 cap_target = getattr(capability, "target", "")
-                expected_targets = {expected_target, dest.host}
                 if dest.endpoint_path:
+                    # Strict endpoint-level authorization: an endpoint-scoped context requires
+                    # an endpoint-scoped capability. A broader host-only target does not authorize
+                    # an endpoint-scoped operation unless explicitly wildcarded ("*").
                     norm_ep = dest.endpoint_path if dest.endpoint_path.startswith("/") else f"/{dest.endpoint_path}"
-                    expected_targets.add(f"{dest.host}{norm_ep}")
-                if dest.tenant_id:
-                    expected_targets.add(f"{dest.host}/{dest.tenant_id}")
-                    expected_targets.add(dest.tenant_id)
+                    expected_targets = {f"{dest.host}{norm_ep}", expected_target}
+                elif dest.tenant_id:
+                    expected_targets = {expected_target, f"{dest.host}/{dest.tenant_id}", dest.tenant_id}
+                else:
+                    expected_targets = {expected_target, dest.host}
 
                 if cap_target != "*" and cap_target not in expected_targets:
                     return TransferDecision(
