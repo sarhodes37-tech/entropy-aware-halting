@@ -1037,6 +1037,13 @@ def test_response_streaming_oversized_response_aborts_mid_stream(org_policy):
         assert mock_resp.total_read < 20000
         assert mock_resp.total_read >= 10000
 
+        # Verify that transfer_context.observed_bytes accurately records the actual bytes read off the wire
+        # (10 chunks of 1024 = 10240 bytes read before raising on limit 10000)
+        assert ctx.observed_bytes == mock_resp.total_read
+        # Verify policy cumulative tracking committed the full volume of read bytes
+        tracker_key = ctx.task_id or f"{ctx.initiating_principal}:{ctx.destination.host}"
+        assert org_policy.get_cumulative_bytes(tracker_key) == mock_resp.total_read
+
 
 def test_trusted_context_assertion_negative_cases():
     """
