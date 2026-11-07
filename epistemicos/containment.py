@@ -1566,6 +1566,32 @@ class ControlledEgressTransport:
         # atomically transition the capability from VALID to CONSUMED immediately before the first network I/O.
         # A single-use capability cannot authorize two concurrent requests, and once consumed before network I/O,
         # it is NEVER un-consumed / restored on network error, transport failure, or partial execution.
+        # Deterministic pre-flight destination validation:
+        # Before consuming any single-use capability token, validate the destination scheme,
+        # host, and allowlist policy. If the destination is rejected by local policy, abort immediately
+        # WITHOUT consuming the capability token.
+        norm_host = normalize_destination_host(current_url)
+        if not norm_host:
+            if reservation_id and self.broker.transfer_policy is not None:
+                self.broker.transfer_policy.refund_reservation(reservation_id)
+            raise PermissionError("Egress transport blocked request: Missing or invalid target destination.")
+
+        if self.broker.policy is None or (not self.broker.policy.allowed_destinations and not self.broker.policy.allowed_wildcards):
+            if reservation_id and self.broker.transfer_policy is not None:
+                self.broker.transfer_policy.refund_reservation(reservation_id)
+            raise PermissionError("Egress transport blocked request: Absent or empty approved-egress policy.")
+
+        allowed, pol_reason = self.broker.policy.is_destination_allowed(current_url, category=category)
+        if not allowed:
+            if reservation_id and self.broker.transfer_policy is not None:
+                self.broker.transfer_policy.refund_reservation(reservation_id)
+            raise PermissionError(f"Egress transport blocked request to '{current_url}': {pol_reason}")
+
+        # H3: Atomic single-use capability consumption.
+        # After completing all deterministic local validations (destination, policy, rules, digest, authority),
+        # atomically transition the capability from VALID to CONSUMED immediately before the first network I/O.
+        # A single-use capability cannot authorize two concurrent requests, and once consumed before network I/O,
+        # it is NEVER un-consumed / restored on network error, transport failure, or partial execution.
         # If capability is provided but effective authority or its registry is missing, protected mode must FAIL CLOSED.
         cap_token = getattr(capability, "token_id", None) if capability is not None else None
         if cap_token is not None:

