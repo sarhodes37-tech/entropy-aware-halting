@@ -1143,7 +1143,9 @@ class EgressTransportBroker:
         eff_transfer_policy = self.transfer_policy
         if transfer_context is not None or eff_transfer_policy is not None:
             if transfer_context is not None:
-                # 1. Enforce strict destination host binding: context destination host must match target URL host
+                # 1. Enforce strict destination host and endpoint path binding:
+                # Context destination host must match target URL host, and if an endpoint_path
+                # is specified in the destination identity, it must match the actual URL path.
                 ctx_dest = getattr(transfer_context, "destination", None)
                 if ctx_dest is not None:
                     ctx_host = getattr(ctx_dest, "host", "")
@@ -1158,6 +1160,24 @@ class EgressTransportBroker:
                             transfer_context=transfer_context
                         )
                         return False, pol_reason, None
+
+                    ctx_endpoint = getattr(ctx_dest, "endpoint_path", None)
+                    if ctx_endpoint:
+                        parsed_url = urlsplit(target_url)
+                        actual_path = unquote(parsed_url.path) or "/"
+                        norm_ctx_endpoint = ctx_endpoint if ctx_endpoint.startswith("/") else f"/{ctx_endpoint}"
+                        norm_actual_path = actual_path if actual_path.startswith("/") else f"/{actual_path}"
+                        if norm_ctx_endpoint != norm_actual_path:
+                            pol_reason = (
+                                f"Egress blocked: DataTransferContext destination endpoint_path '{ctx_endpoint}' "
+                                f"does not match actual target path '{actual_path}'."
+                            )
+                            self._record_egress_event(
+                                correlation_id, request_id, action_name,
+                                target_url, norm_host, valid_ips[0], False, pol_reason,
+                                transfer_context=transfer_context
+                            )
+                            return False, pol_reason, None
 
             if eff_transfer_policy is not None:
                 if transfer_context is None:
@@ -1566,10 +1586,10 @@ class ControlledEgressTransport:
         # atomically transition the capability from VALID to CONSUMED immediately before the first network I/O.
         # A single-use capability cannot authorize two concurrent requests, and once consumed before network I/O,
         # it is NEVER un-consumed / restored on network error, transport failure, or partial execution.
-        # Deterministic pre-flight destination validation:
+        # Deterministic pre-flight destination and context validation:
         # Before consuming any single-use capability token, validate the destination scheme,
-        # host, and allowlist policy. If the destination is rejected by local policy, abort immediately
-        # WITHOUT consuming the capability token.
+        # host, path, egress allowlist policy, and transfer context destination bindings.
+        # If any validation fails, abort immediately WITHOUT consuming the capability token.
         norm_host = normalize_destination_host(current_url)
         if not norm_host:
             if reservation_id and self.broker.transfer_policy is not None:
@@ -1586,6 +1606,31 @@ class ControlledEgressTransport:
             if reservation_id and self.broker.transfer_policy is not None:
                 self.broker.transfer_policy.refund_reservation(reservation_id)
             raise PermissionError(f"Egress transport blocked request to '{current_url}': {pol_reason}")
+
+        if transfer_context is not None:
+            ctx_dest = getattr(transfer_context, "destination", None)
+            if ctx_dest is not None:
+                ctx_host = getattr(ctx_dest, "host", "")
+                if ctx_host != norm_host:
+                    if reservation_id and self.broker.transfer_policy is not None:
+                        self.broker.transfer_policy.refund_reservation(reservation_id)
+                    raise PermissionError(
+                        f"Egress blocked: DataTransferContext destination host '{ctx_host}' "
+                        f"does not match actual target host '{norm_host}'."
+                    )
+                ctx_endpoint = getattr(ctx_dest, "endpoint_path", None)
+                if ctx_endpoint:
+                    parsed_pre_url = urlsplit(current_url)
+                    pre_actual_path = unquote(parsed_pre_url.path) or "/"
+                    norm_ctx_endpoint = ctx_endpoint if ctx_endpoint.startswith("/") else f"/{ctx_endpoint}"
+                    norm_pre_actual_path = pre_actual_path if pre_actual_path.startswith("/") else f"/{pre_actual_path}"
+                    if norm_ctx_endpoint != norm_pre_actual_path:
+                        if reservation_id and self.broker.transfer_policy is not None:
+                            self.broker.transfer_policy.refund_reservation(reservation_id)
+                        raise PermissionError(
+                            f"Egress blocked: DataTransferContext destination endpoint_path '{ctx_endpoint}' "
+                            f"does not match actual target path '{pre_actual_path}'."
+                        )
 
         # H3: Atomic single-use capability consumption.
         # After completing all deterministic local validations (destination, policy, rules, digest, authority),

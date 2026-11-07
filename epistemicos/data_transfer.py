@@ -1094,6 +1094,10 @@ class DataTransferPolicy:
 
                 if context.target:
                     expected_target = context.target
+                elif dest.endpoint_path:
+                    # Endpoint-level authorization: bind host and endpoint path into canonical target
+                    norm_ep = dest.endpoint_path if dest.endpoint_path.startswith("/") else f"/{dest.endpoint_path}"
+                    expected_target = f"{dest.host}{norm_ep}"
                 elif dest.tenant_id:
                     expected_target = f"{dest.host}/{dest.tenant_id}"
                 else:
@@ -1116,6 +1120,9 @@ class DataTransferPolicy:
                 # Validate expected target independently against granted capability
                 cap_target = getattr(capability, "target", "")
                 expected_targets = {expected_target, dest.host}
+                if dest.endpoint_path:
+                    norm_ep = dest.endpoint_path if dest.endpoint_path.startswith("/") else f"/{dest.endpoint_path}"
+                    expected_targets.add(f"{dest.host}{norm_ep}")
                 if dest.tenant_id:
                     expected_targets.add(f"{dest.host}/{dest.tenant_id}")
                     expected_targets.add(dest.tenant_id)

@@ -4019,3 +4019,108 @@ def test_h2_empty_body_positive_path():
             )
         assert "Capability digest mismatch" in str(exc_mismatch.value)
         mock_conn.assert_not_called()
+
+
+def test_endpoint_path_destination_binding_and_capability_target():
+    """
+    Endpoint-Level Authorization Test:
+    Proves that when DestinationIdentity specifies endpoint_path:
+    1. Requests to a different path on the same host fail closed without consuming single-use capability.
+    2. Capability target derivation matches host/endpoint_path.
+    3. Requests to the exact authorized endpoint path succeed.
+    """
+    from epistemicos.authorization import CapabilityRegistry, AuthorizationAuthority, Policy
+    from unittest.mock import patch, MagicMock
+
+    registry = CapabilityRegistry(signing_secret=b"endpoint_auth_secret_key_123456")
+    auth_policy = Policy(policy_id="p-endpoint", allowed_operations={"api_upload"}, allowed_resources={"api.corp.com/v1/approved"})
+    authority = AuthorizationAuthority(default_policy=auth_policy, registry=registry, principal_provider=TEST_VERIFIER)
+    principal = TEST_IDP.issue_principal("principal:alice")
+
+    payload = b"APPROVED_ENDPOINT_PAYLOAD"
+    payload_digest = hashlib.sha256(payload).hexdigest()
+
+    # Capability target explicitly bound to /v1/approved
+    cap, _ = authority.evaluate_and_issue_capability(
+        action_name="api_upload",
+        target="api.corp.com/v1/approved",
+        canonical_request_digest=payload_digest,
+        executor_id="transport",
+        principal_id=principal
+    )
+
+    transfer_policy = DataTransferPolicy(
+        rules=[
+            TransferRule(
+                rule_id="r-endpoint",
+                allowed_principals={"principal:alice"},
+                destination_service="api",
+                allowed_hosts={"api.corp.com"},
+                require_capability=True
+            )
+        ],
+        principal_verifier=TEST_VERIFIER
+    )
+
+    broker = EgressTransportBroker(
+        policy=EgressPolicy(allowed_destinations={"api.corp.com"}),
+        transfer_policy=transfer_policy,
+        authorization_authority=authority,
+        resolver_func=lambda h: ["93.184.216.34"]
+    )
+    transport = ControlledEgressTransport(broker=broker)
+
+    # 1. Attempt transfer to unapproved path /v1/unapproved with context bound to /v1/approved
+    ctx_approved = create_test_context(
+        principal_verifier=TEST_VERIFIER, principal="principal:alice",
+        destination=DestinationIdentity(service="api", host="api.corp.com", endpoint_path="/v1/approved"),
+        classification=DataClassification.INTERNAL, direction=TransferDirection.UPLOAD,
+        operation=TransferOperation.WRITE, action_name="api_upload",
+        target="api.corp.com/v1/approved", canonical_request_digest=payload_digest, declared_bytes=len(payload),
+        trusted_authority_assertion=make_assertion(
+            "principal:alice", "INTERNAL", destination_host="api.corp.com", endpoint_path="/v1/approved",
+            direction=TransferDirection.UPLOAD, operation=TransferOperation.WRITE, declared_bytes=len(payload)
+        )
+    )
+
+    with pytest.raises(PermissionError) as exc_path_mismatch:
+        transport.request(
+            method="POST",
+            url="http://api.corp.com/v1/unapproved",
+            body=payload,
+            transfer_context=ctx_approved,
+            capability=cap
+        )
+    assert "endpoint_path '/v1/approved' does not match actual target path '/v1/unapproved'" in str(exc_path_mismatch.value)
+
+    # Capability must NOT have been consumed
+    assert registry.is_consumed(cap.token_id) is False
+
+    # 2. Attempt transfer to approved path succeeds
+    class EndpointConn:
+        def __init__(self, *args, **kwargs):
+            pass
+        def request(self, method, url, body=None, headers=None):
+            pass
+        def getresponse(self):
+            resp = MagicMock()
+            resp.status = 200
+            resp.reason = "OK"
+            resp.getheaders.return_value = []
+            resp.read.return_value = b"approved_ok"
+            return resp
+        def close(self):
+            pass
+
+    with patch("epistemicos.containment.PinnedHTTPConnection", EndpointConn):
+        res = transport.request(
+            method="POST",
+            url="http://api.corp.com/v1/approved",
+            body=payload,
+            transfer_context=ctx_approved,
+            capability=cap
+        )
+        assert res["status"] == 200
+
+    # Capability is now consumed
+    assert registry.is_consumed(cap.token_id) is True
