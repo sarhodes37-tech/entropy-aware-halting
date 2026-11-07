@@ -211,8 +211,9 @@ class BaselineUncachedSensitiveDataDetector(SensitiveDataDetector):
                 suggested_treatment="GENERALIZE"
             ))
 
-        # 12. Custom Entities Dictionary
-        for entity, pattern in self.custom_entities_compiled:
+        # 12. Custom Entities Dictionary (Unconditional regex execution baseline)
+        for item in self.custom_entities_compiled:
+            entity, pattern = item[0], item[1]
             for m in pattern.finditer(text):
                 _add_result(DetectionResult(
                     category=SensitivityCategory.CUSTOM_ENTITY,
@@ -433,8 +434,48 @@ def run_benchmark():
         calls_per_run=1000
     )
 
-    # 3. Shannon Entropy isolated comparison
-    print("\n3. Shannon Entropy Isolated Evaluation (100k calls, 20 reps):")
+    # 3. Custom Entities Workloads (8 configured entities + Unicode entities)
+    custom_entities_list = [
+        "ProjectFalcon", "Acme Corp", "TopSecret", "OmegaKey",
+        "SuperServer", "DatabaseProd", "UserZero", "SpecialAlpha",
+        "i", "s"
+    ]
+    det_custom_base = BaselineUncachedSensitiveDataDetector(custom_entities=custom_entities_list)
+    det_custom_opt = SensitiveDataDetector(custom_entities=custom_entities_list)
+
+    # Workload 3a: Clean/no-match texts (demonstrates fast-path short-circuiting)
+    benchmark_workload(
+        "3a. Custom Entities - Clean / No-Match Workload",
+        CLEAN_TEXTS,
+        det_custom_base,
+        det_custom_opt,
+        num_runs=20,
+        calls_per_run=1000
+    )
+
+    # Workload 3b: Matching workload (validates exact, mixed-case, boundary, and Unicode matches)
+    CUSTOM_MATCH_TEXTS = [
+        "Deployment confirmed for ProjectFalcon and Acme Corp in production.",
+        "System operator reported UserZero accessed SuperServer via console.",
+        "Internal tag projectfalcon marked as topsecret by SpecialAlpha.",
+        "Encountered OmegaKey rotation failure on DatabaseProd cluster.",
+        "Mixed case PROJECTFALCON and acme corp observed in audit event.",
+        "Boundary check: ProjectFalconX should not match, but ProjectFalcon must.",
+        "Unicode casing test: Letter ı matches entity i under regex.",
+        "Unicode casing test: Symbol ſ matches entity s under regex."
+    ]
+
+    benchmark_workload(
+        "3b. Custom Entities - Matching Workload (Exact, Mixed-Case, Boundaries, Unicode)",
+        CUSTOM_MATCH_TEXTS,
+        det_custom_base,
+        det_custom_opt,
+        num_runs=20,
+        calls_per_run=1000
+    )
+
+    # 4. Shannon Entropy isolated comparison
+    print("\n4. Shannon Entropy Isolated Evaluation (100k calls, 20 reps):")
     test_word = "aB39kLpQ0zWsX7vB1mZ9wK2yTx4rNv6q"
     base_ent_times = []
     curr_ent_times = []
