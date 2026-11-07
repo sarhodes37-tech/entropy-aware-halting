@@ -18,7 +18,7 @@ import functools
 import os
 import re
 import time
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Set, Union, Iterable
 from dataclasses import dataclass, field
 from enum import Enum
 from epistemicos.models import TokenSurprisalSensor
@@ -743,13 +743,30 @@ class CryptoAttestationGate(ControlPlaneGate):
         self,
         required_algorithm: str = "ML-DSA",
         expiry_year: int = 2030,
-        revoked_keys: Optional[frozenset] = None,
+        revoked_keys: Optional[Union[frozenset, Set[str], List[str], Iterable[str]]] = None,
         config: Optional[GateConfig] = None
     ):
         super().__init__(config=config or GateConfig(version="1.0.0", is_critical=True))
         self.required_algorithm = required_algorithm
         self.expiry_year = expiry_year
-        self.revoked_keys = revoked_keys if revoked_keys is not None else frozenset(k.strip() for k in os.getenv("EPISTEMICOS_REVOKED_KEYS", "").split(",")) if os.getenv("EPISTEMICOS_REVOKED_KEYS") else frozenset()
+        if revoked_keys is not None:
+            if not isinstance(revoked_keys, (set, frozenset, list, tuple)):
+                sec_type = type(revoked_keys).__name__
+                raise TypeError(f"revoked_keys must be a collection of strings, got {sec_type}")
+            cleaned: Set[str] = set()
+            for k in revoked_keys:
+                if not isinstance(k, str):
+                    raise TypeError(f"revoked key elements must be strings, got {type(k).__name__}")
+                stripped = k.strip()
+                if stripped:
+                    cleaned.add(stripped)
+            self.revoked_keys: frozenset = frozenset(cleaned)
+        else:
+            env_val = os.getenv("EPISTEMICOS_REVOKED_KEYS")
+            if env_val is not None:
+                self.revoked_keys = frozenset(k.strip() for k in env_val.split(",") if k.strip())
+            else:
+                self.revoked_keys = frozenset()
 
     def _check_ocsp_revocation(self, key_id: str) -> bool:
         return key_id in self.revoked_keys
@@ -762,6 +779,8 @@ class CryptoAttestationGate(ControlPlaneGate):
         crypto_meta = context.get("cryptography") or payload.get("raw_payload", {}).get("cryptography", {})
         algo = crypto_meta.get("algorithm", "RSA-2048")
         key_id = crypto_meta.get("key_id", "UNKNOWN_KEY")
+        if isinstance(key_id, str):
+            key_id = key_id.strip()
 
         if self._check_ocsp_revocation(key_id):
             return GateOutcome(

@@ -256,6 +256,44 @@ def test_crypto_attestation_gate():
     assert "Deprecated" in res_dep["reason"]
 
 
+def test_crypto_attestation_gate_revoked_keys_validation(monkeypatch):
+    """Validates CryptoAttestationGate revoked_keys validation and env resolution."""
+    # Invalid container type
+    with pytest.raises(TypeError, match="revoked_keys must be a collection"):
+        CryptoAttestationGate(revoked_keys=123)
+
+    with pytest.raises(TypeError, match="revoked_keys must be a collection"):
+        CryptoAttestationGate(revoked_keys="not_a_collection")
+
+    # Invalid element type
+    with pytest.raises(TypeError, match="revoked key elements must be strings"):
+        CryptoAttestationGate(revoked_keys=["VALID_KEY", 12345])
+
+    # Direct list/set normalization and whitespace stripping
+    gate_list = CryptoAttestationGate(revoked_keys=[" KEY-1 ", "KEY-2", "", "   "])
+    assert gate_list.revoked_keys == frozenset({"KEY-1", "KEY-2"})
+
+    # Environment variable resolution
+    monkeypatch.setenv("EPISTEMICOS_REVOKED_KEYS", " KEY-ENV-1, KEY-ENV-2 ,,   ,KEY-ENV-3 ")
+    gate_env = CryptoAttestationGate()
+    assert gate_env.revoked_keys == frozenset({"KEY-ENV-1", "KEY-ENV-2", "KEY-ENV-3"})
+
+    # Evaluate revoked key from environment variable
+    crypto_payload = {"cryptography": {"algorithm": "ML-DSA", "key_id": "KEY-ENV-2"}}
+    res_env = gate_env.evaluate({}, crypto_payload)
+    assert res_env["passed"] is False
+    assert "REVOKED" in res_env["reason"]
+
+    # Explicit revoked_keys overrides environment variable
+    gate_override = CryptoAttestationGate(revoked_keys=["KEY-CUSTOM"])
+    assert gate_override.revoked_keys == frozenset({"KEY-CUSTOM"})
+
+    # Unset environment variable defaults to empty frozenset
+    monkeypatch.delenv("EPISTEMICOS_REVOKED_KEYS", raising=False)
+    gate_none = CryptoAttestationGate()
+    assert gate_none.revoked_keys == frozenset()
+
+
 def test_entropy_gate_strict_mode():
     # Default mode (strict_mode=False) allows missing logprobs
     gate_default = EntropyGate()
