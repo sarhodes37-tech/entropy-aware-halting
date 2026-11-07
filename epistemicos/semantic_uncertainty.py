@@ -85,24 +85,43 @@ class ExactAndNormalizedResolver(SemanticResolver):
     ]
     CLEAN_PUNCTUATION_PATTERN = re.compile(r"[^\w\s\$\€\£\¥]")
     QUANTITY_UNIT_PATTERN = re.compile(r"[\$\€\£\¥]?\b\d+(?:\.\d+)?\b(?:\s*(?:usd|eur|gbp|jpy|kg|lbs|dollars|euros|percent|%))?")
+    HAS_DIGIT_OR_CURRENCY = re.compile(r"[\d\$\€\£\¥]")
 
     def __init__(self, confidence_threshold: float = 0.85):
         self.confidence_threshold = confidence_threshold
 
     @staticmethod
     @functools.lru_cache(maxsize=4096)
-    def _get_features(text: str) -> Tuple[str, Tuple[str, ...], FrozenSet[str], Tuple[str, ...], FrozenSet[str], FrozenSet[str], FrozenSet[str], FrozenSet[str]]:
+    def _get_features(
+        text: str
+    ) -> Tuple[
+        str,
+        Tuple[str, ...],
+        FrozenSet[str],
+        Tuple[str, ...],
+        FrozenSet[str],
+        FrozenSet[str],
+        FrozenSet[str],
+        FrozenSet[str]
+    ]:
         clean = text.strip().lower()
-        # Simplify double negations
-        for pattern, replacement in ExactAndNormalizedResolver.DOUBLE_NEGATION_PATTERNS:
-            clean = pattern.sub(replacement, clean)
+        # Fast-path trigger guard: skip 6 regex substitution passes when "not" is absent
+        if "not" in clean:
+            for pattern, replacement in ExactAndNormalizedResolver.DOUBLE_NEGATION_PATTERNS:
+                clean = pattern.sub(replacement, clean)
         clean = ExactAndNormalizedResolver.CLEAN_PUNCTUATION_PATTERN.sub("", clean)
-        norm = " ".join(clean.split())
-        tokens = tuple(norm.split())
+        # Single-pass split: derive tokens and norm from single split to eliminate memory churn
+        tokens = tuple(clean.split())
+        norm = " ".join(tokens)
         token_set = frozenset(tokens)
 
-        matches = ExactAndNormalizedResolver.QUANTITY_UNIT_PATTERN.findall(text.lower())
-        units = tuple(m.strip() for m in matches if m.strip())
+        # Fast-path trigger guard: quantity/unit extraction requires digit or currency symbol
+        lower = text.lower()
+        if ExactAndNormalizedResolver.HAS_DIGIT_OR_CURRENCY.search(lower):
+            matches = ExactAndNormalizedResolver.QUANTITY_UNIT_PATTERN.findall(lower)
+            units = tuple(m.strip() for m in matches if m.strip())
+        else:
+            units = ()
 
         # Pre-compute keyword intersections once per candidate text to accelerate O(N^2) pairwise comparisons
         negs = token_set & ExactAndNormalizedResolver.NEGATION_WORDS

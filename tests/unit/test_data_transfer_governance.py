@@ -243,7 +243,8 @@ def org_policy():
         rules=[rule_onedrive, rule_gdrive, rule_cap_required],
         default_max_cumulative_bytes=100000,
         protected_mode=True,
-        authorization_authority=test_authority
+        authorization_authority=test_authority,
+        principal_verifier=TEST_VERIFIER
     )
 
 
@@ -707,7 +708,8 @@ def test_requirement_j_legitimate_tools_not_globally_blocked():
                 allowed_hosts={"sftp.partner.corp"},
                 max_classification=DataClassification.INTERNAL
             )
-        ]
+        ],
+        principal_verifier=TEST_VERIFIER
     )
 
     ctx_rclone = create_test_context(
@@ -1331,7 +1333,7 @@ def test_atomic_reservation_under_concurrency_contention():
         max_classification=DataClassification.INTERNAL,
         max_cumulative_bytes=1000
     )
-    policy = DataTransferPolicy(rules=[rule], default_max_cumulative_bytes=1000)
+    policy = DataTransferPolicy(rules=[rule], default_max_cumulative_bytes=1000, principal_verifier=TEST_VERIFIER)
 
     num_threads = 10
     vol_per_request = 200  # 10 * 200 = 2000 > 1000
@@ -1480,7 +1482,7 @@ def test_capability_parameter_mismatches_and_replay_at_execution_boundary():
         max_classification=DataClassification.CONFIDENTIAL,
         require_capability=True
     )
-    transfer_policy = DataTransferPolicy(rules=[transfer_rule])
+    transfer_policy = DataTransferPolicy(rules=[transfer_rule], principal_verifier=TEST_VERIFIER)
     egress_policy = EgressPolicy(allowed_destinations={"s3.us-east-1.amazonaws.com"})
     broker = EgressTransportBroker(
         policy=egress_policy,
@@ -1629,7 +1631,7 @@ def test_overlapping_host_different_tenant_streaming_limits():
         max_bytes_per_transfer=5000
     )
 
-    policy = DataTransferPolicy(rules=[rule_restricted, rule_standard])
+    policy = DataTransferPolicy(rules=[rule_restricted, rule_standard], principal_verifier=TEST_VERIFIER)
     egress_policy = EgressPolicy(allowed_destinations={"api.cloud-service.com"})
     broker = EgressTransportBroker(
         policy=egress_policy,
@@ -1985,7 +1987,8 @@ def test_targeted_security_defect_verification_suite():
     )
     accounting_policy = DataTransferPolicy(
         rules=[accounting_rule],
-        default_max_cumulative_bytes=1000
+        default_max_cumulative_bytes=1000,
+        principal_verifier=TEST_VERIFIER
     )
     broker_acct = EgressTransportBroker(
         policy=egress_policy,
@@ -2312,7 +2315,7 @@ def test_multi_hop_redirect_accounting_and_reservation_lifecycle():
         max_bytes_per_transfer=1000,
         max_cumulative_bytes=500
     )
-    policy = DataTransferPolicy(rules=[rule_strict])
+    policy = DataTransferPolicy(rules=[rule_strict], principal_verifier=TEST_VERIFIER)
 
     broker = EgressTransportBroker(
         policy=egress_policy,
@@ -2555,7 +2558,8 @@ def test_multi_hop_chain_combined_volume_aborts_mid_stream_on_second_hop():
                 allowed_hosts={"api.corp.internal"},
                 max_cumulative_bytes=50  # Total ceiling: 50 bytes
             )
-        ]
+        ],
+        principal_verifier=TEST_VERIFIER
     )
     broker = EgressTransportBroker(
         policy=EgressPolicy(allowed_destinations={"api.corp.internal"}),
@@ -2639,7 +2643,8 @@ def test_concurrent_transfers_in_flight_cumulative_ceiling_enforcement():
                 allowed_hosts={"api.corp.internal"},
                 max_cumulative_bytes=70  # Ceiling: 70 bytes
             )
-        ]
+        ],
+        principal_verifier=TEST_VERIFIER
     )
     broker = EgressTransportBroker(
         policy=EgressPolicy(allowed_destinations={"api.corp.internal"}),
@@ -2765,7 +2770,8 @@ def test_simultaneous_streaming_toctou_race_prevented():
                 allowed_hosts={"api.corp.internal"},
                 max_cumulative_bytes=100  # Ceiling: 100 bytes
             )
-        ]
+        ],
+        principal_verifier=TEST_VERIFIER
     )
     broker = EgressTransportBroker(
         policy=EgressPolicy(allowed_destinations={"api.corp.internal"}),
@@ -2905,7 +2911,8 @@ def test_post_307_redirect_repeated_body_aborts_before_transmission():
                 allowed_hosts={"api.corp.internal"},
                 max_cumulative_bytes=100
             )
-        ]
+        ],
+        principal_verifier=TEST_VERIFIER
     )
     broker = EgressTransportBroker(
         policy=EgressPolicy(allowed_destinations={"api.corp.internal"}),
@@ -2992,7 +2999,8 @@ def test_post_308_redirect_repeated_body_aborts_before_transmission():
                 allowed_hosts={"api.corp.internal"},
                 max_cumulative_bytes=100
             )
-        ]
+        ],
+        principal_verifier=TEST_VERIFIER
     )
     broker = EgressTransportBroker(
         policy=EgressPolicy(allowed_destinations={"api.corp.internal"}),
@@ -3078,7 +3086,8 @@ def test_empty_final_response_body_commits_upload_bytes():
                 allowed_hosts={"api.corp.internal"},
                 max_cumulative_bytes=500
             )
-        ]
+        ],
+        principal_verifier=TEST_VERIFIER
     )
     broker = EgressTransportBroker(
         policy=EgressPolicy(allowed_destinations={"api.corp.internal"}),
@@ -3159,7 +3168,8 @@ def test_simultaneous_uploads_budget_contention_prevented():
                 allowed_hosts={"api.corp.internal"},
                 max_cumulative_bytes=100
             )
-        ]
+        ],
+        principal_verifier=TEST_VERIFIER
     )
     broker = EgressTransportBroker(
         policy=EgressPolicy(allowed_destinations={"api.corp.internal"}),
@@ -3507,3 +3517,155 @@ def test_dns_resolution_not_invoked_for_empty_policy():
     assert ip is None
     # DNS resolver must NEVER be called
     mock_resolver.assert_not_called()
+
+
+def test_h1_h2_h3_m1_review_specific_remediations():
+    """
+    Dedicated regression test covering all specific PR #356 review comments:
+    1. H1: Missing policy verifier fails closed in protected mode; authority verifier cannot bypass missing policy verifier.
+    2. H2: Original context authorization digest is compared, not overwritten; empty body digest must be
+       SHA-256(b"") (not URL hash); negative tests for mismatched original context digest and capability digest.
+    3. H3: Missing authority/registry when capability is supplied fails closed before network socket creation.
+    4. DNS ordering: Disallowed non-empty-policy destination never triggers DNS resolution.
+    5. M1: Unbounded resp.read() IncompleteRead accounts partial bytes and commits observed bytes.
+    """
+    import http.client
+    from unittest.mock import MagicMock, patch
+
+    # 1. H1: Missing policy verifier fails closed in protected mode
+    policy_no_ver = DataTransferPolicy(
+        rules=[TransferRule(rule_id="r-no-ver", destination_service="s3", allowed_hosts={"s3.corp.com"})],
+        protected_mode=True
+        # principal_verifier is None!
+    )
+    ctx_test = create_test_context(
+        principal_verifier=TEST_VERIFIER,
+        principal="principal:alice",
+        destination=DestinationIdentity(service="s3", host="s3.corp.com"),
+        classification=DataClassification.INTERNAL,
+        direction=TransferDirection.UPLOAD,
+        operation=TransferOperation.WRITE,
+        trusted_authority_assertion=make_assertion("principal:alice", "INTERNAL", destination_host="s3.corp.com")
+    )
+    dec_no_ver = policy_no_ver.evaluate_transfer(ctx_test)
+    assert dec_no_ver.allowed is False
+    assert "no trusted PrincipalVerifier configured on policy boundary" in dec_no_ver.reason
+
+    # H1: Authority verifier substitution cannot bypass missing policy verifier
+    from epistemicos.authorization import AuthorizationAuthority, CapabilityRegistry, Policy
+    idp_corp = ExternalTestIdentityAuthority(issuer_id="CorpIdP")
+    verifier_corp = PrincipalVerifier(trusted_public_keys={"CorpIdP": idp_corp.public_key})
+    auth_sub = AuthorizationAuthority(
+        default_policy=Policy(policy_id="p-sub", allowed_operations={"op"}, allowed_resources={"res"}),
+        registry=CapabilityRegistry(signing_secret=b"sub_sec_32_bytes_test_1234567890"),
+        principal_provider=verifier_corp
+    )
+    dec_auth_sub = policy_no_ver.evaluate_transfer(ctx_test, authority=auth_sub)
+    assert dec_auth_sub.allowed is False
+    assert "no trusted PrincipalVerifier configured on policy boundary" in dec_auth_sub.reason
+
+    # 2. H2: Context authorization digest compared, not overwritten; empty body requires SHA-256(b"")
+    empty_body_hash = hashlib.sha256(b"").hexdigest()
+    wrong_hash = hashlib.sha256(b"something-else").hexdigest()
+    policy_h2_test = DataTransferPolicy(
+        rules=[TransferRule(rule_id="r-h2", allowed_principals={"principal:alice"}, destination_service="api", allowed_hosts={"api.corp.com"})],
+        principal_verifier=TEST_VERIFIER
+    )
+    broker_h2_test = EgressTransportBroker(
+        policy=EgressPolicy(allowed_destinations={"api.corp.com"}),
+        transfer_policy=policy_h2_test,
+        resolver_func=lambda h: ["93.184.216.34"]
+    )
+    transport_h2_test = ControlledEgressTransport(broker=broker_h2_test)
+
+    ctx_h2_mismatch = create_test_context(
+        principal_verifier=TEST_VERIFIER,
+        principal="principal:alice",
+        destination=DestinationIdentity(service="api", host="api.corp.com"),
+        classification=DataClassification.INTERNAL,
+        direction=TransferDirection.DOWNLOAD,
+        operation=TransferOperation.READ,
+        canonical_request_digest=wrong_hash,
+        trusted_authority_assertion=make_assertion("principal:alice", "INTERNAL", destination_host="api.corp.com", direction=TransferDirection.DOWNLOAD, operation=TransferOperation.READ)
+    )
+    with pytest.raises(PermissionError) as exc_empty_mismatch:
+        transport_h2_test.request(method="GET", url="http://api.corp.com/empty", transfer_context=ctx_h2_mismatch)
+    assert "does not match context authorization digest" in str(exc_empty_mismatch.value)
+    assert ctx_h2_mismatch.canonical_request_digest == wrong_hash
+
+    # 3. H3: Missing authority/registry when capability supplied fails closed
+    dummy_cap = Capability(
+        token_id="tok-fail-close-1",
+        principal_id="principal:alice",
+        correlation_id="corr-1",
+        request_id="req-1",
+        action_name="api_download",
+        target="api.corp.com",
+        canonical_request_digest=empty_body_hash,
+        executor_id="exec",
+        policy_version="1.0",
+        created_at=100.0,
+        expires_at=2000000000.0,
+        signature="aa" * 32
+    )
+    with pytest.raises(PermissionError) as exc_missing_auth:
+        transport_h2_test.request(method="GET", url="http://api.corp.com/empty", capability=dummy_cap)
+    assert "no AuthorizationAuthority or registry is configured" in str(exc_missing_auth.value)
+
+    # 4. DNS ordering: Disallowed non-empty-policy destination never triggers DNS resolution
+    mock_dns = MagicMock()
+    broker_disallowed = EgressTransportBroker(
+        policy=EgressPolicy(allowed_destinations={"api.allowed.com"}),
+        resolver_func=mock_dns
+    )
+    allowed, reason, ip = broker_disallowed.establish_connection("https://api.disallowed.com/data")
+    assert allowed is False
+    assert "not in approved egress policy" in reason
+    assert ip is None
+    mock_dns.assert_not_called()
+
+    # 5. M1: Unbounded resp.read() IncompleteRead accounts partial bytes and commits observed bytes
+    policy_unbounded = DataTransferPolicy(
+        rules=[TransferRule(rule_id="r-unbounded", allowed_principals={"principal:alice"}, destination_service="api", allowed_hosts={"api.corp.com"})],
+        principal_verifier=TEST_VERIFIER
+    )
+    broker_unbounded = EgressTransportBroker(
+        policy=EgressPolicy(allowed_destinations={"api.corp.com"}),
+        transfer_policy=policy_unbounded,
+        resolver_func=lambda h: ["93.184.216.34"]
+    )
+    transport_unbounded = ControlledEgressTransport(broker=broker_unbounded)
+
+    class IncompleteReadUnboundedConn:
+        def __init__(self, *args, **kwargs):
+            pass
+        def request(self, *args, **kwargs):
+            pass
+        def getresponse(self):
+            resp = MagicMock()
+            resp.status = 200
+            resp.reason = "OK"
+            resp.getheaders.return_value = []
+            def read():
+                raise http.client.IncompleteRead(b"PARTIAL_UNBOUNDED_DATA", expected=5000)
+            resp.read = read
+            return resp
+        def close(self):
+            pass
+
+    ctx_unbounded = create_test_context(
+        principal_verifier=TEST_VERIFIER,
+        principal="principal:alice",
+        destination=DestinationIdentity(service="api", host="api.corp.com"),
+        classification=DataClassification.INTERNAL,
+        direction=TransferDirection.DOWNLOAD,
+        operation=TransferOperation.READ,
+        declared_bytes=5000,
+        task_id="task-unbounded-inc",
+        trusted_authority_assertion=make_assertion("principal:alice", "INTERNAL", destination_host="api.corp.com", direction=TransferDirection.DOWNLOAD, operation=TransferOperation.READ, declared_bytes=5000)
+    )
+    with patch("epistemicos.containment.PinnedHTTPConnection", IncompleteReadUnboundedConn):
+        with pytest.raises(http.client.IncompleteRead):
+            transport_unbounded.request(method="GET", url="http://api.corp.com/unbounded", transfer_context=ctx_unbounded)
+    assert ctx_unbounded.observed_bytes == len(b"PARTIAL_UNBOUNDED_DATA")
+    assert policy_unbounded.get_cumulative_bytes("task-unbounded-inc") == len(b"PARTIAL_UNBOUNDED_DATA")

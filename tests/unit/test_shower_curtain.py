@@ -902,3 +902,209 @@ def test_detector_fast_path_guard_boundaries():
     assert spy_bearer.call_count == 0
     assert spy_priv.call_count == 0
     assert spy_path.call_count == 0
+
+
+def test_local_mapping_vault_master_key_fail_closed_validation():
+    """Verifies fail-closed validation and immutability for LocalMappingVault master_key."""
+    # 1. Reject invalid types with TypeError
+    invalid_keys = ["str_key", 12345, True, False, 3.14, ["bytes"], {"k": b"v"}]
+    for invalid_key in invalid_keys:
+        with pytest.raises(TypeError, match="master_key must be bytes or bytearray"):
+            LocalMappingVault(master_key=invalid_key)
+
+    # 2. Reject empty byte sequences with ValueError
+    with pytest.raises(ValueError, match="master_key cannot be empty"):
+        LocalMappingVault(master_key=b"")
+
+    with pytest.raises(ValueError, match="master_key cannot be empty"):
+        LocalMappingVault(master_key=bytearray())
+
+    # 3. Defensively cast mutable bytearray to immutable bytes
+    mutable_key = bytearray(b"M" * 32)
+    vault = LocalMappingVault(master_key=mutable_key)
+    assert isinstance(vault.master_key, bytes)
+    assert vault.master_key == b"M" * 32
+
+    # Verify mutating source bytearray does not alter vault master_key or derived session HMAC keys
+    sid = "test_session_defense"
+    session_key_before = vault._get_session_key(sid)
+    mutable_key[0] = ord("Z")
+    session_key_after = vault._get_session_key(sid)
+
+    assert vault.master_key == b"M" * 32
+    assert session_key_before == session_key_after
+
+    # 4. Default generation produces 32-byte immutable bytes
+    default_vault = LocalMappingVault()
+    assert isinstance(default_vault.master_key, bytes)
+    assert len(default_vault.master_key) == 32
+
+
+def test_shower_curtain_gate_trusted_exception_token_fail_closed_validation():
+    """Verifies fail-closed validation for ShowerCurtainGate trusted_exception_token."""
+    # 1. Reject invalid types with TypeError
+    invalid_tokens = [12345, b"secret_bytes", True, False, 3.14, ["token"], {"k": "v"}]
+    for invalid_token in invalid_tokens:
+        with pytest.raises(TypeError, match="trusted_exception_token must be a string"):
+            ShowerCurtainGate(trusted_exception_token=invalid_token)
+
+    # 2. Reject empty or whitespace-only tokens with ValueError
+    empty_tokens = ["", "   ", "\t", "\n", " \t \n "]
+    for empty_tok in empty_tokens:
+        with pytest.raises(ValueError, match="trusted_exception_token cannot be empty"):
+            ShowerCurtainGate(trusted_exception_token=empty_tok)
+
+    # 3. Valid tokens are stripped and function correctly
+    gate = ShowerCurtainGate(trusted_exception_token="  VALID_EXCEPTION_TOKEN  ")
+    assert gate.trusted_exception_token == "VALID_EXCEPTION_TOKEN"
+
+    # Authorized bypass on sensitive non-credential data with matching token
+    res_allowed = gate.evaluate(
+        payload={"msg": "Contact Alice at alice@example.com"},
+        context={"shower_curtain_exception_token": "VALID_EXCEPTION_TOKEN"}
+    )
+    assert res_allowed.action == GateAction.ALLOW
+    assert res_allowed.reason == "EXPLICIT_PRIVACY_EXCEPTION_AUTHORIZED_VIA_TRUSTED_TOKEN"
+
+    # Mismatched token halts
+    res_halted = gate.evaluate(
+        payload={"msg": "Contact Alice at alice@example.com"},
+        context={"shower_curtain_exception_token": "INVALID_TOKEN"}
+    )
+    assert res_halted.action == GateAction.HALT
+
+    # 4. None default initialization
+    default_gate = ShowerCurtainGate()
+    assert default_gate.trusted_exception_token is None
+
+    # Missing token in context when gate is configured with token
+    res_missing = gate.evaluate(
+        payload={"msg": "Contact Alice at alice@example.com"},
+        context={}
+    )
+    assert res_missing.action == GateAction.HALT
+
+    # Missing token in context when gate is unconfigured (None)
+    res_unconfigured_missing = default_gate.evaluate(
+        payload={"msg": "Contact Alice at alice@example.com"},
+        context={}
+    )
+    assert res_unconfigured_missing.action == GateAction.HALT
+
+    # Caller-controlled context attempting to forge authorization against unconfigured gate
+    res_unconfigured_forged = default_gate.evaluate(
+        payload={"msg": "Contact Alice at alice@example.com"},
+        context={"shower_curtain_exception_token": "FORGED_ATTEMPT"}
+    )
+    assert res_unconfigured_forged.action == GateAction.HALT
+
+    # Adversarial test: Configured gate with untrusted caller supplying arbitrary token
+    res_arbitrary_tok = gate.evaluate(
+        payload={"msg": "Contact Alice at alice@example.com"},
+        context={"shower_curtain_exception_token": "ARBITRARY_TOKEN_ATTEMPT"}
+    )
+    assert res_arbitrary_tok.action == GateAction.HALT
+
+    # Adversarial test: Context mutation / token override attempt
+    # If caller context dictionary is mutated prior to gate evaluation, evaluation fails closed
+    mutable_ctx = {"shower_curtain_exception_token": "VALID_EXCEPTION_TOKEN"}
+    mutable_ctx["shower_curtain_exception_token"] = "MUTATED_VALUE"
+    res_mutated = gate.evaluate(
+        payload={"msg": "Contact Alice at alice@example.com"},
+        context=mutable_ctx
+    )
+    assert res_mutated.action == GateAction.HALT
+
+    # Adversarial test: Token replay across separate evaluation contexts
+    # Replay of the valid token across multiple calls succeeds only if the token string matches,
+    # demonstrating bearer credential semantics without ephemeral consumption tracking.
+    res_replay1 = gate.evaluate(
+        payload={"msg": "User 1: user1@example.com"},
+        context={"shower_curtain_exception_token": "VALID_EXCEPTION_TOKEN"}
+    )
+    assert res_replay1.action == GateAction.ALLOW
+    res_replay2 = gate.evaluate(
+        payload={"msg": "User 2: user2@example.com"},
+        context={"shower_curtain_exception_token": "VALID_EXCEPTION_TOKEN"}
+    )
+    assert res_replay2.action == GateAction.ALLOW
+
+    # Credential detections strictly remain blocked under an otherwise valid exception
+    res_cred_blocked = gate.evaluate(
+        payload={"api_key": "sk-proj1234567890abcdef1234567890"},
+        context={"shower_curtain_exception_token": "VALID_EXCEPTION_TOKEN"}
+    )
+    assert res_cred_blocked.action == GateAction.HALT
+    assert "Credentials cannot bypass mandatory privacy protection" in res_cred_blocked.reason
+
+
+def test_luhn_check_correctness_and_boundaries():
+    """Validates _luhn_check across valid/invalid checksums, lengths, and formatted inputs."""
+    from epistemicos.shower_curtain.detector import _luhn_check
+
+    # Valid cards of varying lengths
+    assert _luhn_check("4532015112830366") is True  # 16 digits
+    assert _luhn_check("4532-0151-1283-0366") is True  # Formatted with dashes
+    assert _luhn_check("4532 0151 1283 0366") is True  # Formatted with spaces
+    assert _luhn_check("49927398716") is False  # 11-digit valid checksum but length < 13 -> False
+    assert _luhn_check("4000000000006") is True  # 13 digits valid Luhn
+    assert _luhn_check("4000000000000000006") is True  # 19 digits valid Luhn
+
+    # Invalid checksum
+    assert _luhn_check("4532015112830367") is False
+
+    # Length boundaries (< 13 or > 19 digits)
+    assert _luhn_check("12345") is False  # Too short
+    assert _luhn_check("123456789012") is False  # 12 digits
+    assert _luhn_check("12345678901234567890") is False  # 20 digits (too long)
+    assert _luhn_check("") is False
+    assert _luhn_check("abcdefghijk") is False
+
+    # Differential fuzzing against reference specification
+    import random
+    rng = random.Random(1337)
+    chars = "0123456789 -abcXYZ"
+
+    def reference_luhn(card_number: str) -> bool:
+        digits = [int(c) for c in card_number if c.isdigit()]
+        if len(digits) < 13 or len(digits) > 19:
+            return False
+        checksum = 0
+        reverse_digits = digits[::-1]
+        for idx, digit in enumerate(reverse_digits):
+            if idx % 2 == 1:
+                doubled = digit * 2
+                checksum += doubled - 9 if doubled > 9 else doubled
+            else:
+                checksum += digit
+        return checksum % 10 == 0
+
+    for _ in range(500):
+        length = rng.randint(0, 25)
+        sample = "".join(rng.choice(chars) for _ in range(length))
+        assert _luhn_check(sample) == reference_luhn(sample), f"Mismatch for sample: {sample}"
+
+
+def test_credit_card_regex_unicode_ascii_isolation():
+    """
+    Verifies that the production _CREDIT_CARD_REGEX pattern strictly restricts matches
+    to ASCII [0-9], preventing non-ASCII Unicode digits from reaching _luhn_check.
+    """
+    from epistemicos.shower_curtain.detector import _CREDIT_CARD_REGEX, SensitiveDataDetector
+
+    # Fullwidth Unicode digits (e.g. U+FF10 through U+FF19)
+    fullwidth_card = "４５３２０１５１１２８３０３６６"
+    assert fullwidth_card.isdigit() is True
+    # The production credit card regex must not match non-ASCII digits
+    assert _CREDIT_CARD_REGEX.search(fullwidth_card) is None
+
+    # Arabic-Indic Unicode digits (e.g. U+0660 through U+0669)
+    arabic_card = "٤٥٣٢٠١٥١١٢٨٣٠٣٦٦"
+    assert arabic_card.isdigit() is True
+    assert _CREDIT_CARD_REGEX.search(arabic_card) is None
+
+    # SensitiveDataDetector does not classify fullwidth numbers as credit cards
+    detector = SensitiveDataDetector()
+    results = detector.detect(f"Customer payment method: {fullwidth_card}")
+    card_results = [r for r in results if r.metadata.get("subtype") == "credit_card"]
+    assert len(card_results) == 0

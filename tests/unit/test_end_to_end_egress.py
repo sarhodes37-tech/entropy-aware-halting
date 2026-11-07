@@ -200,7 +200,7 @@ def test_9_direct_socket_connection_intercepted_and_enforced():
 
 def test_10_policy_engine_errors_and_dns_failures_fail_closed():
     """10. Proves DNS failures, resolver errors, and ambiguous destinations fail closed."""
-    policy = EgressPolicy(allowed_destinations={"api.github.com"})
+    policy = EgressPolicy(allowed_destinations={"api.github.com", "unresolvable-domain-xyz.org"})
 
     def failing_dns_resolver(hostname):
         raise socket.gaierror("Name or service not known")

@@ -562,11 +562,16 @@ def test_keyboard_navigation_and_focus_management_workflows(a11y_comprehensive_s
         page.keyboard.press("/")
         assert page.evaluate("() => document.activeElement.id") == "trace-search"
 
-        # 3. Escape key clears search query or blurs
+        # 3. Escape key clears search query or blurs and announces clearance
         page.keyboard.type("test query")
         assert page.locator("#trace-search").input_value() == "test query"
         page.keyboard.press("Escape")
         assert page.locator("#trace-search").input_value() == ""
+        page.wait_for_function(
+            "() => document.getElementById('a11y-status-announcer').textContent === "
+            "'Trace search cleared.'"
+        )
+        assert page.locator("#a11y-status-announcer").text_content() == "Trace search cleared."
 
         # 4. Keyboard Arrow Navigation in Traces Listbox
         first_item = page.locator("#trace-list .trace-item").first
@@ -739,6 +744,17 @@ def test_live_region_announcements(a11y_comprehensive_server):
             clear_btn.click()
             page.wait_for_function("() => document.getElementById('a11y-status-announcer').textContent.length > 0")
             assert "Trace filters cleared" in announcer.text_content()
+
+        # 3b. Dropdown filter change announcements: select status and reset
+        page.evaluate("() => { document.getElementById('a11y-status-announcer').textContent = ''; }")
+        page.select_option("#trace-status-filter", "DENIED")
+        page.wait_for_function("() => document.getElementById('a11y-status-announcer').textContent.length > 0")
+        assert "Trace status filter applied: DENIED." in announcer.text_content()
+
+        page.evaluate("() => { document.getElementById('a11y-status-announcer').textContent = ''; }")
+        page.select_option("#trace-status-filter", "ALL")
+        page.wait_for_function("() => document.getElementById('a11y-status-announcer').textContent.length > 0")
+        assert "Trace status filter reset: showing all statuses." in announcer.text_content()
 
         # 4. Provenance Navigation and Selection
         page.evaluate("() => { document.getElementById('a11y-status-announcer').textContent = ''; }")

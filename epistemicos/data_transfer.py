@@ -895,52 +895,37 @@ class DataTransferPolicy:
 
             # H1: Verify authority assertion strictly against the policy's configured trusted verifier.
             # A caller-supplied verifier on the context must never override the policy's trusted trust store.
-            effective_verifier = self.principal_verifier
-            if effective_verifier is None:
-                if authority is not None:
-                    candidate = getattr(authority, "principal_provider", None) or getattr(authority, "verifier", None)
-                    assertion = getattr(context, "trusted_authority_assertion", None)
-                    issuer = assertion.get("issuer") if isinstance(assertion, dict) else None
-                    if candidate is not None and issuer in getattr(candidate, "_trusted_public_keys", {}):
-                        effective_verifier = candidate
+            # Protected mode must fail closed when self.principal_verifier is absent or has no trusted issuers.
+            # Fallback to context or evaluation-time authority verifier promotion is strictly prohibited.
+            if self.principal_verifier is None or not getattr(self.principal_verifier, "has_trusted_issuers", lambda: False)():
+                return TransferDecision(
+                    allowed=False,
+                    reason=(
+                        f"Transfer blocked: Classification '{context.classification.value}' "
+                        "cannot be verified; no trusted PrincipalVerifier configured on policy boundary."
+                    )
+                )
 
-            if effective_verifier is not None:
-                if not getattr(effective_verifier, "has_trusted_issuers", lambda: False)():
-                    return TransferDecision(
-                        allowed=False,
-                        reason=(
-                            f"Transfer blocked: Classification '{context.classification.value}' "
-                            "cannot be verified; policy PrincipalVerifier has no trusted issuers."
-                        )
+            effective_verifier = self.principal_verifier
+            assertion = getattr(context, "trusted_authority_assertion", None)
+            issuer = assertion.get("issuer") if isinstance(assertion, dict) else None
+            trusted_keys = getattr(effective_verifier, "_trusted_public_keys", {})
+            if issuer not in trusted_keys:
+                return TransferDecision(
+                    allowed=False,
+                    reason=(
+                        f"Transfer blocked: Classification '{context.classification.value}' "
+                        f"assertion issuer '{issuer}' is not trusted by policy PrincipalVerifier."
                     )
-                assertion = getattr(context, "trusted_authority_assertion", None)
-                issuer = assertion.get("issuer") if isinstance(assertion, dict) else None
-                trusted_keys = getattr(effective_verifier, "_trusted_public_keys", {})
-                if issuer not in trusted_keys:
-                    return TransferDecision(
-                        allowed=False,
-                        reason=(
-                            f"Transfer blocked: Classification '{context.classification.value}' "
-                            f"assertion issuer '{issuer}' is not trusted by policy PrincipalVerifier."
-                        )
+                )
+            if not context._verify_context_assertion(verifier_override=effective_verifier):
+                return TransferDecision(
+                    allowed=False,
+                    reason=(
+                        f"Transfer blocked: Classification '{context.classification.value}' "
+                        "failed cryptographic authority assertion verification against policy trust store."
                     )
-                if not context._verify_context_assertion(verifier_override=effective_verifier):
-                    return TransferDecision(
-                        allowed=False,
-                        reason=(
-                            f"Transfer blocked: Classification '{context.classification.value}' "
-                            "failed cryptographic authority assertion verification against policy trust store."
-                        )
-                    )
-            else:
-                if not context._verify_context_assertion():
-                    return TransferDecision(
-                        allowed=False,
-                        reason=(
-                            f"Transfer blocked: Classification '{context.classification.value}' "
-                            "failed cryptographic authority assertion verification or binding mismatch."
-                        )
-                    )
+                )
 
         dest = context.destination
         principal = context.initiating_principal

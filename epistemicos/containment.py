@@ -1088,6 +1088,13 @@ class EgressTransportBroker:
             self._record_egress_event(correlation_id, request_id, action_name, target_url, norm_host, None, False, reason)
             return False, reason, None
 
+        # 2. DNS Ordering: Evaluate destination allowlist prior to DNS resolution.
+        # An unapproved destination must never trigger DNS lookups or disclose network intent.
+        allowed, pol_reason = self.policy.is_destination_allowed(target_url, category=category)
+        if not allowed:
+            self._record_egress_event(correlation_id, request_id, action_name, target_url, norm_host, None, False, pol_reason)
+            return False, pol_reason, None
+
         # Resolve DNS via trusted resolver
         try:
             resolved_ips = self.resolver_func(norm_host)
@@ -1131,12 +1138,6 @@ class EgressTransportBroker:
             reason = f"Egress blocked: DNS resolution for '{norm_host}' returned restricted IP(s) '{restricted_found}'."
             self._record_egress_event(correlation_id, request_id, action_name, target_url, norm_host, restricted_found[0], False, reason)
             return False, reason, None
-
-        # Check policy
-        allowed, pol_reason = self.policy.is_destination_allowed(target_url, category=category)
-        if not allowed:
-            self._record_egress_event(correlation_id, request_id, action_name, target_url, norm_host, valid_ips[0], False, pol_reason)
-            return False, pol_reason, None
 
         # Evaluate Data Transfer Policy if configured or if transfer_context is provided
         eff_transfer_policy = self.transfer_policy
@@ -1495,14 +1496,24 @@ class ControlledEgressTransport:
             else hashlib.sha256(b"").hexdigest()
         )
 
-        # If transfer_context is provided, update observed_bytes and set authoritative body digest
+        # H2: Compare, don't overwrite.
+        # If the transfer context carried an authorization digest, compare it against SHA-256 of the actual encoded body.
+        # The ONLY valid digest for an empty request body is SHA-256(b"").
+        if transfer_context is not None:
+            orig_context_digest = getattr(transfer_context, "canonical_request_digest", None)
+            if orig_context_digest is not None and orig_context_digest != actual_body_digest:
+                raise PermissionError(
+                    f"Egress transport authorization rejected: Transmitted request body digest "
+                    f"'{actual_body_digest}' does not match context authorization digest "
+                    f"'{orig_context_digest}'."
+                )
+
+        # If transfer_context is provided, update observed_bytes and evaluate & reserve
         reservation_id = None
         tracker_key = None
         matched_rule = None
         if transfer_context is not None:
             transfer_context.observed_bytes = actual_bytes
-            # Authoritatively bind the actual body digest to the context for policy evaluation
-            transfer_context.canonical_request_digest = actual_body_digest
 
             if self.broker.transfer_policy is not None:
                 tracker_key = (
@@ -1524,39 +1535,41 @@ class ControlledEgressTransport:
                 reservation_id = decision.reservation_id
                 matched_rule = decision.matched_rule
 
-        # H2: If capability specifies canonical_request_digest, independently verify it against actual_body_digest
+        # H2: If capability specifies canonical_request_digest, compare against actual_body_digest
         if capability is not None:
             cap_digest = getattr(capability, "canonical_request_digest", None)
-            if cap_digest is not None:
-                valid_digests = {actual_body_digest}
-                if encoded_body is None or len(encoded_body) == 0:
-                    valid_digests.add(hashlib.sha256(current_url.encode("utf-8")).hexdigest())
-                if cap_digest not in valid_digests:
-                    if reservation_id and self.broker.transfer_policy is not None:
-                        self.broker.transfer_policy.refund_reservation(reservation_id)
-                    raise PermissionError(
-                        f"Capability digest mismatch: capability bound to digest '{cap_digest}', "
-                        f"requested transfer digest is '{actual_body_digest}'."
-                    )
+            if cap_digest is not None and cap_digest != actual_body_digest:
+                if reservation_id and self.broker.transfer_policy is not None:
+                    self.broker.transfer_policy.refund_reservation(reservation_id)
+                raise PermissionError(
+                    f"Capability digest mismatch: capability bound to digest '{cap_digest}', "
+                    f"requested transfer digest is '{actual_body_digest}'."
+                )
 
         # H3: Atomic single-use capability consumption.
         # After completing all deterministic local validations (destination, policy, rules, digest, authority),
         # atomically transition the capability from VALID to CONSUMED immediately before the first network I/O.
         # A single-use capability cannot authorize two concurrent requests, and once consumed before network I/O,
         # it is NEVER un-consumed / restored on network error, transport failure, or partial execution.
+        # If capability is provided but effective authority or its registry is missing, protected mode must FAIL CLOSED.
         cap_token = getattr(capability, "token_id", None) if capability is not None else None
         if cap_token is not None:
             effective_authority = self.broker.authorization_authority
             if effective_authority is None and self.broker.transfer_policy is not None:
                 effective_authority = self.broker.transfer_policy.authorization_authority
-            if effective_authority is not None:
-                consumed_ok = effective_authority.registry.consume_token(cap_token)
-                if not consumed_ok:
-                    if reservation_id and self.broker.transfer_policy is not None:
-                        self.broker.transfer_policy.refund_reservation(reservation_id)
-                    raise PermissionError(
-                        f"Capability '{cap_token}' has already been consumed, revoked, or is invalid."
-                    )
+            if effective_authority is None or getattr(effective_authority, "registry", None) is None:
+                if reservation_id and self.broker.transfer_policy is not None:
+                    self.broker.transfer_policy.refund_reservation(reservation_id)
+                raise PermissionError(
+                    f"Capability '{cap_token}' presented but no AuthorizationAuthority or registry is configured to consume it."
+                )
+            consumed_ok = effective_authority.registry.consume_token(cap_token)
+            if not consumed_ok:
+                if reservation_id and self.broker.transfer_policy is not None:
+                    self.broker.transfer_policy.refund_reservation(reservation_id)
+                raise PermissionError(
+                    f"Capability '{cap_token}' has already been consumed, revoked, or is invalid."
+                )
 
         if transfer_context is not None:
             # Pre-flight passed: reset observed_bytes to 0 until bytes actually cross the network boundary
@@ -1819,7 +1832,24 @@ class ControlledEgressTransport:
                         "headers": resp_headers,
                         "body": resp_data
                     }
-                except (PermissionError, RuntimeError, ValueError, http.client.IncompleteRead):
+                except http.client.IncompleteRead as inc_err:
+                    partial_len = len(inc_err.partial) if getattr(inc_err, "partial", None) else 0
+                    hop_total = hop_actual_bytes + partial_len
+                    total_observed = prior_hops_bytes + hop_total
+                    if transfer_context is not None:
+                        transfer_context.observed_bytes = total_observed
+                    if self.broker.transfer_policy is not None:
+                        if reservation_id:
+                            self.broker.transfer_policy.commit_reservation(
+                                reservation_id, total_observed
+                            )
+                            reservation_id = None
+                        elif tracker_key:
+                            self.broker.transfer_policy.record_observed_bytes(
+                                tracker_key, total_observed
+                            )
+                    raise
+                except (PermissionError, RuntimeError, ValueError):
                     raise
                 except Exception as net_err:
                     raise socket.error(f"Egress transport network I/O error to '{current_url}': {str(net_err)}") from net_err
