@@ -200,13 +200,21 @@ def test_mobile_trace_explorer_drilldown_navigation(e2e_server, tmp_path):
                 btn_back_detail = page.locator("#btn-trace-back-to-detail")
                 assert btn_back_detail.is_visible()
 
-                # Click Back to Lifecycle
+                # Click Back to Lifecycle and verify announcement
                 btn_back_detail.click()
                 assert page.locator("#btn-trace-back-to-list").is_visible()
+                page.wait_for_function(
+                    "() => document.getElementById('a11y-status-announcer').textContent === "
+                    "'Returned to trace lifecycle overview.'"
+                )
 
-                # Click Back to Traces
+                # Click Back to Traces and verify announcement
                 btn_back.click()
                 assert page.locator("#area-trace-list").is_visible()
+                page.wait_for_function(
+                    "() => document.getElementById('a11y-status-announcer').textContent === "
+                    "'Returned to execution trace list.'"
+                )
 
             else:
                 # On Desktop (>=1024px), verify both list and detail are simultaneously visible
