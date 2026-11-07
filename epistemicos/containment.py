@@ -1856,7 +1856,7 @@ class ControlledEgressTransport:
                                         f"exceeds maximum allowed per-transfer limit ({max_resp_limit} bytes)."
                                     )
 
-                                # Enforce cumulative limit in-flight before consuming chunk
+                                # Enforce cumulative limit in-flight before accepting chunk into response buffer.
                                 # Atomically evaluates and claims in-flight usage against the cumulative ceiling,
                                 # accounting for committed bytes, other concurrent outstanding reservations,
                                 # and all bytes observed across prior redirect hops, current hop upload,
@@ -1872,6 +1872,8 @@ class ControlledEgressTransport:
                                     )
                                     if not claimed:
                                         conn.close()
+                                        if transfer_context is not None:
+                                            transfer_context.observed_bytes = new_total
                                         raise PermissionError(
                                             f"Egress transport streaming aborted: Cumulative volume exceeds "
                                             f"ceiling of {eff_cumulative_limit} bytes during stream reception."

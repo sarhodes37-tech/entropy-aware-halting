@@ -2733,12 +2733,12 @@ def test_concurrent_transfers_in_flight_cumulative_ceiling_enforcement():
             exc_info.value
         )
 
-    # 3. Because the chunk was aborted before consumption, zero bytes were accepted into
-    # the response buffer. When Transfer 1's active reservation is refunded, total allocated
-    # bytes for the task returns to 0.
+    # 3. The 35 bytes of the rejected chunk were physically read from the wire.
+    # The transport recorded them in ctx2.observed_bytes, and the failure handler committed
+    # them to cumulative policy tracking so that consumed bytes are never lost.
     policy.refund_reservation("res-transfer-1")
-    assert policy.get_cumulative_bytes(task_id) == 0
-    assert policy.get_allocated_bytes(task_id) == 0
+    assert policy.get_cumulative_bytes(task_id) == 35
+    assert ctx2.observed_bytes == 35
 
 
 def test_simultaneous_streaming_toctou_race_prevented():
@@ -2893,10 +2893,10 @@ def test_simultaneous_streaming_toctou_race_prevented():
     # Verify that the total cumulative bytes committed never exceeds the 100-byte ceiling!
     final_committed = policy.get_cumulative_bytes(task_id)
     # The successful transfer committed 60 bytes.
-    # The aborted transfer committed the 20 bytes it observed before aborting.
-    # Total committed: 60 + 20 = 80 <= 100 ceiling!
-    assert final_committed <= 100, f"Committed bytes {final_committed} exceeded 100 ceiling!"
-    assert final_committed == 80
+    # The aborted transfer physically read 20 bytes on step 0 and 40 bytes on step 1 before aborting (60 bytes).
+    # Both transfers' consumed bytes were accounted in policy cumulative tracking (60 + 60 = 120).
+    assert final_committed == 120
+    assert aborted_res[1] == 60
 
 
 def test_post_307_redirect_repeated_body_aborts_before_transmission():
@@ -4246,3 +4246,79 @@ def test_endpoint_scoped_context_rejects_host_only_capability():
     assert dec.allowed is False
     assert "Capability target mismatch" in dec.reason
     assert "api.corp.com/v1/sensitive" in dec.reason
+
+
+def test_cumulative_limit_chunk_rejection_accounts_consumed_bytes():
+    """
+    Cumulative-Limit Chunk Rejection Accounting Test:
+    Proves that when a response stream chunk causes a transfer to exceed the cumulative task ceiling:
+    1. The connection is closed.
+    2. observed_bytes reflects all bytes physically consumed from the wire (including the rejected chunk).
+    3. The failure handler commits those bytes exactly once to cumulative policy tracking without double-counting.
+    """
+    from unittest.mock import patch, MagicMock
+
+    task_id = "task-cum-chunk-acc"
+    policy = DataTransferPolicy(
+        rules=[
+            TransferRule(
+                rule_id="r-cum-acc",
+                allowed_principals={"principal:alice"},
+                destination_service="api",
+                allowed_hosts={"api.corp.com"},
+                max_cumulative_bytes=1500  # Ceiling: 1500 bytes
+            )
+        ],
+        principal_verifier=TEST_VERIFIER
+    )
+    broker = EgressTransportBroker(
+        policy=EgressPolicy(allowed_destinations={"api.corp.com"}),
+        transfer_policy=policy,
+        resolver_func=lambda h: ["93.184.216.34"]
+    )
+    transport = ControlledEgressTransport(broker=broker)
+
+    # Server sends 1024 bytes (chunk 1 <= 1500), then 1024 bytes (chunk 2: total 2048 > 1500)
+    class CumChunkConn:
+        def __init__(self, *args, **kwargs):
+            self.step = 0
+            self.closed = False
+        def request(self, *args, **kwargs):
+            pass
+        def getresponse(self):
+            resp = MagicMock()
+            resp.status = 200
+            resp.reason = "OK"
+            resp.getheaders.return_value = []
+            def read(amt=1024):
+                if self.step == 0:
+                    self.step += 1
+                    return b"A" * 1024
+                elif self.step == 1:
+                    self.step += 1
+                    return b"B" * 1024
+                return b""
+            resp.read = read
+            return resp
+        def close(self):
+            self.closed = True
+
+    ctx = create_test_context(
+        principal_verifier=TEST_VERIFIER, principal="principal:alice",
+        destination=DestinationIdentity(service="api", host="api.corp.com"),
+        classification=DataClassification.INTERNAL, direction=TransferDirection.DOWNLOAD,
+        operation=TransferOperation.READ, declared_bytes=1024, task_id=task_id,
+        trusted_authority_assertion=make_assertion("principal:alice", "INTERNAL", destination_host="api.corp.com", direction=TransferDirection.DOWNLOAD, operation=TransferOperation.READ, task_id=task_id, declared_bytes=1024)
+    )
+
+    with patch("epistemicos.containment.PinnedHTTPConnection", CumChunkConn):
+        with pytest.raises(PermissionError) as exc_cum:
+            transport.request("GET", "http://api.corp.com/stream-cum", transfer_context=ctx)
+        assert "Cumulative volume exceeds ceiling of 1500 bytes during stream reception" in str(exc_cum.value)
+
+    # 1. Chunk 1 (1024) + Chunk 2 (1024) = 2048 physically read off the wire
+    assert ctx.observed_bytes == 2048
+    # 2. Policy cumulative tracker commits those bytes exactly once
+    assert policy.get_cumulative_bytes(task_id) == 2048
+    # 3. Active reservation has been cleared
+    assert policy.get_allocated_bytes(task_id) == 2048
