@@ -920,12 +920,12 @@ class EgressTransportBroker:
         self.require_provenance = require_provenance
         self.authorization_authority = authorization_authority
         self.principal_verifier = principal_verifier
-        if self.transfer_policy is not None and getattr(self.transfer_policy, "principal_verifier", None) is not None:
-            if self.principal_verifier is None:
+        # H1: Strict Verifier Ownership.
+        # A broker MUST NOT mutate an attached transfer_policy's principal_verifier.
+        # DataTransferPolicy must independently own and establish its trusted verifier boundary.
+        if self.principal_verifier is None and self.transfer_policy is not None:
+            if getattr(self.transfer_policy, "principal_verifier", None) is not None:
                 self.principal_verifier = self.transfer_policy.principal_verifier
-        elif self.principal_verifier is not None and self.transfer_policy is not None:
-            if getattr(self.transfer_policy, "principal_verifier", None) is None:
-                self.transfer_policy.principal_verifier = self.principal_verifier
         self.connection_history: List[EgressConnectionRecord] = []
 
         if self.require_provenance and self.provenance_store is None:
@@ -1486,7 +1486,22 @@ class ControlledEgressTransport:
         current_method = method.upper()
         current_headers = dict(headers or {})
 
-        encoded_body = body.encode("utf-8") if isinstance(body, str) else body
+        # H2: Canonicalize request body across bytes, bytearray, str, or readable stream
+        if isinstance(body, (bytes, bytearray)):
+            encoded_body = bytes(body)
+        elif isinstance(body, str):
+            encoded_body = body.encode("utf-8")
+        elif hasattr(body, "read"):
+            # File-like or readable byte stream
+            encoded_body = body.read()
+        elif body is None:
+            encoded_body = None
+        else:
+            raise TypeError(
+                f"Unsupported request body type: {type(body).__name__}. "
+                "ControlledEgressTransport requires bytes, bytearray, str, or readable byte stream."
+            )
+
         actual_bytes = len(encoded_body) if encoded_body is not None else 0
 
         # H2: Derive authoritative request body digest independently from the actual transmitted encoded body

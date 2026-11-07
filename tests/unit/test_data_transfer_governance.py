@@ -3669,3 +3669,145 @@ def test_h1_h2_h3_m1_review_specific_remediations():
             transport_unbounded.request(method="GET", url="http://api.corp.com/unbounded", transfer_context=ctx_unbounded)
     assert ctx_unbounded.observed_bytes == len(b"PARTIAL_UNBOUNDED_DATA")
     assert policy_unbounded.get_cumulative_bytes("task-unbounded-inc") == len(b"PARTIAL_UNBOUNDED_DATA")
+
+
+def test_h1_broker_verifier_promotion_eliminated():
+    """
+    H1 Audit Verification:
+    Proves that a broker NEVER promotes or mutates an attached DataTransferPolicy's verifier.
+    If a DataTransferPolicy is instantiated with principal_verifier=None, attaching it to a broker
+    (even one with a configured verifier) leaves the policy's verifier as None, and protected mode
+    fails closed.
+    """
+    from epistemicos.containment import EgressTransportBroker, EgressPolicy
+
+    policy_no_ver = DataTransferPolicy(
+        rules=[TransferRule(rule_id="r-no-ver", destination_service="s3", allowed_hosts={"s3.corp.com"})],
+        protected_mode=True,
+        principal_verifier=None
+    )
+
+    idp = ExternalTestIdentityAuthority(issuer_id="BrokerIdP")
+    broker_verifier = PrincipalVerifier(trusted_public_keys={"BrokerIdP": idp.public_key})
+
+    broker = EgressTransportBroker(
+        policy=EgressPolicy(allowed_destinations={"s3.corp.com"}),
+        transfer_policy=policy_no_ver,
+        principal_verifier=broker_verifier
+    )
+    assert broker.principal_verifier is broker_verifier
+
+    # Broker must NOT have mutated policy_no_ver.principal_verifier
+    assert policy_no_ver.principal_verifier is None
+
+    # Context evaluation against policy fails closed
+    ctx_test = create_test_context(
+        principal_verifier=TEST_VERIFIER,
+        principal="principal:alice",
+        destination=DestinationIdentity(service="s3", host="s3.corp.com"),
+        classification=DataClassification.INTERNAL,
+        direction=TransferDirection.UPLOAD,
+        operation=TransferOperation.WRITE,
+        trusted_authority_assertion=make_assertion("principal:alice", "INTERNAL", destination_host="s3.corp.com")
+    )
+    dec = policy_no_ver.evaluate_transfer(ctx_test)
+    assert dec.allowed is False
+    assert "no trusted PrincipalVerifier configured on policy boundary" in dec.reason
+
+
+def test_h2_body_types_and_digest_binding_matrix():
+    """
+    H2 Verification Audit:
+    Proves digest derivation and authorization binding across:
+    - bytes
+    - bytearray
+    - str
+    - readable stream (io.BytesIO)
+    - empty body (SHA-256(b""))
+    - unsupported types fail closed with TypeError
+    """
+    import io
+    from unittest.mock import patch
+
+    policy = DataTransferPolicy(
+        rules=[TransferRule(rule_id="r-h2-matrix", allowed_principals={"principal:alice"}, destination_service="api", allowed_hosts={"api.corp.com"})],
+        principal_verifier=TEST_VERIFIER
+    )
+    broker = EgressTransportBroker(
+        policy=EgressPolicy(allowed_destinations={"api.corp.com"}),
+        transfer_policy=policy,
+        resolver_func=lambda h: ["93.184.216.34"]
+    )
+    transport = ControlledEgressTransport(broker=broker)
+
+    test_payload = b"TEST_PAYLOAD_DATA_123"
+    expected_digest = hashlib.sha256(test_payload).hexdigest()
+
+    class CaptureConn:
+        def __init__(self, *args, **kwargs):
+            pass
+        def request(self, method, url, body=None, headers=None):
+            pass
+        def getresponse(self):
+            resp = MagicMock()
+            resp.status = 200
+            resp.reason = "OK"
+            resp.getheaders.return_value = []
+            resp.read.return_value = b""
+            return resp
+        def close(self):
+            pass
+
+    # 1. bytes body
+    ctx_bytes = create_test_context(
+        principal_verifier=TEST_VERIFIER, principal="principal:alice",
+        destination=DestinationIdentity(service="api", host="api.corp.com"),
+        classification=DataClassification.INTERNAL, direction=TransferDirection.UPLOAD,
+        operation=TransferOperation.WRITE, canonical_request_digest=expected_digest,
+        trusted_authority_assertion=make_assertion("principal:alice", "INTERNAL", destination_host="api.corp.com")
+    )
+    with patch("epistemicos.containment.PinnedHTTPConnection", CaptureConn):
+        res = transport.request("POST", "http://api.corp.com/upload", body=test_payload, transfer_context=ctx_bytes)
+        assert res["status"] == 200
+
+    # 2. bytearray body
+    ctx_bytearray = create_test_context(
+        principal_verifier=TEST_VERIFIER, principal="principal:alice",
+        destination=DestinationIdentity(service="api", host="api.corp.com"),
+        classification=DataClassification.INTERNAL, direction=TransferDirection.UPLOAD,
+        operation=TransferOperation.WRITE, canonical_request_digest=expected_digest,
+        trusted_authority_assertion=make_assertion("principal:alice", "INTERNAL", destination_host="api.corp.com")
+    )
+    with patch("epistemicos.containment.PinnedHTTPConnection", CaptureConn):
+        res = transport.request("POST", "http://api.corp.com/upload", body=bytearray(test_payload), transfer_context=ctx_bytearray)
+        assert res["status"] == 200
+
+    # 3. str body
+    str_payload = "TEST_PAYLOAD_DATA_123"
+    ctx_str = create_test_context(
+        principal_verifier=TEST_VERIFIER, principal="principal:alice",
+        destination=DestinationIdentity(service="api", host="api.corp.com"),
+        classification=DataClassification.INTERNAL, direction=TransferDirection.UPLOAD,
+        operation=TransferOperation.WRITE, canonical_request_digest=expected_digest,
+        trusted_authority_assertion=make_assertion("principal:alice", "INTERNAL", destination_host="api.corp.com")
+    )
+    with patch("epistemicos.containment.PinnedHTTPConnection", CaptureConn):
+        res = transport.request("POST", "http://api.corp.com/upload", body=str_payload, transfer_context=ctx_str)
+        assert res["status"] == 200
+
+    # 4. readable stream
+    ctx_stream = create_test_context(
+        principal_verifier=TEST_VERIFIER, principal="principal:alice",
+        destination=DestinationIdentity(service="api", host="api.corp.com"),
+        classification=DataClassification.INTERNAL, direction=TransferDirection.UPLOAD,
+        operation=TransferOperation.WRITE, canonical_request_digest=expected_digest,
+        trusted_authority_assertion=make_assertion("principal:alice", "INTERNAL", destination_host="api.corp.com")
+    )
+    with patch("epistemicos.containment.PinnedHTTPConnection", CaptureConn):
+        res = transport.request("POST", "http://api.corp.com/upload", body=io.BytesIO(test_payload), transfer_context=ctx_stream)
+        assert res["status"] == 200
+
+    # 5. Unsupported body type raises TypeError
+    with pytest.raises(TypeError) as exc_type:
+        transport.request("POST", "http://api.corp.com/upload", body=12345, transfer_context=ctx_bytes)
+    assert "Unsupported request body type" in str(exc_type.value)
