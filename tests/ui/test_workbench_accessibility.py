@@ -747,6 +747,13 @@ def test_live_region_announcements(a11y_comprehensive_server):
         page.wait_for_function("() => document.getElementById('a11y-status-announcer').textContent.length > 0")
         assert "Selected execution trace" in announcer.text_content()
 
+        # 2b. Lifecycle Stage Selection announcement
+        page.wait_for_selector(".lifecycle-stage")
+        page.evaluate("() => { document.getElementById('a11y-status-announcer').textContent = ''; }")
+        page.click(".lifecycle-stage .lifecycle-stage-card")
+        page.wait_for_function("() => document.getElementById('a11y-status-announcer').textContent.length > 0")
+        assert "Selected lifecycle stage" in announcer.text_content()
+
         # 3. Filter clearing announcement: clear announcer, fill filter, click clear, assert announcement
         trace_search = page.locator("#trace-search")
         trace_search.fill("no_such_trace_abc")

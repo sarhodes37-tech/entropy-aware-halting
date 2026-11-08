@@ -1931,6 +1931,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
           const handleSelectStage = () => {
             this.state.selectedEventSeq = ev.sequence_number;
+            this.announce(`Selected lifecycle stage #${seqDisplay} ${type}`);
             this.updateMobileTraceView('event');
             this.renderTraceDetail(trace, container);
 
