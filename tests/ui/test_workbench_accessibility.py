@@ -978,6 +978,25 @@ def test_live_region_announcements(a11y_comprehensive_server):
         assert announcer.text_content() == "Failed to load benchmark artifacts."
         page.unroute("**/api/benchmarks")
 
+        # 9.4 Trace detail fetch failure
+        page.click("#tab-traces")
+        page.wait_for_selector("#trace-list .trace-item")
+        page.route("**/api/trace/*", lambda route: route.abort())
+        first_trace = page.locator("#trace-list .trace-item").first
+        first_trace_corr = page.evaluate(
+            "() => document.querySelector("
+            "'#trace-list .trace-item .trace-id')?.getAttribute('title')?.trim()"
+        )
+        first_trace.click()
+        page.wait_for_selector("#trace-detail-content .card-header.text-danger")
+        page.wait_for_function(
+            "() => document.getElementById('a11y-status-announcer')"
+            ".textContent.includes('Failed to load trace details for')"
+        )
+        expected_msg = f"Failed to load trace details for {first_trace_corr}."
+        assert expected_msg == announcer.text_content()
+        page.unroute("**/api/trace/*")
+
         browser.close()
 
 

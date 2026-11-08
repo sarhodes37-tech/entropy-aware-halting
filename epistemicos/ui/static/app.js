@@ -1535,6 +1535,7 @@ document.addEventListener('DOMContentLoaded', () => {
     },
 
     renderTraceErrorDetail(correlationId, errorMsg, container) {
+      this.announce(`Failed to load trace details for ${correlationId}.`);
       container.innerHTML = '';
 
       const errCard = document.createElement('div');
