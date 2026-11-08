@@ -1676,6 +1676,19 @@ def test_release_approval_record_expires_at_numeric_validation():
                 expires_at=bad_float
             )
 
+    # Floats exceeding magnitude bound rejected (both positive and negative)
+    for bad_mag in [1e25, -1e25, 1e100, -1e100]:
+        with pytest.raises(ValueError, match="expires_at float overflows magnitude limits"):
+            ReleaseApprovalRecord(
+                approval_id="appr-bad-mag",
+                manifest_digest=m_digest,
+                approver_id="alice",
+                approver_issuer="IdP",
+                policy_version="1.0",
+                required_evidence_digests=[ev_digest],
+                expires_at=bad_mag
+            )
+
     # Oversized integer rejected to prevent float conversion OverflowError
     with pytest.raises(ValueError, match="expires_at integer overflows 64-bit limits"):
         ReleaseApprovalRecord(
@@ -1702,6 +1715,78 @@ def test_release_approval_record_expires_at_numeric_validation():
         payload = appr_valid.compute_signature_payload()
         assert isinstance(payload, bytes)
         assert b"expires_at" in payload
+
+
+def test_release_approval_record_timestamp_numeric_validation():
+    """Validates that timestamp strictly enforces numeric type, boolean rejection, finiteness, and magnitude."""
+    m_digest = "a" * 64
+    ev_digest = "b" * 64
+
+    # Non-numeric types and booleans rejected
+    for bad_ts in [True, False, "1000.0", [1000.0], {"ts": 1000.0}]:
+        with pytest.raises(TypeError, match="timestamp must be a numeric timestamp"):
+            ReleaseApprovalRecord(
+                approval_id="appr-bad-ts-type",
+                manifest_digest=m_digest,
+                approver_id="alice",
+                approver_issuer="IdP",
+                policy_version="1.0",
+                required_evidence_digests=[ev_digest],
+                timestamp=bad_ts
+            )
+
+    # Non-finite floats rejected
+    for bad_float in [float("nan"), float("inf"), float("-inf")]:
+        with pytest.raises(ValueError, match="timestamp must be a finite number"):
+            ReleaseApprovalRecord(
+                approval_id="appr-bad-ts-float",
+                manifest_digest=m_digest,
+                approver_id="alice",
+                approver_issuer="IdP",
+                policy_version="1.0",
+                required_evidence_digests=[ev_digest],
+                timestamp=bad_float
+            )
+
+    # Floats exceeding magnitude bound rejected (both positive and negative)
+    for bad_mag in [1e25, -1e25, 1e100, -1e100]:
+        with pytest.raises(ValueError, match="timestamp float overflows magnitude limits"):
+            ReleaseApprovalRecord(
+                approval_id="appr-bad-ts-mag",
+                manifest_digest=m_digest,
+                approver_id="alice",
+                approver_issuer="IdP",
+                policy_version="1.0",
+                required_evidence_digests=[ev_digest],
+                timestamp=bad_mag
+            )
+
+    # Oversized integer rejected to prevent float conversion OverflowError
+    with pytest.raises(ValueError, match="timestamp integer overflows 64-bit limits"):
+        ReleaseApprovalRecord(
+            approval_id="appr-ts-overflow",
+            manifest_digest=m_digest,
+            approver_id="alice",
+            approver_issuer="IdP",
+            policy_version="1.0",
+            required_evidence_digests=[ev_digest],
+            timestamp=10**1000
+        )
+
+    # Valid integer and float timestamp pass and compute signature payload cleanly
+    for valid_ts in [1000, 1000.5, (1 << 63) - 1]:
+        appr_valid = ReleaseApprovalRecord(
+            approval_id="appr-valid-ts",
+            manifest_digest=m_digest,
+            approver_id="alice",
+            approver_issuer="IdP",
+            policy_version="1.0",
+            required_evidence_digests=[ev_digest],
+            timestamp=valid_ts
+        )
+        payload = appr_valid.compute_signature_payload()
+        assert isinstance(payload, bytes)
+        assert b"timestamp" in payload
 
 
 def test_release_approval_record_is_expired_invalid_clock_fail_closed():

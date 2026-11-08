@@ -17,6 +17,7 @@ from enum import Enum
 from typing import Any, Dict, List, Optional, Set, Union
 
 SHA256_HEX_REGEX = re.compile(r"^[0-9a-fA-F]{64}$")
+MAX_TIMESTAMP_MAGNITUDE = float((1 << 63) - 1)
 
 
 def validate_sha256_hex(val: str, field_name: str) -> str:
@@ -289,6 +290,21 @@ class ReleaseApprovalRecord:
         for ev_dig in self.required_evidence_digests:
             validate_sha256_hex(ev_dig, "ReleaseApprovalRecord.required_evidence_digests[]")
 
+        # Validate timestamp field
+        if isinstance(self.timestamp, bool) or not isinstance(self.timestamp, (int, float)):
+            raise TypeError(
+                f"ReleaseApprovalRecord: timestamp must be a numeric timestamp, got {type(self.timestamp).__name__}"
+            )
+        if isinstance(self.timestamp, int):
+            if self.timestamp.bit_length() > 64:
+                raise ValueError("ReleaseApprovalRecord: timestamp integer overflows 64-bit limits")
+        else:
+            if not math.isfinite(self.timestamp):
+                raise ValueError(f"ReleaseApprovalRecord: timestamp must be a finite number, got {self.timestamp}")
+            if abs(self.timestamp) > MAX_TIMESTAMP_MAGNITUDE:
+                raise ValueError("ReleaseApprovalRecord: timestamp float overflows magnitude limits")
+
+        # Validate expires_at field if present
         if self.expires_at is not None:
             if isinstance(self.expires_at, bool) or not isinstance(self.expires_at, (int, float)):
                 raise TypeError(
@@ -297,8 +313,11 @@ class ReleaseApprovalRecord:
             if isinstance(self.expires_at, int):
                 if self.expires_at.bit_length() > 64:
                     raise ValueError("ReleaseApprovalRecord: expires_at integer overflows 64-bit limits")
-            elif not math.isfinite(self.expires_at):
-                raise ValueError(f"ReleaseApprovalRecord: expires_at must be a finite number, got {self.expires_at}")
+            else:
+                if not math.isfinite(self.expires_at):
+                    raise ValueError(f"ReleaseApprovalRecord: expires_at must be a finite number, got {self.expires_at}")
+                if abs(self.expires_at) > MAX_TIMESTAMP_MAGNITUDE:
+                    raise ValueError("ReleaseApprovalRecord: expires_at float overflows magnitude limits")
 
     def compute_signature_payload(self) -> bytes:
         """
@@ -329,7 +348,7 @@ class ReleaseApprovalRecord:
                     return True
                 now: Union[int, float] = current_time
             else:
-                if not math.isfinite(current_time):
+                if not math.isfinite(current_time) or abs(current_time) > MAX_TIMESTAMP_MAGNITUDE:
                     return True
                 now = current_time
         else:
