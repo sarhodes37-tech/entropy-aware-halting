@@ -290,6 +290,10 @@ class ReleaseApprovalRecord:
         for ev_dig in self.required_evidence_digests:
             validate_sha256_hex(ev_dig, "ReleaseApprovalRecord.required_evidence_digests[]")
 
+        self._validate_timestamps()
+
+    def _validate_timestamps(self) -> None:
+        """Strictly validates timestamp and expires_at against type ambiguity and overflow."""
         # Validate timestamp field
         if isinstance(self.timestamp, bool) or not isinstance(self.timestamp, (int, float)):
             raise TypeError(
@@ -324,6 +328,7 @@ class ReleaseApprovalRecord:
         Deterministic, domain-separated canonical structured JSON payload for Ed25519 verification.
         Eliminates delimiter injection vulnerabilities.
         """
+        self._validate_timestamps()
         data = {
             "domain": "EpistemicOS:ReleaseApprovalRecord:v1",
             "approval_id": self.approval_id.strip(),

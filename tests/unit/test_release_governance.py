@@ -1788,6 +1788,26 @@ def test_release_approval_record_timestamp_numeric_validation():
         assert isinstance(payload, bytes)
         assert b"timestamp" in payload
 
+    # Revalidation upon post-construction mutation in compute_signature_payload
+    appr_mutate = ReleaseApprovalRecord(
+        approval_id="appr-mutate",
+        manifest_digest=m_digest,
+        approver_id="alice",
+        approver_issuer="IdP",
+        policy_version="1.0",
+        required_evidence_digests=[ev_digest],
+        timestamp=1000.0,
+        expires_at=2000.0
+    )
+    appr_mutate.timestamp = 10**1000
+    with pytest.raises(ValueError, match="timestamp integer overflows 64-bit limits"):
+        appr_mutate.compute_signature_payload()
+
+    appr_mutate.timestamp = 1000.0
+    appr_mutate.expires_at = 1e25
+    with pytest.raises(ValueError, match="expires_at float overflows magnitude limits"):
+        appr_mutate.compute_signature_payload()
+
 
 def test_release_approval_record_is_expired_invalid_clock_fail_closed():
     """Validates that is_expired fails closed when given invalid or overflowing current_time."""
