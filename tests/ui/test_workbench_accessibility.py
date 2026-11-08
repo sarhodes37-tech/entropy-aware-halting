@@ -938,6 +938,46 @@ def test_live_region_announcements(a11y_comprehensive_server):
             }
         }""")
 
+        # 9. Asynchronous view error load announcements (Traces, Provenance, Benchmarks)
+        # 9.1 Traces fetch failure
+        page.route("**/api/traces", lambda route: route.abort())
+        page.evaluate(
+            "() => { document.getElementById('a11y-status-announcer').textContent = ''; }"
+        )
+        page.click("#tab-traces")
+        page.wait_for_function(
+            "() => document.getElementById('a11y-status-announcer').textContent === "
+            "'Failed to load execution traces.'"
+        )
+        assert announcer.text_content() == "Failed to load execution traces."
+        page.unroute("**/api/traces")
+
+        # 9.2 Provenance fetch failure
+        page.route("**/api/provenance", lambda route: route.abort())
+        page.evaluate(
+            "() => { document.getElementById('a11y-status-announcer').textContent = ''; }"
+        )
+        page.click("#tab-provenance")
+        page.wait_for_function(
+            "() => document.getElementById('a11y-status-announcer').textContent === "
+            "'Failed to load provenance data.'"
+        )
+        assert announcer.text_content() == "Failed to load provenance data."
+        page.unroute("**/api/provenance")
+
+        # 9.3 Benchmarks fetch failure
+        page.route("**/api/benchmarks", lambda route: route.abort())
+        page.evaluate(
+            "() => { document.getElementById('a11y-status-announcer').textContent = ''; }"
+        )
+        page.click("#tab-benchmarks")
+        page.wait_for_function(
+            "() => document.getElementById('a11y-status-announcer').textContent === "
+            "'Failed to load benchmark artifacts.'"
+        )
+        assert announcer.text_content() == "Failed to load benchmark artifacts."
+        page.unroute("**/api/benchmarks")
+
         browser.close()
 
 

@@ -1303,6 +1303,7 @@ document.addEventListener('DOMContentLoaded', () => {
     },
 
     renderTracesLoadError(errorMsg) {
+      this.announce('Failed to load execution traces.');
       const traceListUl = document.getElementById('trace-list');
       if (!traceListUl) return;
       traceListUl.innerHTML = '';
@@ -2165,6 +2166,7 @@ document.addEventListener('DOMContentLoaded', () => {
     },
 
     renderProvenanceError(errorMsg) {
+      this.announce('Failed to load provenance data.');
       const recListUl = document.getElementById('provenance-record-list');
       if (recListUl) {
         recListUl.innerHTML = '';
@@ -2774,6 +2776,7 @@ document.addEventListener('DOMContentLoaded', () => {
     },
 
     renderBenchmarkLoadError(errorMsg) {
+      this.announce('Failed to load benchmark artifacts.');
       const statusBadge = document.getElementById('benchmark-artifacts-status');
       if (statusBadge) {
         const badge = this.createStatusBadge('UNAVAILABLE');
