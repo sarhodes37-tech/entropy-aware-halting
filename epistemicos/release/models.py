@@ -345,6 +345,20 @@ class ReleaseApprovalRecord:
     def is_expired(self, current_time: Optional[float] = None) -> bool:
         if self.expires_at is None:
             return False
+
+        # Fail closed if expires_at was mutated after construction to invalid, non-finite, or overflowing value
+        if isinstance(self.expires_at, bool) or not isinstance(self.expires_at, (int, float)):
+            return True
+        if isinstance(self.expires_at, int):
+            if self.expires_at.bit_length() > 64:
+                return True
+            exp_val: Union[int, float] = self.expires_at
+        else:
+            if not math.isfinite(self.expires_at) or abs(self.expires_at) > MAX_TIMESTAMP_MAGNITUDE:
+                return True
+            exp_val = self.expires_at
+
+        # Validate clock override
         if current_time is not None:
             if isinstance(current_time, bool) or not isinstance(current_time, (int, float)):
                 return True
@@ -358,7 +372,7 @@ class ReleaseApprovalRecord:
                 now = current_time
         else:
             now = time.time()
-        return now >= self.expires_at
+        return now >= exp_val
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)

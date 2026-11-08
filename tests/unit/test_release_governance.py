@@ -1842,6 +1842,47 @@ def test_release_approval_record_is_expired_invalid_clock_fail_closed():
     # Oversized integer clock fail closed
     assert appr.is_expired(current_time=10**1000) is True
 
+    # Mutated expires_at fail-closed checks (NaN, inf, -inf, oversized int, non-numeric, out-of-range float)
+    appr_mut_exp = ReleaseApprovalRecord(
+        approval_id="appr-mut-exp",
+        manifest_digest=m_digest,
+        approver_id="alice",
+        approver_issuer="IdP",
+        policy_version="1.0",
+        required_evidence_digests=[ev_digest],
+        expires_at=2000.0
+    )
+    # Valid baseline
+    assert appr_mut_exp.is_expired(current_time=1500.0) is False
+
+    # NaN mutation fails closed
+    appr_mut_exp.expires_at = float("nan")
+    assert appr_mut_exp.is_expired(current_time=1500.0) is True
+
+    # Infinity / -Infinity mutations fail closed
+    appr_mut_exp.expires_at = float("inf")
+    assert appr_mut_exp.is_expired(current_time=1500.0) is True
+    appr_mut_exp.expires_at = float("-inf")
+    assert appr_mut_exp.is_expired(current_time=1500.0) is True
+
+    # Oversized integer mutation fails closed
+    appr_mut_exp.expires_at = 10**1000
+    assert appr_mut_exp.is_expired(current_time=1500.0) is True
+
+    # Non-numeric and boolean mutations fail closed
+    appr_mut_exp.expires_at = "not-a-number"
+    assert appr_mut_exp.is_expired(current_time=1500.0) is True
+    appr_mut_exp.expires_at = True
+    assert appr_mut_exp.is_expired(current_time=1500.0) is True
+    appr_mut_exp.expires_at = [1500.0]
+    assert appr_mut_exp.is_expired(current_time=1500.0) is True
+
+    # Float exceeding magnitude bounds fails closed
+    appr_mut_exp.expires_at = 1e25
+    assert appr_mut_exp.is_expired(current_time=1500.0) is True
+    appr_mut_exp.expires_at = -1e25
+    assert appr_mut_exp.is_expired(current_time=1500.0) is True
+
 
 # ==============================================================================
 # Invalidation Coverage Expansion: EvidenceInvalidator
