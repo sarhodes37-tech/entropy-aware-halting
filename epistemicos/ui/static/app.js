@@ -1604,14 +1604,27 @@ document.addEventListener('DOMContentLoaded', () => {
         provBtn.setAttribute('aria-label', `View provenance records for correlation ${trace.correlation_id}`);
         provBtn.setAttribute('title', `View provenance records for correlation ${trace.correlation_id}`);
         provBtn.innerHTML = `<span>View in Provenance</span> <span class="arrow" aria-hidden="true">➔</span>`;
-        provBtn.addEventListener('click', () => {
+        provBtn.addEventListener('click', async () => {
           this.state.provenanceSearchQuery = trace.correlation_id.toLowerCase().trim();
           const provSearchInput = document.getElementById('provenance-search');
           if (provSearchInput) {
             provSearchInput.value = trace.correlation_id;
           }
+          const matchingRecId = (trace.provenance_events && trace.provenance_events[0])
+            ? (trace.provenance_events[0].event_id || `seq_${trace.provenance_events[0].sequence_number}`)
+            : null;
+          if (matchingRecId) {
+            this.state.selectedRecordId = matchingRecId;
+          }
           this.switchTab('provenance');
-          this.renderProvenanceRecordList();
+          if (matchingRecId) {
+            if (!this.state.provenanceData) {
+              await this.loadProvenance();
+            }
+            this.selectProvenanceRecord(matchingRecId);
+          } else {
+            this.renderProvenanceRecordList();
+          }
           this.announce(`Navigated to Provenance Explorer (Filtered: ${trace.correlation_id})`);
           if (provSearchInput) {
             provSearchInput.focus();
