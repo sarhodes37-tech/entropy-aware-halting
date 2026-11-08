@@ -9,11 +9,12 @@ This module defines deterministic, verifiable data structures representing:
 
 import hashlib
 import json
+import math
 import re
 import time
 from dataclasses import dataclass, field, asdict
 from enum import Enum
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Union
 
 SHA256_HEX_REGEX = re.compile(r"^[0-9a-fA-F]{64}$")
 
@@ -288,6 +289,17 @@ class ReleaseApprovalRecord:
         for ev_dig in self.required_evidence_digests:
             validate_sha256_hex(ev_dig, "ReleaseApprovalRecord.required_evidence_digests[]")
 
+        if self.expires_at is not None:
+            if isinstance(self.expires_at, bool) or not isinstance(self.expires_at, (int, float)):
+                raise TypeError(
+                    f"ReleaseApprovalRecord: expires_at must be a numeric timestamp, got {type(self.expires_at).__name__}"
+                )
+            if isinstance(self.expires_at, int):
+                if self.expires_at.bit_length() > 64:
+                    raise ValueError("ReleaseApprovalRecord: expires_at integer overflows 64-bit limits")
+            elif not math.isfinite(self.expires_at):
+                raise ValueError(f"ReleaseApprovalRecord: expires_at must be a finite number, got {self.expires_at}")
+
     def compute_signature_payload(self) -> bytes:
         """
         Deterministic, domain-separated canonical structured JSON payload for Ed25519 verification.
@@ -309,7 +321,19 @@ class ReleaseApprovalRecord:
     def is_expired(self, current_time: Optional[float] = None) -> bool:
         if self.expires_at is None:
             return False
-        now = current_time if current_time is not None else time.time()
+        if current_time is not None:
+            if isinstance(current_time, bool) or not isinstance(current_time, (int, float)):
+                return True
+            if isinstance(current_time, int):
+                if current_time.bit_length() > 64:
+                    return True
+                now: Union[int, float] = current_time
+            else:
+                if not math.isfinite(current_time):
+                    return True
+                now = current_time
+        else:
+            now = time.time()
         return now >= self.expires_at
 
     def to_dict(self) -> Dict[str, Any]:

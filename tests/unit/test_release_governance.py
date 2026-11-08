@@ -1645,6 +1645,99 @@ def test_release_approval_record_validation_and_expiration():
     assert d["expires_at"] == 1500.0
 
 
+def test_release_approval_record_expires_at_numeric_validation():
+    """Validates that expires_at strictly enforces numeric finite boundaries and prevents overflow."""
+    m_digest = "a" * 64
+    ev_digest = "b" * 64
+
+    # Non-numeric types and booleans rejected
+    for bad_exp in [True, False, "1500.0", [1500.0], {"exp": 1500.0}]:
+        with pytest.raises(TypeError, match="expires_at must be a numeric timestamp"):
+            ReleaseApprovalRecord(
+                approval_id="appr-bad-type",
+                manifest_digest=m_digest,
+                approver_id="alice",
+                approver_issuer="IdP",
+                policy_version="1.0",
+                required_evidence_digests=[ev_digest],
+                expires_at=bad_exp
+            )
+
+    # Non-finite floats rejected
+    for bad_float in [float("nan"), float("inf"), float("-inf")]:
+        with pytest.raises(ValueError, match="expires_at must be a finite number"):
+            ReleaseApprovalRecord(
+                approval_id="appr-bad-float",
+                manifest_digest=m_digest,
+                approver_id="alice",
+                approver_issuer="IdP",
+                policy_version="1.0",
+                required_evidence_digests=[ev_digest],
+                expires_at=bad_float
+            )
+
+    # Oversized integer rejected to prevent float conversion OverflowError
+    with pytest.raises(ValueError, match="expires_at integer overflows 64-bit limits"):
+        ReleaseApprovalRecord(
+            approval_id="appr-overflow",
+            manifest_digest=m_digest,
+            approver_id="alice",
+            approver_issuer="IdP",
+            policy_version="1.0",
+            required_evidence_digests=[ev_digest],
+            expires_at=10**1000
+        )
+
+    # Valid integer and float within 64-bit bounds pass and compute signature payload cleanly
+    for valid_exp in [1500, 1500.5, (1 << 63) - 1]:
+        appr_valid = ReleaseApprovalRecord(
+            approval_id="appr-valid-num",
+            manifest_digest=m_digest,
+            approver_id="alice",
+            approver_issuer="IdP",
+            policy_version="1.0",
+            required_evidence_digests=[ev_digest],
+            expires_at=valid_exp
+        )
+        payload = appr_valid.compute_signature_payload()
+        assert isinstance(payload, bytes)
+        assert b"expires_at" in payload
+
+
+def test_release_approval_record_is_expired_invalid_clock_fail_closed():
+    """Validates that is_expired fails closed when given invalid or overflowing current_time."""
+    m_digest = "a" * 64
+    ev_digest = "b" * 64
+
+    appr = ReleaseApprovalRecord(
+        approval_id="appr-clock-test",
+        manifest_digest=m_digest,
+        approver_id="alice",
+        approver_issuer="IdP",
+        policy_version="1.0",
+        required_evidence_digests=[ev_digest],
+        expires_at=2000.0
+    )
+
+    # Valid times behave normally
+    assert appr.is_expired(current_time=1999.0) is False
+    assert appr.is_expired(current_time=2000.0) is True
+
+    # Invalid clock types fail closed (treated as expired)
+    assert appr.is_expired(current_time=True) is True
+    assert appr.is_expired(current_time=False) is True
+    assert appr.is_expired(current_time="1000.0") is True
+    assert appr.is_expired(current_time=[1000.0]) is True
+
+    # Non-finite clock floats fail closed
+    assert appr.is_expired(current_time=float("nan")) is True
+    assert appr.is_expired(current_time=float("inf")) is True
+    assert appr.is_expired(current_time=float("-inf")) is True
+
+    # Oversized integer clock fail closed
+    assert appr.is_expired(current_time=10**1000) is True
+
+
 # ==============================================================================
 # Invalidation Coverage Expansion: EvidenceInvalidator
 # ==============================================================================
