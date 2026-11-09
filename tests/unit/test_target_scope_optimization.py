@@ -68,6 +68,10 @@ MALFORMED_TARGETS = [
     "/path/\x00/bad",
     "/path/\x0b/bad",
     "/path/\x0c/bad",
+    "http://example.com:8080/path\x00bad",
+    "http://example.com:8080/path\r\nbad",
+    "http://example.com:8080/path\tbad",
+    "http://[bad netloc with spaces]/path",
     "a" * (MAX_TARGET_INPUT_LEN + 1),
 ]
 
