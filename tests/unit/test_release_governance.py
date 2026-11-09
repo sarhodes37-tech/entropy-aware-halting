@@ -1272,6 +1272,29 @@ def test_direct_revocation_record_validation():
         with pytest.raises(ValueError, match="RevocationRecord: reason must be a non-empty string"):
             RevocationRecord(approval_id="appr-1", revoked_by_principal="admin", reason=bad_r)
 
+    # Validate revocation_timestamp type ambiguity and bounds
+    for bad_type_ts in [True, False, "123456789", None, [12345], {"ts": 123}]:
+        with pytest.raises(TypeError, match="RevocationRecord: revocation_timestamp must be a numeric timestamp"):
+            RevocationRecord(approval_id="appr-1", revoked_by_principal="admin", reason="compromised", revocation_timestamp=bad_type_ts)
+
+    for non_finite_ts in [float("nan"), float("inf"), float("-inf")]:
+        with pytest.raises(ValueError, match="RevocationRecord: revocation_timestamp must be a finite number"):
+            RevocationRecord(approval_id="appr-1", revoked_by_principal="admin", reason="compromised", revocation_timestamp=non_finite_ts)
+
+    # 64-bit integer overflow
+    with pytest.raises(ValueError, match="RevocationRecord: revocation_timestamp integer overflows 64-bit limits"):
+        RevocationRecord(approval_id="appr-1", revoked_by_principal="admin", reason="compromised", revocation_timestamp=1 << 65)
+
+    # Float magnitude overflow
+    with pytest.raises(ValueError, match="RevocationRecord: revocation_timestamp float overflows magnitude limits"):
+        RevocationRecord(approval_id="appr-1", revoked_by_principal="admin", reason="compromised", revocation_timestamp=1e300)
+
+    # Valid int and float timestamps
+    rec_int = RevocationRecord(approval_id="appr-1", revoked_by_principal="admin", reason="compromised", revocation_timestamp=1600000000)
+    assert rec_int.revocation_timestamp == 1600000000
+    rec_flt = RevocationRecord(approval_id="appr-1", revoked_by_principal="admin", reason="compromised", revocation_timestamp=1600000000.123456)
+    assert rec_flt.revocation_timestamp == 1600000000.123456
+
 
 # ==============================================================================
 # Models Coverage Expansion: ComponentSpec, ReleaseManifest,

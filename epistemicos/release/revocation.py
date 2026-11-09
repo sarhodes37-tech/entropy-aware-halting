@@ -5,10 +5,13 @@ Ensures that an approval marked as revoked cannot be resurrected through
 in-memory object mutation or serialization tampering.
 """
 
+import math
 import threading
 import time
 from dataclasses import dataclass, field
 from typing import Dict, Optional, Set
+
+from epistemicos.release.models import MAX_TIMESTAMP_MAGNITUDE
 
 
 @dataclass(frozen=True)
@@ -25,6 +28,22 @@ class RevocationRecord:
             raise ValueError("RevocationRecord: revoked_by_principal must be a non-empty string")
         if not self.reason or not isinstance(self.reason, str) or not self.reason.strip():
             raise ValueError("RevocationRecord: reason must be a non-empty string")
+
+        # Fail-closed timestamp validation: prevent type ambiguity, non-finite values, and overflow
+        if isinstance(self.revocation_timestamp, bool) or not isinstance(self.revocation_timestamp, (int, float)):
+            raise TypeError(
+                f"RevocationRecord: revocation_timestamp must be a numeric timestamp, got {type(self.revocation_timestamp).__name__}"
+            )
+        if isinstance(self.revocation_timestamp, int):
+            if self.revocation_timestamp.bit_length() > 64:
+                raise ValueError("RevocationRecord: revocation_timestamp integer overflows 64-bit limits")
+        else:
+            if not math.isfinite(self.revocation_timestamp):
+                raise ValueError(
+                    f"RevocationRecord: revocation_timestamp must be a finite number, got {self.revocation_timestamp}"
+                )
+            if abs(self.revocation_timestamp) > MAX_TIMESTAMP_MAGNITUDE:
+                raise ValueError("RevocationRecord: revocation_timestamp float overflows magnitude limits")
 
 
 class ReleaseApprovalRevocationRegistry:
