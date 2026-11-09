@@ -533,6 +533,7 @@ def test_workbench_cross_viewport_responsiveness_and_screenshots(a11y_e2e_server
         browser.close()
 
 
+@pytest.mark.skipif(not PLAYWRIGHT_AVAILABLE, reason="playwright not installed")
 def test_benchmark_case_verdict_hero_and_telemetry_pills(a11y_e2e_server):
     """Verifies that selecting a benchmark case renders the .case-verdict-hero and telemetry pills."""
     with sync_playwright() as p:
