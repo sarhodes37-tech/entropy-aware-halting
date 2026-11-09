@@ -623,6 +623,12 @@ def test_keyboard_navigation_and_focus_management_workflows(a11y_comprehensive_s
         )
         assert sel_range == [0, len(selected_corr)]
 
+        # Verify auto-selection of matching provenance record populated the inspector
+        page.wait_for_selector("#provenance-inspector-content:not(.hidden)")
+        assert page.locator("#provenance-inspector-content").is_visible()
+        selected_prov_rec = page.evaluate("() => window.ObservatoryApp.state.selectedRecordId")
+        assert selected_prov_rec is not None
+
         # 5. Keyboard Navigation in Provenance Listbox
         page.click("#tab-provenance")
         page.fill("#provenance-search", "")
