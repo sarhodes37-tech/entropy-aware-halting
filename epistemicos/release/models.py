@@ -17,7 +17,9 @@ from enum import Enum
 from typing import Any, Dict, List, Optional, Set, Union
 
 SHA256_HEX_REGEX = re.compile(r"^[0-9a-fA-F]{64}$")
-MAX_TIMESTAMP_MAGNITUDE = float((1 << 63) - 1)
+# Signed 64-bit integer timestamp boundaries: -2^63 <= t <= 2^63 - 1
+MIN_TIMESTAMP_BOUND = -(1 << 63)
+MAX_TIMESTAMP_BOUND = (1 << 63) - 1
 
 
 def validate_sha256_hex(val: str, field_name: str) -> str:
@@ -300,13 +302,13 @@ class ReleaseApprovalRecord:
                 f"ReleaseApprovalRecord: timestamp must be a numeric timestamp, got {type(self.timestamp).__name__}"
             )
         if isinstance(self.timestamp, int):
-            if self.timestamp.bit_length() > 64:
-                raise ValueError("ReleaseApprovalRecord: timestamp integer overflows 64-bit limits")
+            if not (MIN_TIMESTAMP_BOUND <= self.timestamp <= MAX_TIMESTAMP_BOUND):
+                raise ValueError("ReleaseApprovalRecord: timestamp integer overflows signed 64-bit limits")
         else:
             if not math.isfinite(self.timestamp):
                 raise ValueError(f"ReleaseApprovalRecord: timestamp must be a finite number, got {self.timestamp}")
-            if abs(self.timestamp) > MAX_TIMESTAMP_MAGNITUDE:
-                raise ValueError("ReleaseApprovalRecord: timestamp float overflows magnitude limits")
+            if not (MIN_TIMESTAMP_BOUND <= self.timestamp <= MAX_TIMESTAMP_BOUND):
+                raise ValueError("ReleaseApprovalRecord: timestamp float overflows signed 64-bit limits")
 
         # Validate expires_at field if present
         if self.expires_at is not None:
@@ -315,13 +317,13 @@ class ReleaseApprovalRecord:
                     f"ReleaseApprovalRecord: expires_at must be a numeric timestamp, got {type(self.expires_at).__name__}"
                 )
             if isinstance(self.expires_at, int):
-                if self.expires_at.bit_length() > 64:
-                    raise ValueError("ReleaseApprovalRecord: expires_at integer overflows 64-bit limits")
+                if not (MIN_TIMESTAMP_BOUND <= self.expires_at <= MAX_TIMESTAMP_BOUND):
+                    raise ValueError("ReleaseApprovalRecord: expires_at integer overflows signed 64-bit limits")
             else:
                 if not math.isfinite(self.expires_at):
                     raise ValueError(f"ReleaseApprovalRecord: expires_at must be a finite number, got {self.expires_at}")
-                if abs(self.expires_at) > MAX_TIMESTAMP_MAGNITUDE:
-                    raise ValueError("ReleaseApprovalRecord: expires_at float overflows magnitude limits")
+                if not (MIN_TIMESTAMP_BOUND <= self.expires_at <= MAX_TIMESTAMP_BOUND):
+                    raise ValueError("ReleaseApprovalRecord: expires_at float overflows signed 64-bit limits")
 
     def compute_signature_payload(self) -> bytes:
         """
@@ -350,11 +352,11 @@ class ReleaseApprovalRecord:
         if isinstance(self.expires_at, bool) or not isinstance(self.expires_at, (int, float)):
             return True
         if isinstance(self.expires_at, int):
-            if self.expires_at.bit_length() > 64:
+            if not (MIN_TIMESTAMP_BOUND <= self.expires_at <= MAX_TIMESTAMP_BOUND):
                 return True
             exp_val: Union[int, float] = self.expires_at
         else:
-            if not math.isfinite(self.expires_at) or abs(self.expires_at) > MAX_TIMESTAMP_MAGNITUDE:
+            if not math.isfinite(self.expires_at) or not (MIN_TIMESTAMP_BOUND <= self.expires_at <= MAX_TIMESTAMP_BOUND):
                 return True
             exp_val = self.expires_at
 
@@ -363,11 +365,11 @@ class ReleaseApprovalRecord:
             if isinstance(current_time, bool) or not isinstance(current_time, (int, float)):
                 return True
             if isinstance(current_time, int):
-                if current_time.bit_length() > 64:
+                if not (MIN_TIMESTAMP_BOUND <= current_time <= MAX_TIMESTAMP_BOUND):
                     return True
                 now: Union[int, float] = current_time
             else:
-                if not math.isfinite(current_time) or abs(current_time) > MAX_TIMESTAMP_MAGNITUDE:
+                if not math.isfinite(current_time) or not (MIN_TIMESTAMP_BOUND <= current_time <= MAX_TIMESTAMP_BOUND):
                     return True
                 now = current_time
         else:
