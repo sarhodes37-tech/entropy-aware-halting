@@ -200,6 +200,10 @@ class AuthenticatedPrincipal:
         if not self.signature or not isinstance(self.signature, str) or not self.signature.strip():
             raise ValueError("AuthenticatedPrincipal: signature must be a non-empty string")
 
+        self._validate_timestamp_fields()
+
+    def _validate_timestamp_fields(self) -> None:
+        """Strictly validates timestamp and expires_at against type ambiguity and overflow."""
         # Validate timestamp field
         if isinstance(self.timestamp, bool) or not isinstance(self.timestamp, (int, float)):
             raise TypeError(f"AuthenticatedPrincipal: timestamp must be a numeric timestamp, got {type(self.timestamp).__name__}")
@@ -226,6 +230,7 @@ class AuthenticatedPrincipal:
                     raise ValueError("AuthenticatedPrincipal: expires_at float overflows magnitude limits")
 
     def compute_signature_payload(self) -> bytes:
+        self._validate_timestamp_fields()
         exp_str = f"{self.expires_at:.6f}" if self.expires_at is not None else ""
         kid_str = self.key_id or ""
         payload = f"{self.principal_id}:{self.issuer_id}:{self.timestamp:.6f}:{exp_str}:{kid_str}"
@@ -1839,13 +1844,25 @@ class PrincipalVerifier:
         else:
             now = time.time()
 
+        # Runtime validation of principal.timestamp before any arithmetic
+        if isinstance(principal.timestamp, bool) or not isinstance(principal.timestamp, (int, float)):
+            return False, "Principal assertion has invalid non-numeric timestamp", None
+        if isinstance(principal.timestamp, int):
+            if principal.timestamp.bit_length() > 64:
+                return False, "Principal assertion timestamp integer overflows 64-bit limits", None
+            ts_val = float(principal.timestamp)
+        else:
+            if not math.isfinite(principal.timestamp) or abs(principal.timestamp) > MAX_TIMESTAMP_MAGNITUDE:
+                return False, "Principal assertion timestamp is non-finite or overflows limits", None
+            ts_val = principal.timestamp
+
         # Reject future-dated assertions (beyond permitted clock skew)
-        if principal.timestamp > (now + self.clock_skew_seconds):
-            return False, f"Future-dated principal assertion rejected (timestamp {principal.timestamp} > current time {now})", None
+        if ts_val > (now + self.clock_skew_seconds):
+            return False, f"Future-dated principal assertion rejected (timestamp {ts_val} > current time {now})", None
 
         # Reject expired assertions by timestamp + max_age_seconds
-        if (now - principal.timestamp) > max_age_seconds:
-            return False, f"Principal assertion expired (age {now - principal.timestamp:.1f}s > max {max_age_seconds}s)", None
+        if (now - ts_val) > max_age_seconds:
+            return False, f"Principal assertion expired (age {now - ts_val:.1f}s > max {max_age_seconds}s)", None
 
         # Reject expired assertions by explicit expires_at field if present
         if principal.expires_at is not None:

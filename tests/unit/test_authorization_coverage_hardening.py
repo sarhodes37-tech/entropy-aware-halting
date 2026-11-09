@@ -1606,3 +1606,67 @@ class TestAuthenticatedPrincipalNumericHardening:
         valid, reason, pid = verifier.verify_principal(p, current_time=10**100)
         assert not valid
         assert "Invalid current_time clock override" in reason
+
+    def test_compute_signature_payload_defensive_validation_on_bypassed_mutation(self):
+        p = AuthenticatedPrincipal("alice", "idp", 1000.0, "00" * 64, expires_at=2000.0)
+
+        # Mutate timestamp via object.__setattr__ to bypass frozen dataclass
+        object.__setattr__(p, "timestamp", True)
+        with pytest.raises(TypeError, match="timestamp must be a numeric timestamp"):
+            p.compute_signature_payload()
+
+        object.__setattr__(p, "timestamp", float("nan"))
+        with pytest.raises(ValueError, match="timestamp must be a finite number"):
+            p.compute_signature_payload()
+
+        object.__setattr__(p, "timestamp", 10**100)
+        with pytest.raises(ValueError, match="timestamp integer overflows 64-bit limits"):
+            p.compute_signature_payload()
+
+        # Restore valid timestamp, mutate expires_at
+        object.__setattr__(p, "timestamp", 1000.0)
+        object.__setattr__(p, "expires_at", False)
+        with pytest.raises(TypeError, match="expires_at must be a numeric timestamp"):
+            p.compute_signature_payload()
+
+        object.__setattr__(p, "expires_at", float("inf"))
+        with pytest.raises(ValueError, match="expires_at must be a finite number"):
+            p.compute_signature_payload()
+
+        object.__setattr__(p, "expires_at", 10**100)
+        with pytest.raises(ValueError, match="expires_at integer overflows 64-bit limits"):
+            p.compute_signature_payload()
+
+    def test_principal_verifier_timestamp_runtime_validation_fails_closed(self):
+        verifier = PrincipalVerifier({"idp": b"\x00" * 32})
+        p = AuthenticatedPrincipal("alice", "idp", 1000.0, "00" * 64, expires_at=2000.0)
+
+        # 1. Boolean timestamp fails closed
+        object.__setattr__(p, "timestamp", True)
+        valid, reason, pid = verifier.verify_principal(p)
+        assert not valid
+        assert "Principal assertion has invalid non-numeric timestamp" in reason
+
+        # 2. Non-numeric string timestamp fails closed
+        object.__setattr__(p, "timestamp", "not-a-number")
+        valid, reason, pid = verifier.verify_principal(p)
+        assert not valid
+        assert "Principal assertion has invalid non-numeric timestamp" in reason
+
+        # 3. Non-finite NaN float timestamp fails closed
+        object.__setattr__(p, "timestamp", float("nan"))
+        valid, reason, pid = verifier.verify_principal(p)
+        assert not valid
+        assert "Principal assertion timestamp is non-finite or overflows limits" in reason
+
+        # 4. Non-finite Inf float timestamp fails closed
+        object.__setattr__(p, "timestamp", float("inf"))
+        valid, reason, pid = verifier.verify_principal(p)
+        assert not valid
+        assert "Principal assertion timestamp is non-finite or overflows limits" in reason
+
+        # 5. Overflowing integer timestamp fails closed
+        object.__setattr__(p, "timestamp", 10**100)
+        valid, reason, pid = verifier.verify_principal(p)
+        assert not valid
+        assert "Principal assertion timestamp integer overflows 64-bit limits" in reason
