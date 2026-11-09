@@ -4304,23 +4304,42 @@ document.addEventListener('DOMContentLoaded', () => {
     renderCaseDetailInspector(c, container) {
       container.innerHTML = '';
 
-      // Header Bar with Copy buttons
-      const headerBar = document.createElement('div');
-      headerBar.style.display = 'flex';
-      headerBar.style.justifyContent = 'space-between';
-      headerBar.style.alignItems = 'center';
-      headerBar.style.marginBottom = '1rem';
-      headerBar.style.flexWrap = 'wrap';
-      headerBar.style.gap = '0.5rem';
+      const classification = (c.classification || c.actual_outcome || 'N/A').toUpperCase();
+      let badgeCls = 'status-badge-unknown';
+      let heroCls = '';
+      if (classification === 'TC') {
+        badgeCls = 'status-badge-verified';
+        heroCls = 'verdict-tc';
+      } else if (classification === 'TR') {
+        badgeCls = 'status-badge-halted';
+        heroCls = 'verdict-tr';
+      } else if (classification === 'FC' || classification === 'FR') {
+        badgeCls = 'status-badge-failed';
+        heroCls = classification === 'FC' ? 'verdict-fc' : 'verdict-fr';
+      }
+
+      // 1. Case Verdict & Telemetry Hero
+      const hero = document.createElement('div');
+      hero.className = `case-verdict-hero ${heroCls}`;
+
+      const heroHeader = document.createElement('div');
+      heroHeader.className = 'case-verdict-header';
 
       const titleGroup = document.createElement('div');
+      titleGroup.className = 'case-verdict-title';
+
       const title = document.createElement('h3');
-      title.style.fontSize = '1.05rem';
+      title.style.fontSize = '1.1rem';
       title.style.fontWeight = '700';
       title.style.margin = '0';
       title.className = 'font-mono';
       title.textContent = `Case: ${c.case_id || 'UNNAMED_CASE'}`;
       titleGroup.appendChild(title);
+
+      const badge = document.createElement('span');
+      badge.className = `status-badge ${badgeCls}`;
+      badge.textContent = classification;
+      titleGroup.appendChild(badge);
 
       const actionBtnGroup = document.createElement('div');
       actionBtnGroup.style.display = 'flex';
@@ -4344,34 +4363,59 @@ document.addEventListener('DOMContentLoaded', () => {
       copyJsonBtn.addEventListener('click', () => this.copyToClipboard(JSON.stringify(c, null, 2), copyJsonBtn));
       actionBtnGroup.appendChild(copyJsonBtn);
 
-      headerBar.appendChild(titleGroup);
-      headerBar.appendChild(actionBtnGroup);
-      container.appendChild(headerBar);
+      heroHeader.appendChild(titleGroup);
+      heroHeader.appendChild(actionBtnGroup);
+      hero.appendChild(heroHeader);
 
-      // Card 1: Structured Case Metadata Breakdown
-      const metaCard = document.createElement('div');
-      metaCard.className = 'card mb-1';
+      // Telemetry Metric Pill Strip
+      const telemStrip = document.createElement('div');
+      telemStrip.className = 'case-telemetry-strip';
 
-      const metaHeader = document.createElement('div');
-      metaHeader.className = 'card-header';
-      metaHeader.textContent = 'Recorded Case Outcomes & Telemetry';
-      metaCard.appendChild(metaHeader);
+      const latStr = (c.latency_ms !== undefined && c.latency_ms !== null) ? `${c.latency_ms} ms` : 'N/A';
+      const tokStr = (c.tokens_consumed !== undefined && c.tokens_consumed !== null) ? `${c.tokens_consumed} tok` : 'N/A';
 
-      const fieldList = [
+      const pillLatency = document.createElement('span');
+      pillLatency.className = 'case-telemetry-pill';
+      pillLatency.innerHTML = `Latency: <strong>${latStr}</strong>`;
+      telemStrip.appendChild(pillLatency);
+
+      const pillTokens = document.createElement('span');
+      pillTokens.className = 'case-telemetry-pill';
+      pillTokens.innerHTML = `Tokens: <strong>${tokStr}</strong>`;
+      telemStrip.appendChild(pillTokens);
+
+      const pillOutcome = document.createElement('span');
+      pillOutcome.className = 'case-telemetry-pill';
+      pillOutcome.innerHTML = `Expected: <strong>${c.expected_outcome || 'N/A'}</strong> ➔ Actual: <strong>${c.actual_outcome || c.status || c.outcome || 'N/A'}</strong>`;
+      telemStrip.appendChild(pillOutcome);
+
+      hero.appendChild(telemStrip);
+      container.appendChild(hero);
+
+      // 2. Structured Metadata Grid (2-column layout)
+      const metaGrid = document.createElement('div');
+      metaGrid.className = 'case-metadata-grid';
+
+      // Column A: Scenario & Evaluation Telemetry
+      const evalCard = document.createElement('div');
+      evalCard.className = 'card';
+
+      const evalHeader = document.createElement('div');
+      evalHeader.className = 'card-header';
+      evalHeader.textContent = 'Recorded Case Outcomes & Telemetry';
+      evalCard.appendChild(evalHeader);
+
+      const evalFields = [
         { label: 'Case Identifier', value: c.case_id, mono: true, copyable: true },
         { label: 'Baseline Condition', value: c.baseline, bold: true },
         { label: 'Scenario Family', value: c.scenario_family || c.family || c.category },
         { label: 'Expected Outcome', value: c.expected_outcome, mono: true },
         { label: 'Actual Outcome', value: c.actual_outcome || c.status || c.outcome, mono: true, bold: true },
         { label: 'Classification Label', value: c.classification, bold: true },
-        { label: 'Decision Reason / Details', value: c.decision_reason || c.reason || c.gate_action },
-        { label: 'Observed Latency', value: (c.latency_ms !== undefined && c.latency_ms !== null) ? `${c.latency_ms} ms` : null, mono: true },
-        { label: 'Tokens Consumed', value: (c.tokens_consumed !== undefined && c.tokens_consumed !== null) ? `${c.tokens_consumed} tokens` : null, mono: true },
-        { label: 'Run Identifier', value: c.run_id, mono: true, copyable: true },
-        { label: 'Dataset SHA-256 Digest', value: c.dataset_sha256_digest, mono: true, copyable: true }
+        { label: 'Decision Reason / Details', value: c.decision_reason || c.reason || c.gate_action }
       ];
 
-      fieldList.forEach(item => {
+      const renderRow = (item, card) => {
         const row = document.createElement('div');
         row.style.marginBottom = '0.4rem';
         row.style.fontSize = '0.8rem';
@@ -4392,14 +4436,14 @@ document.addEventListener('DOMContentLoaded', () => {
 
           if (item.copyable) {
             const btn = document.createElement('button');
-              btn.type = 'button';
+            btn.type = 'button';
             btn.className = 'copy-btn';
             btn.style.marginLeft = '0.4rem';
             btn.style.padding = '0.1rem 0.35rem';
             btn.style.fontSize = '0.65rem';
             btn.textContent = 'Copy';
             btn.setAttribute('aria-label', `Copy ${item.label}`);
-              btn.setAttribute('title', `Copy ${item.label} to clipboard`);
+            btn.setAttribute('title', `Copy ${item.label} to clipboard`);
             btn.addEventListener('click', () => this.copyToClipboard(String(item.value), btn));
             row.appendChild(btn);
           }
@@ -4409,10 +4453,32 @@ document.addEventListener('DOMContentLoaded', () => {
           row.appendChild(valSpan);
         }
 
-        metaCard.appendChild(row);
-      });
+        card.appendChild(row);
+      };
 
-      container.appendChild(metaCard);
+      evalFields.forEach(item => renderRow(item, evalCard));
+      metaGrid.appendChild(evalCard);
+
+      // Column B: Run & Verification Artifacts
+      const provCard = document.createElement('div');
+      provCard.className = 'card';
+
+      const provHeader = document.createElement('div');
+      provHeader.className = 'card-header';
+      provHeader.textContent = 'Run & Artifact Verification';
+      provCard.appendChild(provHeader);
+
+      const provFields = [
+        { label: 'Observed Latency', value: (c.latency_ms !== undefined && c.latency_ms !== null) ? `${c.latency_ms} ms` : null, mono: true },
+        { label: 'Tokens Consumed', value: (c.tokens_consumed !== undefined && c.tokens_consumed !== null) ? `${c.tokens_consumed} tokens` : null, mono: true },
+        { label: 'Run Identifier', value: c.run_id, mono: true, copyable: true },
+        { label: 'Dataset SHA-256 Digest', value: c.dataset_sha256_digest, mono: true, copyable: true }
+      ];
+
+      provFields.forEach(item => renderRow(item, provCard));
+      metaGrid.appendChild(provCard);
+
+      container.appendChild(metaGrid);
 
       // Epistemic Notice Callout Box
       const epistemicBox = document.createElement('div');
