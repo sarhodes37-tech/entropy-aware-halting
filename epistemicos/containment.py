@@ -176,12 +176,6 @@ def parse_url_authority_structure(target_url_or_host: str, default_protocol: str
         eff_default_port = 443
 
     netloc = parsed.netloc
-    if not isinstance(netloc, str):
-        if hasattr(parsed, "hostname") and isinstance(parsed.hostname, str):
-            netloc = parsed.hostname
-        else:
-            netloc = str(netloc) if netloc else ""
-
     if not netloc:
         return {"scheme": scheme, "port": eff_default_port, "normalized_host": "", "valid": False}
 
@@ -194,7 +188,7 @@ def parse_url_authority_structure(target_url_or_host: str, default_protocol: str
 
     # Reject decoded whitespace and C0 control characters (e.g., %20, %09, %0A, %0D, %0B, %0C, %00)
     # in the authority structure prior to any trimming or normalization.
-    if _NETLOC_CTRL_REGEX.search(unquoted_netloc):
+    if isinstance(unquoted_netloc, str) and _NETLOC_CTRL_REGEX.search(unquoted_netloc):
         return {"scheme": scheme, "port": eff_default_port, "normalized_host": "", "valid": False}
 
     if "@" in unquoted_netloc:
@@ -229,7 +223,7 @@ def parse_url_authority_structure(target_url_or_host: str, default_protocol: str
     if host_clean.endswith(".") and len(host_clean) > 1:
         host_clean = host_clean[:-1]
 
-    if not host_clean or _HOST_WS_REGEX.search(host_clean):
+    if not host_clean or (isinstance(host_clean, str) and _HOST_WS_REGEX.search(host_clean)):
         return {"scheme": scheme, "port": port, "normalized_host": "", "valid": False}
 
     norm_host = ""

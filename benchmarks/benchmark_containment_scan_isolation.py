@@ -315,7 +315,11 @@ def main():
         stats_gen, stats_reg = run_paired_trial(fn_gen, fn_reg, trials=100, inner_loops=500)
         speedup = stats_gen["median_us"] / stats_reg["median_us"] if stats_reg["median_us"] > 0 else 0
         reduction = (1 - (stats_reg["median_us"] / stats_gen["median_us"])) * 100
-        print(f"  [{name:<24}] Gen p50: {stats_gen['median_us']:>6.2f} µs | Regex p50: {stats_reg['median_us']:>6.2f} µs | Speedup: {speedup:>5.2f}x ({reduction:>5.1f}% reduction)")
+        print(
+            f"  [{name:<24}] Gen: p50={stats_gen['median_us']:>5.2f}µs, p95={stats_gen['p95_us']:>5.2f}µs | "
+            f"Regex: p50={stats_reg['median_us']:>5.2f}µs, p95={stats_reg['p95_us']:>5.2f}µs | "
+            f"Speedup: {speedup:>5.2f}x ({reduction:>4.1f}% reduction)"
+        )
 
     # Full parser URL workloads (uncached)
     url_workloads = {
@@ -336,7 +340,11 @@ def main():
         stats_gen, stats_reg = run_paired_trial(fn_gen, fn_reg, trials=100, inner_loops=200)
         speedup = stats_gen["median_us"] / stats_reg["median_us"] if stats_reg["median_us"] > 0 else 0
         reduction = (1 - (stats_reg["median_us"] / stats_gen["median_us"])) * 100
-        print(f"  [{name:<24}] Gen p50: {stats_gen['median_us']:>6.2f} µs | Regex p50: {stats_reg['median_us']:>6.2f} µs | Speedup: {speedup:>5.2f}x ({reduction:>5.1f}% reduction)")
+        print(
+            f"  [{name:<24}] Gen: p50={stats_gen['median_us']:>5.2f}µs, p95={stats_gen['p95_us']:>5.2f}µs | "
+            f"Regex: p50={stats_reg['median_us']:>5.2f}µs, p95={stats_reg['p95_us']:>5.2f}µs | "
+            f"Speedup: {speedup:>5.2f}x ({reduction:>4.1f}% reduction)"
+        )
 
     # Full parser IP workloads (uncached)
     ip_workloads = {
@@ -357,7 +365,11 @@ def main():
         stats_gen, stats_reg = run_paired_trial(fn_gen, fn_reg, trials=100, inner_loops=200)
         speedup = stats_gen["median_us"] / stats_reg["median_us"] if stats_reg["median_us"] > 0 else 0
         reduction = (1 - (stats_reg["median_us"] / stats_gen["median_us"])) * 100
-        print(f"  [{name:<24}] Gen p50: {stats_gen['median_us']:>6.2f} µs | Regex p50: {stats_reg['median_us']:>6.2f} µs | Speedup: {speedup:>5.2f}x ({reduction:>5.1f}% reduction)")
+        print(
+            f"  [{name:<24}] Gen: p50={stats_gen['median_us']:>5.2f}µs, p95={stats_gen['p95_us']:>5.2f}µs | "
+            f"Regex: p50={stats_reg['median_us']:>5.2f}µs, p95={stats_reg['p95_us']:>5.2f}µs | "
+            f"Speedup: {speedup:>5.2f}x ({reduction:>4.1f}% reduction)"
+        )
 
     print("\n✓ Dedicated benchmark suite completed successfully.")
 
