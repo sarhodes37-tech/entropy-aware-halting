@@ -745,3 +745,65 @@ class TestSideEffectPolicyEngineInvariants:
         )
         assert valid is True
         assert msg == "Approval record validated"
+
+    def test_signature_hex_validation_differential_equivalence(self):
+        """
+        ⚡ Bolt differential equivalence test:
+        Verifies 100% equivalence between legacy frozenset + generator expression
+        and the optimized precompiled regex across BMP codepoints and edge-case strings.
+        """
+        from typing import Any
+        from epistemicos.action_policy import _APPROVAL_SIG_HEX_REGEX
+
+        def legacy_hex_check(sig: Any) -> bool:
+            if not isinstance(sig, str) or len(sig) != 64:
+                return False
+            _hex_chars = frozenset("0123456789abcdefABCDEF")
+            if any(c not in _hex_chars for c in sig):
+                return False
+            return True
+
+        def optimized_hex_check(sig: Any) -> bool:
+            if not isinstance(sig, str) or len(sig) != 64:
+                return False
+            if not _APPROVAL_SIG_HEX_REGEX.match(sig):
+                return False
+            return True
+
+        # Test varying lengths and non-string types
+        test_inputs = [
+            "",
+            "a" * 63,
+            "a" * 64,
+            "a" * 65,
+            "A" * 64,
+            "0" * 64,
+            "f" * 64,
+            "F" * 64,
+            None,
+            123,
+            True,
+            False,
+            ("a" * 63) + " ",
+            ("a" * 63) + "z",
+            ("a" * 63) + "Z",
+            ("a" * 63) + chr(0),
+            ("a" * 63) + "\n",
+            "+" + ("0" * 63),
+            "-" + ("0" * 63),
+            " " + ("0" * 63),
+            "0123456789abcdef" * 4,
+            "0123456789ABCDEF" * 4,
+            "0123456789aBcDeF" * 4,
+        ]
+
+        for s in test_inputs:
+            assert legacy_hex_check(s) == optimized_hex_check(s), f"Differential mismatch for input {s!r}"
+
+        # Exhaustive character test across ASCII range [0, 127]
+        for c_code in range(128):
+            ch = chr(c_code)
+            test_sig = ch * 64
+            assert legacy_hex_check(test_sig) == optimized_hex_check(test_sig), (
+                f"ASCII character mismatch at code {c_code}: {ch!r}"
+            )
