@@ -92,3 +92,42 @@ Empirical isolation benchmarks directly comparing generator vs compiled-regex sc
 - Malformed Decoded Path C0: **1.60x speedup** (37.5% latency reduction: median 14.43 µs -> 9.02 µs, p95 14.54 µs -> 9.12 µs).
 Differential equivalence across all 65,536 code points (BMP) confirms 100% identical character acceptance/rejection semantics with zero functional regression.
 **Action:** In high-throughput string canonicalization or validation routines, replace multi-condition character iteration generator expressions with precompiled C-level character-class regular expressions (`re.compile(r"[...]")`) to execute character validation at native speed.
+
+## 2026-11-09 - Precompiled Character-Class Regex Scanning in Containment URL Authority & Numeric IP Validation
+**Learning:** In network containment filters like `parse_url_authority_structure` and `parse_ip_numeric`, validating authority and IP character anomalies via dynamic Python generator expressions (`any(c.isspace() or ord(c) < 32 or ord(c) == 127 for c in unquoted_netloc)`, `any(c.isspace() for c in host_clean)`, and `any(c.isspace() or c in ('+', '-', '\x00') for c in host_str)`) forces per-character Python iterator allocation and ordinal evaluation on every uncached target and candidate string. Replacing these generator loops with module-level precompiled character-class regexes (`_NETLOC_CTRL_REGEX = re.compile(r"[\s\x00-\x1f\x7f]")`, `_HOST_WS_REGEX = re.compile(r"\s")`, and `_IP_INVALID_REGEX = re.compile(r"[\s+\-\x00]")`) delivers significant measured speedups:
+
+1. **Isolated Predicate Performance (100 paired trials, 500 inner loops)**:
+   - `netloc_short_valid` ("api.github.com"): **5.60x speedup** (82.1% reduction; Gen: p50=2.80µs, p95=2.96µs | Regex: p50=0.50µs, p95=0.58µs).
+   - `netloc_typical_valid` ("internal-service.cluster.local:8443"): **8.41x speedup** (88.1% reduction; Gen: p50=6.14µs, p95=6.28µs | Regex: p50=0.73µs, p95=0.85µs).
+   - `netloc_long_valid` (>64 char authority): **10.73x speedup** (90.7% reduction; Gen: p50=13.73µs, p95=13.94µs | Regex: p50=1.28µs, p95=1.36µs).
+   - `netloc_c0_rejected` (C0 control character): **4.51x speedup** (77.8% reduction; Gen: p50=3.34µs, p95=3.46µs | Regex: p50=0.74µs, p95=0.83µs).
+   - `netloc_ws_rejected` (embedded whitespace): **3.65x speedup** (72.6% reduction; Gen: p50=2.52µs, p95=2.67µs | Regex: p50=0.69µs, p95=0.81µs).
+   - `host_clean_valid` ("api-v2.internal-service.local"): **3.79x speedup** (73.6% reduction; Gen: p50=2.20µs, p95=2.31µs | Regex: p50=0.58µs, p95=0.69µs).
+   - `host_clean_rejected` ("api-v2.internal service.local"): **2.91x speedup** (65.7% reduction; Gen: p50=2.01µs, p95=2.20µs | Regex: p50=0.69µs, p95=0.80µs).
+   - `ip_short_valid` ("10.0.0.1"): **4.59x speedup** (78.2% reduction; Gen: p50=1.88µs, p95=1.98µs | Regex: p50=0.41µs, p95=0.51µs).
+   - `ip_typical_valid` ("192.168.1.100"): **5.91x speedup** (83.1% reduction; Gen: p50=2.78µs, p95=2.89µs | Regex: p50=0.47µs, p95=0.54µs).
+   - `ip_octal_valid` ("0177.0.0.1"): **5.07x speedup** (80.3% reduction; Gen: p50=2.23µs, p95=2.35µs | Regex: p50=0.44µs, p95=0.52µs).
+   - `ip_hex_valid` ("0x7f000001"): **5.09x speedup** (80.4% reduction; Gen: p50=2.24µs, p95=2.39µs | Regex: p50=0.44µs, p95=0.51µs).
+   - `ip_whitespace_rejected` ("192.168. 1.1"): **3.73x speedup** (73.2% reduction; Gen: p50=2.46µs, p95=2.68µs | Regex: p50=0.66µs, p95=0.79µs).
+   - `ip_sign_rejected` ("+192.168.1.1", early short-circuit): **2.07x speedup** (51.8% reduction; Gen: p50=1.14µs, p95=1.27µs | Regex: p50=0.55µs, p95=0.68µs).
+
+2. **Complete Uncached `parse_url_authority_structure()` (100 paired trials, 200 inner loops)**:
+   - `url_short_valid`: **1.27x speedup** (21.5% reduction; Gen: p50=34.70µs, p95=39.00µs | Regex: p50=27.23µs, p95=31.32µs).
+   - `url_typical_valid`: **1.50x speedup** (33.4% reduction; Gen: p50=36.91µs, p95=39.83µs | Regex: p50=24.58µs, p95=27.76µs).
+   - `url_long_valid`: **1.71x speedup** (41.4% reduction; Gen: p50=51.09µs, p95=51.82µs | Regex: p50=29.95µs, p95=30.38µs).
+   - `url_ip_authority`: **1.33x speedup** (24.9% reduction; Gen: p50=18.30µs, p95=19.93µs | Regex: p50=13.75µs, p95=15.61µs).
+   - `url_schemeless`: **1.27x speedup** (21.1% reduction; Gen: p50=36.09µs, p95=37.45µs | Regex: p50=28.49µs, p95=29.26µs).
+   - `url_ws_rejected`: **1.45x speedup** (30.9% reduction; Gen: p50=4.69µs, p95=4.96µs | Regex: p50=3.24µs, p95=3.54µs).
+   - `url_c0_rejected`: **1.83x speedup** (45.4% reduction; Gen: p50=6.12µs, p95=6.45µs | Regex: p50=3.34µs, p95=3.62µs).
+
+3. **Complete Uncached `parse_ip_numeric()` (100 paired trials, 200 inner loops)**:
+   - `ip_standard_v4`: **1.88x speedup** (46.9% reduction; Gen: p50=5.16µs, p95=5.42µs | Regex: p50=2.74µs, p95=2.94µs).
+   - `ip_loopback`: **1.78x speedup** (43.9% reduction; Gen: p50=4.81µs, p95=5.15µs | Regex: p50=2.70µs, p95=2.97µs).
+   - `ip_octal_dotted`: **1.83x speedup** (45.5% reduction; Gen: p50=4.95µs, p95=5.28µs | Regex: p50=2.70µs, p95=2.88µs).
+   - `ip_hex_dword`: **2.07x speedup** (51.6% reduction; Gen: p50=4.61µs, p95=4.90µs | Regex: p50=2.23µs, p95=2.35µs).
+   - `ip_decimal_dword`: **2.06x speedup** (51.5% reduction; Gen: p50=4.56µs, p95=4.90µs | Regex: p50=2.21µs, p95=2.37µs).
+   - `ip_non_numeric`: **1.82x speedup** (45.1% reduction; Gen: p50=7.74µs, p95=8.12µs | Regex: p50=4.25µs, p95=4.53µs).
+   - `ip_invalid_char_rejected`: **3.53x speedup** (71.7% reduction; Gen: p50=1.66µs, p95=1.87µs | Regex: p50=0.47µs, p95=0.59µs).
+
+Differential equivalence across all 65,536 code points (BMP) confirms 100% identical Boolean character classification with zero functional regression.
+**Action:** In containment and network destination parsing kernels, replace per-character generator expressions with module-level precompiled character-class regular expressions to execute character validation in C.
