@@ -11,7 +11,9 @@ import time
 from dataclasses import dataclass, field
 from typing import Dict, Optional, Set
 
-from epistemicos.release.models import MAX_TIMESTAMP_MAGNITUDE
+# Signed 64-bit integer timestamp boundaries: -2^63 <= t <= 2^63 - 1
+MIN_TIMESTAMP_BOUND = -(1 << 63)
+MAX_TIMESTAMP_BOUND = (1 << 63) - 1
 
 
 @dataclass(frozen=True)
@@ -35,15 +37,17 @@ class RevocationRecord:
                 f"RevocationRecord: revocation_timestamp must be a numeric timestamp, got {type(self.revocation_timestamp).__name__}"
             )
         if isinstance(self.revocation_timestamp, int):
-            if self.revocation_timestamp.bit_length() > 64:
-                raise ValueError("RevocationRecord: revocation_timestamp integer overflows 64-bit limits")
+            if not (MIN_TIMESTAMP_BOUND <= self.revocation_timestamp <= MAX_TIMESTAMP_BOUND):
+                raise ValueError("RevocationRecord: revocation_timestamp integer overflows signed 64-bit limits")
         else:
             if not math.isfinite(self.revocation_timestamp):
                 raise ValueError(
                     f"RevocationRecord: revocation_timestamp must be a finite number, got {self.revocation_timestamp}"
                 )
-            if abs(self.revocation_timestamp) > MAX_TIMESTAMP_MAGNITUDE:
-                raise ValueError("RevocationRecord: revocation_timestamp float overflows magnitude limits")
+            # Direct comparison against exact signed integer bounds avoids float-rounding artifact
+            # where float((1 << 63) - 1) rounds up to 2^63
+            if not (MIN_TIMESTAMP_BOUND <= self.revocation_timestamp <= MAX_TIMESTAMP_BOUND):
+                raise ValueError("RevocationRecord: revocation_timestamp float overflows signed 64-bit limits")
 
 
 class ReleaseApprovalRevocationRegistry:
