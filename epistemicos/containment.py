@@ -176,6 +176,12 @@ def parse_url_authority_structure(target_url_or_host: str, default_protocol: str
         eff_default_port = 443
 
     netloc = parsed.netloc
+    if not isinstance(netloc, str):
+        if hasattr(parsed, "hostname") and isinstance(parsed.hostname, str):
+            netloc = parsed.hostname
+        else:
+            netloc = str(netloc) if netloc else ""
+
     if not netloc:
         return {"scheme": scheme, "port": eff_default_port, "normalized_host": "", "valid": False}
 
