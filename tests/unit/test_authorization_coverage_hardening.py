@@ -1548,11 +1548,32 @@ class TestAuthenticatedPrincipalNumericHardening:
         with pytest.raises(ValueError, match="timestamp must be a finite number"):
             AuthenticatedPrincipal("alice", "idp", float("inf"), "00" * 64)
 
-        # 3. 64-bit integer overflow rejected
-        with pytest.raises(ValueError, match="timestamp integer overflows 64-bit limits"):
-            AuthenticatedPrincipal("alice", "idp", 10**100, "00" * 64)
+        # 3. Signed 64-bit boundary tests
+        min_int64 = -(1 << 63)
+        max_int64 = (1 << 63) - 1
 
-        # 4. Valid int and float timestamp accepted
+        # Valid boundaries (-2^63 and 2^63 - 1)
+        p_min = AuthenticatedPrincipal("alice", "idp", min_int64, "00" * 64)
+        assert p_min.timestamp == min_int64
+        p_min_f = AuthenticatedPrincipal("alice", "idp", float(min_int64), "00" * 64)
+        assert p_min_f.timestamp == float(min_int64)
+
+        p_max = AuthenticatedPrincipal("alice", "idp", max_int64, "00" * 64)
+        assert p_max.timestamp == max_int64
+
+        # Out-of-range positive (2^63) as int and float
+        with pytest.raises(ValueError, match="timestamp integer overflows signed 64-bit limits"):
+            AuthenticatedPrincipal("alice", "idp", 1 << 63, "00" * 64)
+        with pytest.raises(ValueError, match="timestamp float overflows signed 64-bit limits"):
+            AuthenticatedPrincipal("alice", "idp", float(1 << 63), "00" * 64)
+
+        # Out-of-range negative (-(2^63 + 1)) as int and float
+        with pytest.raises(ValueError, match="timestamp integer overflows signed 64-bit limits"):
+            AuthenticatedPrincipal("alice", "idp", -(1 << 63) - 1, "00" * 64)
+        with pytest.raises(ValueError, match="timestamp float overflows signed 64-bit limits"):
+            AuthenticatedPrincipal("alice", "idp", float(-(1 << 63) - 2048), "00" * 64)
+
+        # 4. Valid normal int and float timestamp accepted
         p_int = AuthenticatedPrincipal("alice", "idp", 1700000000, "00" * 64)
         assert p_int.timestamp == 1700000000
         p_flt = AuthenticatedPrincipal("alice", "idp", 1700000000.5, "00" * 64)
@@ -1573,11 +1594,32 @@ class TestAuthenticatedPrincipalNumericHardening:
         with pytest.raises(ValueError, match="expires_at must be a finite number"):
             AuthenticatedPrincipal("alice", "idp", 1000.0, "00" * 64, expires_at=float("inf"))
 
-        # 3. 64-bit integer overflow rejected
-        with pytest.raises(ValueError, match="expires_at integer overflows 64-bit limits"):
-            AuthenticatedPrincipal("alice", "idp", 1000.0, "00" * 64, expires_at=10**100)
+        # 3. Signed 64-bit boundary tests
+        min_int64 = -(1 << 63)
+        max_int64 = (1 << 63) - 1
 
-        # 4. Valid int and float expires_at accepted
+        # Valid boundaries (-2^63 and 2^63 - 1)
+        p_min = AuthenticatedPrincipal("alice", "idp", 1000.0, "00" * 64, expires_at=min_int64)
+        assert p_min.expires_at == min_int64
+        p_min_f = AuthenticatedPrincipal("alice", "idp", 1000.0, "00" * 64, expires_at=float(min_int64))
+        assert p_min_f.expires_at == float(min_int64)
+
+        p_max = AuthenticatedPrincipal("alice", "idp", 1000.0, "00" * 64, expires_at=max_int64)
+        assert p_max.expires_at == max_int64
+
+        # Out-of-range positive (2^63) as int and float
+        with pytest.raises(ValueError, match="expires_at integer overflows signed 64-bit limits"):
+            AuthenticatedPrincipal("alice", "idp", 1000.0, "00" * 64, expires_at=1 << 63)
+        with pytest.raises(ValueError, match="expires_at float overflows signed 64-bit limits"):
+            AuthenticatedPrincipal("alice", "idp", 1000.0, "00" * 64, expires_at=float(1 << 63))
+
+        # Out-of-range negative (-(2^63 + 1)) as int and float
+        with pytest.raises(ValueError, match="expires_at integer overflows signed 64-bit limits"):
+            AuthenticatedPrincipal("alice", "idp", 1000.0, "00" * 64, expires_at=-(1 << 63) - 1)
+        with pytest.raises(ValueError, match="expires_at float overflows signed 64-bit limits"):
+            AuthenticatedPrincipal("alice", "idp", 1000.0, "00" * 64, expires_at=float(-(1 << 63) - 2048))
+
+        # 4. Valid normal int and float expires_at accepted
         p_int = AuthenticatedPrincipal("alice", "idp", 1000.0, "00" * 64, expires_at=2000)
         assert p_int.expires_at == 2000
         p_flt = AuthenticatedPrincipal("alice", "idp", 1000.0, "00" * 64, expires_at=2000.5)
@@ -1602,8 +1644,25 @@ class TestAuthenticatedPrincipalNumericHardening:
         assert not valid
         assert "Invalid current_time clock override" in reason
 
-        # 4. Overflowing current_time fails closed
-        valid, reason, pid = verifier.verify_principal(p, current_time=10**100)
+        # 4. Signed 64-bit boundary tests for current_time
+        min_int64 = -(1 << 63)
+        max_int64 = (1 << 63) - 1
+
+        # Out-of-range positive 2^63 (int and float)
+        valid, reason, pid = verifier.verify_principal(p, current_time=1 << 63)
+        assert not valid
+        assert "Invalid current_time clock override" in reason
+
+        valid, reason, pid = verifier.verify_principal(p, current_time=float(1 << 63))
+        assert not valid
+        assert "Invalid current_time clock override" in reason
+
+        # Out-of-range negative -(2^63 + 1) (int and float)
+        valid, reason, pid = verifier.verify_principal(p, current_time=-(1 << 63) - 1)
+        assert not valid
+        assert "Invalid current_time clock override" in reason
+
+        valid, reason, pid = verifier.verify_principal(p, current_time=float(-(1 << 63) - 2048))
         assert not valid
         assert "Invalid current_time clock override" in reason
 
@@ -1620,7 +1679,7 @@ class TestAuthenticatedPrincipalNumericHardening:
             p.compute_signature_payload()
 
         object.__setattr__(p, "timestamp", 10**100)
-        with pytest.raises(ValueError, match="timestamp integer overflows 64-bit limits"):
+        with pytest.raises(ValueError, match="timestamp integer overflows signed 64-bit limits"):
             p.compute_signature_payload()
 
         # Restore valid timestamp, mutate expires_at
@@ -1634,7 +1693,7 @@ class TestAuthenticatedPrincipalNumericHardening:
             p.compute_signature_payload()
 
         object.__setattr__(p, "expires_at", 10**100)
-        with pytest.raises(ValueError, match="expires_at integer overflows 64-bit limits"):
+        with pytest.raises(ValueError, match="expires_at integer overflows signed 64-bit limits"):
             p.compute_signature_payload()
 
     def test_principal_verifier_timestamp_runtime_validation_fails_closed(self):
@@ -1657,16 +1716,26 @@ class TestAuthenticatedPrincipalNumericHardening:
         object.__setattr__(p, "timestamp", float("nan"))
         valid, reason, pid = verifier.verify_principal(p)
         assert not valid
-        assert "Principal assertion timestamp is non-finite or overflows limits" in reason
+        assert "Principal assertion timestamp is non-finite or overflows signed 64-bit limits" in reason
 
         # 4. Non-finite Inf float timestamp fails closed
         object.__setattr__(p, "timestamp", float("inf"))
         valid, reason, pid = verifier.verify_principal(p)
         assert not valid
-        assert "Principal assertion timestamp is non-finite or overflows limits" in reason
+        assert "Principal assertion timestamp is non-finite or overflows signed 64-bit limits" in reason
 
-        # 5. Overflowing integer timestamp fails closed
-        object.__setattr__(p, "timestamp", 10**100)
+        # 5. Overflowing integer timestamp fails closed (including 2^63 and -(2^63 + 1))
+        object.__setattr__(p, "timestamp", 1 << 63)
         valid, reason, pid = verifier.verify_principal(p)
         assert not valid
-        assert "Principal assertion timestamp integer overflows 64-bit limits" in reason
+        assert "Principal assertion timestamp integer overflows signed 64-bit limits" in reason
+
+        object.__setattr__(p, "timestamp", float(1 << 63))
+        valid, reason, pid = verifier.verify_principal(p)
+        assert not valid
+        assert "Principal assertion timestamp is non-finite or overflows signed 64-bit limits" in reason
+
+        object.__setattr__(p, "timestamp", -(1 << 63) - 1)
+        valid, reason, pid = verifier.verify_principal(p)
+        assert not valid
+        assert "Principal assertion timestamp integer overflows signed 64-bit limits" in reason
