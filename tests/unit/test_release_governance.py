@@ -1733,8 +1733,8 @@ def test_release_approval_record_expires_at_numeric_validation():
             )
 
     # Floats exceeding magnitude bound rejected (both positive and negative)
-    for bad_mag in [1e25, -1e25, 1e100, -1e100]:
-        with pytest.raises(ValueError, match="expires_at float overflows magnitude limits"):
+    for bad_mag in [1e25, -1e25, 1e100, -1e100, float(1 << 63)]:
+        with pytest.raises(ValueError, match="expires_at float overflows signed 64-bit limits"):
             ReleaseApprovalRecord(
                 approval_id="appr-bad-mag",
                 manifest_digest=m_digest,
@@ -1745,20 +1745,21 @@ def test_release_approval_record_expires_at_numeric_validation():
                 expires_at=bad_mag
             )
 
-    # Oversized integer rejected to prevent float conversion OverflowError
-    with pytest.raises(ValueError, match="expires_at integer overflows 64-bit limits"):
-        ReleaseApprovalRecord(
-            approval_id="appr-overflow",
-            manifest_digest=m_digest,
-            approver_id="alice",
-            approver_issuer="IdP",
-            policy_version="1.0",
-            required_evidence_digests=[ev_digest],
-            expires_at=10**1000
-        )
+    # Out-of-bounds integers rejected (overflowing signed 64-bit limits)
+    for bad_int in [10**1000, 1 << 63, -(1 << 63) - 1]:
+        with pytest.raises(ValueError, match="expires_at integer overflows signed 64-bit limits"):
+            ReleaseApprovalRecord(
+                approval_id="appr-overflow",
+                manifest_digest=m_digest,
+                approver_id="alice",
+                approver_issuer="IdP",
+                policy_version="1.0",
+                required_evidence_digests=[ev_digest],
+                expires_at=bad_int
+            )
 
-    # Valid integer and float within 64-bit bounds pass and compute signature payload cleanly
-    for valid_exp in [1500, 1500.5, (1 << 63) - 1]:
+    # Valid integer and float within signed 64-bit bounds pass and compute signature payload cleanly
+    for valid_exp in [1500, 1500.5, (1 << 63) - 1, -(1 << 63)]:
         appr_valid = ReleaseApprovalRecord(
             approval_id="appr-valid-num",
             manifest_digest=m_digest,
@@ -1805,8 +1806,8 @@ def test_release_approval_record_timestamp_numeric_validation():
             )
 
     # Floats exceeding magnitude bound rejected (both positive and negative)
-    for bad_mag in [1e25, -1e25, 1e100, -1e100]:
-        with pytest.raises(ValueError, match="timestamp float overflows magnitude limits"):
+    for bad_mag in [1e25, -1e25, 1e100, -1e100, float(1 << 63)]:
+        with pytest.raises(ValueError, match="timestamp float overflows signed 64-bit limits"):
             ReleaseApprovalRecord(
                 approval_id="appr-bad-ts-mag",
                 manifest_digest=m_digest,
@@ -1817,20 +1818,21 @@ def test_release_approval_record_timestamp_numeric_validation():
                 timestamp=bad_mag
             )
 
-    # Oversized integer rejected to prevent float conversion OverflowError
-    with pytest.raises(ValueError, match="timestamp integer overflows 64-bit limits"):
-        ReleaseApprovalRecord(
-            approval_id="appr-ts-overflow",
-            manifest_digest=m_digest,
-            approver_id="alice",
-            approver_issuer="IdP",
-            policy_version="1.0",
-            required_evidence_digests=[ev_digest],
-            timestamp=10**1000
-        )
+    # Out-of-bounds integers rejected (overflowing signed 64-bit limits)
+    for bad_int in [10**1000, 1 << 63, -(1 << 63) - 1]:
+        with pytest.raises(ValueError, match="timestamp integer overflows signed 64-bit limits"):
+            ReleaseApprovalRecord(
+                approval_id="appr-ts-overflow",
+                manifest_digest=m_digest,
+                approver_id="alice",
+                approver_issuer="IdP",
+                policy_version="1.0",
+                required_evidence_digests=[ev_digest],
+                timestamp=bad_int
+            )
 
     # Valid integer and float timestamp pass and compute signature payload cleanly
-    for valid_ts in [1000, 1000.5, (1 << 63) - 1]:
+    for valid_ts in [1000, 1000.5, (1 << 63) - 1, -(1 << 63)]:
         appr_valid = ReleaseApprovalRecord(
             approval_id="appr-valid-ts",
             manifest_digest=m_digest,
@@ -1856,12 +1858,12 @@ def test_release_approval_record_timestamp_numeric_validation():
         expires_at=2000.0
     )
     appr_mutate.timestamp = 10**1000
-    with pytest.raises(ValueError, match="timestamp integer overflows 64-bit limits"):
+    with pytest.raises(ValueError, match="timestamp integer overflows signed 64-bit limits"):
         appr_mutate.compute_signature_payload()
 
     appr_mutate.timestamp = 1000.0
     appr_mutate.expires_at = 1e25
-    with pytest.raises(ValueError, match="expires_at float overflows magnitude limits"):
+    with pytest.raises(ValueError, match="expires_at float overflows signed 64-bit limits"):
         appr_mutate.compute_signature_payload()
 
 
@@ -1895,8 +1897,11 @@ def test_release_approval_record_is_expired_invalid_clock_fail_closed():
     assert appr.is_expired(current_time=float("inf")) is True
     assert appr.is_expired(current_time=float("-inf")) is True
 
-    # Oversized integer clock fail closed
+    # Oversized integer and out-of-bound clock fail closed
     assert appr.is_expired(current_time=10**1000) is True
+    assert appr.is_expired(current_time=1 << 63) is True
+    assert appr.is_expired(current_time=-(1 << 63) - 1) is True
+    assert appr.is_expired(current_time=float(1 << 63)) is True
 
     # Mutated expires_at fail-closed checks (NaN, inf, -inf, oversized int, non-numeric, out-of-range float)
     appr_mut_exp = ReleaseApprovalRecord(
