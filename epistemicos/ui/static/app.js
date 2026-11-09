@@ -2587,6 +2587,7 @@ document.addEventListener('DOMContentLoaded', () => {
           this.state.selectedTraceId = corrId;
           this.switchTab('traces');
           await this.selectTrace(corrId);
+          this.announce(`Navigated to Execution Trace Explorer (Trace: ${corrId})`);
           const activeItem = document.querySelector('#trace-list .trace-item.active');
           if (activeItem) {
             activeItem.focus();
