@@ -39,6 +39,8 @@ GENERIC_CONTINUATION_PATTERNS = frozenset({
 
 
 
+MAX_TIMESTAMP_MAGNITUDE = float((1 << 63) - 1)
+
 _ED25519_Q = 2**255 - 19
 _ED25519_L = 2**252 + 27742317777372353535851937790883648493
 
@@ -197,6 +199,31 @@ class AuthenticatedPrincipal:
             raise ValueError("AuthenticatedPrincipal: issuer_id must be a non-empty string")
         if not self.signature or not isinstance(self.signature, str) or not self.signature.strip():
             raise ValueError("AuthenticatedPrincipal: signature must be a non-empty string")
+
+        # Validate timestamp field
+        if isinstance(self.timestamp, bool) or not isinstance(self.timestamp, (int, float)):
+            raise TypeError(f"AuthenticatedPrincipal: timestamp must be a numeric timestamp, got {type(self.timestamp).__name__}")
+        if isinstance(self.timestamp, int):
+            if self.timestamp.bit_length() > 64:
+                raise ValueError("AuthenticatedPrincipal: timestamp integer overflows 64-bit limits")
+        else:
+            if not math.isfinite(self.timestamp):
+                raise ValueError(f"AuthenticatedPrincipal: timestamp must be a finite number, got {self.timestamp}")
+            if abs(self.timestamp) > MAX_TIMESTAMP_MAGNITUDE:
+                raise ValueError("AuthenticatedPrincipal: timestamp float overflows magnitude limits")
+
+        # Validate expires_at field if present
+        if self.expires_at is not None:
+            if isinstance(self.expires_at, bool) or not isinstance(self.expires_at, (int, float)):
+                raise TypeError(f"AuthenticatedPrincipal: expires_at must be a numeric timestamp, got {type(self.expires_at).__name__}")
+            if isinstance(self.expires_at, int):
+                if self.expires_at.bit_length() > 64:
+                    raise ValueError("AuthenticatedPrincipal: expires_at integer overflows 64-bit limits")
+            else:
+                if not math.isfinite(self.expires_at):
+                    raise ValueError(f"AuthenticatedPrincipal: expires_at must be a finite number, got {self.expires_at}")
+                if abs(self.expires_at) > MAX_TIMESTAMP_MAGNITUDE:
+                    raise ValueError("AuthenticatedPrincipal: expires_at float overflows magnitude limits")
 
     def compute_signature_payload(self) -> bytes:
         exp_str = f"{self.expires_at:.6f}" if self.expires_at is not None else ""
@@ -1797,7 +1824,20 @@ class PrincipalVerifier:
         if not trusted_pubkey:
             return False, f"Untrusted identity issuer: '{principal.issuer_id}' is not in configured trusted issuers", None
 
-        now = current_time if current_time is not None else time.time()
+        # Validate clock override if provided
+        if current_time is not None:
+            if isinstance(current_time, bool) or not isinstance(current_time, (int, float)):
+                return False, "Invalid current_time clock override: must be a numeric timestamp", None
+            if isinstance(current_time, int):
+                if current_time.bit_length() > 64:
+                    return False, "Invalid current_time clock override: integer overflows 64-bit limits", None
+                now = float(current_time)
+            else:
+                if not math.isfinite(current_time) or abs(current_time) > MAX_TIMESTAMP_MAGNITUDE:
+                    return False, "Invalid current_time clock override: must be a finite number within limits", None
+                now = current_time
+        else:
+            now = time.time()
 
         # Reject future-dated assertions (beyond permitted clock skew)
         if principal.timestamp > (now + self.clock_skew_seconds):
@@ -1809,8 +1849,19 @@ class PrincipalVerifier:
 
         # Reject expired assertions by explicit expires_at field if present
         if principal.expires_at is not None:
-            if now >= principal.expires_at:
-                return False, f"Principal assertion expired (current time {now} >= expires_at {principal.expires_at})", None
+            if isinstance(principal.expires_at, bool) or not isinstance(principal.expires_at, (int, float)):
+                return False, "Principal assertion has invalid non-numeric expires_at", None
+            if isinstance(principal.expires_at, int):
+                if principal.expires_at.bit_length() > 64:
+                    return False, "Principal assertion expires_at integer overflows 64-bit limits", None
+                exp_val = float(principal.expires_at)
+            else:
+                if not math.isfinite(principal.expires_at) or abs(principal.expires_at) > MAX_TIMESTAMP_MAGNITUDE:
+                    return False, "Principal assertion expires_at is non-finite or overflows limits", None
+                exp_val = principal.expires_at
+
+            if now >= exp_val:
+                return False, f"Principal assertion expired (current time {now} >= expires_at {exp_val})", None
 
         # Decode signature
         try:

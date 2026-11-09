@@ -1528,3 +1528,81 @@ class TestAuthorizationConcurrencyAndDeterminism:
         )
         assert auth_rand1.approval_signing_secret != auth_rand2.approval_signing_secret
         assert auth_rand1.contract_signing_secret != auth_rand2.contract_signing_secret
+
+
+class TestAuthenticatedPrincipalNumericHardening:
+    """Tests for fail-closed timestamp and expiration numeric validation."""
+
+    def test_authenticated_principal_timestamp_validation(self):
+        # 1. Non-numeric or boolean timestamp rejected
+        with pytest.raises(TypeError, match="timestamp must be a numeric timestamp"):
+            AuthenticatedPrincipal("alice", "idp", True, "00" * 64)
+
+        with pytest.raises(TypeError, match="timestamp must be a numeric timestamp"):
+            AuthenticatedPrincipal("alice", "idp", "12345", "00" * 64)
+
+        # 2. Non-finite float timestamp rejected
+        with pytest.raises(ValueError, match="timestamp must be a finite number"):
+            AuthenticatedPrincipal("alice", "idp", float("nan"), "00" * 64)
+
+        with pytest.raises(ValueError, match="timestamp must be a finite number"):
+            AuthenticatedPrincipal("alice", "idp", float("inf"), "00" * 64)
+
+        # 3. 64-bit integer overflow rejected
+        with pytest.raises(ValueError, match="timestamp integer overflows 64-bit limits"):
+            AuthenticatedPrincipal("alice", "idp", 10**100, "00" * 64)
+
+        # 4. Valid int and float timestamp accepted
+        p_int = AuthenticatedPrincipal("alice", "idp", 1700000000, "00" * 64)
+        assert p_int.timestamp == 1700000000
+        p_flt = AuthenticatedPrincipal("alice", "idp", 1700000000.5, "00" * 64)
+        assert p_flt.timestamp == 1700000000.5
+
+    def test_authenticated_principal_expires_at_validation(self):
+        # 1. Non-numeric or boolean expires_at rejected
+        with pytest.raises(TypeError, match="expires_at must be a numeric timestamp"):
+            AuthenticatedPrincipal("alice", "idp", 1000.0, "00" * 64, expires_at=False)
+
+        with pytest.raises(TypeError, match="expires_at must be a numeric timestamp"):
+            AuthenticatedPrincipal("alice", "idp", 1000.0, "00" * 64, expires_at="invalid")
+
+        # 2. Non-finite float expires_at rejected
+        with pytest.raises(ValueError, match="expires_at must be a finite number"):
+            AuthenticatedPrincipal("alice", "idp", 1000.0, "00" * 64, expires_at=float("nan"))
+
+        with pytest.raises(ValueError, match="expires_at must be a finite number"):
+            AuthenticatedPrincipal("alice", "idp", 1000.0, "00" * 64, expires_at=float("inf"))
+
+        # 3. 64-bit integer overflow rejected
+        with pytest.raises(ValueError, match="expires_at integer overflows 64-bit limits"):
+            AuthenticatedPrincipal("alice", "idp", 1000.0, "00" * 64, expires_at=10**100)
+
+        # 4. Valid int and float expires_at accepted
+        p_int = AuthenticatedPrincipal("alice", "idp", 1000.0, "00" * 64, expires_at=2000)
+        assert p_int.expires_at == 2000
+        p_flt = AuthenticatedPrincipal("alice", "idp", 1000.0, "00" * 64, expires_at=2000.5)
+        assert p_flt.expires_at == 2000.5
+
+    def test_principal_verifier_clock_override_and_expiration_fail_closed(self):
+        verifier = PrincipalVerifier({"idp": b"\x00" * 32})
+        p = AuthenticatedPrincipal("alice", "idp", 1000.0, "00" * 64, expires_at=2000.0)
+
+        # 1. Boolean current_time fails closed
+        valid, reason, pid = verifier.verify_principal(p, current_time=True)
+        assert not valid
+        assert "Invalid current_time clock override" in reason
+
+        # 2. Non-numeric current_time fails closed
+        valid, reason, pid = verifier.verify_principal(p, current_time="not-a-number")
+        assert not valid
+        assert "Invalid current_time clock override" in reason
+
+        # 3. Non-finite float current_time fails closed
+        valid, reason, pid = verifier.verify_principal(p, current_time=float("nan"))
+        assert not valid
+        assert "Invalid current_time clock override" in reason
+
+        # 4. Overflowing current_time fails closed
+        valid, reason, pid = verifier.verify_principal(p, current_time=10**100)
+        assert not valid
+        assert "Invalid current_time clock override" in reason
