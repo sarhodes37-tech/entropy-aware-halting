@@ -342,6 +342,61 @@ def test_patched_getaddrinfo_restricted_ips_and_safe_dns_context(mock_orig_getad
         assert len(res_invalid) == 1
 
 
+@patch('epistemicos.containment._original_getaddrinfo')
+def test_patched_getaddrinfo_value_error_handling_and_mixed_records(mock_orig_getaddrinfo, default_guard):
+    """Verifies that _patched_getaddrinfo cleanly handles ValueError during IP parsing and continues checking remaining records."""
+    # Scenario A: Multiple invalid IP representations that cause ValueError in ipaddress.ip_address()
+    malformed_ips = [
+        "999.999.999.999",
+        "not-an-ip-string",
+        "::invalid:ipv6:literal::",
+        "256.1.1.1",
+        "",
+    ]
+    for bad_ip in malformed_ips:
+        mock_orig_getaddrinfo.return_value = [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, '', (bad_ip, 443))
+        ]
+        with default_guard._safe_dns_resolution():
+            results = socket.getaddrinfo("faulty-ip.example.com", 443)
+            assert len(results) == 1
+            assert results[0][4][0] == bad_ip
+
+    # Scenario B: Mixed records - invalid IP followed by a valid public IP
+    # The ValueError on the first record is ignored, and the second valid record passes through without blocking
+    mock_orig_getaddrinfo.return_value = [
+        (socket.AF_INET, socket.SOCK_STREAM, 6, '', ('malformed-ip-1', 443)),
+        (socket.AF_INET, socket.SOCK_STREAM, 6, '', ('93.184.216.34', 443)),
+    ]
+    with default_guard._safe_dns_resolution():
+        mixed_pass = socket.getaddrinfo("mixed-pass.example.com", 443)
+        assert len(mixed_pass) == 2
+        assert mixed_pass[0][4][0] == 'malformed-ip-1'
+        assert mixed_pass[1][4][0] == '93.184.216.34'
+
+    # Scenario C: Mixed records - invalid IP followed by a restricted loopback IP
+    # The ValueError on the first record is caught, and iteration continues to detect the restricted IP and block
+    mock_orig_getaddrinfo.return_value = [
+        (socket.AF_INET, socket.SOCK_STREAM, 6, '', ('malformed-ip-2', 443)),
+        (socket.AF_INET, socket.SOCK_STREAM, 6, '', ('127.0.0.1', 443)),
+    ]
+    with pytest.raises(socket.error) as exc_info:
+        with default_guard._safe_dns_resolution():
+            socket.getaddrinfo("mixed-blocked.example.com", 443)
+    assert "Egress blocked: DNS resolution for 'mixed-blocked.example.com' returned restricted IP '127.0.0.1'." in str(exc_info.value)
+
+    # Scenario D: Mixed records - restricted private IP followed by invalid IP
+    # Restricted IP raises socket.error immediately before reaching second record
+    mock_orig_getaddrinfo.return_value = [
+        (socket.AF_INET, socket.SOCK_STREAM, 6, '', ('10.0.0.1', 80)),
+        (socket.AF_INET, socket.SOCK_STREAM, 6, '', ('malformed-ip-3', 80)),
+    ]
+    with pytest.raises(socket.error) as exc_info:
+        with default_guard._safe_dns_resolution():
+            socket.getaddrinfo("private-first.example.com", 80)
+    assert "Egress blocked: DNS resolution for 'private-first.example.com' returned restricted IP '10.0.0.1'." in str(exc_info.value)
+
+
 @patch('socket.getaddrinfo')
 def test_is_restricted_target_ip_ranges_and_duplicates(mock_getaddrinfo, default_guard):
     """Verifies _is_restricted_target evaluates all restricted IP categories and handles duplicate IPs."""
