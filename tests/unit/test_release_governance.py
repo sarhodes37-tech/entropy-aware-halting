@@ -1272,6 +1272,62 @@ def test_direct_revocation_record_validation():
         with pytest.raises(ValueError, match="RevocationRecord: reason must be a non-empty string"):
             RevocationRecord(approval_id="appr-1", revoked_by_principal="admin", reason=bad_r)
 
+    # Validate revocation_timestamp type ambiguity and bounds
+    for bad_type_ts in [True, False, "123456789", None, [12345], {"ts": 123}]:
+        with pytest.raises(TypeError, match="RevocationRecord: revocation_timestamp must be a numeric timestamp"):
+            RevocationRecord(approval_id="appr-1", revoked_by_principal="admin", reason="compromised", revocation_timestamp=bad_type_ts)
+
+    for non_finite_ts in [float("nan"), float("inf"), float("-inf")]:
+        with pytest.raises(ValueError, match="RevocationRecord: revocation_timestamp must be a finite number"):
+            RevocationRecord(approval_id="appr-1", revoked_by_principal="admin", reason="compromised", revocation_timestamp=non_finite_ts)
+
+    # Signed 64-bit integer boundary values (-2^63 and 2^63 - 1)
+    min_int = -(1 << 63)
+    max_int = (1 << 63) - 1
+    rec_min_int = RevocationRecord(approval_id="appr-1", revoked_by_principal="admin", reason="compromised", revocation_timestamp=min_int)
+    assert rec_min_int.revocation_timestamp == min_int
+    rec_max_int = RevocationRecord(approval_id="appr-1", revoked_by_principal="admin", reason="compromised", revocation_timestamp=max_int)
+    assert rec_max_int.revocation_timestamp == max_int
+
+    # Immediately out-of-range signed integer values (-2^63 - 1 and 2^63)
+    with pytest.raises(ValueError, match="RevocationRecord: revocation_timestamp integer overflows signed 64-bit limits"):
+        RevocationRecord(approval_id="appr-1", revoked_by_principal="admin", reason="compromised", revocation_timestamp=min_int - 1)
+    with pytest.raises(ValueError, match="RevocationRecord: revocation_timestamp integer overflows signed 64-bit limits"):
+        RevocationRecord(approval_id="appr-1", revoked_by_principal="admin", reason="compromised", revocation_timestamp=max_int + 1)
+    with pytest.raises(ValueError, match="RevocationRecord: revocation_timestamp integer overflows signed 64-bit limits"):
+        RevocationRecord(approval_id="appr-1", revoked_by_principal="admin", reason="compromised", revocation_timestamp=1 << 65)
+
+    # Float boundaries
+    # -2^63 is exact in float64
+    valid_min_flt = -float(1 << 63)
+    rec_min_flt = RevocationRecord(approval_id="appr-1", revoked_by_principal="admin", reason="compromised", revocation_timestamp=valid_min_flt)
+    assert rec_min_flt.revocation_timestamp == valid_min_flt
+
+    # Maximum float strictly <= 2^63 - 1 (since 2^63 is not <= 2^63 - 1)
+    import math
+    valid_max_flt = math.nextafter(float(1 << 63), -float("inf"))
+    rec_max_flt = RevocationRecord(approval_id="appr-1", revoked_by_principal="admin", reason="compromised", revocation_timestamp=valid_max_flt)
+    assert rec_max_flt.revocation_timestamp == valid_max_flt
+
+    # Immediately out-of-range float values
+    # float(1 << 63) is 2^63, which exceeds max_int (2^63 - 1)
+    with pytest.raises(ValueError, match="RevocationRecord: revocation_timestamp float overflows signed 64-bit limits"):
+        RevocationRecord(approval_id="appr-1", revoked_by_principal="admin", reason="compromised", revocation_timestamp=float(1 << 63))
+
+    # Float immediately below -2^63
+    with pytest.raises(ValueError, match="RevocationRecord: revocation_timestamp float overflows signed 64-bit limits"):
+        RevocationRecord(approval_id="appr-1", revoked_by_principal="admin", reason="compromised", revocation_timestamp=-math.nextafter(float(1 << 63), float("inf")))
+
+    # Large float magnitude overflow
+    with pytest.raises(ValueError, match="RevocationRecord: revocation_timestamp float overflows signed 64-bit limits"):
+        RevocationRecord(approval_id="appr-1", revoked_by_principal="admin", reason="compromised", revocation_timestamp=1e300)
+
+    # Typical valid int and float timestamps
+    rec_int = RevocationRecord(approval_id="appr-1", revoked_by_principal="admin", reason="compromised", revocation_timestamp=1600000000)
+    assert rec_int.revocation_timestamp == 1600000000
+    rec_flt = RevocationRecord(approval_id="appr-1", revoked_by_principal="admin", reason="compromised", revocation_timestamp=1600000000.123456)
+    assert rec_flt.revocation_timestamp == 1600000000.123456
+
 
 # ==============================================================================
 # Models Coverage Expansion: ComponentSpec, ReleaseManifest,

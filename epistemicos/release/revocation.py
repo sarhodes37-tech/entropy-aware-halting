@@ -5,10 +5,15 @@ Ensures that an approval marked as revoked cannot be resurrected through
 in-memory object mutation or serialization tampering.
 """
 
+import math
 import threading
 import time
 from dataclasses import dataclass, field
 from typing import Dict, Optional, Set
+
+# Signed 64-bit integer timestamp boundaries: -2^63 <= t <= 2^63 - 1
+MIN_TIMESTAMP_BOUND = -(1 << 63)
+MAX_TIMESTAMP_BOUND = (1 << 63) - 1
 
 
 @dataclass(frozen=True)
@@ -25,6 +30,24 @@ class RevocationRecord:
             raise ValueError("RevocationRecord: revoked_by_principal must be a non-empty string")
         if not self.reason or not isinstance(self.reason, str) or not self.reason.strip():
             raise ValueError("RevocationRecord: reason must be a non-empty string")
+
+        # Fail-closed timestamp validation: prevent type ambiguity, non-finite values, and overflow
+        if isinstance(self.revocation_timestamp, bool) or not isinstance(self.revocation_timestamp, (int, float)):
+            raise TypeError(
+                f"RevocationRecord: revocation_timestamp must be a numeric timestamp, got {type(self.revocation_timestamp).__name__}"
+            )
+        if isinstance(self.revocation_timestamp, int):
+            if not (MIN_TIMESTAMP_BOUND <= self.revocation_timestamp <= MAX_TIMESTAMP_BOUND):
+                raise ValueError("RevocationRecord: revocation_timestamp integer overflows signed 64-bit limits")
+        else:
+            if not math.isfinite(self.revocation_timestamp):
+                raise ValueError(
+                    f"RevocationRecord: revocation_timestamp must be a finite number, got {self.revocation_timestamp}"
+                )
+            # Direct comparison against exact signed integer bounds avoids float-rounding artifact
+            # where float((1 << 63) - 1) rounds up to 2^63
+            if not (MIN_TIMESTAMP_BOUND <= self.revocation_timestamp <= MAX_TIMESTAMP_BOUND):
+                raise ValueError("RevocationRecord: revocation_timestamp float overflows signed 64-bit limits")
 
 
 class ReleaseApprovalRevocationRegistry:
