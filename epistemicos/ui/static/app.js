@@ -1218,6 +1218,7 @@ document.addEventListener('DOMContentLoaded', () => {
           this.state.selectedTraceId = trace.correlation_id;
           this.switchTab('traces');
           await this.selectTrace(trace.correlation_id);
+          this.announce(`Navigated to Execution Trace Explorer (Trace: ${trace.correlation_id || 'UNKNOWN'})`);
           const activeItem = document.querySelector('#trace-list .trace-item.active');
           if (activeItem) {
             activeItem.focus();

@@ -586,6 +586,25 @@ def test_keyboard_navigation_and_focus_management_workflows(a11y_comprehensive_s
         )
         assert page.locator("#a11y-status-announcer").text_content() == "Trace search cleared."
 
+        # 3c. Overview Recent Trace Row Activation Keyboard and Focus Shift
+        page.click("#tab-overview")
+        page.wait_for_selector("#overview-recent-traces tr.clickable")
+        recent_row = page.locator("#overview-recent-traces tr.clickable").first
+        first_row_corr = page.evaluate(
+            "() => document.querySelector('#overview-recent-traces tr.clickable td.ops-cell-corr')?.title"
+        )
+        recent_row.focus()
+        page.keyboard.press("Enter")
+        page.wait_for_function(
+            f"() => document.getElementById('a11y-status-announcer')"
+            f".textContent.includes('Navigated to Execution Trace Explorer (Trace: {first_row_corr})')"
+        )
+        assert page.evaluate("() => window.ObservatoryApp.state.currentTab") == "traces"
+        focused_classes_recent = page.evaluate(
+            "() => document.activeElement ? Array.from(document.activeElement.classList) : []"
+        )
+        assert "trace-item" in focused_classes_recent and "active" in focused_classes_recent
+
         # 4. Keyboard Arrow Navigation in Traces Listbox
         first_item = page.locator("#trace-list .trace-item").first
         first_item.focus()
