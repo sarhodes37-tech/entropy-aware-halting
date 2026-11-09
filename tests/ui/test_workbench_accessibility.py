@@ -650,7 +650,7 @@ def test_keyboard_navigation_and_focus_management_workflows(a11y_comprehensive_s
             page.keyboard.press("Enter")
             page.wait_for_function(
                 "() => document.getElementById('a11y-status-announcer')"
-                ".textContent.includes('Selected execution trace')"
+                ".textContent.includes('Navigated to Execution Trace Explorer (Trace:')"
             )
             assert page.evaluate("() => window.ObservatoryApp.state.currentTab") == "traces"
             focused_classes_prov = page.evaluate(
