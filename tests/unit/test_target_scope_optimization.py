@@ -146,3 +146,78 @@ def test_canonicalize_fencing_scope_integration():
     # Global task fallback
     global_scope = canonicalize_fencing_scope(None, "https://api.external.com/v1")
     assert global_scope == "task:__GLOBAL__|target:api.external.com:/v1"
+
+
+def test_exhaustive_unicode_and_control_character_equivalence():
+    """
+    Exhaustively verifies semantic equivalence between generator and regex character validation
+    across all ASCII and Unicode code points up to 0xFFFF, including:
+    - All 32 C0 control characters (0x00..0x1F) and DEL (0x7F)
+    - Unicode whitespace characters (e.g. U+00A0, U+1680, U+2000..U+200A, U+2028, U+2029, U+202F, U+205F, U+3000)
+    - Percent-encoded (%XX) and literal raw inputs in authority and path components.
+    """
+    from epistemicos.authorization import (
+        _TARGET_UNENCODED_CTRL_REGEX,
+        _TARGET_AUTHORITY_CTRL_REGEX,
+        _TARGET_DECODED_CTRL_REGEX,
+    )
+
+    # 1. Direct predicate equivalence across entire BMP code space (0..65535)
+    for cp in range(0x10000):
+        ch = chr(cp)
+
+        # Unencoded predicate
+        gen_unenc = any(c.isspace() or c in ("\x00", "\x0b", "\x0c") for c in ch)
+        reg_unenc = bool(_TARGET_UNENCODED_CTRL_REGEX.search(ch))
+        assert gen_unenc == reg_unenc, f"Unencoded predicate divergence at U+{cp:04X}"
+
+        # Decoded authority predicate
+        gen_auth = any(c.isspace() or ord(c) < 32 or ord(c) == 127 for c in ch)
+        reg_auth = bool(_TARGET_AUTHORITY_CTRL_REGEX.search(ch))
+        assert gen_auth == reg_auth, f"Authority predicate divergence at U+{cp:04X}"
+
+        # Decoded path predicate
+        gen_dec = any(c in ch for c in ("\x00", "\r", "\n", "\t", "\x0b", "\x0c"))
+        reg_dec = bool(_TARGET_DECODED_CTRL_REGEX.search(ch))
+        assert gen_dec == reg_dec, f"Decoded path predicate divergence at U+{cp:04X}"
+
+    # 2. End-to-end normalization acceptance / rejection equivalence
+    # Explicit Unicode whitespace samples
+    unicode_spaces = [
+        "\u00A0",  # NO-BREAK SPACE
+        "\u1680",  # OGHAM SPACE MARK
+        "\u2000",  # EN QUAD
+        "\u2002",  # EN SPACE
+        "\u2007",  # FIGURE SPACE
+        "\u2009",  # THIN SPACE
+        "\u2028",  # LINE SEPARATOR
+        "\u2029",  # PARAGRAPH SEPARATOR
+        "\u202F",  # NARROW NO-BREAK SPACE
+        "\u205F",  # MEDIUM MATHEMATICAL SPACE
+        "\u3000",  # IDEOGRAPHIC SPACE
+    ]
+    for ws in unicode_spaces:
+        # Unencoded Unicode whitespace in raw target must be rejected
+        with pytest.raises(ValueError):
+            normalize_target_scope(f"/path/{ws}/endpoint")
+
+    # 3. Percent-encoded variants in authority and path
+    # Authority rejection: %00..%1F, %7F, and %20 in authority
+    for cp in list(range(32)) + [127, 32]:
+        encoded_auth = f"http://service%{cp:02x}.corp/v1"
+        with pytest.raises(ValueError):
+            normalize_target_scope(encoded_auth)
+
+    # Path rejection: decoded NUL and control characters (%00, %0a, %0d, %09, %0b, %0c)
+    for bad_hex in ("00", "0a", "0d", "09", "0b", "0c", "0A", "0D", "0B", "0C"):
+        encoded_path = f"/api/v1/resource%{bad_hex}sub"
+        with pytest.raises(ValueError):
+            normalize_target_scope(encoded_path)
+
+    # Path acceptance: non-prohibited percent-encoded characters (e.g. %20 space, %2F slash, %2D hyphen)
+    # in path should be decoded and normalized properly
+    res_space = normalize_target_scope("/api/my%20documents")
+    assert res_space == "target::/api/my documents"
+
+    res_hyphen = normalize_target_scope("/api/item%2D123")
+    assert res_hyphen == "target::/api/item-123"
