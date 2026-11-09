@@ -10,6 +10,7 @@ Serves REST API endpoints and static frontend assets with strict security contro
 
 import sys
 import os
+import re
 import json
 import argparse
 from pathlib import Path
@@ -20,6 +21,9 @@ from urllib.parse import unquote
 
 from epistemicos.audit import _sanitize_sensitive_data
 from epistemicos.ui.adapters import ObservatoryDataAdapter
+
+# Regex matching ASCII control characters (0x00-0x1F, 0x7F) including CRLF, tabs, and backspaces
+_CONTROL_CHAR_REGEX = re.compile(r"[\x00-\x1f\x7f]")
 
 
 class ObservatoryRequestHandler(BaseHTTPRequestHandler):
@@ -62,8 +66,8 @@ class ObservatoryRequestHandler(BaseHTTPRequestHandler):
             self._send_json_response({"error": "Invalid path"}, status=HTTPStatus.BAD_REQUEST)
             return
 
-        # Prevent directory traversal and null-byte injection
-        if ".." in path or "\\" in path or "\x00" in path:
+        # Prevent directory traversal, backslashes, and control character injections (CRLF, null bytes, tabs)
+        if ".." in path or "\\" in path or _CONTROL_CHAR_REGEX.search(path):
             self._send_json_response({"error": "Invalid path"}, status=HTTPStatus.BAD_REQUEST)
             return
 
@@ -201,10 +205,11 @@ class ObservatoryRequestHandler(BaseHTTPRequestHandler):
         self.send_header("X-Permitted-Cross-Domain-Policies", "none")
         self.send_header("Cross-Origin-Opener-Policy", "same-origin")
         self.send_header("Cross-Origin-Resource-Policy", "same-origin")
+        self.send_header("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
         self.send_header("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
         self.send_header(
             "Content-Security-Policy",
-            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
+            "upgrade-insecure-requests; default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
             "object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none';"
         )
 
