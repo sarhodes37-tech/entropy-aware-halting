@@ -670,21 +670,69 @@ class TestSideEffectPolicyEngineInvariants:
             expires_at=expires_at_normal,
         )
 
-        # 1. Oversized integer current_time (10**10000)
-        valid, msg = engine.verify_approval_record(
-            record=record,
-            expected_operation_id="package_publish",
-            expected_target="https://example.com",
-            expected_payload=payload,
-            expected_task_id="TASK-1",
-            current_time=10**10000,
-        )
-        assert valid is False
-        assert "integer overflow" in msg
+        # 1. Out-of-bounds integer and float current_time overrides fail closed
+        for bad_time in [10**10000, 1 << 63, -(1 << 63) - 1, 1e100, -1e100, float(1 << 63)]:
+            valid, msg = engine.verify_approval_record(
+                record=record,
+                expected_operation_id="package_publish",
+                expected_target="https://example.com",
+                expected_payload=payload,
+                expected_task_id="TASK-1",
+                current_time=bad_time,
+            )
+            assert valid is False
+            assert "Invalid current_time clock override" in msg
 
-        # 2. Oversized integer expires_at (10**10000)
-        record_huge_exp = TypedHumanApprovalRecord(
-            approval_id="APP-OVERFLOW-EXP",
+        # 2. Out-of-bounds integer and float expires_at values fail closed
+        for bad_exp in [10**10000, 1 << 63, -(1 << 63) - 1, 1e100, -1e100, float(1 << 63)]:
+            record_bad_exp = TypedHumanApprovalRecord(
+                approval_id="APP-OVERFLOW-EXP",
+                operation_id="package_publish",
+                target_resource="https://example.com",
+                canonical_args_digest=digest,
+                task_id="TASK-1",
+                policy_version="1.0.0",
+                approved_by_principal="admin",
+                timestamp="2026-01-01T00:00:00Z",
+                signature="0" * 64,
+                expires_at=bad_exp,
+            )
+            valid, msg = engine.verify_approval_record(
+                record=record_bad_exp,
+                expected_operation_id="package_publish",
+                expected_target="https://example.com",
+                expected_payload=payload,
+                expected_task_id="TASK-1",
+                current_time=1000,
+            )
+            assert valid is False
+            assert "overflows" in msg
+
+        # 3. Valid integer boundaries and ordinary in-range fractional floats pass within signed 64-bit limits
+        for valid_time in [1000, 1000.5, (1 << 63) - 1, -(1 << 63)]:
+            valid, msg = engine.verify_approval_record(
+                record=record,
+                expected_operation_id="package_publish",
+                expected_target="https://example.com",
+                expected_payload=payload,
+                expected_task_id="TASK-1",
+                current_time=valid_time,
+            )
+            # record.expires_at is 2000, so valid_time >= 2000 is expired, valid_time < 2000 is validated
+            if valid_time >= 2000:
+                assert valid is False
+                assert "expired" in msg
+            else:
+                assert valid is True
+                assert msg == "Approval record validated"
+
+        # Valid boundary expires_at: (1 << 63) - 1
+        sig_max = engine.compute_approval_signature((
+            "APP-MAX", "package_publish", "https://example.com",
+            digest, "TASK-1", "1.0.0", "admin", str((1 << 63) - 1)
+        ))
+        record_max = TypedHumanApprovalRecord(
+            approval_id="APP-MAX",
             operation_id="package_publish",
             target_resource="https://example.com",
             canonical_args_digest=digest,
@@ -692,23 +740,11 @@ class TestSideEffectPolicyEngineInvariants:
             policy_version="1.0.0",
             approved_by_principal="admin",
             timestamp="2026-01-01T00:00:00Z",
-            signature="0" * 64,
-            expires_at=10**10000,
+            signature=sig_max,
+            expires_at=(1 << 63) - 1,
         )
         valid, msg = engine.verify_approval_record(
-            record=record_huge_exp,
-            expected_operation_id="package_publish",
-            expected_target="https://example.com",
-            expected_payload=payload,
-            expected_task_id="TASK-1",
-            current_time=1000,
-        )
-        assert valid is False
-        assert "overflows" in msg
-
-        # 3. Ordinary integer current_time and expires_at
-        valid, msg = engine.verify_approval_record(
-            record=record,
+            record=record_max,
             expected_operation_id="package_publish",
             expected_target="https://example.com",
             expected_payload=payload,
