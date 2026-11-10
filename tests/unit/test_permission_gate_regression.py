@@ -1,3 +1,5 @@
+from tests.unit.test_sec01_sec03_remediation import ExternalTestIdentityAuthority
+from epistemicos.authorization import PrincipalVerifier, AuthorizationAuthority
 """
 Regression tests for PermissionGate action parsing and nested endpoint boundaries.
 """
@@ -48,12 +50,18 @@ def test_permission_gate_nested_endpoint_execution_reached():
     """
     execution_callback = MagicMock(return_value={"status": "EXECUTED_SUCCESSFULLY"})
 
-    orchestrator = EpistemicOrchestrator()
+    test_idp = ExternalTestIdentityAuthority(issuer_id="TestIdP_Perm")
+    verifier = PrincipalVerifier(trusted_public_keys={"TestIdP_Perm": test_idp.public_key})
+    auth_p = test_idp.issue_principal("operator_perm")
+
+    auth = AuthorizationAuthority(principal_provider=verifier, tenant_domain="test_tenant")
+    orchestrator = EpistemicOrchestrator(authority=auth)
     # Configure PermissionGate with trusted scope allowing api_call on /issue_binder
     perm_gate = PermissionGate(
         trusted_scope={
             "allowed_operations": ["api_call"],
             "allowed_resources": ["/issue_binder"],
+            "tenant_domain": "test_tenant",
         }
     )
     orchestrator.gates[0] = perm_gate
@@ -80,6 +88,7 @@ def test_permission_gate_nested_endpoint_execution_reached():
         "token_logprobs": [-0.002, -0.004, -0.001],
         "heterogeneous_telemetry": [84500.0, 85200.0, 85100.0],
         "actual_executable": execution_callback,
+        "authenticated_principal": auth_p,
     }
 
     token_id = "AUTH-TOKEN-PERM-GATE"
@@ -266,7 +275,8 @@ def test_permission_gate_reward_cheating_pipeline_zero_callback_invocations():
     orchestrator = EpistemicOrchestrator()
     orchestrator.gates[0] = PermissionGate(trusted_scope={
         "allowed_operations": ["evaluate"],
-        "allowed_resources": ["grader_service"]
+        "allowed_resources": ["grader_service"],
+        "tenant_domain": "test_tenant",
     })
 
     cheat_code = "def evaluate(): return True # pytest.mark.skip"
@@ -346,9 +356,16 @@ def test_permission_gate_alternate_dispatch_keys_and_obfuscated_reward_cheating(
         assert side_effects["completed"] is False
 
     # 2. Test legitimate control case through the exact same dispatch with server-configured scope
+    test_idp2 = ExternalTestIdentityAuthority(issuer_id="TestIdP_Perm2")
+    verifier2 = PrincipalVerifier(trusted_public_keys={"TestIdP_Perm2": test_idp2.public_key})
+    auth_p2 = test_idp2.issue_principal("operator_perm2")
+    auth_legit = AuthorizationAuthority(principal_provider=verifier2, tenant_domain="test_tenant")
+    orchestrator = EpistemicOrchestrator(authority=auth_legit)
+
     orchestrator.gates[0] = PermissionGate(trusted_scope={
         "allowed_operations": ["evaluate"],
-        "allowed_resources": ["grader_service"]
+        "allowed_resources": ["grader_service"],
+        "tenant_domain": "test_tenant",
     })
     legit_payload = {
         "policy_id": "POL-TEST-LEGIT",
@@ -362,7 +379,8 @@ def test_permission_gate_alternate_dispatch_keys_and_obfuscated_reward_cheating(
         "token_logprobs": [-0.01] * 5,
         "proposed_actions": legit_payload["proposed_actions"],
         "actual_executable": synthetic_executor,
-        "correlation_id": "CORR-LEGIT-1"
+        "correlation_id": "CORR-LEGIT-1",
+        "authenticated_principal": auth_p2
     }
 
     res_legit = orchestrator.process_submission(legit_payload, legit_ctx)
@@ -383,7 +401,11 @@ def test_permission_gate_benign_controls_with_suspicious_substrings():
         side_effects["invocations"] += 1
         return {"status": "SUCCESS"}
 
-    orchestrator = EpistemicOrchestrator()
+    test_idp3 = ExternalTestIdentityAuthority(issuer_id="TestIdP_Perm3")
+    verifier3 = PrincipalVerifier(trusted_public_keys={"TestIdP_Perm3": test_idp3.public_key})
+    auth_p3 = test_idp3.issue_principal("operator_perm3")
+    auth_benign = AuthorizationAuthority(principal_provider=verifier3, tenant_domain="test_tenant")
+    orchestrator = EpistemicOrchestrator(authority=auth_benign)
 
     benign_code_snippets = [
         "def calculate_stats():\n    pytest_config_option = True\n    return {'score': 100}",
@@ -393,7 +415,8 @@ def test_permission_gate_benign_controls_with_suspicious_substrings():
 
     orchestrator.gates[0] = PermissionGate(trusted_scope={
         "allowed_operations": ["evaluate"],
-        "allowed_resources": ["grader_service"]
+        "allowed_resources": ["grader_service"],
+        "tenant_domain": "test_tenant",
     })
 
     for i, snippet in enumerate(benign_code_snippets):
@@ -409,7 +432,8 @@ def test_permission_gate_benign_controls_with_suspicious_substrings():
             "token_logprobs": [-0.01] * 5,
             "proposed_actions": payload["proposed_actions"],
             "actual_executable": benign_executor,
-            "correlation_id": f"CORR-BENIGN-SUBSTR-{i}"
+            "correlation_id": f"CORR-BENIGN-SUBSTR-{i}",
+            "authenticated_principal": auth_p3
         }
 
         res = orchestrator.process_submission(payload, ctx)

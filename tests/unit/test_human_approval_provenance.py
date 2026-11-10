@@ -18,6 +18,7 @@ import hashlib
 import pytest
 
 from epistemicos.authorization import (
+    _TRUSTED_AUTHORITY_ASSIGNMENT_TOKEN,
     AuthorizationAuthority,
     CapabilityRegistry,
     Policy,
@@ -52,7 +53,8 @@ def auth_setup(tmp_path):
         allowed_operations={"deploy_ransomware_defense", "wipe_database", "read_telemetry"},
         allowed_resources={"cluster_primary", "db_primary", "telemetry_endpoint"},
         required_human_approval_operations={"wipe_database", "deploy_ransomware_defense"},
-        allowed_approvers={"security_lead_alice", "ciso_carol"}
+        allowed_approvers={"security_lead_alice", "ciso_carol"},
+        tenant_domain="enterprise-defense-corp"
     )
 
     authority = AuthorizationAuthority(
@@ -714,7 +716,7 @@ def test_h_replay_and_field_mutation_protection(auth_setup):
     assert v_reason == "CAPABILITY_VERIFICATION_FAILED_INVALID_SIGNATURE"
 
     # Re-sign with forged approver_principal: semantic check rejects approver mismatch
-    cap.signature = authority.registry.sign_capability(cap)
+    cap.signature = authority.registry._sign_capability_internal(cap, _TRUSTED_AUTHORITY_ASSIGNMENT_TOKEN)
     v_ok_sem, v_reason_sem, _ = authority.verify_capability(
         token_id=cap.token_id, action_name="wipe_database", target="db_primary",
         canonical_request_digest=digest, executor_id=exec_qual_id, principal_id=bob_assertion,
@@ -723,7 +725,7 @@ def test_h_replay_and_field_mutation_protection(auth_setup):
     assert v_ok_sem is False
     assert "APPROVER_MISMATCH" in v_reason_sem
     cap.approver_principal = "security_lead_alice"
-    cap.signature = authority.registry.sign_capability(cap)
+    cap.signature = authority.registry._sign_capability_internal(cap, _TRUSTED_AUTHORITY_ASSIGNMENT_TOKEN)
 
     # 3b. Downstream mutation: Mutating approver_provenance fields invalidates capability signature
     orig_prov = dict(cap.approver_provenance)
@@ -786,7 +788,7 @@ def test_h_replay_and_field_mutation_protection(auth_setup):
     # 3d. Downstream verification failure on missing requester or task bindings
     cap.human_approval.requesting_principal = None
     cap.human_approval.sign(authority.approval_signing_secret)
-    cap.signature = authority.registry.sign_capability(cap)
+    cap.signature = authority.registry._sign_capability_internal(cap, _TRUSTED_AUTHORITY_ASSIGNMENT_TOKEN)
     v_ok, v_reason, _ = authority.verify_capability(
         token_id=cap.token_id, action_name="wipe_database", target="db_primary",
         canonical_request_digest=digest, executor_id=exec_qual_id, principal_id=bob_assertion,
@@ -798,7 +800,7 @@ def test_h_replay_and_field_mutation_protection(auth_setup):
     cap.human_approval.requesting_principal = "agent_bob"
     cap.human_approval.task_id = None
     cap.human_approval.sign(authority.approval_signing_secret)
-    cap.signature = authority.registry.sign_capability(cap)
+    cap.signature = authority.registry._sign_capability_internal(cap, _TRUSTED_AUTHORITY_ASSIGNMENT_TOKEN)
     v_ok, v_reason, _ = authority.verify_capability(
         token_id=cap.token_id, action_name="wipe_database", target="db_primary",
         canonical_request_digest=digest, executor_id=exec_qual_id, principal_id=bob_assertion,
@@ -810,11 +812,11 @@ def test_h_replay_and_field_mutation_protection(auth_setup):
     # Restore legitimate approval record and signature
     cap.human_approval.task_id = "TASK-H"
     cap.human_approval.sign(authority.approval_signing_secret)
-    cap.signature = authority.registry.sign_capability(cap)
+    cap.signature = authority.registry._sign_capability_internal(cap, _TRUSTED_AUTHORITY_ASSIGNMENT_TOKEN)
 
     # 3e. A correctly signed capability with internally inconsistent provenance is rejected
     cap.approver_provenance["issuer_id"] = "forged_issuer"
-    cap.signature = authority.registry.sign_capability(cap)
+    cap.signature = authority.registry._sign_capability_internal(cap, _TRUSTED_AUTHORITY_ASSIGNMENT_TOKEN)
     v_ok_incon, v_reason_incon, _ = authority.verify_capability(
         token_id=cap.token_id, action_name="wipe_database", target="db_primary",
         canonical_request_digest=digest, executor_id=exec_qual_id, principal_id=bob_assertion,
@@ -823,13 +825,13 @@ def test_h_replay_and_field_mutation_protection(auth_setup):
     assert v_ok_incon is False
     assert "PROVENANCE_ISSUER_MISMATCH" in v_reason_incon
     cap.approver_provenance = dict(orig_prov)
-    cap.signature = authority.registry.sign_capability(cap)
+    cap.signature = authority.registry._sign_capability_internal(cap, _TRUSTED_AUTHORITY_ASSIGNMENT_TOKEN)
 
     # 3e-2. Malformed assertion_timestamp rejection tests (missing, string, bool, NaN, +inf, -inf)
     import math
     for bad_ts in [None, "12345.67", True, False, float("nan"), float("inf"), float("-inf")]:
         cap.approver_provenance["assertion_timestamp"] = bad_ts
-        cap.signature = authority.registry.sign_capability(cap)
+        cap.signature = authority.registry._sign_capability_internal(cap, _TRUSTED_AUTHORITY_ASSIGNMENT_TOKEN)
         v_ok_ts, v_reason_ts, _ = authority.verify_capability(
             token_id=cap.token_id, action_name="wipe_database", target="db_primary",
             canonical_request_digest=digest, executor_id=exec_qual_id, principal_id=bob_assertion,
@@ -840,12 +842,12 @@ def test_h_replay_and_field_mutation_protection(auth_setup):
             "CAPABILITY_VERIFICATION_FAILED_HUMAN_APPROVAL_PROVENANCE_INVALID_ASSERTION_TIMESTAMP"
         )
     cap.approver_provenance = dict(orig_prov)
-    cap.signature = authority.registry.sign_capability(cap)
+    cap.signature = authority.registry._sign_capability_internal(cap, _TRUSTED_AUTHORITY_ASSIGNMENT_TOKEN)
 
     # 3f. Test valid persisted capability verification after serialization / reload
     cap_dict = cap.to_dict() if hasattr(cap, "to_dict") else cap.__dict__.copy()
-    restored_cap = Capability(**cap_dict)
-    assert authority.registry.sign_capability(restored_cap) == restored_cap.signature
+    restored_cap = Capability._restore_from_storage(cap_dict, _TRUSTED_AUTHORITY_ASSIGNMENT_TOKEN)
+    assert authority.registry._sign_capability_internal(restored_cap, _TRUSTED_AUTHORITY_ASSIGNMENT_TOKEN) == restored_cap.signature
     v_ok_res, v_reason_res, _ = authority.verify_capability(
         token_id=restored_cap.token_id, action_name="wipe_database", target="db_primary",
         canonical_request_digest=digest, executor_id=exec_qual_id, principal_id=bob_assertion,

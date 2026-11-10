@@ -1,3 +1,5 @@
+from tests.unit.test_sec01_sec03_remediation import ExternalTestIdentityAuthority
+from epistemicos.authorization import PrincipalVerifier
 import tempfile
 from unittest.mock import MagicMock
 import pytest
@@ -69,8 +71,12 @@ class TestCoreCoverageOrchestratorEnforcement:
                 policy_id="pol",
                 allowed_operations={"read_file"},
                 allowed_resources={"data.txt"},
+                tenant_domain="test_tenant",
             )
-            authority = AuthorizationAuthority(default_policy=policy)
+            test_idp = ExternalTestIdentityAuthority(issuer_id="TestIdP_Core")
+            verifier = PrincipalVerifier(trusted_public_keys={"TestIdP_Core": test_idp.public_key})
+            auth_p = test_idp.issue_principal("operator_core")
+            authority = AuthorizationAuthority(principal_provider=verifier, tenant_domain="test_tenant", default_policy=policy)
             boundary = TrustedExecutionBoundary(
                 provenance_store=store, authority=authority
             )
@@ -97,6 +103,7 @@ class TestCoreCoverageOrchestratorEnforcement:
                 "target": "data.txt",
                 "correlation_id": "corr-grant-fail",
                 "request_id": "req-grant-fail",
+                "authenticated_principal": auth_p,
             }
             res = orch.process_submission(raw_payload=payload, context=ctx)
             assert res["status"] == "HALTED"
@@ -116,8 +123,12 @@ class TestCoreCoverageOrchestratorEnforcement:
                 policy_id="pol",
                 allowed_operations={"read_file"},
                 allowed_resources={"data.txt"},
+                tenant_domain="test_tenant",
             )
-            authority = AuthorizationAuthority(default_policy=policy)
+            test_idp = ExternalTestIdentityAuthority(issuer_id="TestIdP_Core")
+            verifier = PrincipalVerifier(trusted_public_keys={"TestIdP_Core": test_idp.public_key})
+            auth_p = test_idp.issue_principal("operator_core")
+            authority = AuthorizationAuthority(principal_provider=verifier, tenant_domain="test_tenant", default_policy=policy)
             boundary = TrustedExecutionBoundary(
                 provenance_store=store, authority=authority
             )
@@ -144,6 +155,7 @@ class TestCoreCoverageOrchestratorEnforcement:
                 "target": "data.txt",
                 "correlation_id": "corr-missing-grant",
                 "request_id": "req-missing-grant",
+                "authenticated_principal": auth_p,
             }
             res = orch.process_submission(raw_payload=payload, context=ctx)
             assert res["status"] == "HALTED"
@@ -159,8 +171,12 @@ class TestCoreCoverageOrchestratorEnforcement:
                 policy_id="pol",
                 allowed_operations={"read_file"},
                 allowed_resources={"data.txt"},
+                tenant_domain="test_tenant",
             )
-            authority = AuthorizationAuthority(default_policy=policy)
+            test_idp = ExternalTestIdentityAuthority(issuer_id="TestIdP_Core")
+            verifier = PrincipalVerifier(trusted_public_keys={"TestIdP_Core": test_idp.public_key})
+            auth_p = test_idp.issue_principal("operator_core")
+            authority = AuthorizationAuthority(principal_provider=verifier, tenant_domain="test_tenant", default_policy=policy)
             boundary = TrustedExecutionBoundary(
                 provenance_store=store, authority=authority
             )
@@ -183,6 +199,7 @@ class TestCoreCoverageOrchestratorEnforcement:
                 "target": "data.txt",
                 "correlation_id": "corr-boundary-crash",
                 "request_id": "req-boundary-crash",
+                "authenticated_principal": auth_p,
             }
             res = orch.process_submission(raw_payload=payload, context=ctx)
             assert res["status"] == "HALTED"
@@ -198,7 +215,10 @@ class TestCoreCoverageOrchestratorEnforcement:
         """Tests dynamic policy scope synthesis from gate objects."""
         with tempfile.NamedTemporaryFile() as tf_audit, tempfile.NamedTemporaryFile() as tf_prov:
             store = LocalProvenanceStore(log_path=tf_prov.name)
-            authority = AuthorizationAuthority()
+            test_idp = ExternalTestIdentityAuthority(issuer_id="TestIdP_Core")
+            verifier = PrincipalVerifier(trusted_public_keys={"TestIdP_Core": test_idp.public_key})
+            auth_p = test_idp.issue_principal("operator_core")
+            authority = AuthorizationAuthority(principal_provider=verifier, tenant_domain="test_tenant")
             boundary = TrustedExecutionBoundary(
                 provenance_store=store, authority=authority
             )
@@ -216,6 +236,7 @@ class TestCoreCoverageOrchestratorEnforcement:
                     return {
                         "allowed_operations": ["read_file"],
                         "allowed_resources": ["data.txt"],
+                        "tenant_domain": "test_tenant",
                     }
 
             class GateToDict:
@@ -234,6 +255,7 @@ class TestCoreCoverageOrchestratorEnforcement:
                 "target": "data.txt",
                 "correlation_id": "c1",
                 "request_id": "r1",
+                "authenticated_principal": auth_p,
             }
             res1 = orch.process_submission(raw_payload=payload, context=ctx)
             assert res1["status"] == "ALLOWED"
@@ -309,9 +331,11 @@ class TestCoreCoverageOrchestratorEnforcement:
 
             # 6. Requestor ID validation without wildcard principal (lines 576-579)
             orch.gates = [GateDictObj()]
+            ctx6 = {k: v for k, v in ctx.items() if k != "authenticated_principal"}
+            ctx6["requestor_id"] = "unverified_principal"
             res6 = orch.process_submission(
                 raw_payload=payload,
-                context={**ctx, "requestor_id": "unverified_principal"},
+                context=ctx6,
             )
             assert res6["status"] == "HALTED"
             err_substr = (
@@ -327,8 +351,12 @@ class TestCoreCoverageOrchestratorEnforcement:
                 policy_id="pol",
                 allowed_operations={"read_file"},
                 allowed_resources={"data.txt"},
+                tenant_domain="test_tenant",
             )
-            authority = AuthorizationAuthority(default_policy=policy)
+            test_idp = ExternalTestIdentityAuthority(issuer_id="TestIdP_Core")
+            verifier = PrincipalVerifier(trusted_public_keys={"TestIdP_Core": test_idp.public_key})
+            auth_p = test_idp.issue_principal("operator_core")
+            authority = AuthorizationAuthority(principal_provider=verifier, tenant_domain="test_tenant", default_policy=policy)
             boundary = TrustedExecutionBoundary(
                 provenance_store=store, authority=authority
             )
@@ -361,6 +389,7 @@ class TestCoreCoverageOrchestratorEnforcement:
                 "target": "data.txt",
                 "correlation_id": "corr-unknown-outcome",
                 "request_id": "req-unknown-outcome",
+                "authenticated_principal": auth_p,
             }
             res = orch.process_submission(raw_payload=payload, context=ctx)
             assert res["status"] == "RECONCILIATION_REQUIRED"
@@ -376,6 +405,7 @@ class TestCoreCoverageOrchestratorEnforcement:
                 policy_id="pol",
                 allowed_operations={"read_file"},
                 allowed_resources={"data.txt"},
+                tenant_domain="test_tenant",
                 allowed_principals={"admin"},
             )
             authority = AuthorizationAuthority(default_policy=policy)
@@ -415,8 +445,12 @@ class TestCoreCoverageOrchestratorEnforcement:
                 allowed_operations={"read_file"},
                 allowed_resources={"data.txt"},
                 allowed_principals={"*"},
+                tenant_domain="test_tenant",
             )
-            authority = AuthorizationAuthority(default_policy=policy_star)
+            test_idp = ExternalTestIdentityAuthority(issuer_id="TestIdP_Core")
+            verifier = PrincipalVerifier(trusted_public_keys={"TestIdP_Core": test_idp.public_key})
+            auth_p = test_idp.issue_principal("operator_core")
+            authority = AuthorizationAuthority(principal_provider=verifier, tenant_domain="test_tenant", default_policy=policy_star)
             boundary = TrustedExecutionBoundary(
                 provenance_store=store, authority=authority
             )
@@ -443,6 +477,7 @@ class TestCoreCoverageOrchestratorEnforcement:
                     "target": "data.txt",
                     "correlation_id": "corr-invalid-boundary",
                     "request_id": "req-invalid-boundary",
+                "authenticated_principal": auth_p,
                 }
                 res = orch.process_submission(
                     raw_payload={"policy_id": "pol_star", "task": "read"}, context=ctx
@@ -475,6 +510,7 @@ class TestCoreCoverageOrchestratorEnforcement:
                     "target": "data.txt",
                     "correlation_id": "corr-invalid-dict-status",
                     "request_id": "req-invalid-dict-status",
+                "authenticated_principal": auth_p,
                 }
                 res = orch.process_submission(
                     raw_payload={"policy_id": "pol_star", "task": "read"}, context=ctx
@@ -494,6 +530,7 @@ class TestCoreCoverageOrchestratorEnforcement:
                 "target": "data.txt",
                 "correlation_id": "corr-valid-success",
                 "request_id": "req-valid-success",
+                "authenticated_principal": auth_p,
             }
             res_success = orch.process_submission(
                 raw_payload={"policy_id": "pol_star", "task": "read"}, context=ctx_success
@@ -514,6 +551,7 @@ class TestCoreCoverageOrchestratorEnforcement:
                 "target": "data.txt",
                 "correlation_id": "corr-valid-unverified",
                 "request_id": "req-valid-unverified",
+                "authenticated_principal": auth_p,
             }
             res_unverified = orch.process_submission(
                 raw_payload={"policy_id": "pol_star", "task": "read"}, context=ctx_unverified

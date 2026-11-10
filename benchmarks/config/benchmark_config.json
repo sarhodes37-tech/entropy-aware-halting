@@ -15,7 +15,12 @@
   ],
   "thresholds": {
     "entropy_z_threshold": 1.5,
-    "ablation_z_thresholds": [1.0, 1.5, 2.0, 2.85]
+    "ablation_z_thresholds": [
+      1.0,
+      1.5,
+      2.0,
+      2.85
+    ]
   },
   "baselines": [
     "Ungated Generation",
@@ -23,7 +28,7 @@
     "Permission-Only Gating",
     "Combined Gating",
     "Active Execution-Gated Recovery",
-    "Compute-Matched Baseline"
+    "Synthetic Token-Budget Control"
   ],
   "datasets": {
     "dev": "benchmarks/data/dev_set.jsonl",

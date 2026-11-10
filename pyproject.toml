@@ -27,6 +27,7 @@ classifiers = [
 # Pydantic is the only mandatory dependency for the baseline data models.
 dependencies = [
     "pydantic>=2.0.0",
+    "cryptography>=41.0.0",
 ]
 
 # THE HIDDEN COMPARTMENTS

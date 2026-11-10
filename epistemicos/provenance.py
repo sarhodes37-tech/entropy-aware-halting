@@ -233,6 +233,11 @@ class LocalProvenanceStore(ProvenanceStore):
                 if event.provenance_source not in self._VALID_PROVENANCE_SOURCES:
                     raise ValueError(f"Unsupported provenance_source: {event.provenance_source}")
 
+                # Enforce dispatch-event integrity on EXECUTION_STARTED events
+                if event.event_type == ProvenanceEventType.EXECUTION_STARTED.value:
+                    if not event.execution_attempt_id or not isinstance(event.execution_attempt_id, str) or not event.execution_attempt_id.strip():
+                        raise ValueError("Telemetry integrity failure: EXECUTION_STARTED event must have a non-empty execution_attempt_id")
+
                 # Acquire file lock FIRST before inspecting health and reading tail hash to avoid multi-process race conditions
                 with open(self.log_path, "a+b") as f:
                     if HAS_FCNTL:
@@ -671,7 +676,7 @@ class TrustedExecutionBoundary:
             raise PermissionError(f"Execution rejected: {cap_reason}")
 
         # SEC-01: Reject unauthenticated or missing principal if capability is bound to a specific principal
-        if cap and cap.principal_id != "agent_default":
+        if cap and cap.principal_id:
             if auth_principal is None:
                 raise PermissionError(f"Execution rejected: Capability bound to principal '{cap.principal_id}' requires authenticated principal in ExecutionContext")
             if not isinstance(auth_principal, AuthenticatedPrincipal):
@@ -789,7 +794,15 @@ class TrustedExecutionBoundary:
             if isinstance(executor_func, FencedResource):
                 result = executor_func.validate_and_execute(effective_fence, effective_scope, request_payload)
             else:
-                result = executor_func()
+                import inspect
+                sig = inspect.signature(executor_func)
+                accepts_kwargs = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
+                if "attempt_id" in sig.parameters or accepts_kwargs:
+                    result = executor_func(attempt_id=attempt_id)
+                elif "dispatch_intent_id" in sig.parameters:
+                    result = executor_func(dispatch_intent_id=attempt_id)
+                else:
+                    result = executor_func()
         except Exception as e:
             end_ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
             end_epoch = time.time()

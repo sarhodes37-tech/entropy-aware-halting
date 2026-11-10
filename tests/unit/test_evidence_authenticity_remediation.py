@@ -1,3 +1,4 @@
+from epistemicos.authorization import _TRUSTED_AUTHORITY_ASSIGNMENT_TOKEN
 """
 Adversarial Verification & Regression Test Suite for Phase 1 Execution Evidence Authenticity.
 Remediates VULN-EVID-01 & VULN-EVID-02.
@@ -45,21 +46,29 @@ from epistemicos.provenance import (
 from epistemicos.ui.adapters import ObservatoryDataAdapter
 
 
+from tests.unit.test_sec01_sec03_remediation import ExternalTestIdentityAuthority
+from epistemicos.authorization import PrincipalVerifier
+
 @pytest.fixture
 def test_setup(tmp_path):
     prov_path = tmp_path / "provenance.jsonl"
     audit_path = tmp_path / "audit.jsonl"
     denial_path = tmp_path / "denial.jsonl"
 
+    test_idp = ExternalTestIdentityAuthority(issuer_id="TestIdP_Evidence")
+    verifier = PrincipalVerifier(trusted_public_keys={"TestIdP_Evidence": test_idp.public_key})
+    auth_principal = test_idp.issue_principal("operator_alice")
+
     store = LocalProvenanceStore(log_path=str(prov_path))
     cap_registry = CapabilityRegistry(denial_log_path=str(denial_path))
-    authority = AuthorizationAuthority(registry=cap_registry)
+    authority = AuthorizationAuthority(registry=cap_registry, principal_provider=verifier, tenant_domain="test_tenant")
     boundary = TrustedExecutionBoundary(provenance_store=store, authority=authority)
 
     policy = Policy(
         policy_id="test_policy",
         allowed_operations={"read_file", "write_file", "delete_file"},
-        allowed_resources={"/data/resource.txt", "/data/prod_db"}
+        allowed_resources={"/data/resource.txt", "/data/prod_db"},
+        tenant_domain="test_tenant"
     )
     authority.default_policy = policy
 
@@ -70,7 +79,9 @@ def test_setup(tmp_path):
         "boundary": boundary,
         "prov_path": str(prov_path),
         "audit_path": str(audit_path),
-        "policy": policy
+        "policy": policy,
+        "test_idp": test_idp,
+        "auth_principal": auth_principal
     }
 
 
@@ -195,7 +206,8 @@ def test_3_real_capability_with_altered_target_or_digest_rejected(test_setup):
         canonical_request_digest=digest,
         correlation_id=corr_id,
         request_id="req-1",
-        executor_id=exec_func
+        executor_id=exec_func,
+    principal_id=test_setup["auth_principal"],
     )
 
     altered_grant = ProvenanceEvent(
@@ -278,7 +290,8 @@ def test_5_fabricated_success_after_genuine_token_failure_rejected(test_setup):
         canonical_request_digest=digest,
         correlation_id=corr_id,
         request_id=req_id,
-        executor_id=failing_executor
+        executor_id=failing_executor,
+    principal_id=test_setup["auth_principal"],
     )
 
     ctx = ExecutionContext(
@@ -286,7 +299,8 @@ def test_5_fabricated_success_after_genuine_token_failure_rejected(test_setup):
         request_id=req_id,
         authorization_token_id=cap.token_id,
         authorized_digest=digest,
-        authorization_granted=True
+        authorization_granted=True,
+        authenticated_principal=test_setup["auth_principal"]
     )
 
     grant_ev = ProvenanceEvent(
@@ -378,7 +392,8 @@ def test_6_legitimate_execution_reconciles_successfully(test_setup):
         canonical_request_digest=digest,
         correlation_id=corr_id,
         request_id=req_id,
-        executor_id=exec_func
+        executor_id=exec_func,
+    principal_id=test_setup["auth_principal"],
     )
 
     grant_ev = ProvenanceEvent(
@@ -401,7 +416,8 @@ def test_6_legitimate_execution_reconciles_successfully(test_setup):
         request_id=req_id,
         authorization_token_id=cap.token_id,
         authorized_digest=digest,
-        authorization_granted=True
+        authorization_granted=True,
+        authenticated_principal=test_setup["auth_principal"]
     )
 
     res = boundary.execute_protected_action(
@@ -449,10 +465,12 @@ def test_7_post_execution_expiration_preserves_validity(test_setup):
         canonical_request_digest=digest,
         correlation_id=corr_id,
         request_id=req_id,
-        executor_id=exec_func
+        executor_id=exec_func,
+    principal_id=test_setup["auth_principal"],
     )
     # Use ample TTL so boundary.execute_protected_action does not race against expiry on busy CI runners
     cap.expires_at = now_ts + 1.0
+    cap.signature = authority.registry._sign_capability_internal(cap, _TRUSTED_AUTHORITY_ASSIGNMENT_TOKEN)
     authority.registry.register_capability(cap)
 
     grant_ev = ProvenanceEvent(
@@ -475,7 +493,8 @@ def test_7_post_execution_expiration_preserves_validity(test_setup):
         request_id=req_id,
         authorization_token_id=cap.token_id,
         authorized_digest=digest,
-        authorization_granted=True
+        authorization_granted=True,
+        authenticated_principal=test_setup["auth_principal"]
     )
     boundary.execute_protected_action(
         action_name="read_file",
@@ -514,7 +533,8 @@ def test_8_post_execution_revocation_preserves_validity(test_setup):
         canonical_request_digest=digest,
         correlation_id=corr_id,
         request_id=req_id,
-        executor_id=exec_func
+        executor_id=exec_func,
+    principal_id=test_setup["auth_principal"],
     )
 
     grant_ev = ProvenanceEvent(
@@ -537,7 +557,8 @@ def test_8_post_execution_revocation_preserves_validity(test_setup):
         request_id=req_id,
         authorization_token_id=cap.token_id,
         authorized_digest=digest,
-        authorization_granted=True
+        authorization_granted=True,
+        authenticated_principal=test_setup["auth_principal"]
     )
     boundary.execute_protected_action(
         action_name="read_file",
@@ -551,8 +572,8 @@ def test_8_post_execution_revocation_preserves_validity(test_setup):
 
     # Post-execution revocation in storage journal
     now_ts = time.time() + 10.0
-    authority.registry.storage._revoked_tokens.add(cap.token_id)
-    authority.registry.storage._revocation_records[cap.token_id] = {
+    authority.registry._storage._revoked_tokens.add(cap.token_id)
+    authority.registry._storage._revocation_records[cap.token_id] = {
         "token_id": cap.token_id,
         "reason": "Security review retroactive revoke",
         "timestamp": now_ts,
@@ -581,7 +602,8 @@ def test_9_pre_execution_revocation_or_expiration_rejected(test_setup):
         canonical_request_digest=digest,
         correlation_id="c1",
         request_id="r1",
-        executor_id=exec_func
+        executor_id=exec_func,
+    principal_id=test_setup["auth_principal"],
     )
 
     ok, _ = authority.registry.revoke_token(cap.token_id, reason="Admin revoked")
@@ -592,7 +614,8 @@ def test_9_pre_execution_revocation_or_expiration_rejected(test_setup):
         request_id="r1",
         authorization_token_id=cap.token_id,
         authorized_digest=digest,
-        authorization_granted=True
+        authorization_granted=True,
+        authenticated_principal=test_setup["auth_principal"]
     )
 
     with pytest.raises(PermissionError, match="REVOKED"):
@@ -620,7 +643,8 @@ def test_10_missing_terminal_outcome_produces_outcome_unknown(test_setup):
         canonical_request_digest="dig",
         correlation_id=corr_id,
         request_id=req_id,
-        executor_id="default_executor"
+        executor_id="default_executor",
+    principal_id=test_setup["auth_principal"],
     )
 
     ok, _, rec = authority.registry.consume_token_and_record_dispatch(
@@ -691,9 +715,14 @@ def test_11_terminal_outcome_immutability(test_setup):
         policy_version="1.0",
         created_at=now_ts,
         expires_at=now_ts + 300,
+        tenant_domain="test_tenant",
+        policy_id="test_policy",
+        authorization_basis="AUTONOMOUS",
+        _trusted_issuance_token=_TRUSTED_AUTHORITY_ASSIGNMENT_TOKEN,
         fencing_token=1,
         scope_key=scope
     )
+    cap.signature = registry._sign_capability_internal(cap, _TRUSTED_AUTHORITY_ASSIGNMENT_TOKEN)
     registry.register_capability(cap)
 
     ok, _, _ = registry.consume_token_and_record_dispatch(
@@ -744,6 +773,10 @@ def test_12_file_authorization_store_durability_across_reopen(tmp_path):
         policy_version="1.0",
         created_at=now_ts,
         expires_at=now_ts + 300,
+        tenant_domain="test_tenant",
+        policy_id="test_policy",
+        authorization_basis="AUTONOMOUS",
+        _trusted_issuance_token=_TRUSTED_AUTHORITY_ASSIGNMENT_TOKEN,
         fencing_token=1,
         scope_key=scope
     )
@@ -852,7 +885,8 @@ def test_14_failure_injection_after_dispatch_produces_outcome_unknown(test_setup
         canonical_request_digest=digest,
         correlation_id=corr_id,
         request_id=req_id,
-        executor_id=exec_func
+        executor_id=exec_func,
+    principal_id=test_setup["auth_principal"],
     )
 
     ctx = ExecutionContext(
@@ -860,7 +894,8 @@ def test_14_failure_injection_after_dispatch_produces_outcome_unknown(test_setup
         request_id=req_id,
         authorization_token_id=cap.token_id,
         authorized_digest=digest,
-        authorization_granted=True
+        authorization_granted=True,
+        authenticated_principal=test_setup["auth_principal"]
     )
 
     def failing_record_outcome(*args, **kwargs):
@@ -902,6 +937,10 @@ def test_15_concurrent_revocation_and_dispatch_deterministic_ordering(tmp_path):
         policy_version="1.0",
         created_at=now_ts,
         expires_at=now_ts + 300,
+        tenant_domain="test_tenant",
+        policy_id="test_policy",
+        authorization_basis="AUTONOMOUS",
+        _trusted_issuance_token=_TRUSTED_AUTHORITY_ASSIGNMENT_TOKEN,
         fencing_token=1,
         scope_key=scope
     )
@@ -934,7 +973,8 @@ def test_16_duplicate_terminal_events_rejected_in_reconciliation(test_setup):
         canonical_request_digest="dig",
         correlation_id=corr_id,
         request_id="r1",
-        executor_id="default_executor"
+        executor_id="default_executor",
+    principal_id=test_setup["auth_principal"],
     )
 
     ev_grant = ProvenanceEvent(
@@ -1028,6 +1068,10 @@ def test_17_atomic_dispatch_failure_injection_prevents_partial_consumption(tmp_p
         policy_version="1.0",
         created_at=now_ts,
         expires_at=now_ts + 300,
+        tenant_domain="test_tenant",
+        policy_id="test_policy",
+        authorization_basis="AUTONOMOUS",
+        _trusted_issuance_token=_TRUSTED_AUTHORITY_ASSIGNMENT_TOKEN,
         fencing_token=1,
         scope_key=scope
     )
@@ -1172,6 +1216,10 @@ def test_19_multithreaded_concurrent_revocation_vs_dispatch_on_file_store(tmp_pa
             policy_version="1.0",
             created_at=now_ts,
             expires_at=now_ts + 300,
+            tenant_domain="test_tenant",
+            policy_id="test_policy",
+            authorization_basis="AUTONOMOUS",
+            _trusted_issuance_token=_TRUSTED_AUTHORITY_ASSIGNMENT_TOKEN,
             fencing_token=1,
             scope_key=scope,
         )
@@ -1278,6 +1326,7 @@ def test_20_executor_identity_mismatch_rejected(test_setup):
         correlation_id=corr_id,
         request_id="req-1",
         executor_id=trusted_executor,
+        principal_id=test_setup["auth_principal"],
     )
 
     valid, reason, _, _ = authority.verify_historical_capability(
@@ -1340,7 +1389,7 @@ def test_21_missing_attribution_fails_closed(test_setup):
             "task_id": "task_critical_1"
         }
     }
-    authority.registry.storage._execution_attempts[attempt_id] = rec_missing_exec
+    authority.registry._storage._execution_attempts[attempt_id] = rec_missing_exec
 
     valid, reason, _, _ = authority.verify_historical_capability(
         token_id=cap.token_id,
@@ -1361,7 +1410,7 @@ def test_21_missing_attribution_fails_closed(test_setup):
         "task_id": "task_critical_1"
         # principal_id missing!
     }
-    authority.registry.storage._execution_attempts[attempt_id] = rec_missing_principal
+    authority.registry._storage._execution_attempts[attempt_id] = rec_missing_principal
 
     valid, reason, _, _ = authority.verify_historical_capability(
         token_id=cap.token_id,
@@ -1382,7 +1431,7 @@ def test_21_missing_attribution_fails_closed(test_setup):
         "principal_id": "alice"
         # task_id missing!
     }
-    authority.registry.storage._execution_attempts[attempt_id] = rec_missing_task
+    authority.registry._storage._execution_attempts[attempt_id] = rec_missing_task
 
     valid, reason, _, _ = authority.verify_historical_capability(
         token_id=cap.token_id,
@@ -1403,7 +1452,7 @@ def test_21_missing_attribution_fails_closed(test_setup):
         "principal_id": "alice",
         "task_id": "task_critical_1"
     }
-    authority.registry.storage._execution_attempts[attempt_id] = rec_valid
+    authority.registry._storage._execution_attempts[attempt_id] = rec_valid
 
     valid, reason, _, _ = authority.verify_historical_capability(
         token_id=cap.token_id,

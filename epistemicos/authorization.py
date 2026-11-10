@@ -18,7 +18,7 @@ import os
 from abc import ABC, abstractmethod
 from functools import lru_cache
 from typing import Dict, Any, List, Optional, Set, Union, Tuple
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field, asdict, InitVar
 from urllib.parse import urlparse, unquote
 
 
@@ -223,6 +223,7 @@ class HumanApprovalRecord:
     task_id: Optional[str] = None
     requesting_principal: Optional[str] = None
     approver_assertion: Optional[Union[AuthenticatedPrincipal, Dict[str, Any]]] = None
+    tenant_domain: Optional[str] = None
     signature: Optional[str] = None
 
     def compute_assertion_digest(self) -> str:
@@ -243,10 +244,11 @@ class HumanApprovalRecord:
 
     def compute_signature_payload(self) -> str:
         base_payload = f"{self.approval_id}:{self.approver_id}:{self.action_name}:{self.target}:{self.action_digest}:{self.request_id}:{self.policy_version}:{self.expires_at}:{self.task_id or ''}"
-        if self.requesting_principal is not None or self.approver_assertion is not None:
-            req_p = self.requesting_principal or ""
-            ast_dig = self.compute_assertion_digest()
-            return f"{base_payload}:{req_p}:{ast_dig}"
+        req_p = self.requesting_principal or ""
+        ast_dig = self.compute_assertion_digest()
+        t_dom = self.tenant_domain or ""
+        if self.requesting_principal is not None or self.approver_assertion is not None or self.tenant_domain is not None:
+            return f"{base_payload}:{req_p}:{ast_dig}:{t_dom}"
         return base_payload
 
     def sign(self, signing_secret: bytes) -> str:
@@ -356,6 +358,7 @@ class HumanApprovalRecord:
                 task_id=str(val["task_id"]) if val.get("task_id") is not None else None,
                 requesting_principal=str(val["requesting_principal"]) if val.get("requesting_principal") is not None else None,
                 approver_assertion=parsed_assertion,
+                tenant_domain=str(val["tenant_domain"]) if val.get("tenant_domain") is not None else None,
                 signature=val.get("signature")
             )
 
@@ -380,6 +383,7 @@ class TrustedTaskContract:
     success_evidence_requirements: Set[str] = field(default_factory=set)
     created_at: float = field(default_factory=time.time)
     expires_at: Optional[float] = None
+    tenant_domain: Optional[str] = None
     issuer_id: str = "TrustedTaskContractAuthority"
     signature: Optional[str] = None
 
@@ -395,6 +399,7 @@ class TrustedTaskContract:
             "success_evidence_requirements": sorted(list(self.success_evidence_requirements)),
             "created_at": self.created_at,
             "expires_at": self.expires_at,
+            "tenant_domain": self.tenant_domain,
             "issuer_id": self.issuer_id,
         }
         serialized = json.dumps(data, sort_keys=True).encode("utf-8")
@@ -490,6 +495,7 @@ class TrustedTaskContract:
             success_evidence_requirements=set(val.get("success_evidence_requirements", [])),
             created_at=float(val.get("created_at", time.time())),
             expires_at=float(val["expires_at"]) if val.get("expires_at") is not None else None,
+            tenant_domain=str(val["tenant_domain"]) if val.get("tenant_domain") is not None else None,
             issuer_id=str(val.get("issuer_id", "TrustedTaskContractAuthority")),
             signature=val.get("signature")
         )
@@ -512,6 +518,7 @@ class Policy:
     allowed_executors: Set[str] = field(default_factory=lambda: {"*"})
     allowed_approvers: Set[str] = field(default_factory=lambda: {"*"})
     token_ttl_seconds: float = 300.0
+    tenant_domain: Optional[str] = None
 
     def is_operation_allowed(self, action_name: str) -> bool:
         if not self.allowed_operations:
@@ -870,6 +877,15 @@ class InMemoryAuthorizationStore(AuthorizationStore):
         dispatch_metadata: Optional[Dict[str, Any]] = None
     ) -> Tuple[bool, str, Optional[Dict[str, Any]]]:
         with self._lock:
+            if not isinstance(started_at, (int, float)) or isinstance(started_at, bool):
+                return False, "CAPABILITY_CONSUMPTION_FAILED_INVALID_TIMESTAMP", None
+            if isinstance(started_at, int) and started_at.bit_length() > 64:
+                return False, "CAPABILITY_CONSUMPTION_FAILED_INVALID_TIMESTAMP", None
+            try:
+                if not math.isfinite(started_at):
+                    return False, "CAPABILITY_CONSUMPTION_FAILED_INVALID_TIMESTAMP", None
+            except (OverflowError, ValueError, TypeError):
+                return False, "CAPABILITY_CONSUMPTION_FAILED_INVALID_TIMESTAMP", None
             if not token_id or not isinstance(token_id, str):
                 return False, "CAPABILITY_CONSUMPTION_FAILED_INVALID_TOKEN_ID", None
             if not attempt_id or not isinstance(attempt_id, str):
@@ -911,12 +927,28 @@ class InMemoryAuthorizationStore(AuthorizationStore):
                 if cap_fence > auth_fence:
                     return False, f"CAPABILITY_CONSUMPTION_FAILED_FUTURE_FENCING_TOKEN: token generation {cap_fence} > authoritative scope generation {auth_fence}", None
 
+            # Enforce authorization_basis and approval invariants derived from authoritative capability
+            raw_basis = getattr(cap_obj, "authorization_basis", None) if not isinstance(cap_obj, dict) else cap_obj.get("authorization_basis")
+            if raw_basis not in ("AUTONOMOUS", "HUMAN_APPROVED"):
+                return False, f"CAPABILITY_CONSUMPTION_FAILED_INVALID_AUTHORIZATION_BASIS: '{raw_basis}'", None
+
+            human_app = getattr(cap_obj, "human_approval", None) if not isinstance(cap_obj, dict) else cap_obj.get("human_approval")
             approval_id = None
-            human_app = getattr(cap_obj, "human_approval", None) or (cap_obj.get("human_approval") if isinstance(cap_obj, dict) else None)
-            if human_app:
-                approval_id = getattr(human_app, "approval_id", None) or (human_app.get("approval_id") if isinstance(human_app, dict) else None)
-                if approval_id and approval_id in self._consumed_approvals:
+
+            if raw_basis == "HUMAN_APPROVED":
+                if human_app is None:
+                    return False, "CAPABILITY_CONSUMPTION_FAILED_MISSING_APPROVAL_RECORD", None
+                raw_app_id = getattr(human_app, "approval_id", None) if not isinstance(human_app, dict) else human_app.get("approval_id")
+                if not raw_app_id or not isinstance(raw_app_id, str):
+                    return False, "CAPABILITY_CONSUMPTION_FAILED_EMPTY_APPROVAL_ID", None
+                if len(raw_app_id) != len(raw_app_id.strip()):
+                    return False, "CAPABILITY_CONSUMPTION_FAILED_MALFORMED_APPROVAL_ID_WHITESPACE", None
+                approval_id = raw_app_id
+                if approval_id in self._consumed_approvals:
                     return False, "CAPABILITY_CONSUMPTION_FAILED_APPROVAL_REPLAYED", None
+            elif raw_basis == "AUTONOMOUS":
+                if human_app is not None:
+                    return False, "CAPABILITY_CONSUMPTION_FAILED_INCONSISTENT_AUTONOMOUS_APPROVAL", None
 
             # Atomic transaction commit
             self._seq += 1
@@ -1346,36 +1378,7 @@ class FileAuthorizationStore(AuthorizationStore):
                 self._sync_from_disk(acquire_lock=False)
                 cap_data = self._capabilities.get(token_id)
                 if isinstance(cap_data, dict):
-                    app_record = None
-                    app_data = cap_data.get("human_approval")
-                    if app_data and isinstance(app_data, dict):
-                        app_record = HumanApprovalRecord.from_input(app_data)
-                    elif isinstance(app_data, HumanApprovalRecord):
-                        app_record = app_data
-                    return Capability(
-                        token_id=cap_data["token_id"],
-                        principal_id=cap_data["principal_id"],
-                        correlation_id=cap_data["correlation_id"],
-                        request_id=cap_data["request_id"],
-                        action_name=cap_data["action_name"],
-                        target=cap_data["target"],
-                        canonical_request_digest=cap_data["canonical_request_digest"],
-                        executor_id=cap_data["executor_id"],
-                        policy_version=cap_data["policy_version"],
-                        created_at=float(cap_data["created_at"]),
-                        expires_at=float(cap_data["expires_at"]),
-                        task_id=cap_data.get("task_id"),
-                        contract_version=cap_data.get("contract_version"),
-                        contract_digest=cap_data.get("contract_digest"),
-                        required_success_evidence=set(cap_data.get("required_success_evidence") or []),
-                        human_approval=app_record,
-                        approver_principal=cap_data.get("approver_principal"),
-                        approver_provenance=cap_data.get("approver_provenance"),
-                        issuer_id=cap_data.get("issuer_id", "TrustedAuthorizationAuthority"),
-                        signature=cap_data.get("signature"),
-                        fencing_token=int(cap_data.get("fencing_token", 1)),
-                        scope_key=cap_data.get("scope_key")
-                    )
+                    return Capability._restore_from_storage(cap_data, _TRUSTED_AUTHORITY_ASSIGNMENT_TOKEN)
                 return cap_data
             finally:
                 self._release_flock()
@@ -1467,6 +1470,15 @@ class FileAuthorizationStore(AuthorizationStore):
         with self._thread_lock:
             self._acquire_flock()
             try:
+                if not isinstance(started_at, (int, float)) or isinstance(started_at, bool):
+                    return False, "CAPABILITY_CONSUMPTION_FAILED_INVALID_TIMESTAMP", None
+                if isinstance(started_at, int) and started_at.bit_length() > 64:
+                    return False, "CAPABILITY_CONSUMPTION_FAILED_INVALID_TIMESTAMP", None
+                try:
+                    if not math.isfinite(started_at):
+                        return False, "CAPABILITY_CONSUMPTION_FAILED_INVALID_TIMESTAMP", None
+                except (OverflowError, ValueError, TypeError):
+                    return False, "CAPABILITY_CONSUMPTION_FAILED_INVALID_TIMESTAMP", None
                 self._sync_from_disk(acquire_lock=False)
                 if not token_id or not isinstance(token_id, str):
                     return False, "CAPABILITY_CONSUMPTION_FAILED_INVALID_TOKEN_ID", None
@@ -1507,12 +1519,28 @@ class FileAuthorizationStore(AuthorizationStore):
                     if cap_fence > auth_fence:
                         return False, f"CAPABILITY_CONSUMPTION_FAILED_FUTURE_FENCING_TOKEN: token generation {cap_fence} > authoritative scope generation {auth_fence}", None
 
-                approval_id = None
+                # Enforce authorization_basis and approval invariants derived from authoritative capability
+                raw_basis = cap_data.get("authorization_basis") if isinstance(cap_data, dict) else getattr(cap_data, "authorization_basis", None)
+                if raw_basis not in ("AUTONOMOUS", "HUMAN_APPROVED"):
+                    return False, f"CAPABILITY_CONSUMPTION_FAILED_INVALID_AUTHORIZATION_BASIS: '{raw_basis}'", None
+
                 human_app = cap_data.get("human_approval") if isinstance(cap_data, dict) else getattr(cap_data, "human_approval", None)
-                if human_app:
-                    approval_id = human_app.get("approval_id") if isinstance(human_app, dict) else getattr(human_app, "approval_id", None)
-                    if approval_id and approval_id in self._consumed_approvals:
+                approval_id = None
+
+                if raw_basis == "HUMAN_APPROVED":
+                    if human_app is None:
+                        return False, "CAPABILITY_CONSUMPTION_FAILED_MISSING_APPROVAL_RECORD", None
+                    raw_app_id = human_app.get("approval_id") if isinstance(human_app, dict) else getattr(human_app, "approval_id", None)
+                    if not raw_app_id or not isinstance(raw_app_id, str):
+                        return False, "CAPABILITY_CONSUMPTION_FAILED_EMPTY_APPROVAL_ID", None
+                    if len(raw_app_id) != len(raw_app_id.strip()):
+                        return False, "CAPABILITY_CONSUMPTION_FAILED_MALFORMED_APPROVAL_ID_WHITESPACE", None
+                    approval_id = raw_app_id
+                    if approval_id in self._consumed_approvals:
                         return False, "CAPABILITY_CONSUMPTION_FAILED_APPROVAL_REPLAYED", None
+                elif raw_basis == "AUTONOMOUS":
+                    if human_app is not None:
+                        return False, "CAPABILITY_CONSUMPTION_FAILED_INCONSISTENT_AUTONOMOUS_APPROVAL", None
 
                 next_seq = self._seq + 1
                 rec = {
@@ -1834,6 +1862,46 @@ class PrincipalVerifier:
         return True, "Principal verified", principal.principal_id
 
 
+def _validate_capability_nonempty_str(val: Any, field_name: str) -> str:
+    if val is None:
+        raise TypeError(f"Missing required field: {field_name} cannot be None")
+    if not isinstance(val, str):
+        raise TypeError(f"Invalid type for {field_name}: expected str, got {type(val).__name__}")
+    if not val or not val.strip():
+        raise ValueError(f"Invalid value for {field_name}: cannot be empty or whitespace-only")
+    # Preserve identifier exactly as supplied; do NOT strip or normalize
+    return val
+
+
+def _validate_capability_expiry(val: Any) -> float:
+    if val is None:
+        raise TypeError("Missing required field: expires_at cannot be None")
+    if isinstance(val, bool):
+        raise TypeError("Invalid type for expires_at: bool is not allowed")
+    if not isinstance(val, (int, float)):
+        raise TypeError(f"Invalid type for expires_at: expected int or float, got {type(val).__name__}")
+    f_val = float(val)
+    if math.isnan(f_val):
+        raise ValueError("Invalid value for expires_at: NaN is not allowed")
+    if math.isinf(f_val):
+        raise ValueError("Invalid value for expires_at: infinity is not allowed")
+    return f_val
+
+
+def _validate_capability_optional_contract_id(val: Any) -> Optional[str]:
+    if val is None:
+        return None
+    if not isinstance(val, str):
+        raise TypeError(f"Invalid type for contract_id: expected str, got {type(val).__name__}")
+    if not val or not val.strip():
+        raise ValueError("Invalid value for contract_id: cannot be empty or whitespace-only")
+    # Preserve exactly as supplied
+    return val
+
+
+_TRUSTED_AUTHORITY_ASSIGNMENT_TOKEN = object()
+
+
 @dataclass
 class Capability:
     """
@@ -1851,6 +1919,9 @@ class Capability:
     policy_version: str
     created_at: float
     expires_at: float
+    tenant_domain: str
+    policy_id: str
+    contract_id: Optional[str] = None
     task_id: Optional[str] = None
     contract_version: Optional[str] = None
     contract_digest: Optional[str] = None
@@ -1858,10 +1929,122 @@ class Capability:
     human_approval: Optional[HumanApprovalRecord] = None
     approver_principal: Optional[str] = None
     approver_provenance: Optional[Dict[str, Any]] = None
+    authorization_basis: Optional[str] = None
     issuer_id: str = "TrustedAuthorizationAuthority"
     signature: Optional[str] = None
     fencing_token: int = 1
     scope_key: Optional[str] = None
+    _trusted_issuance_token: InitVar[Any] = None
+
+    def __post_init__(self, _trusted_issuance_token: Any = None):
+        _validate_capability_nonempty_str(self.tenant_domain, "tenant_domain")
+        _validate_capability_nonempty_str(self.policy_id, "policy_id")
+        _validate_capability_nonempty_str(self.policy_version, "policy_version")
+        _validate_capability_expiry(self.expires_at)
+        _validate_capability_optional_contract_id(self.contract_id)
+        if self.authorization_basis is not None:
+            if _trusted_issuance_token is not _TRUSTED_AUTHORITY_ASSIGNMENT_TOKEN:
+                raise ValueError(
+                    f"Caller authorization_basis selection prohibited: '{self.authorization_basis}' "
+                    "cannot be supplied by caller. 'authorization_basis' must be derived by trusted authority."
+                )
+            if self.authorization_basis not in ("AUTONOMOUS", "HUMAN_APPROVED"):
+                raise ValueError(
+                    f"Invalid derived authorization_basis: expected 'AUTONOMOUS' or 'HUMAN_APPROVED', got '{self.authorization_basis}'"
+                )
+        if not isinstance(self.required_success_evidence, (set, frozenset, list, tuple)):
+            raise TypeError(f"Invalid type for required_success_evidence: expected collection, got {type(self.required_success_evidence).__name__}")
+        for item in self.required_success_evidence:
+            if not isinstance(item, str) or not item.strip():
+                raise ValueError("Invalid required_success_evidence entry: elements must be nonempty strings")
+        if not isinstance(self.required_success_evidence, set):
+            self.required_success_evidence = set(self.required_success_evidence)
+        if isinstance(self.fencing_token, bool) or not isinstance(self.fencing_token, int):
+            raise TypeError(f"Invalid type for fencing_token: expected int, got {type(self.fencing_token).__name__}")
+        if self.fencing_token <= 0:
+            raise ValueError(f"Invalid value for fencing_token: must be positive integer, got {self.fencing_token}")
+        if self.scope_key is not None:
+            if not isinstance(self.scope_key, str) or not self.scope_key.strip():
+                raise ValueError("Invalid value for scope_key: cannot be empty or whitespace-only if provided")
+        super().__setattr__("_initialized", True)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        if getattr(self, "_initialized", False) and name == "authorization_basis":
+            if value is not None:
+                raise PermissionError("Direct mutation of authorization_basis is prohibited; must be derived by trusted authority")
+        super().__setattr__(name, value)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "Capability":
+        """
+        Public deserialization path for Capability objects.
+        Strictly forbids caller-supplied authorization_basis; callers cannot manufacture
+        or grant trusted issuance status through serialized inputs.
+        """
+        if not isinstance(data, dict):
+            raise TypeError(f"from_dict expects dict, got {type(data).__name__}")
+        d = dict(data)
+        if "tenant_domain" not in d:
+            raise TypeError("Missing required field: tenant_domain cannot be None")
+        if "policy_id" not in d:
+            raise TypeError("Missing required field: policy_id cannot be None")
+        if "policy_version" not in d:
+            raise TypeError("Missing required field: policy_version cannot be None")
+        if "expires_at" not in d:
+            raise TypeError("Missing required field: expires_at cannot be None")
+
+        ev = d.get("required_success_evidence")
+        if ev is not None:
+            if not isinstance(ev, (set, frozenset, list, tuple)):
+                raise TypeError(f"Invalid type for required_success_evidence: expected collection, got {type(ev).__name__}")
+            for item in ev:
+                if not isinstance(item, str) or not item.strip():
+                    raise ValueError("Invalid required_success_evidence entry: elements must be nonempty strings")
+            d["required_success_evidence"] = set(ev)
+
+        app_data = d.get("human_approval")
+        if app_data and isinstance(app_data, dict):
+            d["human_approval"] = HumanApprovalRecord.from_input(app_data)
+
+        # Public deserialization path MUST NOT inject trusted assignment token.
+        # If input contains authorization_basis, Capability.__post_init__ will reject it
+        return cls(**d)
+
+    @classmethod
+    def _restore_from_storage(cls, data: Dict[str, Any], trust_token: Any) -> "Capability":
+        """
+        Internal storage-restoration path for rehydrating authoritative persisted journal capabilities.
+        Must receive trusted token directly from trusted storage implementation code, never from serialized data.
+        """
+        if trust_token is not _TRUSTED_AUTHORITY_ASSIGNMENT_TOKEN:
+            raise PermissionError("Unauthorized invocation of _restore_from_storage: invalid trust token")
+        if not isinstance(data, dict):
+            raise TypeError(f"_restore_from_storage expects dict, got {type(data).__name__}")
+        d = dict(data)
+        if "tenant_domain" not in d:
+            raise TypeError("Missing required field: tenant_domain cannot be None")
+        if "policy_id" not in d:
+            raise TypeError("Missing required field: policy_id cannot be None")
+        if "policy_version" not in d:
+            raise TypeError("Missing required field: policy_version cannot be None")
+        if "expires_at" not in d:
+            raise TypeError("Missing required field: expires_at cannot be None")
+
+        ev = d.get("required_success_evidence")
+        if ev is not None:
+            if not isinstance(ev, (set, frozenset, list, tuple)):
+                raise TypeError(f"Invalid type for required_success_evidence: expected collection, got {type(ev).__name__}")
+            for item in ev:
+                if not isinstance(item, str) or not item.strip():
+                    raise ValueError("Invalid required_success_evidence entry: elements must be nonempty strings")
+            d["required_success_evidence"] = set(ev)
+
+        app_data = d.get("human_approval")
+        if app_data and isinstance(app_data, dict):
+            d["human_approval"] = HumanApprovalRecord.from_input(app_data)
+
+        d["_trusted_issuance_token"] = _TRUSTED_AUTHORITY_ASSIGNMENT_TOKEN
+        return cls(**d)
 
     def is_expired(self, current_time: Optional[float] = None) -> bool:
         now = current_time if current_time is not None else time.time()
@@ -1874,6 +2057,119 @@ class Capability:
         if self.human_approval and hasattr(self.human_approval, "to_dict"):
             data["human_approval"] = self.human_approval.to_dict()
         return data
+
+
+def compute_capability_approval_binding_digest(cap: Capability) -> str:
+    """
+    Computes a deterministic SHA-256 digest binding the attached human approval record,
+    verified approver principal identity, and approver provenance assertions.
+    Returns empty string if no human approval is attached.
+    """
+    human_app = getattr(cap, "human_approval", None)
+    if not human_app:
+        return ""
+
+    app_dict = human_app.to_dict() if hasattr(human_app, "to_dict") else dict(human_app)
+    if "approver_assertion" in app_dict and app_dict["approver_assertion"]:
+        raw_ast = app_dict["approver_assertion"]
+        if hasattr(raw_ast, "to_dict"):
+            ast_dict = raw_ast.to_dict()
+        elif isinstance(raw_ast, dict):
+            ast_dict = raw_ast
+        else:
+            ast_dict = raw_ast.__dict__
+        app_dict["approver_assertion"] = ast_dict
+
+    prov_data = getattr(cap, "approver_provenance", None)
+    prov_dict = prov_data.copy() if isinstance(prov_data, dict) else {}
+
+    app_bound_obj = {
+        "approval_record": app_dict,
+        "approver_principal": str(getattr(cap, "approver_principal", "") or ""),
+        "approver_provenance": prov_dict
+    }
+    canon_json = json.dumps(app_bound_obj, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canon_json.encode("utf-8")).hexdigest()
+
+
+def build_capability_canonical_payload(cap: Capability) -> bytes:
+    """
+    Builds the single authoritative canonical UTF-8 JSON payload for Capability HMAC signing
+    and verification. Explicitly represents all 20 security-relevant fields with stable null
+    handling, strict deterministic key sorting, and no delimiter collisions.
+    """
+    # 1. Fencing token validation: strict positive integer, reject booleans and non-ints without silent coercion
+    fence_val = getattr(cap, "fencing_token", None)
+    if fence_val is None:
+        raise TypeError("Missing required field: fencing_token cannot be None")
+    if isinstance(fence_val, bool) or not isinstance(fence_val, int):
+        raise TypeError(f"Invalid type for fencing_token: expected int, got {type(fence_val).__name__}")
+    if fence_val <= 0:
+        raise ValueError(f"Invalid value for fencing_token: must be positive integer, got {fence_val}")
+    effective_fence_int = fence_val
+
+    # 2. Scope key validation: preserve explicit null semantics (JSON null), validate invalid values, do not silently derive
+    scope_val = getattr(cap, "scope_key", None)
+    if scope_val is not None:
+        if not isinstance(scope_val, str):
+            raise TypeError(f"Invalid type for scope_key: expected str, got {type(scope_val).__name__}")
+        if not scope_val.strip():
+            raise ValueError("Invalid value for scope_key: cannot be empty or whitespace-only")
+        effective_scope = scope_val
+    else:
+        effective_scope = None
+
+    # 3. Authorization basis validation: bound to derived AUTONOMOUS, HUMAN_APPROVED, or JSON null if unset
+    auth_basis = getattr(cap, "authorization_basis", None)
+    if auth_basis is not None:
+        if auth_basis not in ("AUTONOMOUS", "HUMAN_APPROVED"):
+            raise ValueError(
+                f"Invalid authorization_basis in canonical payload: expected 'AUTONOMOUS' or 'HUMAN_APPROVED', got '{auth_basis}'"
+            )
+        effective_auth_basis = auth_basis
+    else:
+        effective_auth_basis = None
+
+    # 4. Strict numeric expiry validation at the canonical builder boundary
+    exp_val = getattr(cap, "expires_at", None)
+    if exp_val is None:
+        raise TypeError("Missing required field: expires_at cannot be None")
+    if isinstance(exp_val, bool):
+        raise TypeError("Invalid type for expires_at: bool is not allowed")
+    if not isinstance(exp_val, (int, float)):
+        raise TypeError(f"Invalid type for expires_at: expected int or float, got {type(exp_val).__name__}")
+    f_exp = float(exp_val)
+    if math.isnan(f_exp) or math.isinf(f_exp):
+        raise ValueError("Invalid value for expires_at: non-finite values (NaN/inf) are not allowed")
+
+    approval_binding_digest = compute_capability_approval_binding_digest(cap)
+
+    payload_dict = {
+        "token_id": cap.token_id,
+        "principal_id": cap.principal_id,
+        "correlation_id": cap.correlation_id,
+        "request_id": cap.request_id,
+        "task_id": cap.task_id,
+        "action_name": cap.action_name,
+        "target": cap.target,
+        "canonical_request_digest": cap.canonical_request_digest,
+        "executor_id": cap.executor_id,
+        "tenant_domain": cap.tenant_domain,
+        "policy_id": cap.policy_id,
+        "policy_version": cap.policy_version,
+        "contract_id": cap.contract_id,
+        "contract_version": cap.contract_version,
+        "contract_digest": cap.contract_digest,
+        "authorization_basis": effective_auth_basis,
+        "approval_binding_digest": approval_binding_digest,
+        "expires_at": f_exp,
+        "fencing_token": effective_fence_int,
+        "scope_key": effective_scope,
+        "issuer_id": getattr(cap, "issuer_id", "TrustedAuthorizationAuthority")
+    }
+
+    canon_str = json.dumps(payload_dict, sort_keys=True, separators=(",", ":"))
+    return canon_str.encode("utf-8")
 
 
 import contextlib
@@ -1921,7 +2217,7 @@ class CapabilityRegistry:
         if self.fail_closed_persistence and not self.denial_log_path:
             raise ValueError("Configuration error: denial_log_path is required when fail_closed_persistence=True")
 
-        self.storage = storage_backend if storage_backend is not None else InMemoryAuthorizationStore()
+        self._storage = storage_backend if storage_backend is not None else InMemoryAuthorizationStore()
 
         # Fail-closed signing secret validation and secure environment variable resolution
         import os
@@ -2065,42 +2361,22 @@ class CapabilityRegistry:
             if self.fail_closed_persistence:
                 raise RuntimeError(f"Failed to load persistent denial log: {str(e)}") from e
 
-    def sign_capability(self, cap: Capability) -> str:
-        effective_scope = getattr(cap, "scope_key", None) or canonicalize_fencing_scope(cap.task_id, cap.target)
-        effective_fence = getattr(cap, "fencing_token", 1)
+    def _sign_capability_internal(self, cap: Capability, issuance_token: Any) -> str:
+        """
+        Internal private signing operation strictly restricted to trusted authority issuance.
+        Requires explicit presentation of _TRUSTED_AUTHORITY_ASSIGNMENT_TOKEN; has no default token.
+        Does not delegate to any unrestricted public method.
+        """
+        if issuance_token is not _TRUSTED_AUTHORITY_ASSIGNMENT_TOKEN:
+            raise PermissionError("Direct capability signing is restricted to trusted authority issuance workflows")
+        canonical_bytes = build_capability_canonical_payload(cap)
+        return hmac.new(self.signing_secret, canonical_bytes, hashlib.sha256).hexdigest()
 
-        # Cryptographically bind approval record and approver provenance into the capability HMAC payload
-        approval_binding_digest = ""
-        human_app = getattr(cap, "human_approval", None)
-        if human_app:
-            app_dict = human_app.to_dict() if hasattr(human_app, "to_dict") else dict(human_app)
-            if "approver_assertion" in app_dict and app_dict["approver_assertion"]:
-                raw_ast = app_dict["approver_assertion"]
-                if hasattr(raw_ast, "to_dict"):
-                    ast_dict = raw_ast.to_dict()
-                elif isinstance(raw_ast, dict):
-                    ast_dict = raw_ast
-                else:
-                    ast_dict = raw_ast.__dict__
-                app_dict["approver_assertion"] = ast_dict
-            prov_data = getattr(cap, "approver_provenance", None)
-            prov_dict = prov_data.copy() if isinstance(prov_data, dict) else {}
-            app_bound_obj = {
-                "approval_record": app_dict,
-                "approver_principal": str(getattr(cap, "approver_principal", "") or ""),
-                "approver_provenance": prov_dict
-            }
-            canon_json = json.dumps(app_bound_obj, sort_keys=True, separators=(",", ":"))
-            approval_binding_digest = hashlib.sha256(canon_json.encode("utf-8")).hexdigest()
-
-        payload = (
-            f"{cap.token_id}:{cap.principal_id}:{cap.correlation_id}:{cap.request_id}:"
-            f"{cap.action_name}:{cap.target}:{cap.canonical_request_digest}:{cap.executor_id}:"
-            f"{cap.policy_version}:{cap.task_id or ''}:{cap.contract_version or ''}:"
-            f"{cap.contract_digest or ''}:{cap.expires_at}:{effective_fence}:{effective_scope}:"
-            f"{approval_binding_digest}"
-        )
-        return hmac.new(self.signing_secret, payload.encode("utf-8"), hashlib.sha256).hexdigest()
+    def _verify_capability_signature(self, cap: Capability) -> bool:
+        """Internal helper to verify capability signature against the registry signing secret."""
+        canonical_bytes = build_capability_canonical_payload(cap)
+        expected_sig = hmac.new(self.signing_secret, canonical_bytes, hashlib.sha256).hexdigest()
+        return bool(cap.signature and hmac.compare_digest(cap.signature, expected_sig))
 
     def _record_denial_unlocked(
         self,
@@ -2473,47 +2749,57 @@ class CapabilityRegistry:
 
     @property
     def _capabilities(self) -> Dict[str, Any]:
-        if hasattr(self.storage, "_capabilities"):
-            return self.storage._capabilities
+        if hasattr(self._storage, "_capabilities"):
+            return self._storage._capabilities
         return {}
 
     @property
     def _consumed_tokens(self) -> Set[str]:
-        if hasattr(self.storage, "_consumed_tokens"):
-            return self.storage._consumed_tokens
+        if hasattr(self._storage, "_consumed_tokens"):
+            return self._storage._consumed_tokens
         return set()
 
     @property
     def _revoked_tokens(self) -> Set[str]:
-        if hasattr(self.storage, "_revoked_tokens"):
-            return self.storage._revoked_tokens
+        if hasattr(self._storage, "_revoked_tokens"):
+            return self._storage._revoked_tokens
         return set()
 
     @property
     def _consumed_approvals(self) -> Set[str]:
-        if hasattr(self.storage, "_consumed_approvals"):
-            return self.storage._consumed_approvals
+        if hasattr(self._storage, "_consumed_approvals"):
+            return self._storage._consumed_approvals
         return set()
 
     def issue_and_register_capability(self, cap: Capability) -> Capability:
         with self._lock:
             self._check_poisoned()
-            return self.storage.issue_and_register_capability(cap, self.sign_capability)
+            return self._storage.issue_and_register_capability(cap, lambda c: self._sign_capability_internal(c, _TRUSTED_AUTHORITY_ASSIGNMENT_TOKEN))
 
     def register_capability(self, cap: Capability) -> None:
+        """
+        Registers an already authenticated, signed capability in authoritative storage.
+        Rejects unsigned or forged capabilities; public registration cannot mint signatures
+        for arbitrary caller-created capabilities. Legitimate authority issuance must proceed
+        through issue_and_register_capability().
+        """
         with self._lock:
             self._check_poisoned()
             if not getattr(cap, "scope_key", None):
                 cap.scope_key = canonicalize_fencing_scope(cap.task_id, cap.target)
             if getattr(cap, "fencing_token", None) is None:
                 cap.fencing_token = 1
-            cap.signature = self.sign_capability(cap)
-            self.storage.register_capability(cap)
+
+            # Validate that capability is already properly signed by this registry
+            if not self._verify_capability_signature(cap):
+                raise PermissionError("Registration rejected: capability must bear a valid authority signature prior to storage registration")
+
+            self._storage.register_capability(cap)
 
     def get_capability(self, token_id: str) -> Optional[Capability]:
         with self._lock:
             self._check_poisoned()
-            cap = self.storage.get_capability(token_id)
+            cap = self._storage.get_capability(token_id)
             if cap is not None and not isinstance(cap, Capability):
                 pass
             return cap
@@ -2521,17 +2807,17 @@ class CapabilityRegistry:
     def is_consumed(self, token_id: str) -> bool:
         with self._lock:
             self._check_poisoned()
-            return self.storage.is_consumed(token_id)
+            return self._storage.is_consumed(token_id)
 
     def is_revoked(self, token_id: str) -> bool:
         with self._lock:
             self._check_poisoned()
-            return self.storage.is_revoked(token_id)
+            return self._storage.is_revoked(token_id)
 
     def is_approval_consumed(self, approval_id: str) -> bool:
         with self._lock:
             self._check_poisoned()
-            return self.storage.is_approval_consumed(approval_id)
+            return self._storage.is_approval_consumed(approval_id)
 
     def consume_token(self, token_id: str, expected_fencing_token: Optional[int] = None) -> bool:
         """
@@ -2540,7 +2826,7 @@ class CapabilityRegistry:
         """
         with self._lock:
             self._check_poisoned()
-            ok, _ = self.storage.consume_capability(token_id, expected_fencing_token=expected_fencing_token)
+            ok, _ = self._storage.consume_capability(token_id, expected_fencing_token=expected_fencing_token)
             return ok
 
     def consume_token_and_record_dispatch(
@@ -2557,7 +2843,7 @@ class CapabilityRegistry:
         """
         with self._lock:
             self._check_poisoned()
-            return self.storage.consume_token_and_record_dispatch(
+            return self._storage.consume_token_and_record_dispatch(
                 token_id=token_id,
                 attempt_id=attempt_id,
                 dispatched_executor_id=dispatched_executor_id,
@@ -2579,7 +2865,7 @@ class CapabilityRegistry:
         """
         with self._lock:
             self._check_poisoned()
-            return self.storage.record_execution_outcome(
+            return self._storage.record_execution_outcome(
                 token_id=token_id,
                 attempt_id=attempt_id,
                 outcome_status=outcome_status,
@@ -2590,22 +2876,22 @@ class CapabilityRegistry:
     def get_execution_record(self, token_id: str, attempt_id: str) -> Optional[Dict[str, Any]]:
         with self._lock:
             self._check_poisoned()
-            return self.storage.get_execution_record(token_id, attempt_id)
+            return self._storage.get_execution_record(token_id, attempt_id)
 
     def get_revocation_record(self, token_id: str) -> Optional[Dict[str, Any]]:
         with self._lock:
             self._check_poisoned()
-            return self.storage.get_revocation_record(token_id)
+            return self._storage.get_revocation_record(token_id)
 
     def revoke_token(self, token_id: str, reason: str = "") -> Tuple[bool, str]:
         with self._lock:
             self._check_poisoned()
-            return self.storage.revoke_capability(token_id, reason=reason)
+            return self._storage.revoke_capability(token_id, reason=reason)
 
     def get_scope_fencing_token(self, scope_key: str) -> int:
         with self._lock:
             self._check_poisoned()
-            return self.storage.get_scope_fencing_token(scope_key)
+            return self._storage.get_scope_fencing_token(scope_key)
 
 
 def get_callable_identity(func: Any) -> str:
@@ -2726,11 +3012,19 @@ class AuthorizationAuthority:
         contract_signing_secret: Optional[bytes] = None,
         executor_registry: Optional[Dict[str, Any]] = None,
         require_task_contract: Optional[bool] = None,
-        principal_provider: Optional[PrincipalVerifier] = None
+        principal_provider: Optional[PrincipalVerifier] = None,
+        tenant_domain: Optional[str] = None
     ):
         import os
         self.default_policy = default_policy
         self.registry = registry or CapabilityRegistry()
+        self.tenant_domain = tenant_domain
+        self.allow_wildcard_approver = False
+        self._trusted_policies: Dict[str, Policy] = {}
+        self._trusted_contracts: Dict[str, TrustedTaskContract] = {}
+        if default_policy:
+            if getattr(default_policy, "policy_id", None):
+                self._trusted_policies[default_policy.policy_id] = default_policy
 
         env_mode = os.getenv("EPISTEMICOS_ENV", os.getenv("ENVIRONMENT", "development")).strip().lower()
         self.is_production = env_mode in ("production", "prod")
@@ -2853,6 +3147,20 @@ class AuthorizationAuthority:
             current_time=current_time
         )
 
+    def register_policy(self, policy: Policy) -> None:
+        if not isinstance(policy, Policy):
+            raise TypeError(f"register_policy expects Policy, got {type(policy).__name__}")
+        if not policy.policy_id or not str(policy.policy_id).strip():
+            raise ValueError("Policy must have a nonempty policy_id")
+        self._trusted_policies[policy.policy_id] = policy
+
+    def register_contract(self, contract: TrustedTaskContract) -> None:
+        if not isinstance(contract, TrustedTaskContract):
+            raise TypeError(f"register_contract expects TrustedTaskContract, got {type(contract).__name__}")
+        if not contract.task_id or not str(contract.task_id).strip():
+            raise ValueError("TrustedTaskContract must have a nonempty task_id")
+        self._trusted_contracts[contract.task_id] = contract
+
     def register_executor(self, executor_id: str, executor_func: Any) -> None:
         """Registers an authoritative callable identity in the authority executor registry atomically."""
         with self.executor_registry._lock:
@@ -2866,7 +3174,7 @@ class AuthorizationAuthority:
         action_name: str,
         target: str,
         canonical_request_digest: str,
-        principal_id: Union[str, AuthenticatedPrincipal] = "agent_default",
+        principal_id: Optional[Union[str, AuthenticatedPrincipal]] = None,
         correlation_id: Optional[str] = None,
         request_id: Optional[str] = None,
         executor_id: str = "default_executor",
@@ -2881,12 +3189,52 @@ class AuthorizationAuthority:
         Fails closed on missing policy, missing fields, explicit prohibitions, scope violations, or failed human approval.
         Atomic critical section across check_denial, policy evaluation, recording denial, and issuing capability.
         """
-        active_policy = policy or self.default_policy
+        # 1. Trusted Effective Policy Resolution
+        # Resolve policy strictly from authority state; caller-supplied policy objects cannot override trusted state.
+        if policy is not None:
+            raw_p_tenant = getattr(policy, "tenant_domain", None)
+            if raw_p_tenant is not None and (not isinstance(raw_p_tenant, str) or not raw_p_tenant.strip()):
+                return None, "AUTHORIZATION_DENIED_INVALID_POLICY_TENANT_DOMAIN"
+
+            if getattr(policy, "policy_id", None) in self._trusted_policies:
+                trusted_pol = self._trusted_policies[policy.policy_id]
+                if trusted_pol.tenant_domain != policy.tenant_domain or trusted_pol.version != policy.version:
+                    return None, "AUTHORIZATION_DENIED_POLICY_TENANT_MISMATCH"
+                active_policy = trusted_pol
+            elif self.default_policy is not None and getattr(policy, "policy_id", None) == self.default_policy.policy_id:
+                active_policy = self.default_policy
+            elif self._trusted_policies:
+                return None, "AUTHORIZATION_DENIED_UNREGISTERED_POLICY_OVERRIDE"
+            else:
+                active_policy = policy
+        else:
+            active_policy = self.default_policy
+
         if not active_policy:
             return None, "AUTHORIZATION_DENIED_NO_TRUSTED_POLICY"
 
+        raw_policy_tenant = getattr(active_policy, "tenant_domain", None)
+        if raw_policy_tenant is not None:
+            if not isinstance(raw_policy_tenant, str) or not raw_policy_tenant.strip():
+                return None, "AUTHORIZATION_DENIED_INVALID_POLICY_TENANT_DOMAIN"
+            effective_tenant = raw_policy_tenant
+        else:
+            raw_auth_tenant = getattr(self, "tenant_domain", None)
+            if raw_auth_tenant is not None:
+                if not isinstance(raw_auth_tenant, str) or not raw_auth_tenant.strip():
+                    return None, "AUTHORIZATION_DENIED_INVALID_AUTHORITY_TENANT_DOMAIN"
+                effective_tenant = raw_auth_tenant
+            else:
+                return None, "AUTHORIZATION_DENIED_MISSING_TENANT_DOMAIN"
+
+        # Validate that active_policy belongs to authority tenant if authority tenant is configured and caller attempted cross-tenant substitution
+        if policy is not None and self.tenant_domain and effective_tenant != self.tenant_domain:
+            return None, "AUTHORIZATION_DENIED_CROSS_TENANT_POLICY_REJECTED"
+
         # SEC-01: Authenticate principal assertion
-        if isinstance(principal_id, AuthenticatedPrincipal):
+        if principal_id is None:
+            return None, "AUTHORIZATION_DENIED_MISSING_PRINCIPAL_ID"
+        elif isinstance(principal_id, AuthenticatedPrincipal):
             if not self.principal_provider:
                 return None, "AUTHORIZATION_DENIED_NO_IDENTITY_PROVIDER_CONFIGURED: AuthenticatedPrincipal presented but authority has no trusted PrincipalProvider"
             valid, p_reason, pid = self.principal_provider.verify_principal(principal_id, current_time=current_time)
@@ -2895,20 +3243,44 @@ class AuthorizationAuthority:
             effective_principal = pid
         elif isinstance(principal_id, str):
             clean_str = principal_id.strip()
+            if not clean_str:
+                return None, "AUTHORIZATION_DENIED_EMPTY_PRINCIPAL_ID"
+            # Reject agent_default as an unauthenticated or otherwise untrusted identity bypass
+            if clean_str == "agent_default":
+                return None, "AUTHORIZATION_DENIED_UNAUTHENTICATED_AGENT_DEFAULT_REJECTED: 'agent_default' is not an authorized principal"
             # If policy restricts principals, an unauthenticated raw string CANNOT assert identity
             if active_policy.allowed_principals != {"*"}:
                 return None, f"AUTHORIZATION_DENIED_AUTHENTICATED_PRINCIPAL_REQUIRED: Claiming privileged principal '{principal_id}' requires AuthenticatedPrincipal"
-            effective_principal = clean_str if clean_str else "agent_default"
+            effective_principal = clean_str
         else:
             return None, "AUTHORIZATION_DENIED_INVALID_PRINCIPAL_TYPE"
 
-        # If authority requires a task contract and none is provided, fail closed
-        if self.require_task_contract and task_contract is None:
+        # 2. Trusted Contract Resolution
+        # If authority requires a task contract and none is provided or resolvable, fail closed
+        contract_lookup_id = task_id or (task_contract.task_id if isinstance(task_contract, TrustedTaskContract) else (task_contract.get("task_id") if isinstance(task_contract, dict) else None))
+
+        trusted_contract: Optional[TrustedTaskContract] = None
+        if contract_lookup_id and contract_lookup_id in self._trusted_contracts:
+            trusted_contract = self._trusted_contracts[contract_lookup_id]
+
+        if self.require_task_contract and task_contract is None and trusted_contract is None:
             return None, "AUTHORIZATION_DENIED_CONTRACT_REQUIRED"
 
-        # Parse task contract if provided as dict
         contract_obj: Optional[TrustedTaskContract] = None
-        if task_contract is not None:
+        if trusted_contract is not None:
+            if task_contract is not None:
+                # Caller-supplied contract object must match trusted registered contract exactly
+                caller_task_id = task_contract.task_id if isinstance(task_contract, TrustedTaskContract) else (task_contract.get("task_id") if isinstance(task_contract, dict) else None)
+                if caller_task_id != trusted_contract.task_id:
+                    return None, "AUTHORIZATION_DENIED_CONTRACT_IDENTITY_MISMATCH"
+                caller_cver = task_contract.contract_version if isinstance(task_contract, TrustedTaskContract) else (task_contract.get("contract_version") if isinstance(task_contract, dict) else None)
+                if caller_cver and caller_cver != trusted_contract.contract_version:
+                    return None, "AUTHORIZATION_DENIED_CONTRACT_VERSION_MISMATCH"
+            contract_obj = trusted_contract
+        elif task_contract is not None:
+            if self._trusted_contracts:
+                # Registered trusted contracts exist, but caller presented an unverified/unregistered contract
+                return None, "AUTHORIZATION_DENIED_UNREGISTERED_CONTRACT_OVERRIDE"
             if isinstance(task_contract, TrustedTaskContract):
                 contract_obj = task_contract
             elif isinstance(task_contract, dict):
@@ -2916,6 +3288,11 @@ class AuthorizationAuthority:
                     contract_obj = TrustedTaskContract.from_dict(task_contract)
                 except Exception:
                     return None, "AUTHORIZATION_DENIED_MALFORMED_TASK_CONTRACT"
+
+        # Validate contract tenant domain if contract has tenant_domain
+        if contract_obj and contract_obj.tenant_domain:
+            if contract_obj.tenant_domain != effective_tenant:
+                return None, "AUTHORIZATION_DENIED_CROSS_TENANT_CONTRACT_REJECTED"
 
         # Validate contract task_id vs task_id parameter if both provided
         effective_task_id = task_id or (contract_obj.task_id if contract_obj else None)
@@ -3016,12 +3393,15 @@ class AuthorizationAuthority:
             req_id = request_id or str(uuid.uuid4())
 
             # Check human approval requirement from policy OR task contract
-            requires_approval = active_policy.requires_human_approval(action_name) or (contract_obj.requires_human_approval(action_name) if contract_obj else False)
+            policy_req = active_policy.requires_human_approval(action_name)
+            contract_req = contract_obj.requires_human_approval(action_name) if contract_obj else False
+            requires_approval = policy_req or contract_req
             approval_record = None
             verified_approver_principal: Optional[str] = None
             approver_provenance_data: Optional[Dict[str, Any]] = None
 
             if requires_approval:
+                derived_basis = "HUMAN_APPROVED"
                 approval_record = HumanApprovalRecord.from_input(human_approval_input)
                 if not approval_record:
                     return None, "STOP_AND_ESCALATE_HUMAN_APPROVAL_REQUIRED"
@@ -3035,6 +3415,11 @@ class AuthorizationAuthority:
 
                 if approval_record.request_id != req_id:
                     return None, "AUTHORIZATION_DENIED_HUMAN_APPROVAL_REQUEST_ID_MISMATCH"
+
+                # Tenant domain consistency on approval record if present
+                if getattr(approval_record, "tenant_domain", None):
+                    if approval_record.tenant_domain != effective_tenant:
+                        return None, "AUTHORIZATION_DENIED_HUMAN_APPROVAL_CROSS_TENANT_MISMATCH"
 
                 # 2. Cryptographic Approval Record Integrity & Freshness (HMAC)
                 if not approval_record.signature:
@@ -3050,6 +3435,11 @@ class AuthorizationAuthority:
                 # 4. Immediate Self-Approval & Raw Approver Allowlist Check
                 if approval_record.approver_id == effective_principal or approval_record.approver_id == principal_id:
                     return None, "AUTHORIZATION_DENIED_HUMAN_APPROVAL_SELF_APPROVAL_REJECTED"
+
+                # Reject wildcard approver authorization unless an explicit trusted configuration enables it
+                is_wildcard_approver = active_policy.allowed_approvers is None or "*" in active_policy.allowed_approvers
+                if is_wildcard_approver and not self.allow_wildcard_approver:
+                    return None, "AUTHORIZATION_DENIED_HUMAN_APPROVAL_WILDCARD_APPROVER_RESTRICTED"
 
                 if active_policy.allowed_approvers is not None and "*" not in active_policy.allowed_approvers:
                     if approval_record.approver_id not in active_policy.allowed_approvers:
@@ -3081,7 +3471,6 @@ class AuthorizationAuthority:
                         return None, f"AUTHORIZATION_DENIED_HUMAN_APPROVAL_UNAUTHORIZED_APPROVER:{verified_approver_principal}"
 
                 # 7. Requesting Principal and Task Context Binding (Mandatory)
-                # Prevent self-approval (approver cannot be the requesting principal)
                 if verified_approver_principal == effective_principal:
                     return None, "AUTHORIZATION_DENIED_HUMAN_APPROVAL_SELF_APPROVAL_REJECTED"
 
@@ -3106,6 +3495,10 @@ class AuthorizationAuthority:
                     "verified_at": current_time if current_time is not None else time.time(),
                     "approval_id": approval_record.approval_id
                 }
+            else:
+                # Operation does NOT require approval.
+                # An unnecessary approval record must NOT automatically establish HUMAN_APPROVED.
+                derived_basis = "AUTONOMOUS"
 
             now = current_time if current_time is not None else time.time()
             token_id = f"AUTH-CAP-{uuid.uuid4()}"
@@ -3137,6 +3530,9 @@ class AuthorizationAuthority:
                 policy_version=active_policy.version,
                 created_at=now,
                 expires_at=expires_at,
+                tenant_domain=effective_tenant,
+                policy_id=active_policy.policy_id,
+                contract_id=contract_obj.task_id if contract_obj else None,
                 task_id=effective_task_id,
                 contract_version=contract_obj.contract_version if contract_obj else None,
                 contract_digest=contract_obj.compute_contract_digest() if contract_obj else None,
@@ -3144,7 +3540,9 @@ class AuthorizationAuthority:
                 human_approval=approval_record,
                 approver_principal=verified_approver_principal,
                 approver_provenance=approver_provenance_data,
-                scope_key=canonical_scope
+                authorization_basis=derived_basis,
+                scope_key=canonical_scope,
+                _trusted_issuance_token=_TRUSTED_AUTHORITY_ASSIGNMENT_TOKEN
             )
 
             # Atomic issuance: advances fencing generation and persists capability atomically
@@ -3196,8 +3594,7 @@ class AuthorizationAuthority:
             return False, "CAPABILITY_VERIFICATION_FAILED_EXPIRED_TOKEN", None
 
         # Verify cryptographic signature
-        expected_sig = self.registry.sign_capability(cap)
-        if not cap.signature or not hmac.compare_digest(cap.signature, expected_sig):
+        if not self.registry._verify_capability_signature(cap):
             return False, "CAPABILITY_VERIFICATION_FAILED_INVALID_SIGNATURE", None
 
         # Field binding verification
@@ -3385,8 +3782,7 @@ class AuthorizationAuthority:
             return False, f"HISTORICAL_VERIFICATION_FAILED_UNKNOWN_TOKEN: token {token_id} was never issued by authoritative registry", None, None
 
         # Verify cryptographic HMAC signature
-        expected_sig = self.registry.sign_capability(cap)
-        if not cap.signature or not hmac.compare_digest(cap.signature, expected_sig):
+        if not self.registry._verify_capability_signature(cap):
             return False, f"HISTORICAL_VERIFICATION_FAILED_INVALID_SIGNATURE: token {token_id} has invalid cryptographic signature", None, None
 
         # Field binding verification
@@ -3408,7 +3804,7 @@ class AuthorizationAuthority:
         if task_id is not None and cap.task_id and cap.task_id != task_id:
             return False, f"HISTORICAL_VERIFICATION_FAILED_TASK_ID_MISMATCH: granted '{cap.task_id}', event '{task_id}'", cap, None
 
-        if principal_id is not None and cap.principal_id != "agent_default" and cap.principal_id != principal_id:
+        if principal_id is not None and cap.principal_id != principal_id:
             return False, f"HISTORICAL_VERIFICATION_FAILED_PRINCIPAL_MISMATCH: granted '{cap.principal_id}', event '{principal_id}'", cap, None
 
         # Authoritative executor binding check against capability
@@ -3445,7 +3841,7 @@ class AuthorizationAuthority:
                 rec_meta = {}
 
             # Principal attribution verification:
-            if cap.principal_id and cap.principal_id != "agent_default":
+            if cap.principal_id:
                 rec_principal = rec_meta.get("principal_id")
                 if not rec_principal:
                     return False, f"HISTORICAL_VERIFICATION_FAILED_PRINCIPAL_MISSING: capability bound to principal '{cap.principal_id}', but dispatch record is missing principal_id attribution", cap, exec_record

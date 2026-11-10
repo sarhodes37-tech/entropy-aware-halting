@@ -563,11 +563,56 @@ class EpistemicOrchestrator:
                             allowed_ops.update(g.trusted_operations.keys())
 
                     if allowed_ops or allowed_res:
+                        auth_tenant = getattr(self.authority, "tenant_domain", None) if self.authority else None
+                        if not auth_tenant or not isinstance(auth_tenant, str) or not auth_tenant.strip():
+                            telemetry = profiler.get_telemetry()
+                            revoked_ids = self.vector_manager.revoke_trajectory(traj_id)
+                            actual_revoked_count = len(revoked_ids)
+                            reason_msg = "Authorization Policy Denied: AUTHORIZATION_DENIED_MISSING_TENANT_DOMAIN"
+                            gate_name = "AuthorizationAuthority"
+
+                            denied_event = ProvenanceEvent(
+                                schema_version="1.0.0",
+                                event_id=str(uuid.uuid4()),
+                                event_type=ProvenanceEventType.AUTHORIZATION_DENIED.value,
+                                provenance_source=ProvenanceSource.GOVERNANCE_GATE.value,
+                                correlation_id=corr_id,
+                                request_id=req_id,
+                                action_name=action_name,
+                                target=target,
+                                canonical_request_digest=payload_digest,
+                                timestamp=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                                decision="DENIED",
+                                policy_version="1.0.0"
+                            )
+                            try:
+                                store.record_event(denied_event)
+                            except Exception as cap_den_err:
+                                reason_msg = f"{reason_msg} (Provenance recording failed: {str(cap_den_err)})"
+                                gate_name = "LocalProvenanceStore"
+
+                            self._log_pipeline_event(
+                                event_type=AuditLogLevel.HALT,
+                                gate_name=gate_name,
+                                reason=f"{reason_msg} | Vectors Revoked: {actual_revoked_count}",
+                                masked_payload=masked_payload,
+                                cpr=cpr,
+                                telemetry=telemetry
+                            )
+                            return {
+                                "status": "HALTED",
+                                "execution_status": "DENIED",
+                                "gate": gate_name,
+                                "reason": reason_msg,
+                                "vectors_revoked": actual_revoked_count
+                            }
+
                         active_policy = Policy(
                             policy_id="server_trusted_scope",
                             allowed_operations=allowed_ops,
                             allowed_resources=allowed_res,
-                            required_human_approval_operations=req_human
+                            required_human_approval_operations=req_human,
+                            tenant_domain=auth_tenant.strip()
                         )
                     else:
                         active_policy = None
@@ -580,12 +625,9 @@ class EpistemicOrchestrator:
                 # SEC-01: Principal authentication at orchestrator boundary
                 auth_principal = context.get("authenticated_principal") or raw_payload.get("authenticated_principal")
                 if auth_principal is None:
-                    claimed_req_id = context.get("requestor_id") or raw_payload.get("requestor_id")
-                    if claimed_req_id and claimed_req_id != "agent_default":
-                        if active_policy and active_policy.allowed_principals != {"*"}:
-                            auth_principal = None
-                        else:
-                            auth_principal = claimed_req_id
+                    claimed_req_id = context.get("requestor_id") or raw_payload.get("requestor_id") or context.get("principal_id") or raw_payload.get("principal_id")
+                    if claimed_req_id:
+                        auth_principal = claimed_req_id
                     else:
                         auth_principal = "agent_default"
 
@@ -593,7 +635,7 @@ class EpistemicOrchestrator:
                     action_name=action_name,
                     target=target,
                     canonical_request_digest=payload_digest,
-                    principal_id=auth_principal or "agent_default",
+                    principal_id=auth_principal,
                     correlation_id=corr_id,
                     request_id=req_id,
                     executor_id=executor_id,

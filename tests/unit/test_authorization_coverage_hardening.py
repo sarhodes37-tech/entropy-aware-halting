@@ -25,6 +25,7 @@ from unittest.mock import patch, MagicMock
 
 import epistemicos.authorization as auth
 from epistemicos.authorization import (
+    _TRUSTED_AUTHORITY_ASSIGNMENT_TOKEN,
     HumanApprovalRecord,
     TrustedTaskContract,
     Policy,
@@ -66,6 +67,9 @@ def make_test_cap(
     fencing_token=1,
     scope_key=None,
     human_approval=None,
+    tenant_domain="test_tenant",
+    policy_id="test_policy",
+    registry=None,
 ):
     if created_at is None:
         created_at = time.time()
@@ -73,7 +77,7 @@ def make_test_cap(
         expires_at = created_at + 300.0
     if scope_key is None:
         scope_key = canonicalize_fencing_scope(task_id, target)
-    return Capability(
+    cap = Capability(
         token_id=token_id,
         principal_id=principal_id,
         correlation_id=correlation_id,
@@ -85,12 +89,18 @@ def make_test_cap(
         policy_version=policy_version,
         created_at=created_at,
         expires_at=expires_at,
+        tenant_domain=tenant_domain,
+        policy_id=policy_id,
         task_id=task_id,
         contract_version=contract_version,
         fencing_token=fencing_token,
         scope_key=scope_key,
         human_approval=human_approval,
     )
+    if registry is not None:
+        cap.signature = registry._sign_capability_internal(cap, _TRUSTED_AUTHORITY_ASSIGNMENT_TOKEN)
+        return cap
+    return cap
 
 
 class TestHumanApprovalAndContractInvariants:
@@ -927,6 +937,7 @@ class TestAuthorizationAuthorityIssuanceAndVerificationInvariants:
             allowed_operations={"read"},
             allowed_resources={"*"},
             allowed_principals={"trusted_service"},
+            tenant_domain="test_tenant"
         )
         authority = AuthorizationAuthority(default_policy=policy)
 
@@ -978,7 +989,7 @@ class TestAuthorizationAuthorityIssuanceAndVerificationInvariants:
     def test_authority_missing_identity_provider(self):
         authority = AuthorizationAuthority(
             default_policy=Policy(
-                policy_id="p1", allowed_operations={"read"}, allowed_resources={"*"}
+                policy_id="p1", allowed_operations={"read"}, allowed_resources={"*"}, tenant_domain="test_tenant"
             ),
             principal_provider=None,
         )
@@ -1007,6 +1018,7 @@ class TestAuthorizationAuthorityIssuanceAndVerificationInvariants:
             canonical_request_digest="req_digest_1",
             executor_id="exec-1",
             principal_id="privileged_agent",
+            registry=authority.registry
         )
         authority.registry.register_capability(dummy_cap)
 
@@ -1027,7 +1039,7 @@ class TestAuthorizationAuthorityIssuanceAndVerificationInvariants:
 
         authority = AuthorizationAuthority(
             default_policy=Policy(
-                policy_id="p1", allowed_operations={"read"}, allowed_resources={"*"}
+                policy_id="p1", allowed_operations={"read"}, allowed_resources={"*"}, tenant_domain="test_tenant"
             ),
             principal_provider=mock_provider,
         )
@@ -1056,6 +1068,7 @@ class TestAuthorizationAuthorityIssuanceAndVerificationInvariants:
             canonical_request_digest="req_digest_1",
             executor_id="exec-1",
             principal_id="privileged_agent",
+            registry=authority.registry
         )
         authority.registry.register_capability(reg_cap)
 
@@ -1073,7 +1086,7 @@ class TestAuthorizationAuthorityIssuanceAndVerificationInvariants:
     def test_authority_invalid_principal_types(self):
         authority = AuthorizationAuthority(
             default_policy=Policy(
-                policy_id="p1", allowed_operations={"read"}, allowed_resources={"*"}
+                policy_id="p1", allowed_operations={"read"}, allowed_resources={"*"}, tenant_domain="test_tenant"
             ),
         )
         cap, reason = authority.evaluate_and_issue_capability(
@@ -1090,7 +1103,7 @@ class TestAuthorizationAuthorityIssuanceAndVerificationInvariants:
     def test_authority_malformed_task_contract_dict(self):
         authority = AuthorizationAuthority(
             default_policy=Policy(
-                policy_id="p1", allowed_operations={"read"}, allowed_resources={"*"}
+                policy_id="p1", allowed_operations={"read"}, allowed_resources={"*"}, tenant_domain="test_tenant"
             ),
         )
         cap, reason = authority.evaluate_and_issue_capability(
@@ -1108,7 +1121,7 @@ class TestAuthorizationAuthorityIssuanceAndVerificationInvariants:
     def test_authority_expired_task_contract(self):
         authority = AuthorizationAuthority(
             default_policy=Policy(
-                policy_id="p1", allowed_operations={"read"}, allowed_resources={"*"}
+                policy_id="p1", allowed_operations={"read"}, allowed_resources={"*"}, tenant_domain="test_tenant"
             ),
         )
         contract = TrustedTaskContract(
@@ -1137,6 +1150,7 @@ class TestAuthorizationAuthorityIssuanceAndVerificationInvariants:
         authority = AuthorizationAuthority(
             default_policy=Policy(
                 policy_id="p1",
+                tenant_domain="test_tenant",
                 allowed_operations={"read"},
                 allowed_resources={"*"},
                 allowed_executors={"exec_allowed"},
@@ -1160,9 +1174,11 @@ class TestAuthorizationAuthorityIssuanceAndVerificationInvariants:
         authority = AuthorizationAuthority(
             default_policy=Policy(
                 policy_id="p1",
+                tenant_domain="test_tenant",
                 allowed_operations={"drop_table"},
                 allowed_resources={"*"},
                 required_human_approval_operations={"drop_table"},
+                allowed_approvers={"sec-admin"},
             ),
             approval_signing_secret=secret,
             principal_provider=verifier,
@@ -1172,6 +1188,7 @@ class TestAuthorizationAuthorityIssuanceAndVerificationInvariants:
             permitted_actions={"drop_table"},
             resource_scope={"*"},
             approval_requirements=["drop_table"],
+            tenant_domain="test_tenant"
         )
         contract.sign(authority.contract_signing_secret)
 
@@ -1187,6 +1204,7 @@ class TestAuthorizationAuthorityIssuanceAndVerificationInvariants:
             requesting_principal="agent1",
             policy_version="1.0.0",
             approver_assertion=assertion,
+            tenant_domain="test_tenant"
         )
         approval_record.sign(secret)
 
@@ -1236,7 +1254,7 @@ class TestAuthorizationAuthorityIssuanceAndVerificationInvariants:
     def test_authority_verification_contract_version_and_future_token(self):
         authority = AuthorizationAuthority(
             default_policy=Policy(
-                policy_id="p1", allowed_operations={"read"}, allowed_resources={"*"}
+                policy_id="p1", allowed_operations={"read"}, allowed_resources={"*"}, tenant_domain="test_tenant"
             ),
         )
 
@@ -1250,8 +1268,9 @@ class TestAuthorizationAuthorityIssuanceAndVerificationInvariants:
             principal_id="agent1",
             contract_version="1.0.0",
             fencing_token=1,
+            registry=authority.registry
         )
-        authority.registry.storage.allocate_fencing_token(cap_baseline.scope_key)
+        authority.registry._storage.allocate_fencing_token(cap_baseline.scope_key)
         authority.registry.register_capability(cap_baseline)
 
         ok_base, r_base, c_base = authority.verify_capability(
@@ -1290,8 +1309,8 @@ class TestAuthorizationAuthorityIssuanceAndVerificationInvariants:
             contract_version="1.0.0",
             fencing_token=10,
         )
-        cap_future.signature = authority.registry.sign_capability(cap_future)
-        authority.registry.storage._capabilities[cap_future.token_id] = cap_future
+        cap_future.signature = authority.registry._sign_capability_internal(cap_future, _TRUSTED_AUTHORITY_ASSIGNMENT_TOKEN)
+        authority.registry._storage._capabilities[cap_future.token_id] = cap_future
 
         ok_fut, reason_fut, c_fut = authority.verify_capability(
             token_id="tok-ver-future",
@@ -1308,7 +1327,7 @@ class TestAuthorizationAuthorityIssuanceAndVerificationInvariants:
     def test_authority_delattr_immutability(self):
         authority = AuthorizationAuthority(
             default_policy=Policy(
-                policy_id="p1", allowed_operations={"read"}, allowed_resources={"*"}
+                policy_id="p1", allowed_operations={"read"}, allowed_resources={"*"}, tenant_domain="test_tenant"
             ),
         )
         with pytest.raises(PermissionError, match="cannot be deleted"):
