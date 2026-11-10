@@ -1214,11 +1214,21 @@ def test_trusted_task_contract_timestamp_validation_and_bounds():
     assert restored.task_id == "t1"
     assert restored.created_at == -(1 << 63)
 
-    # from_dict rejects invalid timestamp
+    # from_dict rejects invalid timestamp and invalid task_id types
     c_dict_bad = c_dict.copy()
     c_dict_bad["created_at"] = "invalid"
     with pytest.raises(TypeError):
         TrustedTaskContract.from_dict(c_dict_bad)
+
+    c_dict_bad_id = c_dict.copy()
+    c_dict_bad_id["task_id"] = None
+    with pytest.raises(ValueError, match="task_id must be a non-empty string"):
+        TrustedTaskContract.from_dict(c_dict_bad_id)
+
+    c_dict_bad_id_num = c_dict.copy()
+    c_dict_bad_id_num["task_id"] = 123
+    with pytest.raises(ValueError, match="task_id must be a non-empty string"):
+        TrustedTaskContract.from_dict(c_dict_bad_id_num)
 
 
 def test_trusted_task_contract_is_expired_fail_closed():

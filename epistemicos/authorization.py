@@ -572,7 +572,7 @@ class TrustedTaskContract:
     @classmethod
     def from_dict(cls, val: Dict[str, Any]) -> "TrustedTaskContract":
         return cls(
-            task_id=str(val["task_id"]),
+            task_id=val["task_id"],
             contract_version=str(val.get("contract_version", "1.0.0")),
             permitted_actions=set(val.get("permitted_actions", [])),
             resource_scope=set(val.get("resource_scope", [])),
