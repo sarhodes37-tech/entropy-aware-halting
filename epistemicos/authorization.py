@@ -417,7 +417,38 @@ class TrustedTaskContract:
     issuer_id: str = "TrustedTaskContractAuthority"
     signature: Optional[str] = None
 
+    def __post_init__(self):
+        if not self.task_id or not isinstance(self.task_id, str) or not self.task_id.strip():
+            raise ValueError("TrustedTaskContract: task_id must be a non-empty string")
+        self._validate_timestamp_fields()
+
+    def _validate_timestamp_fields(self) -> None:
+        """Strictly validates created_at and expires_at against type ambiguity and overflow."""
+        if isinstance(self.created_at, bool) or not isinstance(self.created_at, (int, float)):
+            raise TypeError(f"TrustedTaskContract: created_at must be a numeric timestamp, got {type(self.created_at).__name__}")
+        if isinstance(self.created_at, int):
+            if not (MIN_TIMESTAMP_BOUND <= self.created_at <= MAX_TIMESTAMP_BOUND):
+                raise ValueError("TrustedTaskContract: created_at integer overflows signed 64-bit limits")
+        else:
+            if not math.isfinite(self.created_at):
+                raise ValueError(f"TrustedTaskContract: created_at must be a finite number, got {self.created_at}")
+            if not (MIN_TIMESTAMP_BOUND <= self.created_at <= MAX_TIMESTAMP_BOUND):
+                raise ValueError("TrustedTaskContract: created_at float overflows signed 64-bit limits")
+
+        if self.expires_at is not None:
+            if isinstance(self.expires_at, bool) or not isinstance(self.expires_at, (int, float)):
+                raise TypeError(f"TrustedTaskContract: expires_at must be a numeric timestamp, got {type(self.expires_at).__name__}")
+            if isinstance(self.expires_at, int):
+                if not (MIN_TIMESTAMP_BOUND <= self.expires_at <= MAX_TIMESTAMP_BOUND):
+                    raise ValueError("TrustedTaskContract: expires_at integer overflows signed 64-bit limits")
+            else:
+                if not math.isfinite(self.expires_at):
+                    raise ValueError(f"TrustedTaskContract: expires_at must be a finite number, got {self.expires_at}")
+                if not (MIN_TIMESTAMP_BOUND <= self.expires_at <= MAX_TIMESTAMP_BOUND):
+                    raise ValueError("TrustedTaskContract: expires_at float overflows signed 64-bit limits")
+
     def compute_contract_digest(self) -> str:
+        self._validate_timestamp_fields()
         data = {
             "task_id": self.task_id,
             "contract_version": self.contract_version,
@@ -456,15 +487,42 @@ class TrustedTaskContract:
         if self.is_expired(current_time=current_time):
             return False
 
-        digest = self.compute_contract_digest()
+        try:
+            digest = self.compute_contract_digest()
+        except (TypeError, ValueError):
+            return False
         expected_sig = hmac.new(signing_secret, digest.encode("utf-8"), hashlib.sha256).hexdigest()
         return hmac.compare_digest(self.signature.lower(), expected_sig.lower())
 
     def is_expired(self, current_time: Optional[float] = None) -> bool:
         if self.expires_at is None:
             return False
-        now = current_time if current_time is not None else time.time()
-        return now >= self.expires_at
+
+        if isinstance(self.expires_at, bool) or not isinstance(self.expires_at, (int, float)):
+            return True
+        if isinstance(self.expires_at, int):
+            if not (MIN_TIMESTAMP_BOUND <= self.expires_at <= MAX_TIMESTAMP_BOUND):
+                return True
+            exp_val: Union[int, float] = self.expires_at
+        else:
+            if not math.isfinite(self.expires_at) or not (MIN_TIMESTAMP_BOUND <= self.expires_at <= MAX_TIMESTAMP_BOUND):
+                return True
+            exp_val = self.expires_at
+
+        if current_time is not None:
+            if isinstance(current_time, bool) or not isinstance(current_time, (int, float)):
+                return True
+            if isinstance(current_time, int):
+                if not (MIN_TIMESTAMP_BOUND <= current_time <= MAX_TIMESTAMP_BOUND):
+                    return True
+                now: Union[int, float] = current_time
+            else:
+                if not math.isfinite(current_time) or not (MIN_TIMESTAMP_BOUND <= current_time <= MAX_TIMESTAMP_BOUND):
+                    return True
+                now = current_time
+        else:
+            now = time.time()
+        return now >= exp_val
 
     def is_action_prohibited(self, action_name: str, target: str) -> bool:
         """
@@ -514,7 +572,7 @@ class TrustedTaskContract:
     @classmethod
     def from_dict(cls, val: Dict[str, Any]) -> "TrustedTaskContract":
         return cls(
-            task_id=str(val["task_id"]),
+            task_id=val["task_id"],
             contract_version=str(val.get("contract_version", "1.0.0")),
             permitted_actions=set(val.get("permitted_actions", [])),
             resource_scope=set(val.get("resource_scope", [])),
@@ -522,8 +580,8 @@ class TrustedTaskContract:
             prohibited_resources=set(val.get("prohibited_resources", [])),
             approval_requirements=set(val.get("approval_requirements", [])),
             success_evidence_requirements=set(val.get("success_evidence_requirements", [])),
-            created_at=float(val.get("created_at", time.time())),
-            expires_at=float(val["expires_at"]) if val.get("expires_at") is not None else None,
+            created_at=val.get("created_at", time.time()),
+            expires_at=val.get("expires_at"),
             issuer_id=str(val.get("issuer_id", "TrustedTaskContractAuthority")),
             signature=val.get("signature")
         )
