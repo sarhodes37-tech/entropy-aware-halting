@@ -588,8 +588,6 @@ class TrustedTaskContract:
             created_at=float(val.get("created_at", time.time())),
             expires_at=float(val["expires_at"]) if val.get("expires_at") is not None else None,
             tenant_domain=str(val["tenant_domain"]) if val.get("tenant_domain") is not None else None,
-            created_at=val.get("created_at", time.time()),
-            expires_at=val.get("expires_at"),
             issuer_id=str(val.get("issuer_id", "TrustedTaskContractAuthority")),
             signature=val.get("signature")
         )
@@ -2078,6 +2076,7 @@ class Capability:
         _validate_capability_nonempty_str(self.policy_version, "policy_version")
         _validate_capability_expiry(self.expires_at)
         _validate_capability_optional_contract_id(self.contract_id)
+        self._validate_timestamp_fields()
         if self.authorization_basis is not None:
             if _trusted_issuance_token is not _TRUSTED_AUTHORITY_ASSIGNMENT_TOKEN:
                 raise ValueError(
@@ -2181,9 +2180,6 @@ class Capability:
 
         d["_trusted_issuance_token"] = _TRUSTED_AUTHORITY_ASSIGNMENT_TOKEN
         return cls(**d)
-
-    def __post_init__(self):
-        self._validate_timestamp_fields()
 
     def _validate_timestamp_fields(self) -> None:
         """Strictly validates created_at and expires_at against type ambiguity, finiteness, and overflow."""
