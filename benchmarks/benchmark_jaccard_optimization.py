@@ -117,22 +117,36 @@ def run_benchmarks():
     base_times = []
     opt_times = []
 
-    for _ in range(n_trials):
-        # Baseline
-        t0 = time.perf_counter()
-        for _ in range(n_loops):
-            for s_a, s_b in pairs:
-                baseline_jaccard(s_a, s_b)
-        t_base = time.perf_counter() - t0
-        base_times.append(t_base)
+    for trial_idx in range(n_trials):
+        # Alternating execution order (A/B vs B/A) to eliminate warm-up and order bias
+        if trial_idx % 2 == 0:
+            t0 = time.perf_counter()
+            for _ in range(n_loops):
+                for s_a, s_b in pairs:
+                    baseline_jaccard(s_a, s_b)
+            t_base = time.perf_counter() - t0
+            base_times.append(t_base)
 
-        # Optimized
-        t0 = time.perf_counter()
-        for _ in range(n_loops):
-            for s_a, s_b in pairs:
-                optimized_jaccard(s_a, s_b)
-        t_opt = time.perf_counter() - t0
-        opt_times.append(t_opt)
+            t0 = time.perf_counter()
+            for _ in range(n_loops):
+                for s_a, s_b in pairs:
+                    optimized_jaccard(s_a, s_b)
+            t_opt = time.perf_counter() - t0
+            opt_times.append(t_opt)
+        else:
+            t0 = time.perf_counter()
+            for _ in range(n_loops):
+                for s_a, s_b in pairs:
+                    optimized_jaccard(s_a, s_b)
+            t_opt = time.perf_counter() - t0
+            opt_times.append(t_opt)
+
+            t0 = time.perf_counter()
+            for _ in range(n_loops):
+                for s_a, s_b in pairs:
+                    baseline_jaccard(s_a, s_b)
+            t_base = time.perf_counter() - t0
+            base_times.append(t_base)
 
     base_med = statistics.median(base_times)
     opt_med = statistics.median(opt_times)
@@ -167,20 +181,36 @@ def run_benchmarks():
     opt_res_times = []
     res_loops = 200
 
-    for _ in range(n_trials):
-        t0 = time.perf_counter()
-        for _ in range(res_loops):
-            for i, j in cand_pairs:
-                resolve_with_features_baseline(candidates[i], candidates[j], feats[i], feats[j])
-        t_base = time.perf_counter() - t0
-        base_res_times.append(t_base)
+    for trial_idx in range(n_trials):
+        # Alternating execution order (A/B vs B/A) to eliminate warm-up and order bias
+        if trial_idx % 2 == 0:
+            t0 = time.perf_counter()
+            for _ in range(res_loops):
+                for i, j in cand_pairs:
+                    resolve_with_features_baseline(candidates[i], candidates[j], feats[i], feats[j])
+            t_base = time.perf_counter() - t0
+            base_res_times.append(t_base)
 
-        t0 = time.perf_counter()
-        for _ in range(res_loops):
-            for i, j in cand_pairs:
-                resolver._resolve_with_features(candidates[i], candidates[j], feats[i], feats[j])
-        t_opt = time.perf_counter() - t0
-        opt_res_times.append(t_opt)
+            t0 = time.perf_counter()
+            for _ in range(res_loops):
+                for i, j in cand_pairs:
+                    resolver._resolve_with_features(candidates[i], candidates[j], feats[i], feats[j])
+            t_opt = time.perf_counter() - t0
+            opt_res_times.append(t_opt)
+        else:
+            t0 = time.perf_counter()
+            for _ in range(res_loops):
+                for i, j in cand_pairs:
+                    resolver._resolve_with_features(candidates[i], candidates[j], feats[i], feats[j])
+            t_opt = time.perf_counter() - t0
+            opt_res_times.append(t_opt)
+
+            t0 = time.perf_counter()
+            for _ in range(res_loops):
+                for i, j in cand_pairs:
+                    resolve_with_features_baseline(candidates[i], candidates[j], feats[i], feats[j])
+            t_base = time.perf_counter() - t0
+            base_res_times.append(t_base)
 
     base_res_med = statistics.median(base_res_times)
     opt_res_med = statistics.median(opt_res_times)
