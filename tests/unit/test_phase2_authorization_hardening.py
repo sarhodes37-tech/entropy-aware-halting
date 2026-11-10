@@ -716,3 +716,69 @@ def test_cross_process_concurrent_consumption_race(tmp_path):
     assert len(successes) == 1
     assert len(failures) == 1
     assert "ALREADY_CONSUMED" in failures[0]
+
+
+def test_capability_timestamp_validation_and_fail_closed_expiration():
+    """
+    Validates that Capability enforces strict numeric validation within signed 64-bit bounds
+    on created_at and expires_at during initialization, and fails closed during is_expired().
+    """
+    base_kwargs = {
+        "token_id": "tok-hardening-1",
+        "principal_id": "principal_1",
+        "correlation_id": "corr_1",
+        "request_id": "req_1",
+        "action_name": "op",
+        "target": "/resource",
+        "canonical_request_digest": "digest_123",
+        "executor_id": "default_executor",
+        "policy_version": "1.0.0",
+        "created_at": 1000.0,
+        "expires_at": 2000.0,
+    }
+
+    # 1. Normal construction and valid expiration evaluation
+    cap = Capability(**base_kwargs)
+    assert cap.is_expired(current_time=1500.0) is False
+    assert cap.is_expired(current_time=2000.0) is True
+    assert cap.is_expired(current_time=2500.0) is True
+
+    # 2. Reject non-numeric and boolean types during construction
+    for bad_ts in (True, False, "1000.0", None, [], {}):
+        with pytest.raises(TypeError, match="must be a numeric timestamp"):
+            Capability(**{**base_kwargs, "created_at": bad_ts})
+        with pytest.raises(TypeError, match="must be a numeric timestamp"):
+            Capability(**{**base_kwargs, "expires_at": bad_ts})
+
+    # 3. Reject non-finite floats during construction
+    for bad_float in (float("nan"), float("inf"), float("-inf")):
+        with pytest.raises(ValueError, match="must be a finite number"):
+            Capability(**{**base_kwargs, "created_at": bad_float})
+        with pytest.raises(ValueError, match="must be a finite number"):
+            Capability(**{**base_kwargs, "expires_at": bad_float})
+
+    # 4. Reject signed 64-bit out-of-range integers and floats
+    out_of_bounds_ints = [-(1 << 63) - 1, 1 << 63, 10**100]
+    for bad_int in out_of_bounds_ints:
+        with pytest.raises(ValueError, match="integer overflows signed 64-bit limits"):
+            Capability(**{**base_kwargs, "created_at": bad_int})
+        with pytest.raises(ValueError, match="integer overflows signed 64-bit limits"):
+            Capability(**{**base_kwargs, "expires_at": bad_int})
+
+    out_of_bounds_floats = [float(-(1 << 63) - 2000), float(1 << 63), 1e100]
+    for bad_flt in out_of_bounds_floats:
+        with pytest.raises(ValueError, match="float overflows signed 64-bit limits"):
+            Capability(**{**base_kwargs, "created_at": bad_flt})
+        with pytest.raises(ValueError, match="float overflows signed 64-bit limits"):
+            Capability(**{**base_kwargs, "expires_at": bad_flt})
+
+    # 5. Fail-closed expiration evaluation when expires_at is mutated post-construction
+    test_cap = Capability(**base_kwargs)
+    for bad_val in (float("nan"), float("inf"), float("-inf"), True, False, "invalid", 1 << 63, -(1 << 63) - 1):
+        test_cap.expires_at = bad_val
+        assert test_cap.is_expired(current_time=1500.0) is True
+
+    # 6. Fail-closed expiration evaluation on invalid current_time clock overrides
+    valid_cap = Capability(**base_kwargs)
+    for bad_clock in (float("nan"), float("inf"), float("-inf"), True, False, "1500.0", 1 << 63, -(1 << 63) - 1, float(1 << 63)):
+        assert valid_cap.is_expired(current_time=bad_clock) is True
