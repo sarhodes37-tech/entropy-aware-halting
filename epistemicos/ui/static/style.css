@@ -797,8 +797,9 @@ h2 {
 /* Dedicated Evidence Inspector Area */
 .evidence-inspector-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.85fr);
   gap: 1.25rem;
+  align-items: start;
 }
 
 /* -------------------------------------------------------------------------
@@ -963,6 +964,33 @@ h2 {
   font-size: 0.8rem;
   word-break: break-all;
   overflow-wrap: anywhere;
+}
+
+/* Technical Identifier & Hash Presentation Strategy */
+.tech-id,
+.tech-hash {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 0.775rem;
+  line-height: 1.4;
+  padding: 0.15rem 0.45rem;
+  border-radius: var(--radius-sm);
+  background-color: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  word-break: break-all;
+  overflow-wrap: anywhere;
+  letter-spacing: -0.01em;
+  transition: border-color var(--transition-fast), background-color var(--transition-fast);
+}
+
+.tech-id:hover,
+.tech-hash:hover {
+  background-color: rgba(255, 255, 255, 0.07);
+  border-color: rgba(0, 240, 255, 0.3);
+}
+
+.tech-hash {
+  color: var(--accent-secondary);
 }
 
 .evidence-field-copy-btn {
@@ -2541,10 +2569,19 @@ button:focus-visible {
   .trace-overview-grid {
     grid-template-columns: 1fr;
   }
+
+  .evidence-inspector-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 640px) {
   .ops-dimensions-grid {
     grid-template-columns: 1fr;
+  }
+
+  .evidence-field-row {
+    grid-template-columns: 1fr;
+    gap: 0.25rem;
   }
 }

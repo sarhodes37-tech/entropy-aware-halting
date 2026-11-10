@@ -1826,8 +1826,16 @@ document.addEventListener('DOMContentLoaded', () => {
         lblToken.className = 'trace-key-label';
         lblToken.textContent = 'Token ID';
         const valToken = document.createElement('span');
-        valToken.className = 'trace-key-value mono';
-        valToken.textContent = ae.authorization_token_id || 'UNISSUED';
+        valToken.className = 'trace-key-value';
+        if (ae.authorization_token_id) {
+          const tokenChip = document.createElement('span');
+          tokenChip.className = 'tech-id';
+          tokenChip.textContent = ae.authorization_token_id;
+          valToken.appendChild(tokenChip);
+        } else {
+          valToken.classList.add('mono');
+          valToken.textContent = 'UNISSUED';
+        }
         rowToken.appendChild(lblToken);
         rowToken.appendChild(valToken);
         authList.appendChild(rowToken);
@@ -1839,8 +1847,16 @@ document.addEventListener('DOMContentLoaded', () => {
         lblDigest.className = 'trace-key-label';
         lblDigest.textContent = 'Payload Digest';
         const valDigest = document.createElement('span');
-        valDigest.className = 'trace-key-value mono';
-        valDigest.textContent = ae.canonical_request_digest || 'UNRECORDED';
+        valDigest.className = 'trace-key-value';
+        if (ae.canonical_request_digest) {
+          const digestChip = document.createElement('span');
+          digestChip.className = 'tech-hash';
+          digestChip.textContent = ae.canonical_request_digest;
+          valDigest.appendChild(digestChip);
+        } else {
+          valDigest.classList.add('mono');
+          valDigest.textContent = 'UNRECORDED';
+        }
         rowDigest.appendChild(lblDigest);
         rowDigest.appendChild(valDigest);
         authList.appendChild(rowDigest);
@@ -2131,15 +2147,15 @@ document.addEventListener('DOMContentLoaded', () => {
           { label: 'Provenance Source', value: selectedEv.provenance_source },
           { label: 'Sequence Number', value: selectedEv.sequence_number, mono: true },
           { label: 'Timestamp', value: selectedEv.timestamp, mono: true },
-          { label: 'Correlation ID', value: selectedEv.correlation_id, mono: true, copyable: true },
-          { label: 'Request ID', value: selectedEv.request_id, mono: true, copyable: true },
+          { label: 'Correlation ID', value: selectedEv.correlation_id, techId: true, copyable: true },
+          { label: 'Request ID', value: selectedEv.request_id, techId: true, copyable: true },
           { label: 'Action Name', value: selectedEv.action_name },
           { label: 'Target Resource', value: selectedEv.target },
-          { label: 'Capability Token ID', value: selectedEv.authorization_token_id, mono: true, copyable: true },
-          { label: 'Canonical Request Digest', value: selectedEv.canonical_request_digest, mono: true, copyable: true },
+          { label: 'Capability Token ID', value: selectedEv.authorization_token_id, techId: true, copyable: true },
+          { label: 'Canonical Request Digest', value: selectedEv.canonical_request_digest, techHash: true, copyable: true },
           { label: 'Policy Version', value: selectedEv.policy_version, mono: true },
-          { label: 'Previous Entry Hash', value: selectedEv.prev_hash, mono: true, copyable: true },
-          { label: 'Entry Cryptographic Hash', value: selectedEv.entry_hash, mono: true, copyable: true }
+          { label: 'Previous Entry Hash', value: selectedEv.prev_hash, techHash: true, copyable: true },
+          { label: 'Entry Cryptographic Hash', value: selectedEv.entry_hash, techHash: true, copyable: true }
         ];
 
         fieldList.forEach(item => {
@@ -2157,9 +2173,15 @@ document.addEventListener('DOMContentLoaded', () => {
           const valSpan = document.createElement('span');
           if (item.value !== null && item.value !== undefined && item.value !== '') {
             valSpan.textContent = String(item.value);
-            valSpan.className = 'evidence-field-value';
-            if (item.mono) valSpan.classList.add('font-mono');
-            if (item.bold) valSpan.classList.add('font-bold');
+            if (item.techHash) {
+              valSpan.className = 'tech-hash';
+            } else if (item.techId) {
+              valSpan.className = 'tech-id';
+            } else {
+              valSpan.className = 'evidence-field-value';
+              if (item.mono) valSpan.classList.add('font-mono');
+              if (item.bold) valSpan.classList.add('font-bold');
+            }
             contentDiv.appendChild(valSpan);
 
             if (item.copyable) {
