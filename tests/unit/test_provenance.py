@@ -9,7 +9,8 @@ import hashlib
 import pytest
 import threading
 from dataclasses import asdict
-from epistemicos.authorization import Policy, Capability
+import time
+from epistemicos.authorization import Policy, Capability, AuthorizationAuthority
 from epistemicos.provenance import (
     _sanitize_sensitive_data,
     ExecutionContext,
@@ -988,6 +989,197 @@ def test_execute_protected_action_with_execution_context_keyword(tmp_path):
     events = store.get_events_for_correlation(corr_id)
     assert len(events) == 2
     assert events[0].authorization_token_id == cap.token_id
+
+
+def test_reconciler_rejects_standalone_execution_succeeded():
+    """Regression test: Standalone EXECUTION_SUCCEEDED must be rejected."""
+    authority = AuthorizationAuthority()
+    reconciler = ProvenanceReconciler(authority=authority)
+
+    orphan_event = ProvenanceEvent(
+        schema_version="1.0.0",
+        event_id=str(uuid.uuid4()),
+        event_type=ProvenanceEventType.EXECUTION_SUCCEEDED.value,
+        provenance_source=ProvenanceSource.EXECUTOR.value,
+        correlation_id="corr-orphan",
+        request_id="req-orphan",
+        action_name="query",
+        target="db",
+        canonical_request_digest="d1",
+        timestamp="2026-01-01T00:00:02Z",
+        authorization_token_id="tok-fake",
+        execution_attempt_id="att-1"
+    )
+
+    report = reconciler.reconcile_correlation("corr-orphan", [orphan_event])
+    assert report.valid is False
+    assert report.status == "RECONCILIATION_MISMATCH"
+    assert any("preceding authorization grant" in v for v in report.violations)
+    assert any("preceding execution started" in v for v in report.violations)
+
+
+def test_reconciler_rejects_execution_succeeded_following_denial():
+    """Regression test: Terminal event following AUTHORIZATION_DENIED must be rejected."""
+    authority = AuthorizationAuthority()
+    reconciler = ProvenanceReconciler(authority=authority)
+
+    denied_event = ProvenanceEvent(
+        schema_version="1.0.0",
+        event_id=str(uuid.uuid4()),
+        event_type=ProvenanceEventType.AUTHORIZATION_DENIED.value,
+        provenance_source=ProvenanceSource.GOVERNANCE_GATE.value,
+        correlation_id="corr-denied",
+        request_id="req-1",
+        action_name="delete",
+        target="db",
+        canonical_request_digest="d1",
+        timestamp="2026-01-01T00:00:00Z",
+        decision="DENIED"
+    )
+    succ_event = ProvenanceEvent(
+        schema_version="1.0.0",
+        event_id=str(uuid.uuid4()),
+        event_type=ProvenanceEventType.EXECUTION_SUCCEEDED.value,
+        provenance_source=ProvenanceSource.EXECUTOR.value,
+        correlation_id="corr-denied",
+        request_id="req-1",
+        action_name="delete",
+        target="db",
+        canonical_request_digest="d1",
+        timestamp="2026-01-01T00:00:02Z",
+        authorization_token_id="tok-fake",
+        execution_attempt_id="att-1"
+    )
+
+    report = reconciler.reconcile_correlation("corr-denied", [denied_event, succ_event])
+    assert report.valid is False
+    assert report.status == "RECONCILIATION_MISMATCH"
+    assert any("authorization-denied" in v for v in report.violations)
+
+
+def test_reconciler_rejects_execution_succeeded_without_execution_start():
+    """Regression test: AUTHORIZATION_GRANTED + EXECUTION_SUCCEEDED without EXECUTION_STARTED must fail."""
+    policy = Policy(policy_id="p1", allowed_operations={"read"}, allowed_resources={"db"})
+    authority = AuthorizationAuthority(default_policy=policy)
+    reconciler = ProvenanceReconciler(authority=authority)
+
+    cap, _ = authority.evaluate_and_issue_capability(
+        action_name="read",
+        target="db",
+        canonical_request_digest="d1",
+        correlation_id="corr-no-start",
+        request_id="req-1"
+    )
+
+    grant_event = ProvenanceEvent(
+        schema_version="1.0.0",
+        event_id=str(uuid.uuid4()),
+        event_type=ProvenanceEventType.AUTHORIZATION_GRANTED.value,
+        provenance_source=ProvenanceSource.GOVERNANCE_GATE.value,
+        correlation_id="corr-no-start",
+        request_id="req-1",
+        action_name="read",
+        target="db",
+        canonical_request_digest="d1",
+        timestamp="2026-01-01T00:00:00Z",
+        authorization_token_id=cap.token_id,
+        decision="ALLOW"
+    )
+    succ_event = ProvenanceEvent(
+        schema_version="1.0.0",
+        event_id=str(uuid.uuid4()),
+        event_type=ProvenanceEventType.EXECUTION_SUCCEEDED.value,
+        provenance_source=ProvenanceSource.EXECUTOR.value,
+        correlation_id="corr-no-start",
+        request_id="req-1",
+        action_name="read",
+        target="db",
+        canonical_request_digest="d1",
+        timestamp="2026-01-01T00:00:02Z",
+        authorization_token_id=cap.token_id,
+        execution_attempt_id="att-1"
+    )
+
+    report = reconciler.reconcile_correlation("corr-no-start", [grant_event, succ_event])
+    assert report.valid is False
+    assert report.status == "RECONCILIATION_MISMATCH"
+    assert any("preceding execution started" in v for v in report.violations)
+
+
+def test_reconciler_rejects_reordered_execution_succeeded_before_start():
+    """Regression test: Stream order violation where SUCCEEDED precedes STARTED must be rejected."""
+    policy = Policy(policy_id="p1", allowed_operations={"read"}, allowed_resources={"db"})
+    authority = AuthorizationAuthority(default_policy=policy)
+    reconciler = ProvenanceReconciler(authority=authority)
+
+    cap, _ = authority.evaluate_and_issue_capability(
+        action_name="read",
+        target="db",
+        canonical_request_digest="d1",
+        correlation_id="corr-reorder",
+        request_id="req-1"
+    )
+
+    authority.registry.consume_token_and_record_dispatch(
+        token_id=cap.token_id,
+        attempt_id="att-1",
+        dispatched_executor_id="default_executor",
+        started_at=time.time()
+    )
+    authority.registry.record_execution_outcome(
+        token_id=cap.token_id,
+        attempt_id="att-1",
+        outcome_status="SUCCESS",
+        terminal_ts=time.time()
+    )
+
+    grant_event = ProvenanceEvent(
+        schema_version="1.0.0",
+        event_id=str(uuid.uuid4()),
+        event_type=ProvenanceEventType.AUTHORIZATION_GRANTED.value,
+        provenance_source=ProvenanceSource.GOVERNANCE_GATE.value,
+        correlation_id="corr-reorder",
+        request_id="req-1",
+        action_name="read",
+        target="db",
+        canonical_request_digest="d1",
+        timestamp="2026-01-01T00:00:00Z",
+        authorization_token_id=cap.token_id,
+        decision="ALLOW"
+    )
+    succ_event = ProvenanceEvent(
+        schema_version="1.0.0",
+        event_id=str(uuid.uuid4()),
+        event_type=ProvenanceEventType.EXECUTION_SUCCEEDED.value,
+        provenance_source=ProvenanceSource.EXECUTOR.value,
+        correlation_id="corr-reorder",
+        request_id="req-1",
+        action_name="read",
+        target="db",
+        canonical_request_digest="d1",
+        timestamp="2026-01-01T00:00:01Z",
+        authorization_token_id=cap.token_id,
+        execution_attempt_id="att-1"
+    )
+    start_event = ProvenanceEvent(
+        schema_version="1.0.0",
+        event_id=str(uuid.uuid4()),
+        event_type=ProvenanceEventType.EXECUTION_STARTED.value,
+        provenance_source=ProvenanceSource.EXECUTOR.value,
+        correlation_id="corr-reorder",
+        request_id="req-1",
+        action_name="read",
+        target="db",
+        canonical_request_digest="d1",
+        timestamp="2026-01-01T00:00:02Z",
+        authorization_token_id=cap.token_id,
+        execution_attempt_id="att-1"
+    )
+
+    report = reconciler.reconcile_correlation("corr-reorder", [grant_event, succ_event, start_event])
+    assert report.valid is False
+    assert report.status == "RECONCILIATION_MISMATCH"
+    assert any("precedes EXECUTION_STARTED" in v for v in report.violations)
 
 
 def test_local_provenance_store_hmac_key_validation(tmp_path):

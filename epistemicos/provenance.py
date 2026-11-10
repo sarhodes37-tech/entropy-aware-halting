@@ -1043,6 +1043,44 @@ class ProvenanceReconciler:
         if auth_denied and exec_started:
             violations.append("Execution started for action that was authorization-denied")
 
+        terminal_events = exec_succeeded + exec_failed + exec_interrupted
+
+        # Rule 2b: Terminal execution events without preceding authorization grant
+        if terminal_events and not auth_granted:
+            violations.append("Terminal execution event present without preceding authorization grant")
+
+        # Rule 2c: Terminal execution events following authorization denial
+        if auth_denied and terminal_events:
+            violations.append("Terminal execution event recorded for action that was authorization-denied")
+
+        # Rule 2d: Terminal execution events without preceding execution started record
+        if terminal_events and not exec_started:
+            violations.append("Terminal execution event present without preceding execution started record")
+
+        # Rule 2e: Match terminal execution attempts against recorded execution starts and enforce stream ordering
+        started_attempt_ids = {s.execution_attempt_id for s in exec_started if s.execution_attempt_id}
+        started_indices = {
+            s.execution_attempt_id: idx
+            for idx, s in enumerate(events)
+            if s.event_type == ProvenanceEventType.EXECUTION_STARTED.value and s.execution_attempt_id
+        }
+
+        for idx, t in enumerate(events):
+            if t.event_type in (
+                ProvenanceEventType.EXECUTION_SUCCEEDED.value,
+                ProvenanceEventType.EXECUTION_FAILED.value,
+                ProvenanceEventType.EXECUTION_INTERRUPTED.value
+            ):
+                att = t.execution_attempt_id
+                if not att or att not in started_attempt_ids:
+                    violations.append(
+                        f"Terminal event {t.event_type} (attempt {att}) does not match any recorded EXECUTION_STARTED attempt"
+                    )
+                elif started_indices.get(att) is not None and idx < started_indices[att]:
+                    violations.append(
+                        f"Lifecycle order violation: Terminal event {t.event_type} precedes EXECUTION_STARTED in event stream"
+                    )
+
         # Rule 3 & Rule 4: Match execution events against specific authorization decision by token_id / request_id
         for s in exec_started:
             tok = s.authorization_token_id
