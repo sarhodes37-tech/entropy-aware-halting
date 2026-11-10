@@ -451,7 +451,10 @@ def validate_evidence_artifact(
             if not isinstance(per_case_records, list) or len(per_case_records) == 0:
                 errors.append("Layer D Validator Integrity Error: Per-case run records file is empty or malformed")
             else:
-                combined_records = [r for r in per_case_records if isinstance(r, dict) and r.get("baseline") == "Combined Gating"]
+                combined_records = [
+                    r for r in per_case_records
+                    if isinstance(r, dict) and (r.get("baseline_condition") == "Combined Gating" or r.get("baseline") == "Combined Gating")
+                ]
                 if sample_count > 0 and len(combined_records) != sample_count:
                     errors.append(f"Layer D Integrity Mismatch: Run-level Combined Gating record count ({len(combined_records)}) does not match reported sample size ({sample_count})")
                 else:

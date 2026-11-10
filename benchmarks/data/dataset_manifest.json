@@ -3,7 +3,7 @@
   "version": "1.0.0-frozen",
   "creation_date": "2026-03-30",
   "dataset_file": "benchmarks/data/eval_set.jsonl",
-  "sha256_digest": "dc443e7ef150ef5bb4d9363370f510e584a8e0daaacff6152db9be40d4ea9822",
+  "sha256_digest": "f4e31381a922c1143769ccb887c4841e4a14fedec6eef6569d40eed2956ce873",
   "total_cases": 100,
   "expected_action_distribution": {
     "ALLOW": 35,

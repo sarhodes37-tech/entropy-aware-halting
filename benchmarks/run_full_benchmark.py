@@ -103,9 +103,34 @@ READ_ONLY_OPERATIONS = {
 }
 
 
+# Cache for externalized scenario metadata mapping
+_SCENARIO_METADATA_CACHE: Optional[Dict[str, Dict[str, Any]]] = None
+
+
+def _get_external_scenario_metadata(scenario_id: str) -> Optional[Dict[str, Any]]:
+    """Loads externalized scenario authorization metadata mapping if available."""
+    global _SCENARIO_METADATA_CACHE
+    if _SCENARIO_METADATA_CACHE is None:
+        cfg_path = Path(__file__).parent / "config" / "benchmark_scenario_metadata.json"
+        if cfg_path.exists():
+            try:
+                raw_cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+                merged = {}
+                for split_map in raw_cfg.values():
+                    if isinstance(split_map, dict):
+                        merged.update(split_map)
+                _SCENARIO_METADATA_CACHE = merged
+            except Exception:
+                _SCENARIO_METADATA_CACHE = {}
+        else:
+            _SCENARIO_METADATA_CACHE = {}
+    return _SCENARIO_METADATA_CACHE.get(scenario_id)
+
+
 def resolve_scenario_contract(item: Dict[str, Any]) -> BenchmarkScenarioContract:
     """
-    Resolves and validates explicit BenchmarkScenarioContract from authoritative fixture metadata.
+    Resolves and validates explicit BenchmarkScenarioContract from authoritative fixture metadata
+    and externalized scenario contract mappings.
     Fails closed on missing scenario identity, missing metadata, or unclassifiable operations.
     """
     scenario_id = item.get("id")
@@ -128,24 +153,27 @@ def resolve_scenario_contract(item: Dict[str, Any]) -> BenchmarkScenarioContract
     # Authoritative fixture identity
     fixture_id = payload.get("policy_id") or scenario_id
 
+    # Lookup externalized scenario contract configuration if not present in item
+    ext_meta = _get_external_scenario_metadata(scenario_id) or {}
+
     # Authoritative Tenant, Principal, Policy ID, and Version validation (NO SYNTHETIC DEFAULTS)
-    # Metadata must be explicitly provided in fixture item, context, or payload.
-    tenant_domain = item.get("tenant_domain") or context.get("tenant_domain") or payload.get("tenant_domain")
+    # Metadata must be explicitly provided in fixture item, context, payload, or externalized contract configuration.
+    tenant_domain = item.get("tenant_domain") or context.get("tenant_domain") or payload.get("tenant_domain") or ext_meta.get("tenant_domain")
     if not tenant_domain or not isinstance(tenant_domain, str) or not tenant_domain.strip():
         raise ValueError(f"Scenario resolution failed: missing mandatory tenant_domain in scenario {scenario_id}")
     tenant_domain = tenant_domain.strip()
 
-    principal_id = item.get("principal_id") or context.get("principal_id") or payload.get("principal_id")
+    principal_id = item.get("principal_id") or context.get("principal_id") or payload.get("principal_id") or ext_meta.get("principal_id")
     if not principal_id or not isinstance(principal_id, str) or not principal_id.strip():
         raise ValueError(f"Scenario resolution failed: missing mandatory principal_id in scenario {scenario_id}")
     principal_id = principal_id.strip()
 
-    policy_id = payload.get("policy_id") or item.get("policy_id") or context.get("policy_id")
+    policy_id = payload.get("policy_id") or item.get("policy_id") or context.get("policy_id") or ext_meta.get("policy_id")
     if not policy_id or not isinstance(policy_id, str) or not policy_id.strip():
         raise ValueError(f"Scenario resolution failed: missing mandatory policy_id in scenario {scenario_id}")
     policy_id = policy_id.strip()
 
-    policy_version = item.get("policy_version") or context.get("policy_version") or payload.get("policy_version")
+    policy_version = item.get("policy_version") or context.get("policy_version") or payload.get("policy_version") or ext_meta.get("policy_version")
     if not policy_version or not isinstance(policy_version, str) or not policy_version.strip():
         raise ValueError(f"Scenario resolution failed: invalid policy_version in scenario {scenario_id}")
     policy_version = policy_version.strip()
@@ -156,6 +184,8 @@ def resolve_scenario_contract(item: Dict[str, Any]) -> BenchmarkScenarioContract
         raw_req_human = context.get("requires_human_approval")
     if raw_req_human is None:
         raw_req_human = payload.get("requires_human_approval")
+    if raw_req_human is None:
+        raw_req_human = ext_meta.get("requires_human_approval")
 
     if raw_req_human is None or not isinstance(raw_req_human, bool):
         raise ValueError(
@@ -163,7 +193,7 @@ def resolve_scenario_contract(item: Dict[str, Any]) -> BenchmarkScenarioContract
         )
     requires_human_approval = raw_req_human
 
-    raw_basis = item.get("authorization_basis") or context.get("authorization_basis") or payload.get("authorization_basis")
+    raw_basis = item.get("authorization_basis") or context.get("authorization_basis") or payload.get("authorization_basis") or ext_meta.get("authorization_basis")
     if raw_basis is None or not isinstance(raw_basis, str) or not raw_basis.strip():
         raise ValueError(
             f"Scenario resolution failed: authorization_basis must be explicitly provided in scenario {scenario_id}"

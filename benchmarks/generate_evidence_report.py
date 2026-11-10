@@ -172,7 +172,10 @@ def evaluate_layer_d_evidence(
     if per_case_records is None or not isinstance(per_case_records, list) or len(per_case_records) == 0:
         violations.append("Mandatory run-level per-case records are missing, empty, or malformed")
     else:
-        combined_records = [r for r in per_case_records if isinstance(r, dict) and r.get("baseline") == "Combined Gating"]
+        combined_records = [
+            r for r in per_case_records
+            if isinstance(r, dict) and (r.get("baseline_condition") == "Combined Gating" or r.get("baseline") == "Combined Gating")
+        ]
         if eval_sample_count is not None and len(combined_records) != eval_sample_count:
             violations.append(f"Run-level Combined Gating record count ({len(combined_records)}) does not match expected sample size ({eval_sample_count})")
         else:

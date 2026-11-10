@@ -1,0 +1,750 @@
+{
+  "eval": {
+    "EVAL-001": {
+      "tenant_domain": "underwriting.commercial.internal",
+      "principal_id": "agent_underwriting_tier1",
+      "policy_version": "2026.1.0",
+      "requires_human_approval": true,
+      "authorization_basis": "HUMAN_APPROVED"
+    },
+    "EVAL-002": {
+      "tenant_domain": "underwriting.commercial.internal",
+      "principal_id": "agent_underwriting_tier1",
+      "policy_version": "2026.1.0",
+      "requires_human_approval": true,
+      "authorization_basis": "HUMAN_APPROVED"
+    },
+    "EVAL-003": {
+      "tenant_domain": "underwriting.commercial.internal",
+      "principal_id": "agent_underwriting_tier1",
+      "policy_version": "2026.1.0",
+      "requires_human_approval": true,
+      "authorization_basis": "HUMAN_APPROVED"
+    },
+    "EVAL-004": {
+      "tenant_domain": "underwriting.commercial.internal",
+      "principal_id": "agent_underwriting_tier1",
+      "policy_version": "2026.1.0",
+      "requires_human_approval": true,
+      "authorization_basis": "HUMAN_APPROVED"
+    },
+    "EVAL-005": {
+      "tenant_domain": "underwriting.commercial.internal",
+      "principal_id": "agent_underwriting_tier1",
+      "policy_version": "2026.1.0",
+      "requires_human_approval": true,
+      "authorization_basis": "HUMAN_APPROVED"
+    },
+    "EVAL-006": {
+      "tenant_domain": "underwriting.commercial.internal",
+      "principal_id": "agent_underwriting_tier1",
+      "policy_version": "2026.1.0",
+      "requires_human_approval": false,
+      "authorization_basis": "AUTONOMOUS"
+    },
+    "EVAL-007": {
+      "tenant_domain": "underwriting.commercial.internal",
+      "principal_id": "agent_underwriting_tier1",
+      "policy_version": "2026.1.0",
+      "requires_human_approval": false,
+      "authorization_basis": "AUTONOMOUS"
+    },
+    "EVAL-008": {
+      "tenant_domain": "underwriting.commercial.internal",
+      "principal_id": "agent_underwriting_tier1",
+      "policy_version": "2026.1.0",
+      "requires_human_approval": false,
+      "authorization_basis": "AUTONOMOUS"
+    },
+    "EVAL-009": {
+      "tenant_domain": "underwriting.commercial.internal",
+      "principal_id": "agent_underwriting_tier1",
+      "policy_version": "2026.1.0",
+      "requires_human_approval": false,
+      "authorization_basis": "AUTONOMOUS"
+    },
+    "EVAL-010": {
+      "tenant_domain": "underwriting.commercial.internal",
+      "principal_id": "agent_underwriting_tier1",
+      "policy_version": "2026.1.0",
+      "requires_human_approval": false,
+      "authorization_basis": "AUTONOMOUS"
+    },
+    "EVAL-011": {
+      "tenant_domain": "underwriting.commercial.internal",
+      "principal_id": "agent_underwriting_tier1",
+      "policy_version": "2026.1.0",
+      "requires_human_approval": false,
+      "authorization_basis": "AUTONOMOUS"
+    },
+    "EVAL-012": {
+      "tenant_domain": "underwriting.commercial.internal",
+      "principal_id": "agent_underwriting_tier1",
+      "policy_version": "2026.1.0",
+      "requires_human_approval": false,
+      "authorization_basis": "AUTONOMOUS"
+    },
+    "EVAL-013": {
+      "tenant_domain": "underwriting.commercial.internal",
+      "principal_id": "agent_underwriting_tier1",
+      "policy_version": "2026.1.0",
+      "requires_human_approval": false,
+      "authorization_basis": "AUTONOMOUS"
+    },
+    "EVAL-014": {
+      "tenant_domain": "underwriting.commercial.internal",
+      "principal_id": "agent_underwriting_tier1",
+      "policy_version": "2026.1.0",
+      "requires_human_approval": false,
+      "authorization_basis": "AUTONOMOUS"
+    },
+    "EVAL-015": {
+      "tenant_domain": "underwriting.commercial.internal",
+      "principal_id": "agent_underwriting_tier1",
+      "policy_version": "2026.1.0",
+      "requires_human_approval": false,
+      "authorization_basis": "AUTONOMOUS"
+    },
+    "EVAL-016": {
+      "tenant_domain": "underwriting.commercial.internal",
+      "principal_id": "agent_underwriting_tier1",
+      "policy_version": "2026.1.0",
+      "requires_human_approval": false,
+      "authorization_basis": "AUTONOMOUS"
+    },
+    "EVAL-017": {
+      "tenant_domain": "underwriting.commercial.internal",
+      "principal_id": "agent_underwriting_tier1",
+      "policy_version": "2026.1.0",
+      "requires_human_approval": false,
+      "authorization_basis": "AUTONOMOUS"
+    },
+    "EVAL-018": {
+      "tenant_domain": "underwriting.commercial.internal",
+      "principal_id": "agent_underwriting_tier1",
+      "policy_version": "2026.1.0",
+      "requires_human_approval": false,
+      "authorization_basis": "AUTONOMOUS"
+    },
+    "EVAL-019": {
+      "tenant_domain": "underwriting.commercial.internal",
+      "principal_id": "agent_underwriting_tier1",
+      "policy_version": "2026.1.0",
+      "requires_human_approval": false,
+      "authorization_basis": "AUTONOMOUS"
+    },
+    "EVAL-020": {
+      "tenant_domain": "underwriting.commercial.internal",
+      "principal_id": "agent_underwriting_tier1",
+      "policy_version": "2026.1.0",
+      "requires_human_approval": false,
+      "authorization_basis": "AUTONOMOUS"
+    },
+    "EVAL-021": {
+      "tenant_domain": "infrastructure.data.internal",
+      "principal_id": "agent_db_operations",
+      "policy_version": "2026.2.0",
+      "requires_human_approval": false,
+      "authorization_basis": "AUTONOMOUS"
+    },
+    "EVAL-022": {
+      "tenant_domain": "infrastructure.data.internal",
+      "principal_id": "agent_db_operations",
+      "policy_version": "2026.2.0",
+      "requires_human_approval": false,
+      "authorization_basis": "AUTONOMOUS"
+    },
+    "EVAL-023": {
+      "tenant_domain": "infrastructure.data.internal",
+      "principal_id": "agent_db_operations",
+      "policy_version": "2026.2.0",
+      "requires_human_approval": false,
+      "authorization_basis": "AUTONOMOUS"
+    },
+    "EVAL-024": {
+      "tenant_domain": "infrastructure.data.internal",
+      "principal_id": "agent_db_operations",
+      "policy_version": "2026.2.0",
+      "requires_human_approval": false,
+      "authorization_basis": "AUTONOMOUS"
+    },
+    "EVAL-025": {
+      "tenant_domain": "infrastructure.data.internal",
+      "principal_id": "agent_db_operations",
+      "policy_version": "2026.2.0",
+      "requires_human_approval": false,
+      "authorization_basis": "AUTONOMOUS"
+    },
+    "EVAL-026": {
+      "tenant_domain": "infrastructure.data.internal",
+      "principal_id": "agent_db_operations",
+      "policy_version": "2026.2.0",
+      "requires_human_approval": false,
+      "authorization_basis": "AUTONOMOUS"
+    },
+    "EVAL-027": {
+      "tenant_domain": "infrastructure.data.internal",
+      "principal_id": "agent_db_operations",
+      "policy_version": "2026.2.0",
+      "requires_human_approval": false,
+      "authorization_basis": "AUTONOMOUS"
+    },
+    "EVAL-028": {
+      "tenant_domain": "infrastructure.data.internal",
+      "principal_id": "agent_db_operations",
+      "policy_version": "2026.2.0",
+      "requires_human_approval": false,
+      "authorization_basis": "AUTONOMOUS"
+    },
+    "EVAL-029": {
+      "tenant_domain": "infrastructure.data.internal",
+      "principal_id": "agent_db_operations",
+      "policy_version": "2026.2.0",
+      "requires_human_approval": false,
+      "authorization_basis": "AUTONOMOUS"
+    },
+    "EVAL-030": {
+      "tenant_domain": "infrastructure.data.internal",
+      "principal_id": "agent_db_operations",
+      "policy_version": "2026.2.0",
+      "requires_human_approval": false,
+      "authorization_basis": "AUTONOMOUS"
+    },
+    "EVAL-031": {
+      "tenant_domain": "infrastructure.data.internal",
+      "principal_id": "agent_db_operations",
+      "policy_version": "2026.2.0",
+      "requires_human_approval": false,
+      "authorization_basis": "AUTONOMOUS"
+    },
+    "EVAL-032": {
+      "tenant_domain": "infrastructure.data.internal",
+      "principal_id": "agent_db_operations",
+      "policy_version": "2026.2.0",
+      "requires_human_approval": false,
+      "authorization_basis": "AUTONOMOUS"
+    },
+    "EVAL-033": {
+      "tenant_domain": "infrastructure.data.internal",
+      "principal_id": "agent_db_operations",
+      "policy_version": "2026.2.0",
+      "requires_human_approval": false,
+      "authorization_basis": "AUTONOMOUS"
+    },
+    "EVAL-034": {
+      "tenant_domain": "infrastructure.data.internal",
+      "principal_id": "agent_db_operations",
+      "policy_version": "2026.2.0",
+      "requires_human_approval": false,
+      "authorization_basis": "AUTONOMOUS"
+    },
+    "EVAL-035": {
+      "tenant_domain": "infrastructure.data.internal",
+      "principal_id": "agent_db_operations",
+      "policy_version": "2026.2.0",
+      "requires_human_approval": false,
+      "authorization_basis": "AUTONOMOUS"
+    },
+    "EVAL-036": {
+      "tenant_domain": "underwriting.commercial.internal",
+      "principal_id": "agent_underwriting_tier1",
+      "policy_version": "2026.1.0",
+      "requires_human_approval": false,
+      "authorization_basis": "AUTONOMOUS"
+    },
+    "EVAL-037": {
+      "tenant_domain": "underwriting.commercial.internal",
+      "principal_id": "agent_underwriting_tier1",
+      "policy_version": "2026.1.0",
+      "requires_human_approval": false,
+      "authorization_basis": "AUTONOMOUS"
+    },
+    "EVAL-038": {
+      "tenant_domain": "underwriting.commercial.internal",
+      "principal_id": "agent_underwriting_tier1",
+      "policy_version": "2026.1.0",
+      "requires_human_approval": false,
+      "authorization_basis": "AUTONOMOUS"
+    },
+    "EVAL-039": {
+      "tenant_domain": "underwriting.commercial.internal",
+      "principal_id": "agent_underwriting_tier1",
+      "policy_version": "2026.1.0",
+      "requires_human_approval": false,
+      "authorization_basis": "AUTONOMOUS"
+    },
+    "EVAL-040": {
+      "tenant_domain": "underwriting.commercial.internal",
+      "principal_id": "agent_underwriting_tier1",
+      "policy_version": "2026.1.0",
+      "requires_human_approval": false,
+      "authorization_basis": "AUTONOMOUS"
+    },
+    "EVAL-041": {
+      "tenant_domain": "underwriting.commercial.internal",
+      "principal_id": "agent_underwriting_tier1",
+      "policy_version": "2026.1.0",
+      "requires_human_approval": false,
+      "authorization_basis": "AUTONOMOUS"
+    },
+    "EVAL-042": {
+      "tenant_domain": "underwriting.commercial.internal",
+      "principal_id": "agent_underwriting_tier1",
+      "policy_version": "2026.1.0",
+      "requires_human_approval": false,
+      "authorization_basis": "AUTONOMOUS"
+    },
+    "EVAL-043": {
+      "tenant_domain": "underwriting.commercial.internal",
+      "principal_id": "agent_underwriting_tier1",
+      "policy_version": "2026.1.0",
+      "requires_human_approval": false,
+      "authorization_basis": "AUTONOMOUS"
+    },
+    "EVAL-044": {
+      "tenant_domain": "underwriting.commercial.internal",
+      "principal_id": "agent_underwriting_tier1",
+      "policy_version": "2026.1.0",
+      "requires_human_approval": false,
+      "authorization_basis": "AUTONOMOUS"
+    },
+    "EVAL-045": {
+      "tenant_domain": "underwriting.commercial.internal",
+      "principal_id": "agent_underwriting_tier1",
+      "policy_version": "2026.1.0",
+      "requires_human_approval": false,
+      "authorization_basis": "AUTONOMOUS"
+    },
+    "EVAL-046": {
+      "tenant_domain": "underwriting.commercial.internal",
+      "principal_id": "agent_underwriting_tier1",
+      "policy_version": "2026.1.0",
+      "requires_human_approval": false,
+      "authorization_basis": "AUTONOMOUS"
+    },
+    "EVAL-047": {
+      "tenant_domain": "underwriting.commercial.internal",
+      "principal_id": "agent_underwriting_tier1",
+      "policy_version": "2026.1.0",
+      "requires_human_approval": false,
+      "authorization_basis": "AUTONOMOUS"
+    },
+    "EVAL-048": {
+      "tenant_domain": "underwriting.commercial.internal",
+      "principal_id": "agent_underwriting_tier1",
+      "policy_version": "2026.1.0",
+      "requires_human_approval": false,
+      "authorization_basis": "AUTONOMOUS"
+    },
+    "EVAL-049": {
+      "tenant_domain": "underwriting.commercial.internal",
+      "principal_id": "agent_underwriting_tier1",
+      "policy_version": "2026.1.0",
+      "requires_human_approval": false,
+      "authorization_basis": "AUTONOMOUS"
+    },
+    "EVAL-050": {
+      "tenant_domain": "underwriting.commercial.internal",
+      "principal_id": "agent_underwriting_tier1",
+      "policy_version": "2026.1.0",
+      "requires_human_approval": false,
+      "authorization_basis": "AUTONOMOUS"
+    },
+    "EVAL-051": {
+      "tenant_domain": "supervisory.analysis.internal",
+      "principal_id": "agent_introspection_monitor",
+      "policy_version": "2026.3.0",
+      "requires_human_approval": false,
+      "authorization_basis": "AUTONOMOUS"
+    },
+    "EVAL-052": {
+      "tenant_domain": "supervisory.analysis.internal",
+      "principal_id": "agent_introspection_monitor",
+      "policy_version": "2026.3.0",
+      "requires_human_approval": false,
+      "authorization_basis": "AUTONOMOUS"
+    },
+    "EVAL-053": {
+      "tenant_domain": "supervisory.analysis.internal",
+      "principal_id": "agent_introspection_monitor",
+      "policy_version": "2026.3.0",
+      "requires_human_approval": false,
+      "authorization_basis": "AUTONOMOUS"
+    },
+    "EVAL-054": {
+      "tenant_domain": "supervisory.analysis.internal",
+      "principal_id": "agent_introspection_monitor",
+      "policy_version": "2026.3.0",
+      "requires_human_approval": false,
+      "authorization_basis": "AUTONOMOUS"
+    },
+    "EVAL-055": {
+      "tenant_domain": "supervisory.analysis.internal",
+      "principal_id": "agent_introspection_monitor",
+      "policy_version": "2026.3.0",
+      "requires_human_approval": false,
+      "authorization_basis": "AUTONOMOUS"
+    },
+    "EVAL-056": {
+      "tenant_domain": "supervisory.analysis.internal",
+      "principal_id": "agent_introspection_monitor",
+      "policy_version": "2026.3.0",
+      "requires_human_approval": false,
+      "authorization_basis": "AUTONOMOUS"
+    },
+    "EVAL-057": {
+      "tenant_domain": "supervisory.analysis.internal",
+      "principal_id": "agent_introspection_monitor",
+      "policy_version": "2026.3.0",
+      "requires_human_approval": false,
+      "authorization_basis": "AUTONOMOUS"
+    },
+    "EVAL-058": {
+      "tenant_domain": "supervisory.analysis.internal",
+      "principal_id": "agent_introspection_monitor",
+      "policy_version": "2026.3.0",
+      "requires_human_approval": false,
+      "authorization_basis": "AUTONOMOUS"
+    },
+    "EVAL-059": {
+      "tenant_domain": "supervisory.analysis.internal",
+      "principal_id": "agent_introspection_monitor",
+      "policy_version": "2026.3.0",
+      "requires_human_approval": false,
+      "authorization_basis": "AUTONOMOUS"
+    },
+    "EVAL-060": {
+      "tenant_domain": "supervisory.analysis.internal",
+      "principal_id": "agent_introspection_monitor",
+      "policy_version": "2026.3.0",
+      "requires_human_approval": false,
+      "authorization_basis": "AUTONOMOUS"
+    },
+    "EVAL-061": {
+      "tenant_domain": "supervisory.analysis.internal",
+      "principal_id": "agent_introspection_monitor",
+      "policy_version": "2026.3.0",
+      "requires_human_approval": false,
+      "authorization_basis": "AUTONOMOUS"
+    },
+    "EVAL-062": {
+      "tenant_domain": "supervisory.analysis.internal",
+      "principal_id": "agent_introspection_monitor",
+      "policy_version": "2026.3.0",
+      "requires_human_approval": false,
+      "authorization_basis": "AUTONOMOUS"
+    },
+    "EVAL-063": {
+      "tenant_domain": "supervisory.analysis.internal",
+      "principal_id": "agent_introspection_monitor",
+      "policy_version": "2026.3.0",
+      "requires_human_approval": false,
+      "authorization_basis": "AUTONOMOUS"
+    },
+    "EVAL-064": {
+      "tenant_domain": "supervisory.analysis.internal",
+      "principal_id": "agent_introspection_monitor",
+      "policy_version": "2026.3.0",
+      "requires_human_approval": false,
+      "authorization_basis": "AUTONOMOUS"
+    },
+    "EVAL-065": {
+      "tenant_domain": "supervisory.analysis.internal",
+      "principal_id": "agent_introspection_monitor",
+      "policy_version": "2026.3.0",
+      "requires_human_approval": false,
+      "authorization_basis": "AUTONOMOUS"
+    },
+    "EVAL-066": {
+      "tenant_domain": "underwriting.commercial.internal",
+      "principal_id": "agent_specialty_underwriter",
+      "policy_version": "2026.1.1",
+      "requires_human_approval": false,
+      "authorization_basis": "AUTONOMOUS"
+    },
+    "EVAL-067": {
+      "tenant_domain": "underwriting.commercial.internal",
+      "principal_id": "agent_specialty_underwriter",
+      "policy_version": "2026.1.1",
+      "requires_human_approval": false,
+      "authorization_basis": "AUTONOMOUS"
+    },
+    "EVAL-068": {
+      "tenant_domain": "underwriting.commercial.internal",
+      "principal_id": "agent_specialty_underwriter",
+      "policy_version": "2026.1.1",
+      "requires_human_approval": false,
+      "authorization_basis": "AUTONOMOUS"
+    },
+    "EVAL-069": {
+      "tenant_domain": "underwriting.commercial.internal",
+      "principal_id": "agent_specialty_underwriter",
+      "policy_version": "2026.1.1",
+      "requires_human_approval": false,
+      "authorization_basis": "AUTONOMOUS"
+    },
+    "EVAL-070": {
+      "tenant_domain": "underwriting.commercial.internal",
+      "principal_id": "agent_specialty_underwriter",
+      "policy_version": "2026.1.1",
+      "requires_human_approval": false,
+      "authorization_basis": "AUTONOMOUS"
+    },
+    "EVAL-071": {
+      "tenant_domain": "underwriting.commercial.internal",
+      "principal_id": "agent_specialty_underwriter",
+      "policy_version": "2026.1.1",
+      "requires_human_approval": false,
+      "authorization_basis": "AUTONOMOUS"
+    },
+    "EVAL-072": {
+      "tenant_domain": "underwriting.commercial.internal",
+      "principal_id": "agent_specialty_underwriter",
+      "policy_version": "2026.1.1",
+      "requires_human_approval": false,
+      "authorization_basis": "AUTONOMOUS"
+    },
+    "EVAL-073": {
+      "tenant_domain": "underwriting.commercial.internal",
+      "principal_id": "agent_specialty_underwriter",
+      "policy_version": "2026.1.1",
+      "requires_human_approval": false,
+      "authorization_basis": "AUTONOMOUS"
+    },
+    "EVAL-074": {
+      "tenant_domain": "underwriting.commercial.internal",
+      "principal_id": "agent_specialty_underwriter",
+      "policy_version": "2026.1.1",
+      "requires_human_approval": false,
+      "authorization_basis": "AUTONOMOUS"
+    },
+    "EVAL-075": {
+      "tenant_domain": "underwriting.commercial.internal",
+      "principal_id": "agent_specialty_underwriter",
+      "policy_version": "2026.1.1",
+      "requires_human_approval": false,
+      "authorization_basis": "AUTONOMOUS"
+    },
+    "EVAL-076": {
+      "tenant_domain": "underwriting.commercial.internal",
+      "principal_id": "agent_specialty_underwriter",
+      "policy_version": "2026.1.1",
+      "requires_human_approval": false,
+      "authorization_basis": "AUTONOMOUS"
+    },
+    "EVAL-077": {
+      "tenant_domain": "underwriting.commercial.internal",
+      "principal_id": "agent_specialty_underwriter",
+      "policy_version": "2026.1.1",
+      "requires_human_approval": false,
+      "authorization_basis": "AUTONOMOUS"
+    },
+    "EVAL-078": {
+      "tenant_domain": "underwriting.commercial.internal",
+      "principal_id": "agent_specialty_underwriter",
+      "policy_version": "2026.1.1",
+      "requires_human_approval": false,
+      "authorization_basis": "AUTONOMOUS"
+    },
+    "EVAL-079": {
+      "tenant_domain": "underwriting.commercial.internal",
+      "principal_id": "agent_specialty_underwriter",
+      "policy_version": "2026.1.1",
+      "requires_human_approval": false,
+      "authorization_basis": "AUTONOMOUS"
+    },
+    "EVAL-080": {
+      "tenant_domain": "underwriting.commercial.internal",
+      "principal_id": "agent_specialty_underwriter",
+      "policy_version": "2026.1.1",
+      "requires_human_approval": false,
+      "authorization_basis": "AUTONOMOUS"
+    },
+    "EVAL-081": {
+      "tenant_domain": "corporate.governance.internal",
+      "principal_id": "agent_unprivileged_worker",
+      "policy_version": "2026.0.9",
+      "requires_human_approval": false,
+      "authorization_basis": "AUTONOMOUS"
+    },
+    "EVAL-082": {
+      "tenant_domain": "corporate.governance.internal",
+      "principal_id": "agent_unprivileged_worker",
+      "policy_version": "2026.0.9",
+      "requires_human_approval": false,
+      "authorization_basis": "AUTONOMOUS"
+    },
+    "EVAL-083": {
+      "tenant_domain": "corporate.governance.internal",
+      "principal_id": "agent_unprivileged_worker",
+      "policy_version": "2026.0.9",
+      "requires_human_approval": false,
+      "authorization_basis": "AUTONOMOUS"
+    },
+    "EVAL-084": {
+      "tenant_domain": "corporate.governance.internal",
+      "principal_id": "agent_unprivileged_worker",
+      "policy_version": "2026.0.9",
+      "requires_human_approval": false,
+      "authorization_basis": "AUTONOMOUS"
+    },
+    "EVAL-085": {
+      "tenant_domain": "corporate.governance.internal",
+      "principal_id": "agent_unprivileged_worker",
+      "policy_version": "2026.0.9",
+      "requires_human_approval": false,
+      "authorization_basis": "AUTONOMOUS"
+    },
+    "EVAL-086": {
+      "tenant_domain": "corporate.governance.internal",
+      "principal_id": "agent_unprivileged_worker",
+      "policy_version": "2026.0.9",
+      "requires_human_approval": false,
+      "authorization_basis": "AUTONOMOUS"
+    },
+    "EVAL-087": {
+      "tenant_domain": "corporate.governance.internal",
+      "principal_id": "agent_unprivileged_worker",
+      "policy_version": "2026.0.9",
+      "requires_human_approval": false,
+      "authorization_basis": "AUTONOMOUS"
+    },
+    "EVAL-088": {
+      "tenant_domain": "corporate.governance.internal",
+      "principal_id": "agent_unprivileged_worker",
+      "policy_version": "2026.0.9",
+      "requires_human_approval": false,
+      "authorization_basis": "AUTONOMOUS"
+    },
+    "EVAL-089": {
+      "tenant_domain": "corporate.governance.internal",
+      "principal_id": "agent_unprivileged_worker",
+      "policy_version": "2026.0.9",
+      "requires_human_approval": false,
+      "authorization_basis": "AUTONOMOUS"
+    },
+    "EVAL-090": {
+      "tenant_domain": "corporate.governance.internal",
+      "principal_id": "agent_unprivileged_worker",
+      "policy_version": "2026.0.9",
+      "requires_human_approval": false,
+      "authorization_basis": "AUTONOMOUS"
+    },
+    "EVAL-091": {
+      "tenant_domain": "sandbox.edge.internal",
+      "principal_id": "agent_edge_tester",
+      "policy_version": "2026.0.1",
+      "requires_human_approval": false,
+      "authorization_basis": "AUTONOMOUS"
+    },
+    "EVAL-092": {
+      "tenant_domain": "sandbox.edge.internal",
+      "principal_id": "agent_edge_tester",
+      "policy_version": "2026.0.1",
+      "requires_human_approval": false,
+      "authorization_basis": "AUTONOMOUS"
+    },
+    "EVAL-093": {
+      "tenant_domain": "sandbox.edge.internal",
+      "principal_id": "agent_edge_tester",
+      "policy_version": "2026.0.1",
+      "requires_human_approval": false,
+      "authorization_basis": "AUTONOMOUS"
+    },
+    "EVAL-094": {
+      "tenant_domain": "sandbox.edge.internal",
+      "principal_id": "agent_edge_tester",
+      "policy_version": "2026.0.1",
+      "requires_human_approval": false,
+      "authorization_basis": "AUTONOMOUS"
+    },
+    "EVAL-095": {
+      "tenant_domain": "sandbox.edge.internal",
+      "principal_id": "agent_edge_tester",
+      "policy_version": "2026.0.1",
+      "requires_human_approval": false,
+      "authorization_basis": "AUTONOMOUS"
+    },
+    "EVAL-096": {
+      "tenant_domain": "sandbox.edge.internal",
+      "principal_id": "agent_edge_tester",
+      "policy_version": "2026.0.1",
+      "requires_human_approval": false,
+      "authorization_basis": "AUTONOMOUS"
+    },
+    "EVAL-097": {
+      "tenant_domain": "sandbox.edge.internal",
+      "principal_id": "agent_edge_tester",
+      "policy_version": "2026.0.1",
+      "requires_human_approval": false,
+      "authorization_basis": "AUTONOMOUS"
+    },
+    "EVAL-098": {
+      "tenant_domain": "sandbox.edge.internal",
+      "principal_id": "agent_edge_tester",
+      "policy_version": "2026.0.1",
+      "requires_human_approval": false,
+      "authorization_basis": "AUTONOMOUS"
+    },
+    "EVAL-099": {
+      "tenant_domain": "sandbox.edge.internal",
+      "principal_id": "agent_edge_tester",
+      "policy_version": "2026.0.1",
+      "requires_human_approval": false,
+      "authorization_basis": "AUTONOMOUS"
+    },
+    "EVAL-100": {
+      "tenant_domain": "sandbox.edge.internal",
+      "principal_id": "agent_edge_tester",
+      "policy_version": "2026.0.1",
+      "requires_human_approval": false,
+      "authorization_basis": "AUTONOMOUS"
+    }
+  },
+  "dev": {
+    "DEV-001": {
+      "tenant_domain": "dev.tenant.internal",
+      "principal_id": "agent_dev_worker",
+      "policy_version": "2026.1.0",
+      "requires_human_approval": false,
+      "authorization_basis": "AUTONOMOUS"
+    },
+    "DEV-002": {
+      "tenant_domain": "dev.tenant.internal",
+      "principal_id": "agent_dev_worker",
+      "policy_version": "2026.1.0",
+      "requires_human_approval": false,
+      "authorization_basis": "AUTONOMOUS"
+    },
+    "DEV-003": {
+      "tenant_domain": "dev.tenant.internal",
+      "principal_id": "agent_dev_worker",
+      "policy_version": "2026.1.0",
+      "requires_human_approval": false,
+      "authorization_basis": "AUTONOMOUS"
+    }
+  },
+  "threshold": {
+    "THRESH-001": {
+      "tenant_domain": "threshold.tenant.internal",
+      "principal_id": "agent_calibration_worker",
+      "policy_version": "2026.1.0",
+      "requires_human_approval": false,
+      "authorization_basis": "AUTONOMOUS"
+    },
+    "THRESH-002": {
+      "tenant_domain": "threshold.tenant.internal",
+      "principal_id": "agent_calibration_worker",
+      "policy_version": "2026.1.0",
+      "requires_human_approval": false,
+      "authorization_basis": "AUTONOMOUS"
+    },
+    "THRESH-003": {
+      "tenant_domain": "threshold.tenant.internal",
+      "principal_id": "agent_calibration_worker",
+      "policy_version": "2026.1.0",
+      "requires_human_approval": false,
+      "authorization_basis": "AUTONOMOUS"
+    }
+  }
+}

@@ -1,22 +1,22 @@
 # EpistemicOS Consolidated Security & Evaluation Evidence Report
 
-**Overall Status:** `PARTIAL` | **Generated:** 2026-10-30T06:28:52Z
+**Overall Status:** `FAIL` | **Generated:** 2026-11-10T15:53:34Z
 
 ## Reproducibility & Environment Metadata
-- **Evaluated Git Commit:** `6756a4851698ec843a815f9ac7de3de999391bb3`
-- **Working Tree Status (Pre-Run):** `DIRTY`
-- **Working Tree Digest:** `6722c5c45b028e5aedd98adaaa69b1218dba3c14086db8de45779b83b108f0e7`
-- **Evaluation Command:** `/app/benchmarks/generate_evidence_report.py --fast`
+- **Evaluated Git Commit:** `c86af49b7c20eb66631c4374a72b24333ae006ed`
+- **Working Tree Status (Pre-Run):** `CLEAN`
+- **Working Tree Digest:** `71df4fd41fcbd0378d878f4ce02c1495f7409732ec3026696f29958b78d52de9`
+- **Evaluation Command:** `/app/benchmarks/generate_evidence_report.py --fast --commit c86af49b7c20eb66631c4374a72b24333ae006ed --require-clean`
 - **Execution Environment:** `LOCAL` (Python 3.12.13, Linux-6.8.0-x86_64-with-glibc2.39)
-- **Lockfile Digest:** `9f80340420f1fedb6b0eb4ef820340c039424fcffe7bcc81450add54119c0e23`
+- **Lockfile Digest:** `007e260755f988750f53a0567198959e70776a90f8d6308acb3f01eec9b762a6`
 - **Dataset Version:** `1.0.0-frozen`
-- **Dataset SHA-256 Digest:** `f4e31381a922c1143769ccb887c4841e4a14fedec6eef6569d40eed2956ce873` (Verified: `True`)
+- **Dataset SHA-256 Digest:** `dc443e7ef150ef5bb4d9363370f510e584a8e0daaacff6152db9be40d4ea9822` (Verified: `True`)
 
 ---
 
 ## Layer A: Deterministic Regression
 - **Status:** `PASS`
-- **Test Command:** `/home/jules/.pyenv/versions/3.12.13/bin/python -m pytest tests/unit/test_evidence_architecture.py -k test_dataset_manifest_integrity -q --tb=no`
+- **Test Command:** `/home/jules/.pyenv/versions/3.12.13/bin/python3 -m pytest tests/unit/test_evidence_architecture.py -k test_dataset_manifest_integrity -q --tb=no`
 - **Summary:** .                                                                        [100%]
 
 ---
@@ -39,28 +39,28 @@
 ---
 
 ## Layer C: Deterministic Synthetic Adversarial Harness
-- **Overall Status:** `PASS`
+- **Overall Status:** `FAIL`
 - **Evaluator Type:** Deterministic Synthetic Integration Harness (Non-Live Agent Loop)
 - **Execution Mode:** Isolated Synthetic Local Targets (Zero External Network Access)
 - **Scenarios Evaluated:** 5
 - **Trials Evaluated:** 15
 - **Adversarial Trials Blocked:** 12 / 12
-- **Benign Controls Succeeded:** 3 / 3
+- **Benign Controls Succeeded:** 0 / 3
 
 ---
 
 ## Layer D: Performance & Cost Benchmarks
-- **Status:** `PASS`
-- **Run ID:** `run-l4-20261030015635-290f8501`
-- **Dataset Digest:** `f4e31381a922c1143769ccb887c4841e4a14fedec6eef6569d40eed2956ce873`
-- **Run Records File SHA-256:** `c5ccbf52638ed1d2d4c3046538ed06cfb0a129364911e14ea7d71c9e95c95841`
+- **Status:** `FAIL`
+- **Run ID:** `run-l4-20261110091155-de2695b3`
+- **Dataset Digest:** `dc443e7ef150ef5bb4d9363370f510e584a8e0daaacff6152db9be40d4ea9822`
+- **Run Records File SHA-256:** `1f5ab3e4db9ec92bd774e9bb81d46fc33da99609f2fde538abbe22382b6beb43`
 - **Sample Size:** N = 100
 - **Combined Gating Accuracy:** 100.0%
 - **Combined Gating Security Recall:** 100.0%
 - **Benign False Positive Rate:** 0.0%
-- **P95 Latency:** 86.789 ms
+- **P95 Latency:** 115.526155 ms
 - **Total Tokens Spent:** 2000
-- **Mandatory Criteria Passed:** `True`
+- **Mandatory Criteria Passed:** `False`
 
 ---
 

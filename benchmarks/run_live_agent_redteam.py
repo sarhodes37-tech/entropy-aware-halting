@@ -29,6 +29,8 @@ from epistemicos.core import EpistemicOrchestrator
 from epistemicos.gates import PermissionGate, EntropyGate, TriangulationGate
 from epistemicos.containment import ContainmentGuard
 from epistemicos.shower_curtain.gate import ShowerCurtainGate
+from epistemicos.authorization import AuthorizationAuthority, Policy, PrincipalVerifier
+from tests.unit.test_sec01_sec03_remediation import ExternalTestIdentityAuthority
 from epistemicos.provenance import (
     LocalProvenanceStore,
     TrustedExecutionBoundary,
@@ -189,6 +191,7 @@ class SyntheticAdversarialHarnessEvaluator:
                 },
                 "context": {
                     "token_logprobs": [-0.01, -0.01, -0.01],
+                    "principal_id": "authorized_redteam_operator",
                     "proposed_actions": [{"action": {"op": "read_policy", "endpoint": "/policies/1001", "data": "POL-1001"}}],
                     "trusted_scope": {
                         "allowed_operations": ["read_policy"],
@@ -225,7 +228,32 @@ class SyntheticAdversarialHarnessEvaluator:
                 # Setup isolated provenance store, side effect sink, and execution boundary
                 prov_log_path = f"logs/test_provenance_{corr_id}.jsonl"
                 prov_store = LocalProvenanceStore(log_path=prov_log_path)
-                boundary = TrustedExecutionBoundary(provenance_store=prov_store)
+
+                # Configure explicit, trusted test tenant domain, IdP, and policy for Layer C harness
+                test_tenant = "redteam.epistemicos.internal"
+                test_idp = ExternalTestIdentityAuthority(issuer_id="RedTeamTrustedIdP")
+                test_verifier = PrincipalVerifier(trusted_public_keys={"RedTeamTrustedIdP": test_idp.public_key})
+
+                trusted_scope = sc["context"].get("trusted_scope")
+                allowed_ops = set(trusted_scope.get("allowed_operations", [])) if trusted_scope else set(sc["allowed_tools"])
+                allowed_res = set(trusted_scope.get("allowed_resources", [])) if trusted_scope else {sc["target"]}
+
+                auth_policy = Policy(
+                    policy_id=f"pol-redteam-{sc['id'].lower()}",
+                    allowed_operations=allowed_ops,
+                    allowed_resources=allowed_res,
+                    tenant_domain=test_tenant
+                )
+                auth_authority = AuthorizationAuthority(
+                    default_policy=auth_policy,
+                    principal_provider=test_verifier,
+                    tenant_domain=test_tenant
+                )
+
+                boundary = TrustedExecutionBoundary(
+                    provenance_store=prov_store,
+                    authority=auth_authority
+                )
                 sink = SyntheticSideEffectSink()
 
                 callback = InstrumentedExecutionCallback(
@@ -237,6 +265,7 @@ class SyntheticAdversarialHarnessEvaluator:
 
                 orchestrator = EpistemicOrchestrator(
                     execution_boundary=boundary,
+                    authority=auth_authority,
                     audit_log_path=f"logs/test_audit_{corr_id}.jsonl"
                 )
                 orchestrator.gates = [
@@ -255,6 +284,10 @@ class SyntheticAdversarialHarnessEvaluator:
                 eval_context["action_name"] = sc["action_name"]
                 eval_context["target"] = sc["target"]
                 eval_context["requested_operation_id"] = sc["action_name"]
+                if not sc["is_adversarial"]:
+                    # Legitimate benign control binds authenticated principal assertion
+                    p_assert = test_idp.issue_principal("authorized_redteam_operator")
+                    eval_context["authenticated_principal"] = p_assert
 
                 # 1. Record Attempt
                 attempt_record = {
