@@ -63,7 +63,9 @@ def test_api_overview_route(test_server):
     assert req.headers.get("Cross-Origin-Opener-Policy") == "same-origin"
     assert req.headers.get("Cross-Origin-Resource-Policy") == "same-origin"
     assert "geolocation=()" in req.headers.get("Permissions-Policy", "")
+    assert req.headers.get("Strict-Transport-Security") == "max-age=31536000; includeSubDomains"
     csp = req.headers.get("Content-Security-Policy", "")
+    assert "upgrade-insecure-requests" in csp
     assert "frame-ancestors 'none'" in csp
     assert "object-src 'none'" in csp
     assert "base-uri 'self'" in csp
@@ -232,14 +234,20 @@ def test_read_only_method_restriction(test_server):
 
 
 def test_directory_traversal_prevention(test_server):
-    """Adversarial test: verifies that directory traversal and null-byte attempts are blocked."""
+    """Adversarial test: verifies that directory traversal, null-byte, and control character attempts are blocked."""
     traversal_paths = [
         "/../../../../etc/passwd",
         "/..%2f..%2f..%2fetc%2fpasswd",
         "/%2e%2e/%2e%2e/etc/passwd",
         "/%252e%252e/%252e%252e/etc/passwd",
         "/api/../../epistemicos/audit.py",
-        "/index.html%00.txt"
+        "/index.html%00.txt",
+        "/api/%0d%0a/traces",
+        "/api/%0d/overview",
+        "/api/%0a/overview",
+        "/api/%09/benchmarks",
+        "/api/%1f/traces",
+        "/api/%7f/traces"
     ]
     for path in traversal_paths:
         with pytest.raises(urllib.error.HTTPError) as exc_info:
@@ -451,6 +459,10 @@ def test_dynamic_buttons_aria_accessibility_completeness():
     assert "retryBtn.setAttribute('aria-label', 'Retry loading provenance records');" in js_content
     assert "retryBtn.setAttribute('aria-label', 'Retry loading benchmark artifacts');" in js_content
     assert "copyCorrBtn.setAttribute('aria-label', 'Copy Correlation ID');" in js_content
+    assert "copyTraceJsonBtn.setAttribute('aria-label', `Copy full JSON payload for trace ${trace.correlation_id || ''}`);" in js_content
+    assert "copyReqBtn.setAttribute('aria-label', 'Copy Request ID');" in js_content
+    assert "copyAuthBtn.setAttribute('aria-label', 'Copy Capability Token ID');" in js_content
+    assert "copyDigestBtn.setAttribute('aria-label', 'Copy Payload Digest');" in js_content
     assert "provBtn.setAttribute('aria-label', `View provenance records for correlation ${trace.correlation_id}`);" in js_content
     assert "<span>View in Provenance</span>" in js_content
     assert '<span class="arrow" aria-hidden="true">➔</span>' in js_content

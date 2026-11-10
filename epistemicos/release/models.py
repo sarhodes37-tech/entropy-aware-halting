@@ -9,13 +9,17 @@ This module defines deterministic, verifiable data structures representing:
 
 import hashlib
 import json
+import math
 import re
 import time
 from dataclasses import dataclass, field, asdict
 from enum import Enum
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Union
 
 SHA256_HEX_REGEX = re.compile(r"^[0-9a-fA-F]{64}$")
+# Signed 64-bit integer timestamp boundaries: -2^63 <= t <= 2^63 - 1
+MIN_TIMESTAMP_BOUND = -(1 << 63)
+MAX_TIMESTAMP_BOUND = (1 << 63) - 1
 
 
 def validate_sha256_hex(val: str, field_name: str) -> str:
@@ -288,11 +292,45 @@ class ReleaseApprovalRecord:
         for ev_dig in self.required_evidence_digests:
             validate_sha256_hex(ev_dig, "ReleaseApprovalRecord.required_evidence_digests[]")
 
+        self._validate_timestamps()
+
+    def _validate_timestamps(self) -> None:
+        """Strictly validates timestamp and expires_at against type ambiguity and overflow."""
+        # Validate timestamp field
+        if isinstance(self.timestamp, bool) or not isinstance(self.timestamp, (int, float)):
+            raise TypeError(
+                f"ReleaseApprovalRecord: timestamp must be a numeric timestamp, got {type(self.timestamp).__name__}"
+            )
+        if isinstance(self.timestamp, int):
+            if not (MIN_TIMESTAMP_BOUND <= self.timestamp <= MAX_TIMESTAMP_BOUND):
+                raise ValueError("ReleaseApprovalRecord: timestamp integer overflows signed 64-bit limits")
+        else:
+            if not math.isfinite(self.timestamp):
+                raise ValueError(f"ReleaseApprovalRecord: timestamp must be a finite number, got {self.timestamp}")
+            if not (MIN_TIMESTAMP_BOUND <= self.timestamp <= MAX_TIMESTAMP_BOUND):
+                raise ValueError("ReleaseApprovalRecord: timestamp float overflows signed 64-bit limits")
+
+        # Validate expires_at field if present
+        if self.expires_at is not None:
+            if isinstance(self.expires_at, bool) or not isinstance(self.expires_at, (int, float)):
+                raise TypeError(
+                    f"ReleaseApprovalRecord: expires_at must be a numeric timestamp, got {type(self.expires_at).__name__}"
+                )
+            if isinstance(self.expires_at, int):
+                if not (MIN_TIMESTAMP_BOUND <= self.expires_at <= MAX_TIMESTAMP_BOUND):
+                    raise ValueError("ReleaseApprovalRecord: expires_at integer overflows signed 64-bit limits")
+            else:
+                if not math.isfinite(self.expires_at):
+                    raise ValueError(f"ReleaseApprovalRecord: expires_at must be a finite number, got {self.expires_at}")
+                if not (MIN_TIMESTAMP_BOUND <= self.expires_at <= MAX_TIMESTAMP_BOUND):
+                    raise ValueError("ReleaseApprovalRecord: expires_at float overflows signed 64-bit limits")
+
     def compute_signature_payload(self) -> bytes:
         """
         Deterministic, domain-separated canonical structured JSON payload for Ed25519 verification.
         Eliminates delimiter injection vulnerabilities.
         """
+        self._validate_timestamps()
         data = {
             "domain": "EpistemicOS:ReleaseApprovalRecord:v1",
             "approval_id": self.approval_id.strip(),
@@ -309,8 +347,34 @@ class ReleaseApprovalRecord:
     def is_expired(self, current_time: Optional[float] = None) -> bool:
         if self.expires_at is None:
             return False
-        now = current_time if current_time is not None else time.time()
-        return now >= self.expires_at
+
+        # Fail closed if expires_at was mutated after construction to invalid, non-finite, or overflowing value
+        if isinstance(self.expires_at, bool) or not isinstance(self.expires_at, (int, float)):
+            return True
+        if isinstance(self.expires_at, int):
+            if not (MIN_TIMESTAMP_BOUND <= self.expires_at <= MAX_TIMESTAMP_BOUND):
+                return True
+            exp_val: Union[int, float] = self.expires_at
+        else:
+            if not math.isfinite(self.expires_at) or not (MIN_TIMESTAMP_BOUND <= self.expires_at <= MAX_TIMESTAMP_BOUND):
+                return True
+            exp_val = self.expires_at
+
+        # Validate clock override
+        if current_time is not None:
+            if isinstance(current_time, bool) or not isinstance(current_time, (int, float)):
+                return True
+            if isinstance(current_time, int):
+                if not (MIN_TIMESTAMP_BOUND <= current_time <= MAX_TIMESTAMP_BOUND):
+                    return True
+                now: Union[int, float] = current_time
+            else:
+                if not math.isfinite(current_time) or not (MIN_TIMESTAMP_BOUND <= current_time <= MAX_TIMESTAMP_BOUND):
+                    return True
+                now = current_time
+        else:
+            now = time.time()
+        return now >= exp_val
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)

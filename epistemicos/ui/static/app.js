@@ -1218,6 +1218,7 @@ document.addEventListener('DOMContentLoaded', () => {
           this.state.selectedTraceId = trace.correlation_id;
           this.switchTab('traces');
           await this.selectTrace(trace.correlation_id);
+          this.announce(`Navigated to Execution Trace Explorer (Trace: ${trace.correlation_id || 'UNKNOWN'})`);
           const activeItem = document.querySelector('#trace-list .trace-item.active');
           if (activeItem) {
             activeItem.focus();
@@ -1303,6 +1304,7 @@ document.addEventListener('DOMContentLoaded', () => {
     },
 
     renderTracesLoadError(errorMsg) {
+      this.announce('Failed to load execution traces.');
       const traceListUl = document.getElementById('trace-list');
       if (!traceListUl) return;
       traceListUl.innerHTML = '';
@@ -1534,6 +1536,7 @@ document.addEventListener('DOMContentLoaded', () => {
     },
 
     renderTraceErrorDetail(correlationId, errorMsg, container) {
+      this.announce(`Failed to load trace details for ${correlationId}.`);
       container.innerHTML = '';
 
       const errCard = document.createElement('div');
@@ -1602,14 +1605,27 @@ document.addEventListener('DOMContentLoaded', () => {
         provBtn.setAttribute('aria-label', `View provenance records for correlation ${trace.correlation_id}`);
         provBtn.setAttribute('title', `View provenance records for correlation ${trace.correlation_id}`);
         provBtn.innerHTML = `<span>View in Provenance</span> <span class="arrow" aria-hidden="true">➔</span>`;
-        provBtn.addEventListener('click', () => {
+        provBtn.addEventListener('click', async () => {
           this.state.provenanceSearchQuery = trace.correlation_id.toLowerCase().trim();
           const provSearchInput = document.getElementById('provenance-search');
           if (provSearchInput) {
             provSearchInput.value = trace.correlation_id;
           }
+          const matchingRecId = (trace.provenance_events && trace.provenance_events[0])
+            ? (trace.provenance_events[0].event_id || `seq_${trace.provenance_events[0].sequence_number}`)
+            : null;
+          if (matchingRecId) {
+            this.state.selectedRecordId = matchingRecId;
+          }
           this.switchTab('provenance');
-          this.renderProvenanceRecordList();
+          if (matchingRecId) {
+            if (!this.state.provenanceData) {
+              await this.loadProvenance();
+            }
+            this.selectProvenanceRecord(matchingRecId);
+          } else {
+            this.renderProvenanceRecordList();
+          }
           this.announce(`Navigated to Provenance Explorer (Filtered: ${trace.correlation_id})`);
           if (provSearchInput) {
             provSearchInput.focus();
@@ -1627,6 +1643,15 @@ document.addEventListener('DOMContentLoaded', () => {
       copyCorrBtn.setAttribute('title', 'Copy Correlation ID to clipboard');
       copyCorrBtn.addEventListener('click', () => this.copyToClipboard(trace.correlation_id, copyCorrBtn));
       actionBtnGroup.appendChild(copyCorrBtn);
+
+      const copyTraceJsonBtn = document.createElement('button');
+      copyTraceJsonBtn.type = 'button';
+      copyTraceJsonBtn.className = 'copy-btn';
+      copyTraceJsonBtn.textContent = 'Copy Trace JSON';
+      copyTraceJsonBtn.setAttribute('aria-label', `Copy full JSON payload for trace ${trace.correlation_id || ''}`);
+      copyTraceJsonBtn.setAttribute('title', `Copy JSON payload for trace ${trace.correlation_id || ''}`);
+      copyTraceJsonBtn.addEventListener('click', () => this.copyToClipboard(JSON.stringify(trace, null, 2), copyTraceJsonBtn));
+      actionBtnGroup.appendChild(copyTraceJsonBtn);
 
       headerBar.appendChild(titleGroup);
       headerBar.appendChild(actionBtnGroup);
@@ -1726,6 +1751,19 @@ document.addEventListener('DOMContentLoaded', () => {
       pReq.style.fontSize = '0.8rem';
       pReq.style.color = 'var(--text-secondary)';
       pReq.textContent = `Request ID: ${trace.request_id || 'NOT RECORDED'}`;
+      if (trace.request_id) {
+        const copyReqBtn = document.createElement('button');
+        copyReqBtn.type = 'button';
+        copyReqBtn.className = 'copy-btn';
+        copyReqBtn.style.marginLeft = '0.4rem';
+        copyReqBtn.style.padding = '0.1rem 0.35rem';
+        copyReqBtn.style.fontSize = '0.65rem';
+        copyReqBtn.textContent = 'Copy';
+        copyReqBtn.setAttribute('aria-label', 'Copy Request ID');
+        copyReqBtn.setAttribute('title', 'Copy Request ID to clipboard');
+        copyReqBtn.addEventListener('click', () => this.copyToClipboard(trace.request_id, copyReqBtn));
+        pReq.appendChild(copyReqBtn);
+      }
 
       const pTimeWindow = document.createElement('p');
       pTimeWindow.className = 'font-mono';
@@ -1764,6 +1802,19 @@ document.addEventListener('DOMContentLoaded', () => {
         pAuthToken.style.fontSize = '0.8rem';
         pAuthToken.style.marginBottom = '0.3rem';
         pAuthToken.textContent = `Capability Token ID: ${ae.authorization_token_id || 'UNISSUED'}`;
+        if (ae.authorization_token_id) {
+          const copyAuthBtn = document.createElement('button');
+          copyAuthBtn.type = 'button';
+          copyAuthBtn.className = 'copy-btn';
+          copyAuthBtn.style.marginLeft = '0.4rem';
+          copyAuthBtn.style.padding = '0.1rem 0.35rem';
+          copyAuthBtn.style.fontSize = '0.65rem';
+          copyAuthBtn.textContent = 'Copy';
+          copyAuthBtn.setAttribute('aria-label', 'Copy Capability Token ID');
+          copyAuthBtn.setAttribute('title', 'Copy Capability Token ID to clipboard');
+          copyAuthBtn.addEventListener('click', () => this.copyToClipboard(ae.authorization_token_id, copyAuthBtn));
+          pAuthToken.appendChild(copyAuthBtn);
+        }
 
         const pDigest = document.createElement('p');
         pDigest.className = 'font-mono';
@@ -1771,6 +1822,19 @@ document.addEventListener('DOMContentLoaded', () => {
         pDigest.style.marginBottom = '0.3rem';
         pDigest.style.wordBreak = 'break-all';
         pDigest.textContent = `Payload Digest: ${ae.canonical_request_digest || 'UNRECORDED'}`;
+        if (ae.canonical_request_digest) {
+          const copyDigestBtn = document.createElement('button');
+          copyDigestBtn.type = 'button';
+          copyDigestBtn.className = 'copy-btn';
+          copyDigestBtn.style.marginLeft = '0.4rem';
+          copyDigestBtn.style.padding = '0.1rem 0.35rem';
+          copyDigestBtn.style.fontSize = '0.65rem';
+          copyDigestBtn.textContent = 'Copy';
+          copyDigestBtn.setAttribute('aria-label', 'Copy Payload Digest');
+          copyDigestBtn.setAttribute('title', 'Copy Payload Digest to clipboard');
+          copyDigestBtn.addEventListener('click', () => this.copyToClipboard(ae.canonical_request_digest, copyDigestBtn));
+          pDigest.appendChild(copyDigestBtn);
+        }
 
         const pPolicy = document.createElement('p');
         pPolicy.style.fontSize = '0.85rem';
@@ -1929,6 +1993,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
           const handleSelectStage = () => {
             this.state.selectedEventSeq = ev.sequence_number;
+            this.announce(`Selected lifecycle stage #${seqDisplay} ${type}`);
             this.updateMobileTraceView('event');
             this.renderTraceDetail(trace, container);
 
@@ -2165,6 +2230,7 @@ document.addEventListener('DOMContentLoaded', () => {
     },
 
     renderProvenanceError(errorMsg) {
+      this.announce('Failed to load provenance data.');
       const recListUl = document.getElementById('provenance-record-list');
       if (recListUl) {
         recListUl.innerHTML = '';
@@ -2570,6 +2636,7 @@ document.addEventListener('DOMContentLoaded', () => {
           this.state.selectedTraceId = corrId;
           this.switchTab('traces');
           await this.selectTrace(corrId);
+          this.announce(`Navigated to Execution Trace Explorer (Trace: ${corrId})`);
           const activeItem = document.querySelector('#trace-list .trace-item.active');
           if (activeItem) {
             activeItem.focus();
@@ -2774,6 +2841,7 @@ document.addEventListener('DOMContentLoaded', () => {
     },
 
     renderBenchmarkLoadError(errorMsg) {
+      this.announce('Failed to load benchmark artifacts.');
       const statusBadge = document.getElementById('benchmark-artifacts-status');
       if (statusBadge) {
         const badge = this.createStatusBadge('UNAVAILABLE');
@@ -4284,23 +4352,42 @@ document.addEventListener('DOMContentLoaded', () => {
     renderCaseDetailInspector(c, container) {
       container.innerHTML = '';
 
-      // Header Bar with Copy buttons
-      const headerBar = document.createElement('div');
-      headerBar.style.display = 'flex';
-      headerBar.style.justifyContent = 'space-between';
-      headerBar.style.alignItems = 'center';
-      headerBar.style.marginBottom = '1rem';
-      headerBar.style.flexWrap = 'wrap';
-      headerBar.style.gap = '0.5rem';
+      const classification = (c.classification || c.actual_outcome || 'N/A').toUpperCase();
+      let badgeCls = 'status-badge-unknown';
+      let heroCls = '';
+      if (classification === 'TC') {
+        badgeCls = 'status-badge-verified';
+        heroCls = 'verdict-tc';
+      } else if (classification === 'TR') {
+        badgeCls = 'status-badge-halted';
+        heroCls = 'verdict-tr';
+      } else if (classification === 'FC' || classification === 'FR') {
+        badgeCls = 'status-badge-failed';
+        heroCls = classification === 'FC' ? 'verdict-fc' : 'verdict-fr';
+      }
+
+      // 1. Case Verdict & Telemetry Hero
+      const hero = document.createElement('div');
+      hero.className = `case-verdict-hero ${heroCls}`;
+
+      const heroHeader = document.createElement('div');
+      heroHeader.className = 'case-verdict-header';
 
       const titleGroup = document.createElement('div');
+      titleGroup.className = 'case-verdict-title';
+
       const title = document.createElement('h3');
-      title.style.fontSize = '1.05rem';
+      title.style.fontSize = '1.1rem';
       title.style.fontWeight = '700';
       title.style.margin = '0';
       title.className = 'font-mono';
       title.textContent = `Case: ${c.case_id || 'UNNAMED_CASE'}`;
       titleGroup.appendChild(title);
+
+      const badge = document.createElement('span');
+      badge.className = `status-badge ${badgeCls}`;
+      badge.textContent = classification;
+      titleGroup.appendChild(badge);
 
       const actionBtnGroup = document.createElement('div');
       actionBtnGroup.style.display = 'flex';
@@ -4324,34 +4411,59 @@ document.addEventListener('DOMContentLoaded', () => {
       copyJsonBtn.addEventListener('click', () => this.copyToClipboard(JSON.stringify(c, null, 2), copyJsonBtn));
       actionBtnGroup.appendChild(copyJsonBtn);
 
-      headerBar.appendChild(titleGroup);
-      headerBar.appendChild(actionBtnGroup);
-      container.appendChild(headerBar);
+      heroHeader.appendChild(titleGroup);
+      heroHeader.appendChild(actionBtnGroup);
+      hero.appendChild(heroHeader);
 
-      // Card 1: Structured Case Metadata Breakdown
-      const metaCard = document.createElement('div');
-      metaCard.className = 'card mb-1';
+      // Telemetry Metric Pill Strip
+      const telemStrip = document.createElement('div');
+      telemStrip.className = 'case-telemetry-strip';
 
-      const metaHeader = document.createElement('div');
-      metaHeader.className = 'card-header';
-      metaHeader.textContent = 'Recorded Case Outcomes & Telemetry';
-      metaCard.appendChild(metaHeader);
+      const latStr = (c.latency_ms !== undefined && c.latency_ms !== null) ? `${c.latency_ms} ms` : 'N/A';
+      const tokStr = (c.tokens_consumed !== undefined && c.tokens_consumed !== null) ? `${c.tokens_consumed} tok` : 'N/A';
 
-      const fieldList = [
+      const pillLatency = document.createElement('span');
+      pillLatency.className = 'case-telemetry-pill';
+      pillLatency.innerHTML = `Latency: <strong>${latStr}</strong>`;
+      telemStrip.appendChild(pillLatency);
+
+      const pillTokens = document.createElement('span');
+      pillTokens.className = 'case-telemetry-pill';
+      pillTokens.innerHTML = `Tokens: <strong>${tokStr}</strong>`;
+      telemStrip.appendChild(pillTokens);
+
+      const pillOutcome = document.createElement('span');
+      pillOutcome.className = 'case-telemetry-pill';
+      pillOutcome.innerHTML = `Expected: <strong>${c.expected_outcome || 'N/A'}</strong> ➔ Actual: <strong>${c.actual_outcome || c.status || c.outcome || 'N/A'}</strong>`;
+      telemStrip.appendChild(pillOutcome);
+
+      hero.appendChild(telemStrip);
+      container.appendChild(hero);
+
+      // 2. Structured Metadata Grid (2-column layout)
+      const metaGrid = document.createElement('div');
+      metaGrid.className = 'case-metadata-grid';
+
+      // Column A: Scenario & Evaluation Telemetry
+      const evalCard = document.createElement('div');
+      evalCard.className = 'card';
+
+      const evalHeader = document.createElement('div');
+      evalHeader.className = 'card-header';
+      evalHeader.textContent = 'Recorded Case Outcomes & Telemetry';
+      evalCard.appendChild(evalHeader);
+
+      const evalFields = [
         { label: 'Case Identifier', value: c.case_id, mono: true, copyable: true },
         { label: 'Baseline Condition', value: c.baseline, bold: true },
         { label: 'Scenario Family', value: c.scenario_family || c.family || c.category },
         { label: 'Expected Outcome', value: c.expected_outcome, mono: true },
         { label: 'Actual Outcome', value: c.actual_outcome || c.status || c.outcome, mono: true, bold: true },
         { label: 'Classification Label', value: c.classification, bold: true },
-        { label: 'Decision Reason / Details', value: c.decision_reason || c.reason || c.gate_action },
-        { label: 'Observed Latency', value: (c.latency_ms !== undefined && c.latency_ms !== null) ? `${c.latency_ms} ms` : null, mono: true },
-        { label: 'Tokens Consumed', value: (c.tokens_consumed !== undefined && c.tokens_consumed !== null) ? `${c.tokens_consumed} tokens` : null, mono: true },
-        { label: 'Run Identifier', value: c.run_id, mono: true, copyable: true },
-        { label: 'Dataset SHA-256 Digest', value: c.dataset_sha256_digest, mono: true, copyable: true }
+        { label: 'Decision Reason / Details', value: c.decision_reason || c.reason || c.gate_action }
       ];
 
-      fieldList.forEach(item => {
+      const renderRow = (item, card) => {
         const row = document.createElement('div');
         row.style.marginBottom = '0.4rem';
         row.style.fontSize = '0.8rem';
@@ -4372,14 +4484,14 @@ document.addEventListener('DOMContentLoaded', () => {
 
           if (item.copyable) {
             const btn = document.createElement('button');
-              btn.type = 'button';
+            btn.type = 'button';
             btn.className = 'copy-btn';
             btn.style.marginLeft = '0.4rem';
             btn.style.padding = '0.1rem 0.35rem';
             btn.style.fontSize = '0.65rem';
             btn.textContent = 'Copy';
             btn.setAttribute('aria-label', `Copy ${item.label}`);
-              btn.setAttribute('title', `Copy ${item.label} to clipboard`);
+            btn.setAttribute('title', `Copy ${item.label} to clipboard`);
             btn.addEventListener('click', () => this.copyToClipboard(String(item.value), btn));
             row.appendChild(btn);
           }
@@ -4389,10 +4501,32 @@ document.addEventListener('DOMContentLoaded', () => {
           row.appendChild(valSpan);
         }
 
-        metaCard.appendChild(row);
-      });
+        card.appendChild(row);
+      };
 
-      container.appendChild(metaCard);
+      evalFields.forEach(item => renderRow(item, evalCard));
+      metaGrid.appendChild(evalCard);
+
+      // Column B: Run & Verification Artifacts
+      const provCard = document.createElement('div');
+      provCard.className = 'card';
+
+      const provHeader = document.createElement('div');
+      provHeader.className = 'card-header';
+      provHeader.textContent = 'Run & Artifact Verification';
+      provCard.appendChild(provHeader);
+
+      const provFields = [
+        { label: 'Observed Latency', value: (c.latency_ms !== undefined && c.latency_ms !== null) ? `${c.latency_ms} ms` : null, mono: true },
+        { label: 'Tokens Consumed', value: (c.tokens_consumed !== undefined && c.tokens_consumed !== null) ? `${c.tokens_consumed} tokens` : null, mono: true },
+        { label: 'Run Identifier', value: c.run_id, mono: true, copyable: true },
+        { label: 'Dataset SHA-256 Digest', value: c.dataset_sha256_digest, mono: true, copyable: true }
+      ];
+
+      provFields.forEach(item => renderRow(item, provCard));
+      metaGrid.appendChild(provCard);
+
+      container.appendChild(metaGrid);
 
       // Epistemic Notice Callout Box
       const epistemicBox = document.createElement('div');

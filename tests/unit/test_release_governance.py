@@ -1272,6 +1272,62 @@ def test_direct_revocation_record_validation():
         with pytest.raises(ValueError, match="RevocationRecord: reason must be a non-empty string"):
             RevocationRecord(approval_id="appr-1", revoked_by_principal="admin", reason=bad_r)
 
+    # Validate revocation_timestamp type ambiguity and bounds
+    for bad_type_ts in [True, False, "123456789", None, [12345], {"ts": 123}]:
+        with pytest.raises(TypeError, match="RevocationRecord: revocation_timestamp must be a numeric timestamp"):
+            RevocationRecord(approval_id="appr-1", revoked_by_principal="admin", reason="compromised", revocation_timestamp=bad_type_ts)
+
+    for non_finite_ts in [float("nan"), float("inf"), float("-inf")]:
+        with pytest.raises(ValueError, match="RevocationRecord: revocation_timestamp must be a finite number"):
+            RevocationRecord(approval_id="appr-1", revoked_by_principal="admin", reason="compromised", revocation_timestamp=non_finite_ts)
+
+    # Signed 64-bit integer boundary values (-2^63 and 2^63 - 1)
+    min_int = -(1 << 63)
+    max_int = (1 << 63) - 1
+    rec_min_int = RevocationRecord(approval_id="appr-1", revoked_by_principal="admin", reason="compromised", revocation_timestamp=min_int)
+    assert rec_min_int.revocation_timestamp == min_int
+    rec_max_int = RevocationRecord(approval_id="appr-1", revoked_by_principal="admin", reason="compromised", revocation_timestamp=max_int)
+    assert rec_max_int.revocation_timestamp == max_int
+
+    # Immediately out-of-range signed integer values (-2^63 - 1 and 2^63)
+    with pytest.raises(ValueError, match="RevocationRecord: revocation_timestamp integer overflows signed 64-bit limits"):
+        RevocationRecord(approval_id="appr-1", revoked_by_principal="admin", reason="compromised", revocation_timestamp=min_int - 1)
+    with pytest.raises(ValueError, match="RevocationRecord: revocation_timestamp integer overflows signed 64-bit limits"):
+        RevocationRecord(approval_id="appr-1", revoked_by_principal="admin", reason="compromised", revocation_timestamp=max_int + 1)
+    with pytest.raises(ValueError, match="RevocationRecord: revocation_timestamp integer overflows signed 64-bit limits"):
+        RevocationRecord(approval_id="appr-1", revoked_by_principal="admin", reason="compromised", revocation_timestamp=1 << 65)
+
+    # Float boundaries
+    # -2^63 is exact in float64
+    valid_min_flt = -float(1 << 63)
+    rec_min_flt = RevocationRecord(approval_id="appr-1", revoked_by_principal="admin", reason="compromised", revocation_timestamp=valid_min_flt)
+    assert rec_min_flt.revocation_timestamp == valid_min_flt
+
+    # Maximum float strictly <= 2^63 - 1 (since 2^63 is not <= 2^63 - 1)
+    import math
+    valid_max_flt = math.nextafter(float(1 << 63), -float("inf"))
+    rec_max_flt = RevocationRecord(approval_id="appr-1", revoked_by_principal="admin", reason="compromised", revocation_timestamp=valid_max_flt)
+    assert rec_max_flt.revocation_timestamp == valid_max_flt
+
+    # Immediately out-of-range float values
+    # float(1 << 63) is 2^63, which exceeds max_int (2^63 - 1)
+    with pytest.raises(ValueError, match="RevocationRecord: revocation_timestamp float overflows signed 64-bit limits"):
+        RevocationRecord(approval_id="appr-1", revoked_by_principal="admin", reason="compromised", revocation_timestamp=float(1 << 63))
+
+    # Float immediately below -2^63
+    with pytest.raises(ValueError, match="RevocationRecord: revocation_timestamp float overflows signed 64-bit limits"):
+        RevocationRecord(approval_id="appr-1", revoked_by_principal="admin", reason="compromised", revocation_timestamp=-math.nextafter(float(1 << 63), float("inf")))
+
+    # Large float magnitude overflow
+    with pytest.raises(ValueError, match="RevocationRecord: revocation_timestamp float overflows signed 64-bit limits"):
+        RevocationRecord(approval_id="appr-1", revoked_by_principal="admin", reason="compromised", revocation_timestamp=1e300)
+
+    # Typical valid int and float timestamps
+    rec_int = RevocationRecord(approval_id="appr-1", revoked_by_principal="admin", reason="compromised", revocation_timestamp=1600000000)
+    assert rec_int.revocation_timestamp == 1600000000
+    rec_flt = RevocationRecord(approval_id="appr-1", revoked_by_principal="admin", reason="compromised", revocation_timestamp=1600000000.123456)
+    assert rec_flt.revocation_timestamp == 1600000000.123456
+
 
 # ==============================================================================
 # Models Coverage Expansion: ComponentSpec, ReleaseManifest,
@@ -1643,6 +1699,250 @@ def test_release_approval_record_validation_and_expiration():
     assert isinstance(d, dict)
     assert d["approval_id"] == "appr-exp"
     assert d["expires_at"] == 1500.0
+
+
+def test_release_approval_record_expires_at_numeric_validation():
+    """Validates that expires_at strictly enforces numeric finite boundaries and prevents overflow."""
+    m_digest = "a" * 64
+    ev_digest = "b" * 64
+
+    # Non-numeric types and booleans rejected
+    for bad_exp in [True, False, "1500.0", [1500.0], {"exp": 1500.0}]:
+        with pytest.raises(TypeError, match="expires_at must be a numeric timestamp"):
+            ReleaseApprovalRecord(
+                approval_id="appr-bad-type",
+                manifest_digest=m_digest,
+                approver_id="alice",
+                approver_issuer="IdP",
+                policy_version="1.0",
+                required_evidence_digests=[ev_digest],
+                expires_at=bad_exp
+            )
+
+    # Non-finite floats rejected
+    for bad_float in [float("nan"), float("inf"), float("-inf")]:
+        with pytest.raises(ValueError, match="expires_at must be a finite number"):
+            ReleaseApprovalRecord(
+                approval_id="appr-bad-float",
+                manifest_digest=m_digest,
+                approver_id="alice",
+                approver_issuer="IdP",
+                policy_version="1.0",
+                required_evidence_digests=[ev_digest],
+                expires_at=bad_float
+            )
+
+    # Floats exceeding magnitude bound rejected (both positive and negative)
+    for bad_mag in [1e25, -1e25, 1e100, -1e100, float(1 << 63)]:
+        with pytest.raises(ValueError, match="expires_at float overflows signed 64-bit limits"):
+            ReleaseApprovalRecord(
+                approval_id="appr-bad-mag",
+                manifest_digest=m_digest,
+                approver_id="alice",
+                approver_issuer="IdP",
+                policy_version="1.0",
+                required_evidence_digests=[ev_digest],
+                expires_at=bad_mag
+            )
+
+    # Out-of-bounds integers rejected (overflowing signed 64-bit limits)
+    for bad_int in [10**1000, 1 << 63, -(1 << 63) - 1]:
+        with pytest.raises(ValueError, match="expires_at integer overflows signed 64-bit limits"):
+            ReleaseApprovalRecord(
+                approval_id="appr-overflow",
+                manifest_digest=m_digest,
+                approver_id="alice",
+                approver_issuer="IdP",
+                policy_version="1.0",
+                required_evidence_digests=[ev_digest],
+                expires_at=bad_int
+            )
+
+    # Valid integer and float within signed 64-bit bounds pass and compute signature payload cleanly
+    for valid_exp in [1500, 1500.5, (1 << 63) - 1, -(1 << 63)]:
+        appr_valid = ReleaseApprovalRecord(
+            approval_id="appr-valid-num",
+            manifest_digest=m_digest,
+            approver_id="alice",
+            approver_issuer="IdP",
+            policy_version="1.0",
+            required_evidence_digests=[ev_digest],
+            expires_at=valid_exp
+        )
+        payload = appr_valid.compute_signature_payload()
+        assert isinstance(payload, bytes)
+        assert b"expires_at" in payload
+
+
+def test_release_approval_record_timestamp_numeric_validation():
+    """Validates that timestamp strictly enforces numeric type, boolean rejection, finiteness, and magnitude."""
+    m_digest = "a" * 64
+    ev_digest = "b" * 64
+
+    # Non-numeric types and booleans rejected
+    for bad_ts in [True, False, "1000.0", [1000.0], {"ts": 1000.0}]:
+        with pytest.raises(TypeError, match="timestamp must be a numeric timestamp"):
+            ReleaseApprovalRecord(
+                approval_id="appr-bad-ts-type",
+                manifest_digest=m_digest,
+                approver_id="alice",
+                approver_issuer="IdP",
+                policy_version="1.0",
+                required_evidence_digests=[ev_digest],
+                timestamp=bad_ts
+            )
+
+    # Non-finite floats rejected
+    for bad_float in [float("nan"), float("inf"), float("-inf")]:
+        with pytest.raises(ValueError, match="timestamp must be a finite number"):
+            ReleaseApprovalRecord(
+                approval_id="appr-bad-ts-float",
+                manifest_digest=m_digest,
+                approver_id="alice",
+                approver_issuer="IdP",
+                policy_version="1.0",
+                required_evidence_digests=[ev_digest],
+                timestamp=bad_float
+            )
+
+    # Floats exceeding magnitude bound rejected (both positive and negative)
+    for bad_mag in [1e25, -1e25, 1e100, -1e100, float(1 << 63)]:
+        with pytest.raises(ValueError, match="timestamp float overflows signed 64-bit limits"):
+            ReleaseApprovalRecord(
+                approval_id="appr-bad-ts-mag",
+                manifest_digest=m_digest,
+                approver_id="alice",
+                approver_issuer="IdP",
+                policy_version="1.0",
+                required_evidence_digests=[ev_digest],
+                timestamp=bad_mag
+            )
+
+    # Out-of-bounds integers rejected (overflowing signed 64-bit limits)
+    for bad_int in [10**1000, 1 << 63, -(1 << 63) - 1]:
+        with pytest.raises(ValueError, match="timestamp integer overflows signed 64-bit limits"):
+            ReleaseApprovalRecord(
+                approval_id="appr-ts-overflow",
+                manifest_digest=m_digest,
+                approver_id="alice",
+                approver_issuer="IdP",
+                policy_version="1.0",
+                required_evidence_digests=[ev_digest],
+                timestamp=bad_int
+            )
+
+    # Valid integer and float timestamp pass and compute signature payload cleanly
+    for valid_ts in [1000, 1000.5, (1 << 63) - 1, -(1 << 63)]:
+        appr_valid = ReleaseApprovalRecord(
+            approval_id="appr-valid-ts",
+            manifest_digest=m_digest,
+            approver_id="alice",
+            approver_issuer="IdP",
+            policy_version="1.0",
+            required_evidence_digests=[ev_digest],
+            timestamp=valid_ts
+        )
+        payload = appr_valid.compute_signature_payload()
+        assert isinstance(payload, bytes)
+        assert b"timestamp" in payload
+
+    # Revalidation upon post-construction mutation in compute_signature_payload
+    appr_mutate = ReleaseApprovalRecord(
+        approval_id="appr-mutate",
+        manifest_digest=m_digest,
+        approver_id="alice",
+        approver_issuer="IdP",
+        policy_version="1.0",
+        required_evidence_digests=[ev_digest],
+        timestamp=1000.0,
+        expires_at=2000.0
+    )
+    appr_mutate.timestamp = 10**1000
+    with pytest.raises(ValueError, match="timestamp integer overflows signed 64-bit limits"):
+        appr_mutate.compute_signature_payload()
+
+    appr_mutate.timestamp = 1000.0
+    appr_mutate.expires_at = 1e25
+    with pytest.raises(ValueError, match="expires_at float overflows signed 64-bit limits"):
+        appr_mutate.compute_signature_payload()
+
+
+def test_release_approval_record_is_expired_invalid_clock_fail_closed():
+    """Validates that is_expired fails closed when given invalid or overflowing current_time."""
+    m_digest = "a" * 64
+    ev_digest = "b" * 64
+
+    appr = ReleaseApprovalRecord(
+        approval_id="appr-clock-test",
+        manifest_digest=m_digest,
+        approver_id="alice",
+        approver_issuer="IdP",
+        policy_version="1.0",
+        required_evidence_digests=[ev_digest],
+        expires_at=2000.0
+    )
+
+    # Valid times behave normally
+    assert appr.is_expired(current_time=1999.0) is False
+    assert appr.is_expired(current_time=2000.0) is True
+
+    # Invalid clock types fail closed (treated as expired)
+    assert appr.is_expired(current_time=True) is True
+    assert appr.is_expired(current_time=False) is True
+    assert appr.is_expired(current_time="1000.0") is True
+    assert appr.is_expired(current_time=[1000.0]) is True
+
+    # Non-finite clock floats fail closed
+    assert appr.is_expired(current_time=float("nan")) is True
+    assert appr.is_expired(current_time=float("inf")) is True
+    assert appr.is_expired(current_time=float("-inf")) is True
+
+    # Oversized integer and out-of-bound clock fail closed
+    assert appr.is_expired(current_time=10**1000) is True
+    assert appr.is_expired(current_time=1 << 63) is True
+    assert appr.is_expired(current_time=-(1 << 63) - 1) is True
+    assert appr.is_expired(current_time=float(1 << 63)) is True
+
+    # Mutated expires_at fail-closed checks (NaN, inf, -inf, oversized int, non-numeric, out-of-range float)
+    appr_mut_exp = ReleaseApprovalRecord(
+        approval_id="appr-mut-exp",
+        manifest_digest=m_digest,
+        approver_id="alice",
+        approver_issuer="IdP",
+        policy_version="1.0",
+        required_evidence_digests=[ev_digest],
+        expires_at=2000.0
+    )
+    # Valid baseline
+    assert appr_mut_exp.is_expired(current_time=1500.0) is False
+
+    # NaN mutation fails closed
+    appr_mut_exp.expires_at = float("nan")
+    assert appr_mut_exp.is_expired(current_time=1500.0) is True
+
+    # Infinity / -Infinity mutations fail closed
+    appr_mut_exp.expires_at = float("inf")
+    assert appr_mut_exp.is_expired(current_time=1500.0) is True
+    appr_mut_exp.expires_at = float("-inf")
+    assert appr_mut_exp.is_expired(current_time=1500.0) is True
+
+    # Oversized integer mutation fails closed
+    appr_mut_exp.expires_at = 10**1000
+    assert appr_mut_exp.is_expired(current_time=1500.0) is True
+
+    # Non-numeric and boolean mutations fail closed
+    appr_mut_exp.expires_at = "not-a-number"
+    assert appr_mut_exp.is_expired(current_time=1500.0) is True
+    appr_mut_exp.expires_at = True
+    assert appr_mut_exp.is_expired(current_time=1500.0) is True
+    appr_mut_exp.expires_at = [1500.0]
+    assert appr_mut_exp.is_expired(current_time=1500.0) is True
+
+    # Float exceeding magnitude bounds fails closed
+    appr_mut_exp.expires_at = 1e25
+    assert appr_mut_exp.is_expired(current_time=1500.0) is True
+    appr_mut_exp.expires_at = -1e25
+    assert appr_mut_exp.is_expired(current_time=1500.0) is True
 
 
 # ==============================================================================

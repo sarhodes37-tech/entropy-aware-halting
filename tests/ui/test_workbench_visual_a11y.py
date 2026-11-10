@@ -531,3 +531,40 @@ def test_workbench_cross_viewport_responsiveness_and_screenshots(a11y_e2e_server
             context.close()
 
         browser.close()
+
+
+@pytest.mark.skipif(not PLAYWRIGHT_AVAILABLE, reason="playwright not installed")
+def test_benchmark_case_verdict_hero_and_telemetry_pills(a11y_e2e_server):
+    """Verifies that selecting a benchmark case renders the .case-verdict-hero and telemetry pills."""
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        context = browser.new_context(viewport={"width": 1280, "height": 800})
+        page = context.new_page()
+
+        page.goto(f"{a11y_e2e_server}/index.html")
+        page.click("#tab-benchmarks")
+        page.wait_for_selector("#benchmark-case-list .trace-item")
+
+        # Select first benchmark case
+        first_case = page.locator("#benchmark-case-list .trace-item").first
+        first_case.click()
+        page.wait_for_selector("#benchmark-case-content .case-verdict-hero")
+
+        hero = page.locator("#benchmark-case-content .case-verdict-hero")
+        assert hero.is_visible()
+
+        # Verify telemetry pills
+        pills = page.locator("#benchmark-case-content .case-telemetry-pill")
+        assert pills.count() >= 3
+        assert "Latency:" in pills.nth(0).text_content()
+        assert "Tokens:" in pills.nth(1).text_content()
+        assert "Expected:" in pills.nth(2).text_content()
+
+        # Verify two-column metadata layout
+        meta_grid = page.locator("#benchmark-case-content .case-metadata-grid")
+        assert meta_grid.is_visible()
+        cards = meta_grid.locator(".card")
+        assert cards.count() == 2
+
+        context.close()
+        browser.close()

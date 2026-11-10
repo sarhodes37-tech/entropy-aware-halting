@@ -586,6 +586,25 @@ def test_keyboard_navigation_and_focus_management_workflows(a11y_comprehensive_s
         )
         assert page.locator("#a11y-status-announcer").text_content() == "Trace search cleared."
 
+        # 3c. Overview Recent Trace Row Activation Keyboard and Focus Shift
+        page.click("#tab-overview")
+        page.wait_for_selector("#overview-recent-traces tr.clickable")
+        recent_row = page.locator("#overview-recent-traces tr.clickable").first
+        first_row_corr = page.evaluate(
+            "() => document.querySelector('#overview-recent-traces tr.clickable td.ops-cell-corr')?.title"
+        )
+        recent_row.focus()
+        page.keyboard.press("Enter")
+        page.wait_for_function(
+            f"() => document.getElementById('a11y-status-announcer')"
+            f".textContent.includes('Navigated to Execution Trace Explorer (Trace: {first_row_corr})')"
+        )
+        assert page.evaluate("() => window.ObservatoryApp.state.currentTab") == "traces"
+        focused_classes_recent = page.evaluate(
+            "() => document.activeElement ? Array.from(document.activeElement.classList) : []"
+        )
+        assert "trace-item" in focused_classes_recent and "active" in focused_classes_recent
+
         # 4. Keyboard Arrow Navigation in Traces Listbox
         first_item = page.locator("#trace-list .trace-item").first
         first_item.focus()
@@ -623,6 +642,12 @@ def test_keyboard_navigation_and_focus_management_workflows(a11y_comprehensive_s
         )
         assert sel_range == [0, len(selected_corr)]
 
+        # Verify auto-selection of matching provenance record populated the inspector
+        page.wait_for_selector("#provenance-inspector-content:not(.hidden)")
+        assert page.locator("#provenance-inspector-content").is_visible()
+        selected_prov_rec = page.evaluate("() => window.ObservatoryApp.state.selectedRecordId")
+        assert selected_prov_rec is not None
+
         # 5. Keyboard Navigation in Provenance Listbox
         page.click("#tab-provenance")
         page.fill("#provenance-search", "")
@@ -644,7 +669,7 @@ def test_keyboard_navigation_and_focus_management_workflows(a11y_comprehensive_s
             page.keyboard.press("Enter")
             page.wait_for_function(
                 "() => document.getElementById('a11y-status-announcer')"
-                ".textContent.includes('Selected execution trace')"
+                ".textContent.includes('Navigated to Execution Trace Explorer (Trace:')"
             )
             assert page.evaluate("() => window.ObservatoryApp.state.currentTab") == "traces"
             focused_classes_prov = page.evaluate(
@@ -746,6 +771,13 @@ def test_live_region_announcements(a11y_comprehensive_server):
         page.click("#trace-list .trace-item")
         page.wait_for_function("() => document.getElementById('a11y-status-announcer').textContent.length > 0")
         assert "Selected execution trace" in announcer.text_content()
+
+        # 2b. Lifecycle Stage Selection announcement
+        page.wait_for_selector(".lifecycle-stage")
+        page.evaluate("() => { document.getElementById('a11y-status-announcer').textContent = ''; }")
+        page.click(".lifecycle-stage .lifecycle-stage-card")
+        page.wait_for_function("() => document.getElementById('a11y-status-announcer').textContent.length > 0")
+        assert "Selected lifecycle stage" in announcer.text_content()
 
         # 3. Filter clearing announcement: clear announcer, fill filter, click clear, assert announcement
         trace_search = page.locator("#trace-search")
@@ -926,7 +958,13 @@ def test_live_region_announcements(a11y_comprehensive_server):
         assert copy_btn.get_attribute("aria-label") == orig_aria
         assert copy_btn.get_attribute("title") == orig_title
 
-        # 8.4. Clean up mock and restore original navigator.clipboard
+        # 8.4. Verify Copy Trace JSON button presence and accessible attributes
+        trace_json_btn = page.locator(".copy-btn", has_text="Copy Trace JSON")
+        assert trace_json_btn.count() == 1
+        assert "Copy full JSON payload for trace" in trace_json_btn.get_attribute("aria-label")
+        assert "Copy JSON payload for trace" in trace_json_btn.get_attribute("title")
+
+        # 8.5. Clean up mock and restore original navigator.clipboard
         page.evaluate("""() => {
             if (window.__orig_clipboard !== undefined) {
                 Object.defineProperty(navigator, 'clipboard', {
@@ -937,6 +975,65 @@ def test_live_region_announcements(a11y_comprehensive_server):
                 delete window.__orig_clipboard;
             }
         }""")
+
+        # 9. Asynchronous view error load announcements (Traces, Provenance, Benchmarks)
+        # 9.1 Traces fetch failure
+        page.route("**/api/traces", lambda route: route.abort())
+        page.evaluate(
+            "() => { document.getElementById('a11y-status-announcer').textContent = ''; }"
+        )
+        page.click("#tab-traces")
+        page.wait_for_function(
+            "() => document.getElementById('a11y-status-announcer').textContent === "
+            "'Failed to load execution traces.'"
+        )
+        assert announcer.text_content() == "Failed to load execution traces."
+        page.unroute("**/api/traces")
+
+        # 9.2 Provenance fetch failure
+        page.route("**/api/provenance", lambda route: route.abort())
+        page.evaluate(
+            "() => { document.getElementById('a11y-status-announcer').textContent = ''; }"
+        )
+        page.click("#tab-provenance")
+        page.wait_for_function(
+            "() => document.getElementById('a11y-status-announcer').textContent === "
+            "'Failed to load provenance data.'"
+        )
+        assert announcer.text_content() == "Failed to load provenance data."
+        page.unroute("**/api/provenance")
+
+        # 9.3 Benchmarks fetch failure
+        page.route("**/api/benchmarks", lambda route: route.abort())
+        page.evaluate(
+            "() => { document.getElementById('a11y-status-announcer').textContent = ''; }"
+        )
+        page.click("#tab-benchmarks")
+        page.wait_for_function(
+            "() => document.getElementById('a11y-status-announcer').textContent === "
+            "'Failed to load benchmark artifacts.'"
+        )
+        assert announcer.text_content() == "Failed to load benchmark artifacts."
+        page.unroute("**/api/benchmarks")
+
+        # 9.4 Trace detail fetch failure
+        page.click("#tab-traces")
+        page.wait_for_selector("#trace-list .trace-item")
+        page.route("**/api/trace/*", lambda route: route.abort())
+        first_trace = page.locator("#trace-list .trace-item").first
+        first_trace_corr = page.evaluate(
+            "() => document.querySelector("
+            "'#trace-list .trace-item .trace-id')?.getAttribute('title')?.trim()"
+        )
+        first_trace.click()
+        page.wait_for_selector("#trace-detail-content .card-header.text-danger")
+        page.wait_for_function(
+            "() => document.getElementById('a11y-status-announcer')"
+            ".textContent.includes('Failed to load trace details for')"
+        )
+        expected_msg = f"Failed to load trace details for {first_trace_corr}."
+        assert expected_msg == announcer.text_content()
+        page.unroute("**/api/trace/*")
 
         browser.close()
 

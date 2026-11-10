@@ -1143,3 +1143,132 @@ def test_end_to_end_adversarial_side_effect_isolation(tmp_path):
     )
     assert res_valid["status"] == "ALLOWED"
     assert side_effect_counter[0] == 1
+
+
+# ==============================================================================
+# Timestamp Hardening & Boundary Validation Tests
+# ==============================================================================
+
+def test_trusted_task_contract_timestamp_validation_and_bounds():
+    """Validates fail-closed signed 64-bit and finiteness validation on created_at and expires_at."""
+    # 1. Non-empty task_id validation
+    with pytest.raises(ValueError, match="TrustedTaskContract: task_id must be a non-empty string"):
+        TrustedTaskContract(task_id="")
+    with pytest.raises(ValueError, match="TrustedTaskContract: task_id must be a non-empty string"):
+        TrustedTaskContract(task_id="   ")
+    with pytest.raises(ValueError, match="TrustedTaskContract: task_id must be a non-empty string"):
+        TrustedTaskContract(task_id=None)
+
+    # 2. Type ambiguity on created_at (booleans and non-numeric)
+    with pytest.raises(TypeError, match="created_at must be a numeric timestamp, got bool"):
+        TrustedTaskContract(task_id="t1", created_at=True)
+    with pytest.raises(TypeError, match="created_at must be a numeric timestamp, got str"):
+        TrustedTaskContract(task_id="t1", created_at="1000")
+
+    # 3. Finiteness on created_at
+    with pytest.raises(ValueError, match="created_at must be a finite number"):
+        TrustedTaskContract(task_id="t1", created_at=float("nan"))
+    with pytest.raises(ValueError, match="created_at must be a finite number"):
+        TrustedTaskContract(task_id="t1", created_at=float("inf"))
+
+    # 4. Signed 64-bit limits on created_at
+    with pytest.raises(ValueError, match="created_at integer overflows signed 64-bit limits"):
+        TrustedTaskContract(task_id="t1", created_at=1 << 63)
+    with pytest.raises(ValueError, match="created_at integer overflows signed 64-bit limits"):
+        TrustedTaskContract(task_id="t1", created_at=-(1 << 63) - 1)
+    with pytest.raises(ValueError, match="created_at float overflows signed 64-bit limits"):
+        TrustedTaskContract(task_id="t1", created_at=float(1 << 63))
+    with pytest.raises(ValueError, match="created_at float overflows signed 64-bit limits"):
+        TrustedTaskContract(task_id="t1", created_at=-1e25)
+
+    # 5. Type ambiguity on expires_at
+    with pytest.raises(TypeError, match="expires_at must be a numeric timestamp, got bool"):
+        TrustedTaskContract(task_id="t1", expires_at=False)
+    with pytest.raises(TypeError, match="expires_at must be a numeric timestamp, got str"):
+        TrustedTaskContract(task_id="t1", expires_at="2000")
+
+    # 6. Finiteness on expires_at
+    with pytest.raises(ValueError, match="expires_at must be a finite number"):
+        TrustedTaskContract(task_id="t1", expires_at=float("nan"))
+    with pytest.raises(ValueError, match="expires_at must be a finite number"):
+        TrustedTaskContract(task_id="t1", expires_at=float("inf"))
+
+    # 7. Signed 64-bit limits on expires_at
+    with pytest.raises(ValueError, match="expires_at integer overflows signed 64-bit limits"):
+        TrustedTaskContract(task_id="t1", expires_at=1 << 63)
+    with pytest.raises(ValueError, match="expires_at integer overflows signed 64-bit limits"):
+        TrustedTaskContract(task_id="t1", expires_at=-(1 << 63) - 1)
+    with pytest.raises(ValueError, match="expires_at float overflows signed 64-bit limits"):
+        TrustedTaskContract(task_id="t1", expires_at=float(1 << 63))
+    with pytest.raises(ValueError, match="expires_at float overflows signed 64-bit limits"):
+        TrustedTaskContract(task_id="t1", expires_at=1e25)
+
+    # 8. Valid contract creation succeeds at boundaries
+    c_min = TrustedTaskContract(task_id="t1", created_at=-(1 << 63), expires_at=(1 << 63) - 1)
+    assert c_min.created_at == -(1 << 63)
+    assert c_min.expires_at == (1 << 63) - 1
+
+    # 9. from_dict preserves None or parses valid timestamps
+    c_dict = c_min.to_dict()
+    restored = TrustedTaskContract.from_dict(c_dict)
+    assert restored.task_id == "t1"
+    assert restored.created_at == -(1 << 63)
+
+    # from_dict rejects invalid timestamp and invalid task_id types
+    c_dict_bad = c_dict.copy()
+    c_dict_bad["created_at"] = "invalid"
+    with pytest.raises(TypeError):
+        TrustedTaskContract.from_dict(c_dict_bad)
+
+    c_dict_bad_id = c_dict.copy()
+    c_dict_bad_id["task_id"] = None
+    with pytest.raises(ValueError, match="task_id must be a non-empty string"):
+        TrustedTaskContract.from_dict(c_dict_bad_id)
+
+    c_dict_bad_id_num = c_dict.copy()
+    c_dict_bad_id_num["task_id"] = 123
+    with pytest.raises(ValueError, match="task_id must be a non-empty string"):
+        TrustedTaskContract.from_dict(c_dict_bad_id_num)
+
+
+def test_trusted_task_contract_is_expired_fail_closed():
+    """Validates that is_expired fails closed on invalid/mutated timestamps and invalid clock overrides."""
+    c = TrustedTaskContract(task_id="t1", expires_at=1500.0)
+
+    # Normal behavior
+    assert c.is_expired(current_time=1499.0) is False
+    assert c.is_expired(current_time=1500.0) is True
+    assert c.is_expired(current_time=1501.0) is True
+
+    # None expires_at never expires
+    c_no_exp = TrustedTaskContract(task_id="t1", expires_at=None)
+    assert c_no_exp.is_expired(current_time=1000.0) is False
+
+    # Invalid clock overrides fail closed (evaluated as expired)
+    assert c.is_expired(current_time=True) is True
+    assert c.is_expired(current_time=False) is True
+    assert c.is_expired(current_time="1000.0") is True
+    assert c.is_expired(current_time=float("nan")) is True
+    assert c.is_expired(current_time=float("inf")) is True
+    assert c.is_expired(current_time=float("-inf")) is True
+    assert c.is_expired(current_time=1 << 63) is True
+    assert c.is_expired(current_time=-(1 << 63) - 1) is True
+    assert c.is_expired(current_time=float(1 << 63)) is True
+
+    # Mutated expires_at fails closed
+    c.expires_at = float("nan")
+    assert c.is_expired(current_time=1000.0) is True
+    c.expires_at = float("inf")
+    assert c.is_expired(current_time=1000.0) is True
+    c.expires_at = 1 << 63
+    assert c.is_expired(current_time=1000.0) is True
+    c.expires_at = "bad"
+    assert c.is_expired(current_time=1000.0) is True
+    c.expires_at = True
+    assert c.is_expired(current_time=1000.0) is True
+
+    # Mutated timestamps cause compute_contract_digest and verify_signature to fail closed
+    c.created_at = float("nan")
+    with pytest.raises(ValueError):
+        c.compute_contract_digest()
+    assert c.verify_signature(b"dummy_secret_1234567890123456789012") is False
