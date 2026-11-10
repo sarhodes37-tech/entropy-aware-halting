@@ -958,7 +958,13 @@ def test_live_region_announcements(a11y_comprehensive_server):
         assert copy_btn.get_attribute("aria-label") == orig_aria
         assert copy_btn.get_attribute("title") == orig_title
 
-        # 8.4. Clean up mock and restore original navigator.clipboard
+        # 8.4. Verify Copy Trace JSON button presence and accessible attributes
+        trace_json_btn = page.locator(".copy-btn", has_text="Copy Trace JSON")
+        assert trace_json_btn.count() == 1
+        assert "Copy full JSON payload for trace" in trace_json_btn.get_attribute("aria-label")
+        assert "Copy JSON payload for trace" in trace_json_btn.get_attribute("title")
+
+        # 8.5. Clean up mock and restore original navigator.clipboard
         page.evaluate("""() => {
             if (window.__orig_clipboard !== undefined) {
                 Object.defineProperty(navigator, 'clipboard', {

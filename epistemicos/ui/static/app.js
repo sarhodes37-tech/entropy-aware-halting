@@ -1644,6 +1644,15 @@ document.addEventListener('DOMContentLoaded', () => {
       copyCorrBtn.addEventListener('click', () => this.copyToClipboard(trace.correlation_id, copyCorrBtn));
       actionBtnGroup.appendChild(copyCorrBtn);
 
+      const copyTraceJsonBtn = document.createElement('button');
+      copyTraceJsonBtn.type = 'button';
+      copyTraceJsonBtn.className = 'copy-btn';
+      copyTraceJsonBtn.textContent = 'Copy Trace JSON';
+      copyTraceJsonBtn.setAttribute('aria-label', `Copy full JSON payload for trace ${trace.correlation_id || ''}`);
+      copyTraceJsonBtn.setAttribute('title', `Copy JSON payload for trace ${trace.correlation_id || ''}`);
+      copyTraceJsonBtn.addEventListener('click', () => this.copyToClipboard(JSON.stringify(trace, null, 2), copyTraceJsonBtn));
+      actionBtnGroup.appendChild(copyTraceJsonBtn);
+
       headerBar.appendChild(titleGroup);
       headerBar.appendChild(actionBtnGroup);
       container.appendChild(headerBar);
