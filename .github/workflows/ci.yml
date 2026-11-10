@@ -15,7 +15,7 @@ permissions:
 jobs:
   test-core-isolation:
     name: Core Isolation Tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -37,7 +37,7 @@ jobs:
   test-ui-browser:
     name: UI Browser Accessibility & Visual Tests
     needs: test-core-isolation
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -65,7 +65,7 @@ jobs:
   test-full-execution:
     name: Full Execution Suite
     needs: test-core-isolation
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       matrix:
         python-version: ["3.11", "3.12", "3.13"]

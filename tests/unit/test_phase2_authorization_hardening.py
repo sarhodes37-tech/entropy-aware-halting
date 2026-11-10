@@ -782,3 +782,99 @@ def test_capability_timestamp_validation_and_fail_closed_expiration():
     valid_cap = Capability(**base_kwargs)
     for bad_clock in (float("nan"), float("inf"), float("-inf"), True, False, "1500.0", 1 << 63, -(1 << 63) - 1, float(1 << 63)):
         assert valid_cap.is_expired(current_time=bad_clock) is True
+
+
+def test_human_approval_record_signed_64bit_timestamp_hardening():
+    """
+    Validates fail-closed timestamp and expiration boundary enforcement on HumanApprovalRecord:
+    1. Construction rejects boolean, non-numeric, non-finite floats (NaN, ±Inf), and signed 64-bit overflowing integers/floats.
+    2. Construction parses and validates valid string timestamps within bounds.
+    3. is_expired() and verify_signature() fail closed when expires_at is mutated post-construction or clock overrides are invalid/out-of-bounds.
+    4. from_input() rejects non-finite or out-of-bounds expires_at.
+    """
+    secret = b"test-secret-key-32-bytes-long!!"
+    base_kwargs = {
+        "approval_id": "app-test-hardened-1",
+        "approver_id": "admin_alice",
+        "action_name": "database:drop_table",
+        "target": "prod_db",
+        "action_digest": "sha256_dummy_digest",
+        "request_id": "req-999",
+        "expires_at": 2000.0,
+    }
+
+    # 1. Normal construction and valid expiration evaluation
+    app_rec = HumanApprovalRecord(**base_kwargs)
+    app_rec.sign(secret)
+    assert app_rec.is_expired(current_time=1500.0) is False
+    assert app_rec.verify_signature(secret, current_time=1500.0) is True
+    assert app_rec.is_expired(current_time=2000.0) is True
+    assert app_rec.verify_signature(secret, current_time=2000.0) is False
+    assert app_rec.is_expired(current_time=2500.0) is True
+    assert app_rec.verify_signature(secret, current_time=2500.0) is False
+
+    # 2. Reject boolean types during construction
+    for bad_ts in (True, False):
+        with pytest.raises(TypeError, match="must be a numeric timestamp"):
+            HumanApprovalRecord(**{**base_kwargs, "expires_at": bad_ts})
+
+    # 3. Reject non-finite floats during construction
+    for bad_float in (float("nan"), float("inf"), float("-inf")):
+        with pytest.raises(ValueError, match="must be a finite number"):
+            HumanApprovalRecord(**{**base_kwargs, "expires_at": bad_float})
+
+    # 4. Reject unparseable strings during construction
+    with pytest.raises(ValueError, match="cannot be parsed as a float"):
+        HumanApprovalRecord(**{**base_kwargs, "expires_at": "not-a-number"})
+
+    # 5. Reject signed 64-bit out-of-range integers and floats
+    out_of_bounds_ints = [-(1 << 63) - 1, 1 << 63, 10**100]
+    for bad_int in out_of_bounds_ints:
+        with pytest.raises(ValueError, match="integer overflows signed 64-bit limits"):
+            HumanApprovalRecord(**{**base_kwargs, "expires_at": bad_int})
+
+    out_of_bounds_floats = [float(-(1 << 63) - 2000), float(1 << 63), 1e100]
+    for bad_flt in out_of_bounds_floats:
+        with pytest.raises(ValueError, match="float overflows signed 64-bit limits"):
+            HumanApprovalRecord(**{**base_kwargs, "expires_at": bad_flt})
+
+    # 6. Fail-closed expiration evaluation when expires_at is mutated post-construction
+    test_rec = HumanApprovalRecord(**base_kwargs)
+    test_rec.sign(secret)
+    for bad_val in (float("nan"), float("inf"), float("-inf"), True, False, "invalid", 1 << 63, -(1 << 63) - 1):
+        test_rec.expires_at = bad_val
+        assert test_rec.is_expired(current_time=1500.0) is True
+        assert test_rec.verify_signature(secret, current_time=1500.0) is False
+
+    # 7. Fail-closed expiration evaluation on invalid current_time clock overrides
+    valid_rec = HumanApprovalRecord(**base_kwargs)
+    valid_rec.sign(secret)
+    for bad_clock in (float("nan"), float("inf"), float("-inf"), True, False, "1500.0", 1 << 63, -(1 << 63) - 1, float(1 << 63)):
+        assert valid_rec.is_expired(current_time=bad_clock) is True
+        assert valid_rec.verify_signature(secret, current_time=bad_clock) is False
+
+    # 8. Unexpired record with expires_at=None also fails closed on invalid clock overrides
+    no_exp_rec = HumanApprovalRecord(**{**base_kwargs, "expires_at": None})
+    no_exp_rec.sign(secret)
+    assert no_exp_rec.is_expired() is False
+    assert no_exp_rec.verify_signature(secret) is True
+    for bad_clock in (float("nan"), float("inf"), float("-inf"), True, False, "1500.0", 1 << 63, -(1 << 63) - 1):
+        assert no_exp_rec.is_expired(current_time=bad_clock) is True
+        assert no_exp_rec.verify_signature(secret, current_time=bad_clock) is False
+
+    # 9. HumanApprovalRecord.from_input rejects out-of-bounds or non-finite values
+    dict_payload = {
+        "approval_id": "app-from-input",
+        "approver_id": "admin",
+        "action_name": "op",
+        "target": "tgt",
+        "action_digest": "dig",
+        "request_id": "req-1",
+    }
+    assert HumanApprovalRecord.from_input({**dict_payload, "expires_at": float("inf")}) is None
+    assert HumanApprovalRecord.from_input({**dict_payload, "expires_at": float("nan")}) is None
+    assert HumanApprovalRecord.from_input({**dict_payload, "expires_at": 1 << 63}) is None
+    assert HumanApprovalRecord.from_input({**dict_payload, "expires_at": True}) is None
+    valid_parsed = HumanApprovalRecord.from_input({**dict_payload, "expires_at": 2000.0})
+    assert valid_parsed is not None
+    assert valid_parsed.expires_at == 2000.0
