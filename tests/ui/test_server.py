@@ -460,6 +460,9 @@ def test_dynamic_buttons_aria_accessibility_completeness():
     assert "retryBtn.setAttribute('aria-label', 'Retry loading benchmark artifacts');" in js_content
     assert "copyCorrBtn.setAttribute('aria-label', 'Copy Correlation ID');" in js_content
     assert "copyTraceJsonBtn.setAttribute('aria-label', `Copy full JSON payload for trace ${trace.correlation_id || ''}`);" in js_content
+    assert "copyReqBtn.setAttribute('aria-label', 'Copy Request ID');" in js_content
+    assert "copyAuthBtn.setAttribute('aria-label', 'Copy Capability Token ID');" in js_content
+    assert "copyDigestBtn.setAttribute('aria-label', 'Copy Payload Digest');" in js_content
     assert "provBtn.setAttribute('aria-label', `View provenance records for correlation ${trace.correlation_id}`);" in js_content
     assert "<span>View in Provenance</span>" in js_content
     assert '<span class="arrow" aria-hidden="true">➔</span>' in js_content

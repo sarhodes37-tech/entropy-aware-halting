@@ -1751,6 +1751,19 @@ document.addEventListener('DOMContentLoaded', () => {
       pReq.style.fontSize = '0.8rem';
       pReq.style.color = 'var(--text-secondary)';
       pReq.textContent = `Request ID: ${trace.request_id || 'NOT RECORDED'}`;
+      if (trace.request_id) {
+        const copyReqBtn = document.createElement('button');
+        copyReqBtn.type = 'button';
+        copyReqBtn.className = 'copy-btn';
+        copyReqBtn.style.marginLeft = '0.4rem';
+        copyReqBtn.style.padding = '0.1rem 0.35rem';
+        copyReqBtn.style.fontSize = '0.65rem';
+        copyReqBtn.textContent = 'Copy';
+        copyReqBtn.setAttribute('aria-label', 'Copy Request ID');
+        copyReqBtn.setAttribute('title', 'Copy Request ID to clipboard');
+        copyReqBtn.addEventListener('click', () => this.copyToClipboard(trace.request_id, copyReqBtn));
+        pReq.appendChild(copyReqBtn);
+      }
 
       const pTimeWindow = document.createElement('p');
       pTimeWindow.className = 'font-mono';
@@ -1789,6 +1802,19 @@ document.addEventListener('DOMContentLoaded', () => {
         pAuthToken.style.fontSize = '0.8rem';
         pAuthToken.style.marginBottom = '0.3rem';
         pAuthToken.textContent = `Capability Token ID: ${ae.authorization_token_id || 'UNISSUED'}`;
+        if (ae.authorization_token_id) {
+          const copyAuthBtn = document.createElement('button');
+          copyAuthBtn.type = 'button';
+          copyAuthBtn.className = 'copy-btn';
+          copyAuthBtn.style.marginLeft = '0.4rem';
+          copyAuthBtn.style.padding = '0.1rem 0.35rem';
+          copyAuthBtn.style.fontSize = '0.65rem';
+          copyAuthBtn.textContent = 'Copy';
+          copyAuthBtn.setAttribute('aria-label', 'Copy Capability Token ID');
+          copyAuthBtn.setAttribute('title', 'Copy Capability Token ID to clipboard');
+          copyAuthBtn.addEventListener('click', () => this.copyToClipboard(ae.authorization_token_id, copyAuthBtn));
+          pAuthToken.appendChild(copyAuthBtn);
+        }
 
         const pDigest = document.createElement('p');
         pDigest.className = 'font-mono';
@@ -1796,6 +1822,19 @@ document.addEventListener('DOMContentLoaded', () => {
         pDigest.style.marginBottom = '0.3rem';
         pDigest.style.wordBreak = 'break-all';
         pDigest.textContent = `Payload Digest: ${ae.canonical_request_digest || 'UNRECORDED'}`;
+        if (ae.canonical_request_digest) {
+          const copyDigestBtn = document.createElement('button');
+          copyDigestBtn.type = 'button';
+          copyDigestBtn.className = 'copy-btn';
+          copyDigestBtn.style.marginLeft = '0.4rem';
+          copyDigestBtn.style.padding = '0.1rem 0.35rem';
+          copyDigestBtn.style.fontSize = '0.65rem';
+          copyDigestBtn.textContent = 'Copy';
+          copyDigestBtn.setAttribute('aria-label', 'Copy Payload Digest');
+          copyDigestBtn.setAttribute('title', 'Copy Payload Digest to clipboard');
+          copyDigestBtn.addEventListener('click', () => this.copyToClipboard(ae.canonical_request_digest, copyDigestBtn));
+          pDigest.appendChild(copyDigestBtn);
+        }
 
         const pPolicy = document.createElement('p');
         pPolicy.style.fontSize = '0.85rem';
