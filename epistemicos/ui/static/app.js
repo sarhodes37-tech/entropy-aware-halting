@@ -1479,13 +1479,13 @@ document.addEventListener('DOMContentLoaded', () => {
         headerDiv.appendChild(badgeSpan);
 
         const subDiv = document.createElement('div');
-        subDiv.className = 'text-muted';
+        subDiv.className = 'trace-item-action-target text-muted';
         subDiv.style.fontSize = '0.75rem';
         subDiv.style.marginTop = '0.2rem';
         subDiv.textContent = `${trace.action_name || 'N/A'} ➔ ${trace.target || 'N/A'}`;
 
         const timeDiv = document.createElement('div');
-        timeDiv.className = 'font-mono text-dim';
+        timeDiv.className = 'trace-item-time font-mono text-dim';
         timeDiv.style.fontSize = '0.7rem';
         timeDiv.style.marginTop = '0.15rem';
         timeDiv.textContent = trace.start_time || trace.timestamp || 'Timestamp unavailable';
@@ -1573,35 +1573,31 @@ document.addEventListener('DOMContentLoaded', () => {
     renderTraceDetail(trace, container) {
       container.innerHTML = '';
 
-      // Trace Detail Top Header
+      // Trace Detail Top Header (Unified Hero)
       const headerBar = document.createElement('div');
-      headerBar.style.display = 'flex';
-      headerBar.style.justifyContent = 'space-between';
-      headerBar.style.alignItems = 'center';
-      headerBar.style.marginBottom = '1rem';
-      headerBar.style.flexWrap = 'wrap';
-      headerBar.style.gap = '0.5rem';
+      headerBar.className = 'trace-hero-header';
 
       const titleGroup = document.createElement('div');
+      titleGroup.className = 'trace-hero-title-group';
+
+      const kicker = document.createElement('span');
+      kicker.className = 'trace-hero-kicker';
+      kicker.textContent = 'Execution Trace Record';
+
       const title = document.createElement('h3');
-      title.style.fontSize = '1.05rem';
-      title.style.fontWeight = '700';
-      title.style.margin = '0';
-      title.className = 'font-mono';
+      title.className = 'trace-hero-title font-mono';
       title.textContent = `Trace Correlation: ${trace.correlation_id}`;
 
+      titleGroup.appendChild(kicker);
       titleGroup.appendChild(title);
 
       const actionBtnGroup = document.createElement('div');
-      actionBtnGroup.style.display = 'flex';
-      actionBtnGroup.style.gap = '0.5rem';
+      actionBtnGroup.className = 'trace-hero-actions';
 
       if (trace.correlation_id) {
         const provBtn = document.createElement('button');
         provBtn.type = 'button';
         provBtn.className = 'quick-entry-btn';
-        provBtn.style.padding = '0.25rem 0.6rem';
-        provBtn.style.fontSize = '0.75rem';
         provBtn.setAttribute('aria-label', `View provenance records for correlation ${trace.correlation_id}`);
         provBtn.setAttribute('title', `View provenance records for correlation ${trace.correlation_id}`);
         provBtn.innerHTML = `<span>View in Provenance</span> <span class="arrow" aria-hidden="true">➔</span>`;
@@ -1715,9 +1711,9 @@ document.addEventListener('DOMContentLoaded', () => {
       derivedSummaryCard.appendChild(disclaimerBox);
       container.appendChild(derivedSummaryCard);
 
-      // Section B2: Lifecycle Overview & Authorization Records
+      // Section B2: Lifecycle Overview & Authorization Records (Unified Grid)
       const metaGrid = document.createElement('div');
-      metaGrid.className = 'section-grid mb-1';
+      metaGrid.className = 'trace-overview-grid';
 
       // Lifecycle Card
       const metaCard = document.createElement('div');
@@ -1728,55 +1724,78 @@ document.addEventListener('DOMContentLoaded', () => {
       metaHeader.textContent = 'Observed Execution Overview';
       metaCard.appendChild(metaHeader);
 
-      const pStatus = document.createElement('p');
-      pStatus.style.marginBottom = '0.4rem';
-      pStatus.innerHTML = `<strong>Observed Outcome:</strong> `;
+      const metaList = document.createElement('div');
+      metaList.className = 'trace-key-value-list';
+
+      // Outcome Row
+      const rowStatus = document.createElement('div');
+      rowStatus.className = 'trace-key-value-row';
+      const lblStatus = document.createElement('span');
+      lblStatus.className = 'trace-key-label';
+      lblStatus.textContent = 'Observed Outcome';
+      const valStatus = document.createElement('span');
+      valStatus.className = 'trace-key-value';
       const statusBadge = document.createElement('span');
       statusBadge.className = `badge badge-${trace.status || 'OUTCOME_UNKNOWN'}`;
       statusBadge.textContent = trace.status || 'OUTCOME_UNKNOWN';
-      pStatus.appendChild(statusBadge);
+      valStatus.appendChild(statusBadge);
+      rowStatus.appendChild(lblStatus);
+      rowStatus.appendChild(valStatus);
+      metaList.appendChild(rowStatus);
 
-      const pAction = document.createElement('p');
-      pAction.style.marginBottom = '0.3rem';
-      pAction.style.fontSize = '0.85rem';
-      pAction.textContent = `Action Name: ${trace.action_name || 'NOT RECORDED'}`;
+      // Action Row
+      const rowAction = document.createElement('div');
+      rowAction.className = 'trace-key-value-row';
+      const lblAction = document.createElement('span');
+      lblAction.className = 'trace-key-label';
+      lblAction.textContent = 'Action Name';
+      const valAction = document.createElement('span');
+      valAction.className = 'trace-key-value mono';
+      valAction.textContent = trace.action_name || 'NOT RECORDED';
+      rowAction.appendChild(lblAction);
+      rowAction.appendChild(valAction);
+      metaList.appendChild(rowAction);
 
-      const pTarget = document.createElement('p');
-      pTarget.style.marginBottom = '0.3rem';
-      pTarget.style.fontSize = '0.85rem';
-      pTarget.textContent = `Target Resource: ${trace.target || 'NOT RECORDED'}`;
+      // Target Row
+      const rowTarget = document.createElement('div');
+      rowTarget.className = 'trace-key-value-row';
+      const lblTarget = document.createElement('span');
+      lblTarget.className = 'trace-key-label';
+      lblTarget.textContent = 'Target Resource';
+      const valTarget = document.createElement('span');
+      valTarget.className = 'trace-key-value mono';
+      valTarget.textContent = trace.target || 'NOT RECORDED';
+      rowTarget.appendChild(lblTarget);
+      rowTarget.appendChild(valTarget);
+      metaList.appendChild(rowTarget);
 
-      const pReq = document.createElement('p');
-      pReq.className = 'font-mono';
-      pReq.style.fontSize = '0.8rem';
-      pReq.style.color = 'var(--text-secondary)';
-      pReq.textContent = `Request ID: ${trace.request_id || 'NOT RECORDED'}`;
-      if (trace.request_id) {
-        const copyReqBtn = document.createElement('button');
-        copyReqBtn.type = 'button';
-        copyReqBtn.className = 'copy-btn';
-        copyReqBtn.style.marginLeft = '0.4rem';
-        copyReqBtn.style.padding = '0.1rem 0.35rem';
-        copyReqBtn.style.fontSize = '0.65rem';
-        copyReqBtn.textContent = 'Copy';
-        copyReqBtn.setAttribute('aria-label', 'Copy Request ID');
-        copyReqBtn.setAttribute('title', 'Copy Request ID to clipboard');
-        copyReqBtn.addEventListener('click', () => this.copyToClipboard(trace.request_id, copyReqBtn));
-        pReq.appendChild(copyReqBtn);
-      }
+      // Request ID Row
+      const rowReq = document.createElement('div');
+      rowReq.className = 'trace-key-value-row';
+      const lblReq = document.createElement('span');
+      lblReq.className = 'trace-key-label';
+      lblReq.textContent = 'Request ID';
+      const valReq = document.createElement('span');
+      valReq.className = 'trace-key-value mono';
+      valReq.textContent = trace.request_id || 'NOT RECORDED';
+      rowReq.appendChild(lblReq);
+      rowReq.appendChild(valReq);
+      metaList.appendChild(rowReq);
 
-      const pTimeWindow = document.createElement('p');
-      pTimeWindow.className = 'font-mono';
-      pTimeWindow.style.fontSize = '0.75rem';
-      pTimeWindow.style.color = 'var(--text-muted)';
-      pTimeWindow.style.marginTop = '0.3rem';
-      pTimeWindow.textContent = `Time Span: ${trace.start_time || 'N/A'} ➔ ${trace.end_time || 'N/A'}`;
+      // Time Window Row
+      const rowTime = document.createElement('div');
+      rowTime.className = 'trace-key-value-row';
+      const lblTime = document.createElement('span');
+      lblTime.className = 'trace-key-label';
+      lblTime.textContent = 'Time Span';
+      const valTime = document.createElement('span');
+      valTime.className = 'trace-key-value mono text-muted';
+      valTime.textContent = `${trace.start_time || 'N/A'} ➔ ${trace.end_time || 'N/A'}`;
+      rowTime.appendChild(lblTime);
+      rowTime.appendChild(valTime);
+      metaList.appendChild(rowTime);
 
-      metaCard.appendChild(pStatus);
-      metaCard.appendChild(pAction);
-      metaCard.appendChild(pTarget);
-      metaCard.appendChild(pReq);
-      metaCard.appendChild(pTimeWindow);
+      metaCard.appendChild(metaList);
 
       // Authorization Evidence Card
       const authCard = document.createElement('div');
@@ -1797,52 +1816,65 @@ document.addEventListener('DOMContentLoaded', () => {
         noAuthP.textContent = 'No explicit authorization grant or token record found in provenance events for this correlation ID.';
         authCard.appendChild(noAuthP);
       } else {
-        const pAuthToken = document.createElement('p');
-        pAuthToken.className = 'font-mono';
-        pAuthToken.style.fontSize = '0.8rem';
-        pAuthToken.style.marginBottom = '0.3rem';
-        pAuthToken.textContent = `Capability Token ID: ${ae.authorization_token_id || 'UNISSUED'}`;
+        const authList = document.createElement('div');
+        authList.className = 'trace-key-value-list';
+
+        // Token ID Row
+        const rowToken = document.createElement('div');
+        rowToken.className = 'trace-key-value-row';
+        const lblToken = document.createElement('span');
+        lblToken.className = 'trace-key-label';
+        lblToken.textContent = 'Token ID';
+        const valToken = document.createElement('span');
+        valToken.className = 'trace-key-value';
         if (ae.authorization_token_id) {
-          const copyAuthBtn = document.createElement('button');
-          copyAuthBtn.type = 'button';
-          copyAuthBtn.className = 'copy-btn';
-          copyAuthBtn.style.marginLeft = '0.4rem';
-          copyAuthBtn.style.padding = '0.1rem 0.35rem';
-          copyAuthBtn.style.fontSize = '0.65rem';
-          copyAuthBtn.textContent = 'Copy';
-          copyAuthBtn.setAttribute('aria-label', 'Copy Capability Token ID');
-          copyAuthBtn.setAttribute('title', 'Copy Capability Token ID to clipboard');
-          copyAuthBtn.addEventListener('click', () => this.copyToClipboard(ae.authorization_token_id, copyAuthBtn));
-          pAuthToken.appendChild(copyAuthBtn);
+          const tokenChip = document.createElement('span');
+          tokenChip.className = 'tech-id';
+          tokenChip.textContent = ae.authorization_token_id;
+          valToken.appendChild(tokenChip);
+        } else {
+          valToken.classList.add('mono');
+          valToken.textContent = 'UNISSUED';
         }
+        rowToken.appendChild(lblToken);
+        rowToken.appendChild(valToken);
+        authList.appendChild(rowToken);
 
-        const pDigest = document.createElement('p');
-        pDigest.className = 'font-mono';
-        pDigest.style.fontSize = '0.8rem';
-        pDigest.style.marginBottom = '0.3rem';
-        pDigest.style.wordBreak = 'break-all';
-        pDigest.textContent = `Payload Digest: ${ae.canonical_request_digest || 'UNRECORDED'}`;
+        // Digest Row
+        const rowDigest = document.createElement('div');
+        rowDigest.className = 'trace-key-value-row';
+        const lblDigest = document.createElement('span');
+        lblDigest.className = 'trace-key-label';
+        lblDigest.textContent = 'Payload Digest';
+        const valDigest = document.createElement('span');
+        valDigest.className = 'trace-key-value';
         if (ae.canonical_request_digest) {
-          const copyDigestBtn = document.createElement('button');
-          copyDigestBtn.type = 'button';
-          copyDigestBtn.className = 'copy-btn';
-          copyDigestBtn.style.marginLeft = '0.4rem';
-          copyDigestBtn.style.padding = '0.1rem 0.35rem';
-          copyDigestBtn.style.fontSize = '0.65rem';
-          copyDigestBtn.textContent = 'Copy';
-          copyDigestBtn.setAttribute('aria-label', 'Copy Payload Digest');
-          copyDigestBtn.setAttribute('title', 'Copy Payload Digest to clipboard');
-          copyDigestBtn.addEventListener('click', () => this.copyToClipboard(ae.canonical_request_digest, copyDigestBtn));
-          pDigest.appendChild(copyDigestBtn);
+          const digestChip = document.createElement('span');
+          digestChip.className = 'tech-hash';
+          digestChip.textContent = ae.canonical_request_digest;
+          valDigest.appendChild(digestChip);
+        } else {
+          valDigest.classList.add('mono');
+          valDigest.textContent = 'UNRECORDED';
         }
+        rowDigest.appendChild(lblDigest);
+        rowDigest.appendChild(valDigest);
+        authList.appendChild(rowDigest);
 
-        const pPolicy = document.createElement('p');
-        pPolicy.style.fontSize = '0.85rem';
-        pPolicy.textContent = `Policy Version: ${ae.policy_version || 'NOT RECORDED'}`;
+        // Policy Version Row
+        const rowPolicy = document.createElement('div');
+        rowPolicy.className = 'trace-key-value-row';
+        const lblPolicy = document.createElement('span');
+        lblPolicy.className = 'trace-key-label';
+        lblPolicy.textContent = 'Policy Version';
+        const valPolicy = document.createElement('span');
+        valPolicy.className = 'trace-key-value mono';
+        valPolicy.textContent = ae.policy_version || 'NOT RECORDED';
+        rowPolicy.appendChild(lblPolicy);
+        rowPolicy.appendChild(valPolicy);
+        authList.appendChild(rowPolicy);
 
-        authCard.appendChild(pAuthToken);
-        authCard.appendChild(pDigest);
-        authCard.appendChild(pPolicy);
+        authCard.appendChild(authList);
       }
 
       metaGrid.appendChild(metaCard);
@@ -2070,22 +2102,13 @@ document.addEventListener('DOMContentLoaded', () => {
       if (selectedEv) {
         const inspectorBox = document.createElement('div');
         inspectorBox.id = 'area-evidence-inspector';
-        inspectorBox.style.marginTop = '1.25rem';
-        inspectorBox.style.borderTop = '1px solid var(--border-default)';
-        inspectorBox.style.paddingTop = '1rem';
+        inspectorBox.className = 'evidence-inspector-box';
 
         const inspHeader = document.createElement('div');
-        inspHeader.style.display = 'flex';
-        inspHeader.style.justifyContent = 'space-between';
-        inspHeader.style.alignItems = 'center';
-        inspHeader.style.marginBottom = '0.75rem';
-        inspHeader.style.flexWrap = 'wrap';
-        inspHeader.style.gap = '0.5rem';
+        inspHeader.className = 'evidence-inspector-header';
 
         const inspTitle = document.createElement('h4');
-        inspTitle.style.fontSize = '0.9rem';
-        inspTitle.style.fontWeight = '700';
-        inspTitle.style.color = 'var(--accent-primary)';
+        inspTitle.className = 'evidence-inspector-title';
         inspTitle.textContent = `Evidence Inspector: Event #${selectedEv.sequence_number ?? '-'} (${selectedEv.event_type || 'UNKNOWN'})`;
 
         const inspCopyBtn = document.createElement('button');
@@ -2109,12 +2132,14 @@ document.addEventListener('DOMContentLoaded', () => {
         // Field Inspector Breakdown Card
         const fieldsCard = document.createElement('div');
         fieldsCard.className = 'card';
-        fieldsCard.style.padding = '0.85rem';
 
         const fieldsHeader = document.createElement('div');
         fieldsHeader.className = 'card-header';
         fieldsHeader.textContent = 'Structured Event Metadata';
         fieldsCard.appendChild(fieldsHeader);
+
+        const fieldListContainer = document.createElement('div');
+        fieldListContainer.className = 'evidence-field-list';
 
         const fieldList = [
           { label: 'Event ID', value: selectedEv.event_id, mono: true },
@@ -2122,62 +2147,68 @@ document.addEventListener('DOMContentLoaded', () => {
           { label: 'Provenance Source', value: selectedEv.provenance_source },
           { label: 'Sequence Number', value: selectedEv.sequence_number, mono: true },
           { label: 'Timestamp', value: selectedEv.timestamp, mono: true },
-          { label: 'Correlation ID', value: selectedEv.correlation_id, mono: true, copyable: true },
-          { label: 'Request ID', value: selectedEv.request_id, mono: true, copyable: true },
+          { label: 'Correlation ID', value: selectedEv.correlation_id, techId: true, copyable: true },
+          { label: 'Request ID', value: selectedEv.request_id, techId: true, copyable: true },
           { label: 'Action Name', value: selectedEv.action_name },
           { label: 'Target Resource', value: selectedEv.target },
-          { label: 'Capability Token ID', value: selectedEv.authorization_token_id, mono: true, copyable: true },
-          { label: 'Canonical Request Digest', value: selectedEv.canonical_request_digest, mono: true, copyable: true },
+          { label: 'Capability Token ID', value: selectedEv.authorization_token_id, techId: true, copyable: true },
+          { label: 'Canonical Request Digest', value: selectedEv.canonical_request_digest, techHash: true, copyable: true },
           { label: 'Policy Version', value: selectedEv.policy_version, mono: true },
-          { label: 'Previous Entry Hash', value: selectedEv.prev_hash, mono: true, copyable: true },
-          { label: 'Entry Cryptographic Hash', value: selectedEv.entry_hash, mono: true, copyable: true }
+          { label: 'Previous Entry Hash', value: selectedEv.prev_hash, techHash: true, copyable: true },
+          { label: 'Entry Cryptographic Hash', value: selectedEv.entry_hash, techHash: true, copyable: true }
         ];
 
         fieldList.forEach(item => {
           const row = document.createElement('div');
-          row.style.marginBottom = '0.4rem';
-          row.style.fontSize = '0.8rem';
-          row.style.wordBreak = 'break-all';
+          row.className = 'evidence-field-row';
 
           const lbl = document.createElement('span');
-          lbl.style.color = 'var(--text-secondary)';
-          lbl.style.fontWeight = '600';
-          lbl.textContent = `${item.label}: `;
+          lbl.className = 'evidence-field-label';
+          lbl.textContent = item.label;
           row.appendChild(lbl);
+
+          const contentDiv = document.createElement('div');
+          contentDiv.className = 'evidence-field-content';
 
           const valSpan = document.createElement('span');
           if (item.value !== null && item.value !== undefined && item.value !== '') {
             valSpan.textContent = String(item.value);
-            if (item.mono) valSpan.className = 'font-mono';
-            if (item.bold) valSpan.style.fontWeight = '700';
-            row.appendChild(valSpan);
+            if (item.techHash) {
+              valSpan.className = 'tech-hash';
+            } else if (item.techId) {
+              valSpan.className = 'tech-id';
+            } else {
+              valSpan.className = 'evidence-field-value';
+              if (item.mono) valSpan.classList.add('font-mono');
+              if (item.bold) valSpan.classList.add('font-bold');
+            }
+            contentDiv.appendChild(valSpan);
 
             if (item.copyable) {
               const btn = document.createElement('button');
               btn.type = 'button';
-              btn.className = 'copy-btn';
-              btn.style.marginLeft = '0.4rem';
-              btn.style.padding = '0.1rem 0.35rem';
-              btn.style.fontSize = '0.65rem';
+              btn.className = 'copy-btn evidence-field-copy-btn';
               btn.textContent = 'Copy';
               btn.setAttribute('aria-label', `Copy ${item.label}`);
               btn.setAttribute('title', `Copy ${item.label} to clipboard`);
               btn.addEventListener('click', () => this.copyToClipboard(String(item.value), btn));
-              row.appendChild(btn);
+              contentDiv.appendChild(btn);
             }
           } else {
-            valSpan.className = 'text-dim';
+            valSpan.className = 'text-dim evidence-field-value';
             valSpan.textContent = 'UNAVAILABLE / NOT RECORDED';
-            row.appendChild(valSpan);
+            contentDiv.appendChild(valSpan);
           }
 
-          fieldsCard.appendChild(row);
+          row.appendChild(contentDiv);
+          fieldListContainer.appendChild(row);
         });
+
+        fieldsCard.appendChild(fieldListContainer);
 
         // Raw JSON Block Card
         const jsonCard = document.createElement('div');
         jsonCard.className = 'card';
-        jsonCard.style.padding = '0.85rem';
 
         const jsonHeader = document.createElement('div');
         jsonHeader.className = 'card-header';

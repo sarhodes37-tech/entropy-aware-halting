@@ -1997,49 +1997,9 @@ class Capability:
     fencing_token: int = 1
     scope_key: Optional[str] = None
 
-    def __post_init__(self):
-        self._validate_timestamp_fields()
-
-    def _validate_timestamp_fields(self) -> None:
-        """Strictly validates created_at and expires_at against type ambiguity, finiteness, and overflow."""
-        for field_name, val in (("created_at", self.created_at), ("expires_at", self.expires_at)):
-            if isinstance(val, bool) or not isinstance(val, (int, float)):
-                raise TypeError(f"Capability: {field_name} must be a numeric timestamp, got {type(val).__name__}")
-            if isinstance(val, int):
-                if not (MIN_TIMESTAMP_BOUND <= val <= MAX_TIMESTAMP_BOUND):
-                    raise ValueError(f"Capability: {field_name} integer overflows signed 64-bit limits")
-            else:
-                if not math.isfinite(val):
-                    raise ValueError(f"Capability: {field_name} must be a finite number, got {val}")
-                if not (MIN_TIMESTAMP_BOUND <= val <= MAX_TIMESTAMP_BOUND):
-                    raise ValueError(f"Capability: {field_name} float overflows signed 64-bit limits")
-
     def is_expired(self, current_time: Optional[float] = None) -> bool:
-        if isinstance(self.expires_at, bool) or not isinstance(self.expires_at, (int, float)):
-            return True
-        if isinstance(self.expires_at, int):
-            if not (MIN_TIMESTAMP_BOUND <= self.expires_at <= MAX_TIMESTAMP_BOUND):
-                return True
-            exp_val: Union[int, float] = self.expires_at
-        else:
-            if not math.isfinite(self.expires_at) or not (MIN_TIMESTAMP_BOUND <= self.expires_at <= MAX_TIMESTAMP_BOUND):
-                return True
-            exp_val = self.expires_at
-
-        if current_time is not None:
-            if isinstance(current_time, bool) or not isinstance(current_time, (int, float)):
-                return True
-            if isinstance(current_time, int):
-                if not (MIN_TIMESTAMP_BOUND <= current_time <= MAX_TIMESTAMP_BOUND):
-                    return True
-                now: Union[int, float] = current_time
-            else:
-                if not math.isfinite(current_time) or not (MIN_TIMESTAMP_BOUND <= current_time <= MAX_TIMESTAMP_BOUND):
-                    return True
-                now = current_time
-        else:
-            now = time.time()
-        return now >= exp_val
+        now = current_time if current_time is not None else time.time()
+        return now >= self.expires_at
 
     def to_dict(self) -> Dict[str, Any]:
         data = asdict(self)
