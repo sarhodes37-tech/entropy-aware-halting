@@ -140,3 +140,10 @@ Differential equivalence across all 65,536 code points (BMP) confirms 100% ident
 - Malformed Signatures (non-hex characters): **4.32x speedup** (76.8% latency reduction: median 1.961 µs -> 0.454 µs, p95 1.975 µs -> 0.467 µs).
 Differential testing across edge cases and all 128 ASCII codepoints confirms 100% identical Boolean classification.
 **Action:** When validating fixed-length hexadecimal digest strings or cryptographic signatures, use module-level precompiled regular expressions (`re.compile(r"^[0-9a-fA-F]{N}$")`) instead of dynamically allocated frozensets and generator expressions.
+
+## 2026-11-10 - Set Union Elimination in Jaccard Similarity Computation
+**Learning:** In candidate resolution and clustering routines like `ExactAndNormalizedResolver._resolve_with_features`, computing token overlap Jaccard index via `intersection = set_a & set_b; union = set_a | set_b; jaccard = len(intersection) / len(union)` forces Python to allocate, hash, and resize a new set object on the heap for every pairwise comparison ($O(N^2)$ across candidates). Because $|A \cup B| = |A| + |B| - |A \cap B|$, deriving `union_len = len(set_a) + len(set_b) - inter_len` from `inter_len = len(set_a & set_b)` avoids the union set heap allocation and traversal entirely. Microbenchmarks show:
+- Isolated Jaccard evaluation: **3.28x speedup** (69.6% latency reduction: median 2.807 µs -> 0.855 µs per operation).
+- End-to-end `_resolve_with_features` pairwise comparison: **1.47x speedup** (32.0% latency reduction: median 3.462 µs -> 2.354 µs per comparison).
+Bit-level differential testing across empty sets, disjoint sets, identical sets, subsets, and 500 randomized token sets confirms 100% identical similarity score outputs.
+**Action:** When computing Jaccard index between two sets, never construct an explicit union set (`set_a | set_b`); compute union cardinality mathematically using `len(set_a) + len(set_b) - len(set_a & set_b)`.

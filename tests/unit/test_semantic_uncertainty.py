@@ -479,3 +479,59 @@ def test_fast_path_feature_extraction_differential_equivalence():
         expected = baseline_unoptimized_get_features(text)
         actual = ExactAndNormalizedResolver._get_features(text)
         assert actual == expected, f"Discrepancy detected for input text: {text!r}"
+
+
+def test_jaccard_optimization_differential_equivalence():
+    """
+    Verifies that the set-union-free Jaccard calculation:
+        inter_len = len(set_a & set_b)
+        union_len = len(set_a) + len(set_b) - inter_len
+        jaccard = inter_len / union_len if union_len else 1.0
+    produces bit-for-bit identical results to explicit union:
+        intersection = set_a & set_b
+        union = set_a | set_b
+        jaccard = len(intersection) / len(union) if union else 1.0
+    across empty sets, disjoint sets, identical sets, subset relations, and randomized token sets.
+    """
+    import random
+
+    def baseline_jaccard(s_a: set, s_b: set) -> float:
+        intersection = s_a & s_b
+        union = s_a | set(s_b)
+        return len(intersection) / len(union) if union else 1.0
+
+    def optimized_jaccard(s_a: set, s_b: set) -> float:
+        inter_len = len(s_a & s_b)
+        union_len = len(s_a) + len(s_b) - inter_len
+        return inter_len / union_len if union_len else 1.0
+
+    # 1. Edge cases
+    edge_cases = [
+        (set(), set()),
+        (set(), {"apple", "banana"}),
+        ({"apple", "banana"}, set()),
+        ({"apple"}, {"apple"}),
+        ({"apple", "banana"}, {"apple", "banana"}),
+        ({"apple", "banana"}, {"cherry", "date"}),
+        ({"apple", "banana"}, {"apple"}),
+        ({"apple"}, {"apple", "banana"}),
+        ({"a", "b", "c", "d"}, {"b", "c"}),
+        ({f"token_{i}" for i in range(10)}, {f"token_{i}" for i in range(10)}),
+    ]
+
+    for s_a, s_b in edge_cases:
+        expected = baseline_jaccard(s_a, s_b)
+        actual = optimized_jaccard(s_a, s_b)
+        assert actual == expected, f"Discrepancy for edge case ({s_a}, {s_b}): {actual} != {expected}"
+
+    # 2. Randomized permutations
+    vocab = [f"word_{i}" for i in range(200)]
+    random.seed(1337)
+    for _ in range(500):
+        len_a = random.randint(0, 40)
+        len_b = random.randint(0, 40)
+        s_a = set(random.sample(vocab, len_a))
+        s_b = set(random.sample(vocab, len_b))
+        expected = baseline_jaccard(s_a, s_b)
+        actual = optimized_jaccard(s_a, s_b)
+        assert actual == expected, f"Discrepancy for random sets ({s_a}, {s_b}): {actual} != {expected}"
