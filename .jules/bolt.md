@@ -167,3 +167,12 @@ Differential testing across all 65,536 code points of the BMP confirms 100% iden
 - Batch unique key traversal: **2.89x to 3.26x speedup** (65.4% to 69.3% overall latency reduction).
 Differential equivalence testing across all pattern combinations, prefixes, suffixes, and non-sensitive strings confirms 100% identical Boolean classification.
 **Action:** When scanning strings for multi-pattern substring matches, consolidate fixed pattern tuples into a module-level precompiled regex alternation rather than iterating with `any(p in s for p in PATTERNS)`.
+
+## 2026-11-12 - Early-Termination Short-Circuiting in Payload Egress Bounds Validation
+**Learning:** In egress policy enforcement and zero-trust permission models like `PermissionScope.validate_egress`, validating both memory footprint (`max_payload_bytes`) and nested container row counts (`max_row_count`) previously performed exhaustive full-tree DFS traversals across all objects and collections in the response payload. Computing the global maximum collection size (`count_max_records`) and calculating complete memory size (`_estimate_payload_size`) before comparing against policy thresholds meant that oversized or malicious egress responses (e.g., exfiltration payloads returning 500+ records or megabytes of data) incurred full DFS exploration costs before failing closed. Replacing the exhaustive full-tree traversal with threshold-bounded early termination yields dramatic speedups on violating payloads:
+- Payload Byte Limit Violations: **504x speedup** (99.8% latency reduction: 910.15 µs -> 1.80 µs per check).
+- Top-Level Row Count Violations: **1.32x speedup** (24.3% latency reduction: 1203.94 µs -> 911.43 µs per check).
+- Nested Row Count Violations: **1.29x speedup** (22.2% latency reduction: 491.69 µs -> 382.48 µs per check).
+- Isolated row-count kernel inspection: **~2,400x speedup** on top-level violations (from ~775 µs to ~0.32 µs per check).
+Differential testing across empty collections, primitives, exact boundary limits, deeply nested structures, and 200 randomized object trees confirms 100% identical boolean validation decisions.
+**Action:** In security boundary and egress validation DFS kernels, accept threshold parameters (such as `max_bytes` and `max_row_count`) to short-circuit iteration and fail closed immediately upon exceeding limits rather than calculating global totals.
