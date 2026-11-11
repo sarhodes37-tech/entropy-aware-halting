@@ -843,3 +843,50 @@ class TestSideEffectPolicyEngineInvariants:
             assert legacy_hex_check(test_sig) == optimized_hex_check(test_sig), (
                 f"ASCII character mismatch at code {c_code}: {ch!r}"
             )
+
+    def test_typed_human_approval_record_is_expired_encapsulation(self):
+        """
+        Validates TypedHumanApprovalRecord.is_expired() fail-closed behavior across
+        valid timestamps, expired timestamps, clock overrides, non-finite values, and overflows.
+        """
+        rec_none = TypedHumanApprovalRecord(
+            approval_id="APP-NONE",
+            operation_id="package_publish",
+            target_resource="https://example.com",
+            canonical_args_digest="digest",
+            task_id="TASK-1",
+            policy_version="1.0.0",
+            approved_by_principal="admin",
+            timestamp="2026-01-01T00:00:00Z",
+            signature="0" * 64,
+            expires_at=None,
+        )
+        assert rec_none.is_expired(current_time=1000) is False
+        # Clock override invalid/overflow fails closed
+        assert rec_none.is_expired(current_time=True) is True
+        assert rec_none.is_expired(current_time="invalid") is True
+        assert rec_none.is_expired(current_time=float("nan")) is True
+        assert rec_none.is_expired(current_time=float("inf")) is True
+        assert rec_none.is_expired(current_time=1 << 63) is True
+        assert rec_none.is_expired(current_time=-(1 << 63) - 1) is True
+
+        rec_exp = TypedHumanApprovalRecord(
+            approval_id="APP-EXP",
+            operation_id="package_publish",
+            target_resource="https://example.com",
+            canonical_args_digest="digest",
+            task_id="TASK-1",
+            policy_version="1.0.0",
+            approved_by_principal="admin",
+            timestamp="2026-01-01T00:00:00Z",
+            signature="0" * 64,
+            expires_at=2000.0,
+        )
+        assert rec_exp.is_expired(current_time=1500.0) is False
+        assert rec_exp.is_expired(current_time=2000.0) is True
+        assert rec_exp.is_expired(current_time=2500.0) is True
+
+        # Mutated expires_at fails closed
+        for bad_val in (True, "string", float("nan"), float("inf"), 1 << 63, -(1 << 63) - 1):
+            object.__setattr__(rec_exp, "expires_at", bad_val)
+            assert rec_exp.is_expired(current_time=1500.0) is True

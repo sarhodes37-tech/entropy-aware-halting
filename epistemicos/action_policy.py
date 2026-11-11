@@ -103,6 +103,41 @@ class TypedHumanApprovalRecord:
     signature: str
     expires_at: Optional[float] = None
 
+    def is_expired(self, current_time: Optional[float] = None) -> bool:
+        """
+        Evaluates expiration failing closed on corrupted, non-finite, or out-of-bounds inputs.
+        Returns True if the approval record is expired, or if timestamps/clock overrides are invalid.
+        """
+        if current_time is not None:
+            if isinstance(current_time, bool) or not isinstance(current_time, (int, float)):
+                return True
+            if isinstance(current_time, int):
+                if not (MIN_TIMESTAMP_BOUND <= current_time <= MAX_TIMESTAMP_BOUND):
+                    return True
+                now: Union[int, float] = current_time
+            else:
+                if not math.isfinite(current_time) or not (MIN_TIMESTAMP_BOUND <= current_time <= MAX_TIMESTAMP_BOUND):
+                    return True
+                now = current_time
+        else:
+            now = time.time()
+
+        if self.expires_at is None:
+            return False
+
+        if isinstance(self.expires_at, bool) or not isinstance(self.expires_at, (int, float)):
+            return True
+        if isinstance(self.expires_at, int):
+            if not (MIN_TIMESTAMP_BOUND <= self.expires_at <= MAX_TIMESTAMP_BOUND):
+                return True
+            exp_val: Union[int, float] = self.expires_at
+        else:
+            if not math.isfinite(self.expires_at) or not (MIN_TIMESTAMP_BOUND <= self.expires_at <= MAX_TIMESTAMP_BOUND):
+                return True
+            exp_val = self.expires_at
+
+        return now >= exp_val
+
 
 class ActionRegistry:
     """
@@ -381,23 +416,20 @@ class SideEffectPolicyEngine:
             now = time.time()
 
         # Expiration check: strictly require numeric finite int/float without coercion/overflow
-        if record.expires_at is not None:
-            is_valid_num = isinstance(record.expires_at, (int, float)) and not isinstance(
-                record.expires_at, bool
-            )
-            if not is_valid_num:
-                return False, "Approval record expiration is malformed"
-            if isinstance(record.expires_at, int):
-                if not (MIN_TIMESTAMP_BOUND <= record.expires_at <= MAX_TIMESTAMP_BOUND):
-                    return False, "Approval record expiration is non-finite or overflows"
-                exp_val: Union[int, float] = record.expires_at
-            else:
-                if not math.isfinite(record.expires_at) or not (MIN_TIMESTAMP_BOUND <= record.expires_at <= MAX_TIMESTAMP_BOUND):
-                    return False, "Approval record expiration is non-finite or overflows"
-                exp_val = record.expires_at
-
-            if now >= exp_val:
-                return False, "Approval record expired"
+        if record.is_expired(current_time=current_time):
+            if record.expires_at is not None:
+                is_valid_num = isinstance(record.expires_at, (int, float)) and not isinstance(
+                    record.expires_at, bool
+                )
+                if not is_valid_num:
+                    return False, "Approval record expiration is malformed"
+                if isinstance(record.expires_at, int):
+                    if not (MIN_TIMESTAMP_BOUND <= record.expires_at <= MAX_TIMESTAMP_BOUND):
+                        return False, "Approval record expiration is non-finite or overflows"
+                else:
+                    if not math.isfinite(record.expires_at) or not (MIN_TIMESTAMP_BOUND <= record.expires_at <= MAX_TIMESTAMP_BOUND):
+                        return False, "Approval record expiration is non-finite or overflows"
+            return False, "Approval record expired"
 
         # Validate signature format: strictly exactly 64 ASCII hex characters
         # Performance optimization: precompiled regex avoids per-call frozenset construction and per-character generator loop overhead
