@@ -460,8 +460,39 @@ def test_append_event_does_not_call_reconcile_active_segment(persistence_env, mo
     assert res.event_id == "ev_no_reconcile"
 
 
+class CountingCursor:
+    """Wraps an sqlite3.Cursor to count rows retrieved without re-executing queries."""
+    def __init__(self, real_cursor, counter_callback):
+        self._real_cursor = real_cursor
+        self._counter_callback = counter_callback
+
+    def __getattr__(self, name):
+        return getattr(self._real_cursor, name)
+
+    def fetchone(self):
+        row = self._real_cursor.fetchone()
+        if row is not None:
+            self._counter_callback(1)
+        return row
+
+    def fetchall(self):
+        rows = self._real_cursor.fetchall()
+        self._counter_callback(len(rows))
+        return rows
+
+    def fetchmany(self, size=None):
+        rows = self._real_cursor.fetchmany(size) if size is not None else self._real_cursor.fetchmany()
+        self._counter_callback(len(rows))
+        return rows
+
+    def __iter__(self):
+        for row in self._real_cursor:
+            self._counter_callback(1)
+            yield row
+
+
 class CountingConnectionWrapper:
-    """Wraps an sqlite3.Connection to count historical rows retrieved."""
+    """Wraps an sqlite3.Connection to accurately count historical rows retrieved."""
     def __init__(self, real_conn):
         self._real_conn = real_conn
         self.historical_rows_retrieved = 0
@@ -471,11 +502,11 @@ class CountingConnectionWrapper:
 
     def execute(self, sql, *args, **kwargs):
         cur = self._real_conn.execute(sql, *args, **kwargs)
-        # Count historical reads (SELECT queries on seen_events)
         if "seen_events" in sql and "SELECT" in sql:
-            rows = cur.fetchall()
-            self.historical_rows_retrieved += len(rows)
-            return self._real_conn.execute(sql, *args, **kwargs)
+            return CountingCursor(
+                cur,
+                lambda count: setattr(self, "historical_rows_retrieved", self.historical_rows_retrieved + count),
+            )
         return cur
 
 

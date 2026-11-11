@@ -507,7 +507,7 @@ def append_event(
         segment_fd: Open writable file descriptor for the segment log file.
         db_conn: Active SQLite connection.
         lock_file_path: Mandatory filepath to dedicated lockfile. Cannot be None or empty.
-        db_path: Path to SQLite DB file (required for indeterminate commit recovery).
+        db_path: Optional path to SQLite DB file (auto-discovered from db_conn via PRAGMA database_list if omitted).
 
     Returns:
         AppendResult confirming durable persistence and commitment.
@@ -612,9 +612,21 @@ def append_event(
                     (new_watermark, ledger_id, segment_sequence),
                 )
         except Exception as commit_exc:
-            if db_path:
+            # Auto-resolve db_path from db_conn if not explicitly passed
+            effective_db_path = db_path
+            if not effective_db_path:
+                try:
+                    rows = db_conn.execute("PRAGMA database_list;").fetchall()
+                    for _, name, file_path in rows:
+                        if name == "main" and file_path:
+                            effective_db_path = file_path
+                            break
+                except Exception:
+                    effective_db_path = None
+
+            if effective_db_path:
                 recovered = _recover_indeterminate_commit(
-                    db_path=db_path,
+                    db_path=effective_db_path,
                     ledger_id=ledger_id,
                     segment_sequence=segment_sequence,
                     event_id=event_id,
@@ -626,6 +638,12 @@ def append_event(
                 )
                 if recovered is not None:
                     return recovered
+
+            # If commit durability cannot be verified via fresh connection, do not assume rollback
+            if not effective_db_path:
+                raise IndeterminateCommitError(
+                    f"SQLite transaction outcome indeterminate and db_path unresolvable: {commit_exc}"
+                ) from commit_exc
 
             os.ftruncate(segment_fd, watermark_offset)
             os.fdatasync(segment_fd)
