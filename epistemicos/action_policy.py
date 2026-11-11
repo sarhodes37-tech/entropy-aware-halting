@@ -92,6 +92,12 @@ class ActionPolicy:
 
 @dataclass
 class TypedHumanApprovalRecord:
+    """
+    Typed, authenticated human approval record for externally consequential actions.
+    Note on mutability: __post_init__ guarantees construction-time validation. Downstream
+    authorization-time validation (via is_expired and verify_approval_record) verifies
+    integrity and expiration guards upon policy evaluation.
+    """
     approval_id: str
     operation_id: str
     target_resource: str
@@ -126,11 +132,11 @@ class TypedHumanApprovalRecord:
             if isinstance(self.expires_at, str):
                 try:
                     exp_float = float(self.expires_at)
-                    if not math.isfinite(exp_float):
-                        raise ValueError(f"TypedHumanApprovalRecord: expires_at must be a finite number, got {self.expires_at}")
-                    self.expires_at = exp_float
                 except ValueError as e:
                     raise ValueError(f"TypedHumanApprovalRecord: expires_at cannot be parsed as a float: {self.expires_at}") from e
+                if not math.isfinite(exp_float):
+                    raise ValueError(f"TypedHumanApprovalRecord: expires_at must be a finite number, got {self.expires_at}")
+                self.expires_at = exp_float
             if isinstance(self.expires_at, bool) or not isinstance(self.expires_at, (int, float)):
                 raise TypeError(f"TypedHumanApprovalRecord: expires_at must be a numeric timestamp, got {type(self.expires_at).__name__}")
             if isinstance(self.expires_at, int):

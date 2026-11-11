@@ -943,8 +943,8 @@ class TestSideEffectPolicyEngineInvariants:
         with pytest.raises(ValueError, match="cannot be parsed as a float"):
             TypedHumanApprovalRecord(**base_kwargs, expires_at="invalid-date")
 
-        # 5. Reject non-finite floats
-        for bad_flt in (float("nan"), float("inf"), float("-inf")):
+        # 5. Reject non-finite floats (including string representations 'nan', 'inf', '-inf')
+        for bad_flt in (float("nan"), float("inf"), float("-inf"), "nan", "inf", "-inf"):
             with pytest.raises(ValueError, match="must be a finite number"):
                 TypedHumanApprovalRecord(**base_kwargs, expires_at=bad_flt)
 
