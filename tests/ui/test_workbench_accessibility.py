@@ -964,7 +964,17 @@ def test_live_region_announcements(a11y_comprehensive_server):
         assert "Copy full JSON payload for trace" in trace_json_btn.get_attribute("aria-label")
         assert "Copy JSON payload for trace" in trace_json_btn.get_attribute("title")
 
-        # 8.5. Clean up mock and restore original navigator.clipboard
+        # 8.5. Verify Provenance Explorer Copy Event ID button presence and accessible attributes
+        page.click("#tab-provenance")
+        page.wait_for_selector("#provenance-record-list .trace-item", state="visible")
+        page.click("#provenance-record-list .trace-item:first-child")
+        page.wait_for_selector("#provenance-inspector-content:not(.hidden)", state="visible")
+        prov_event_id_btn = page.locator("#provenance-inspector-content .copy-btn", has_text="Copy Event ID")
+        assert prov_event_id_btn.count() == 1
+        assert "Copy Event ID" in prov_event_id_btn.get_attribute("aria-label")
+        assert "Copy Event ID" in prov_event_id_btn.get_attribute("title")
+
+        # 8.6. Clean up mock and restore original navigator.clipboard
         page.evaluate("""() => {
             if (window.__orig_clipboard !== undefined) {
                 Object.defineProperty(navigator, 'clipboard', {

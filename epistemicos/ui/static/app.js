@@ -2676,6 +2676,17 @@ document.addEventListener('DOMContentLoaded', () => {
         actionBtnGroup.appendChild(traceBtn);
       }
 
+      if (record.event_id) {
+        const copyEventIdBtn = document.createElement('button');
+        copyEventIdBtn.type = 'button';
+        copyEventIdBtn.className = 'copy-btn';
+        copyEventIdBtn.textContent = 'Copy Event ID';
+        copyEventIdBtn.setAttribute('aria-label', `Copy Event ID ${record.event_id}`);
+        copyEventIdBtn.setAttribute('title', `Copy Event ID ${record.event_id} to clipboard`);
+        copyEventIdBtn.addEventListener('click', () => this.copyToClipboard(record.event_id, copyEventIdBtn));
+        actionBtnGroup.appendChild(copyEventIdBtn);
+      }
+
       const copyRecordBtn = document.createElement('button');
       copyRecordBtn.type = 'button';
       copyRecordBtn.className = 'copy-btn';
