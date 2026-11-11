@@ -340,6 +340,89 @@ def test_permission_scope_validate_egress_exceeds_row_count_dict():
     assert scope.validate_egress(payload) is False
 
 
+def test_permission_scope_validate_egress_short_circuit_differential_equivalence():
+    """
+    Validates 100% differential equivalence between the short-circuiting
+    egress row validation and the baseline exhaustive traversal across empty,
+    scalar, boundary, deeply nested, and randomized payloads.
+    """
+    def baseline_count_max_records(data):
+        max_records = 0
+        stack = [data]
+        while stack:
+            current = stack.pop()
+            if isinstance(current, list):
+                if len(current) > max_records:
+                    max_records = len(current)
+                stack.extend(current)
+            elif isinstance(current, dict):
+                if len(current) > max_records:
+                    max_records = len(current)
+                stack.extend(current.values())
+        return max_records
+
+    def baseline_validate(scope_limit, payload):
+        return baseline_count_max_records(payload) <= scope_limit
+
+    # Deterministic test fixtures covering edge cases
+    test_cases = [
+        # (payload, limit)
+        ("simple scalar", 0),
+        (12345, 0),
+        ([], 0),
+        ({}, 0),
+        ([1, 2, 3], 3),     # Boundary exact match
+        ([1, 2, 3], 2),     # Top-level violation
+        ([1, 2, 3], 4),     # Well within limit
+        ({"a": 1, "b": 2}, 2),
+        ({"a": 1, "b": 2}, 1),
+        ({"items": [{"id": i} for i in range(50)]}, 50),
+        ({"items": [{"id": i} for i in range(51)]}, 50),
+        ({"deep": {"nested": {"levels": {"sub": [1, 2, 3, 4, 5, 6]}}}}, 5),
+        ({"deep": {"nested": {"levels": {"sub": [1, 2, 3, 4, 5]}}}}, 5),
+    ]
+
+    for payload, limit in test_cases:
+        scope = PermissionScope(max_payload_bytes=1000000, max_row_count=limit)
+        expected = baseline_validate(limit, payload)
+        actual = scope.validate_egress(payload)
+        assert actual == expected, f"Mismatch for limit={limit}, payload={payload}"
+
+    # Randomized tree validation
+    import random
+    rnd = random.Random(42)
+
+    def make_random_payload(depth=0):
+        if depth >= 4 or rnd.random() < 0.35:
+            return rnd.choice([1, "text", 3.14, None, True])
+        if rnd.random() < 0.5:
+            return [make_random_payload(depth + 1) for _ in range(rnd.randint(0, 10))]
+        return {f"k_{i}": make_random_payload(depth + 1) for i in range(rnd.randint(0, 10))}
+
+    for _ in range(200):
+        rand_payload = make_random_payload()
+        for limit in [0, 1, 2, 5, 10, 15]:
+            scope = PermissionScope(max_payload_bytes=1000000, max_row_count=limit)
+            expected = baseline_validate(limit, rand_payload)
+            actual = scope.validate_egress(rand_payload)
+            assert actual == expected, f"Randomized mismatch for limit={limit}"
+
+
+def test_estimate_payload_size_bounded_short_circuit():
+    """Validates that _estimate_payload_size short-circuits traversal when max_bytes is provided."""
+    full_payload = [{"key_" + str(i): "value_" + str(i) * 50 for i in range(20)} for _ in range(100)]
+    full_size = _estimate_payload_size(full_payload)
+    assert full_size > 5000
+
+    # With higher threshold, exact full size is returned
+    assert _estimate_payload_size(full_payload, max_bytes=full_size + 1000) == full_size
+
+    # With lower threshold, calculation stops early and returns a value exceeding threshold
+    bounded_size = _estimate_payload_size(full_payload, max_bytes=500)
+    assert bounded_size > 500
+    assert bounded_size < full_size
+
+
 # ==========================================
 # CPR SERIALIZATION TESTS
 # ==========================================
