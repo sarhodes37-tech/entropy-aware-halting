@@ -878,3 +878,226 @@ def test_human_approval_record_signed_64bit_timestamp_hardening():
     valid_parsed = HumanApprovalRecord.from_input({**dict_payload, "expires_at": 2000.0})
     assert valid_parsed is not None
     assert valid_parsed.expires_at == 2000.0
+
+
+def test_capability_consumption_and_historical_verification_temporal_validation(tmp_path):
+    """
+    Verifies fail-closed temporal validation in consume_token_and_record_dispatch and verify_historical_capability
+    against non-finite floats, booleans, out-of-range bounds, and expired timestamps.
+    """
+    store_path = str(tmp_path / "auth_store.jsonl")
+    denial_log = str(tmp_path / "denial.jsonl")
+    backend = FileAuthorizationStore(store_path)
+    registry = CapabilityRegistry(storage_backend=backend, denial_log_path=denial_log)
+    authority = AuthorizationAuthority(registry=registry)
+
+    # Issue a valid capability with expires_at = 1000.0
+    cap = Capability(
+        token_id="token-temporal-test-1",
+        principal_id="principal-1",
+        correlation_id="corr-1",
+        request_id="req-1",
+        action_name="read_secret",
+        target="db/secrets",
+        canonical_request_digest="digest-1234",
+        executor_id="exec-1",
+        policy_version="1.0.0",
+        created_at=500.0,
+        expires_at=1000.0,
+    )
+    authority.registry.register_capability(cap)
+
+    # 1. consume_token_and_record_dispatch with non-numeric, boolean, non-finite, out-of-bounds, or expired started_at
+    bad_started_ats = [
+        float("nan"),
+        float("inf"),
+        float("-inf"),
+        True,
+        False,
+        "500.0",
+        10**1000,
+        -(10**1000),
+        1 << 63,
+        -(1 << 63) - 1,
+        1000.0,  # started_at == expires_at is expired
+        1500.0,  # started_at > expires_at is expired
+    ]
+    for idx, bad_ts in enumerate(bad_started_ats):
+        attempt_id = f"attempt-bad-{idx}"
+        ok, reason, _ = authority.registry.consume_token_and_record_dispatch(
+            token_id="token-temporal-test-1",
+            attempt_id=attempt_id,
+            dispatched_executor_id="exec-1",
+            started_at=bad_ts,
+        )
+        assert ok is False
+        assert reason == "CAPABILITY_CONSUMPTION_FAILED_EXPIRED_TOKEN"
+
+    # Token must not have been consumed by the failed attempts
+    assert authority.registry.is_consumed("token-temporal-test-1") is False
+
+    # 2. consume_token_and_record_dispatch succeeds with valid finite started_at < expires_at
+    ok, reason, rec = authority.registry.consume_token_and_record_dispatch(
+        token_id="token-temporal-test-1",
+        attempt_id="attempt-good-1",
+        dispatched_executor_id="exec-1",
+        started_at=750.0,
+        dispatch_metadata={"principal_id": "principal-1"},
+    )
+    assert ok is True
+    assert authority.registry.is_consumed("token-temporal-test-1") is True
+
+    # 3. verify_historical_capability with non-numeric, boolean, non-finite, out-of-bounds, or expired execution_start_time
+    for bad_exec_time in bad_started_ats:
+        valid, reason, _, _ = authority.verify_historical_capability(
+            token_id="token-temporal-test-1",
+            action_name="read_secret",
+            target="db/secrets",
+            canonical_request_digest="digest-1234",
+            execution_attempt_id="attempt-good-1",
+            dispatched_executor_id="exec-1",
+            execution_start_time=bad_exec_time,
+            principal_id="principal-1",
+        )
+        assert valid is False
+        assert "HISTORICAL_VERIFICATION_FAILED_EXPIRED_BEFORE_EXECUTION" in reason
+
+    # 6. Verify that missing or None expires_at in stored capability fails closed unconditionally
+    for missing_case in ("explicit_none", "missing_key"):
+        token_id = f"token-missing-exp-{missing_case}"
+        cap_raw = {
+            "token_id": token_id,
+            "principal_id": "principal-1",
+            "correlation_id": "corr-1",
+            "request_id": "req-1",
+            "action_name": "read_secret",
+            "target": "db/secrets",
+            "canonical_request_digest": "digest-1234",
+            "executor_id": "exec-1",
+            "policy_version": "1.0.0",
+            "created_at": 500.0,
+            "fencing_token": 1,
+            "scope_key": "task:none:db/secrets",
+        }
+        if missing_case == "explicit_none":
+            cap_raw["expires_at"] = None
+
+        issue_rec = {
+            "seq": 100,
+            "type": "ISSUE_CAPABILITY",
+            "scope_key": "task:none:db/secrets",
+            "fencing_token": 1,
+            "token_id": token_id,
+            "data": cap_raw,
+            "timestamp": 500.0
+        }
+        authority.registry.storage._append_record_under_lock(issue_rec)
+
+        ok, reason, _ = authority.registry.consume_token_and_record_dispatch(
+            token_id=token_id,
+            attempt_id=f"attempt-{token_id}",
+            dispatched_executor_id="exec-1",
+            started_at=500.0,
+        )
+        assert ok is False
+        assert reason == "CAPABILITY_CONSUMPTION_FAILED_EXPIRED_TOKEN"
+        assert authority.registry.is_consumed(token_id) is False
+
+    # 4. verify_historical_capability succeeds with valid execution_start_time < expires_at
+    valid, reason, _, _ = authority.verify_historical_capability(
+        token_id="token-temporal-test-1",
+        action_name="read_secret",
+        target="db/secrets",
+        canonical_request_digest="digest-1234",
+        execution_attempt_id="attempt-good-1",
+        dispatched_executor_id="exec-1",
+        execution_start_time=750.0,
+        principal_id="principal-1",
+    )
+    assert valid is True
+    assert reason == "HISTORICAL_CAPABILITY_VERIFIED"
+
+    # 5. Verify arbitrary-precision integer overflow protection when expires_at itself is 10**1000 or -(10**1000)
+    # 5a. FileAuthorizationStore rejects capabilities with invalid timestamps upon retrieval
+    for bad_exp in (10**1000, -(10**1000), float("nan"), float("inf"), float("-inf"), True, False, 1 << 63, -(1 << 63) - 1):
+        cap_file_bad = Capability(
+            token_id=f"token-file-bad-exp-{hash(str(bad_exp)) % 10000}",
+            principal_id="principal-1",
+            correlation_id="corr-1",
+            request_id="req-1",
+            action_name="read_secret",
+            target="db/secrets",
+            canonical_request_digest="digest-1234",
+            executor_id="exec-1",
+            policy_version="1.0.0",
+            created_at=500.0,
+            expires_at=1000.0,
+        )
+        object.__setattr__(cap_file_bad, "expires_at", bad_exp)
+        authority.registry.register_capability(cap_file_bad)
+
+        # Dispatch consumption must fail closed
+        ok, reason, _ = authority.registry.consume_token_and_record_dispatch(
+            token_id=cap_file_bad.token_id,
+            attempt_id=f"attempt-{cap_file_bad.token_id}",
+            dispatched_executor_id="exec-1",
+            started_at=500.0,
+        )
+        assert ok is False
+        assert reason == "CAPABILITY_CONSUMPTION_FAILED_EXPIRED_TOKEN"
+
+        # Historical verification fails closed as unknown token because get_capability rejects invalid timestamps
+        valid, reason, _, _ = authority.verify_historical_capability(
+            token_id=cap_file_bad.token_id,
+            action_name="read_secret",
+            target="db/secrets",
+            canonical_request_digest="digest-1234",
+            execution_start_time=500.0,
+            principal_id="principal-1",
+        )
+        assert valid is False
+        assert "HISTORICAL_VERIFICATION_FAILED_UNKNOWN_TOKEN" in reason
+
+    # 5b. Direct evaluation of in-memory Capability object with invalid expires_at fails closed with EXPIRED_BEFORE_EXECUTION
+    mem_authority = AuthorizationAuthority(registry=CapabilityRegistry(storage_backend=InMemoryAuthorizationStore()))
+    for bad_exp in (None, 10**1000, -(10**1000), float("nan"), float("inf"), float("-inf"), True, False, 1 << 63, -(1 << 63) - 1):
+        cap_mem_bad = Capability(
+            token_id=f"token-mem-bad-exp-{hash(str(bad_exp)) % 10000}",
+            principal_id="principal-1",
+            correlation_id="corr-1",
+            request_id="req-1",
+            action_name="read_secret",
+            target="db/secrets",
+            canonical_request_digest="digest-1234",
+            executor_id="exec-1",
+            policy_version="1.0.0",
+            created_at=500.0,
+            expires_at=1000.0,
+        )
+        object.__setattr__(cap_mem_bad, "expires_at", bad_exp)
+        cap_mem_bad.signature = mem_authority.registry.sign_capability(cap_mem_bad)
+        mem_authority.registry.register_capability(cap_mem_bad)
+
+        # Historical verification directly verifies cap.expires_at via _validate_finite_timestamp_value (with execution_start_time)
+        valid, reason, _, _ = mem_authority.verify_historical_capability(
+            token_id=cap_mem_bad.token_id,
+            action_name="read_secret",
+            target="db/secrets",
+            canonical_request_digest="digest-1234",
+            execution_start_time=500.0,
+            principal_id="principal-1",
+        )
+        assert valid is False
+        assert "HISTORICAL_VERIFICATION_FAILED_EXPIRED_BEFORE_EXECUTION" in reason
+
+        # Historical verification without execution_start_time or execution record still fails closed on invalid cap.expires_at
+        valid_no_exec, reason_no_exec, _, _ = mem_authority.verify_historical_capability(
+            token_id=cap_mem_bad.token_id,
+            action_name="read_secret",
+            target="db/secrets",
+            canonical_request_digest="digest-1234",
+            execution_start_time=None,
+            principal_id="principal-1",
+        )
+        assert valid_no_exec is False
+        assert "HISTORICAL_VERIFICATION_FAILED_EXPIRED_BEFORE_EXECUTION" in reason_no_exec

@@ -178,6 +178,22 @@ def verify_ed25519_signature(sig_bytes: bytes, msg_bytes: bytes, pubkey_bytes: b
     return _ed25519_verify_pure(sig_bytes, msg_bytes, pubkey_bytes)
 
 
+def _validate_finite_timestamp_value(val: Any) -> Tuple[bool, Optional[float]]:
+    """
+    Validates numeric timestamps against booleans, arbitrary-precision integer overflow,
+    and non-finite float semantics.
+    """
+    if isinstance(val, bool) or not isinstance(val, (int, float)):
+        return False, None
+    if isinstance(val, int):
+        if not (MIN_TIMESTAMP_BOUND <= val <= MAX_TIMESTAMP_BOUND):
+            return False, None
+        return True, float(val)
+    if not math.isfinite(val) or not (MIN_TIMESTAMP_BOUND <= val <= MAX_TIMESTAMP_BOUND):
+        return False, None
+    return True, float(val)
+
+
 @dataclass(frozen=True)
 class AuthenticatedPrincipal:
     """
@@ -1507,30 +1523,37 @@ class FileAuthorizationStore(AuthorizationStore):
                         app_record = HumanApprovalRecord.from_input(app_data)
                     elif isinstance(app_data, HumanApprovalRecord):
                         app_record = app_data
-                    return Capability(
-                        token_id=cap_data["token_id"],
-                        principal_id=cap_data["principal_id"],
-                        correlation_id=cap_data["correlation_id"],
-                        request_id=cap_data["request_id"],
-                        action_name=cap_data["action_name"],
-                        target=cap_data["target"],
-                        canonical_request_digest=cap_data["canonical_request_digest"],
-                        executor_id=cap_data["executor_id"],
-                        policy_version=cap_data["policy_version"],
-                        created_at=float(cap_data["created_at"]),
-                        expires_at=float(cap_data["expires_at"]),
-                        task_id=cap_data.get("task_id"),
-                        contract_version=cap_data.get("contract_version"),
-                        contract_digest=cap_data.get("contract_digest"),
-                        required_success_evidence=set(cap_data.get("required_success_evidence") or []),
-                        human_approval=app_record,
-                        approver_principal=cap_data.get("approver_principal"),
-                        approver_provenance=cap_data.get("approver_provenance"),
-                        issuer_id=cap_data.get("issuer_id", "TrustedAuthorizationAuthority"),
-                        signature=cap_data.get("signature"),
-                        fencing_token=int(cap_data.get("fencing_token", 1)),
-                        scope_key=cap_data.get("scope_key")
-                    )
+                    try:
+                        valid_created, created_val = _validate_finite_timestamp_value(cap_data["created_at"])
+                        valid_expires, expires_val = _validate_finite_timestamp_value(cap_data["expires_at"])
+                        if not valid_created or not valid_expires:
+                            return None
+                        return Capability(
+                            token_id=cap_data["token_id"],
+                            principal_id=cap_data["principal_id"],
+                            correlation_id=cap_data["correlation_id"],
+                            request_id=cap_data["request_id"],
+                            action_name=cap_data["action_name"],
+                            target=cap_data["target"],
+                            canonical_request_digest=cap_data["canonical_request_digest"],
+                            executor_id=cap_data["executor_id"],
+                            policy_version=cap_data["policy_version"],
+                            created_at=created_val,
+                            expires_at=expires_val,
+                            task_id=cap_data.get("task_id"),
+                            contract_version=cap_data.get("contract_version"),
+                            contract_digest=cap_data.get("contract_digest"),
+                            required_success_evidence=set(cap_data.get("required_success_evidence") or []),
+                            human_approval=app_record,
+                            approver_principal=cap_data.get("approver_principal"),
+                            approver_provenance=cap_data.get("approver_provenance"),
+                            issuer_id=cap_data.get("issuer_id", "TrustedAuthorizationAuthority"),
+                            signature=cap_data.get("signature"),
+                            fencing_token=int(cap_data.get("fencing_token", 1)),
+                            scope_key=cap_data.get("scope_key")
+                        )
+                    except Exception:
+                        return None
                 return cap_data
             finally:
                 self._release_flock()
@@ -1641,13 +1664,17 @@ class FileAuthorizationStore(AuthorizationStore):
                 if not cap_data:
                     return False, "CAPABILITY_CONSUMPTION_FAILED_UNKNOWN_TOKEN", None
 
-                # Expiration check at dispatch time
+                # Expiration check at dispatch time with fail-closed temporal validation (unconditional)
                 expires_at_val = None
                 if isinstance(cap_data, dict):
                     expires_at_val = cap_data.get("expires_at")
                 else:
                     expires_at_val = getattr(cap_data, "expires_at", None)
-                if expires_at_val is not None and float(started_at) > float(expires_at_val):
+                if expires_at_val is None:
+                    return False, "CAPABILITY_CONSUMPTION_FAILED_EXPIRED_TOKEN", None
+                valid_start, start_num = _validate_finite_timestamp_value(started_at)
+                valid_exp, exp_num = _validate_finite_timestamp_value(expires_at_val)
+                if not valid_start or not valid_exp or start_num >= exp_num:
                     return False, "CAPABILITY_CONSUMPTION_FAILED_EXPIRED_TOKEN", None
 
                 scope_key = cap_data.get("scope_key") if isinstance(cap_data, dict) else getattr(cap_data, "scope_key", None)
@@ -3700,13 +3727,20 @@ class AuthorizationAuthority:
                     return False, f"HISTORICAL_VERIFICATION_FAILED_OUTCOME_MISMATCH: event claims '{expected_outcome_status}', but authoritative boundary recorded '{rec_status}'", cap, exec_record
 
         # Temporal validity verification (Revocation and Expiration at Execution Time)
+        # 1. Expiration check: validate cap.expires_at unconditionally
+        if cap.expires_at is None:
+            return False, "HISTORICAL_VERIFICATION_FAILED_EXPIRED_BEFORE_EXECUTION: capability expired at None", cap, exec_record
+        valid_exp, exp_num = _validate_finite_timestamp_value(cap.expires_at)
+        if not valid_exp:
+            return False, f"HISTORICAL_VERIFICATION_FAILED_EXPIRED_BEFORE_EXECUTION: capability expired at {cap.expires_at}", cap, exec_record
+
         exec_time = execution_start_time
         if exec_time is None and exec_record:
             exec_time = exec_record.get("started_at")
 
-        # 1. Expiration check at execution time
-        if exec_time is not None and cap.expires_at is not None:
-            if float(exec_time) > float(cap.expires_at):
+        if exec_time is not None:
+            valid_exec, exec_num = _validate_finite_timestamp_value(exec_time)
+            if not valid_exec or exec_num >= exp_num:
                 return False, f"HISTORICAL_VERIFICATION_FAILED_EXPIRED_BEFORE_EXECUTION: capability expired at {cap.expires_at}, execution started at {exec_time}", cap, exec_record
 
         # 2. Revocation ordering check
