@@ -962,6 +962,47 @@ def test_capability_consumption_and_historical_verification_temporal_validation(
         assert valid is False
         assert "HISTORICAL_VERIFICATION_FAILED_EXPIRED_BEFORE_EXECUTION" in reason
 
+    # 6. Verify that missing or None expires_at in stored capability fails closed unconditionally
+    for missing_case in ("explicit_none", "missing_key"):
+        token_id = f"token-missing-exp-{missing_case}"
+        cap_raw = {
+            "token_id": token_id,
+            "principal_id": "principal-1",
+            "correlation_id": "corr-1",
+            "request_id": "req-1",
+            "action_name": "read_secret",
+            "target": "db/secrets",
+            "canonical_request_digest": "digest-1234",
+            "executor_id": "exec-1",
+            "policy_version": "1.0.0",
+            "created_at": 500.0,
+            "fencing_token": 1,
+            "scope_key": "task:none:db/secrets",
+        }
+        if missing_case == "explicit_none":
+            cap_raw["expires_at"] = None
+
+        issue_rec = {
+            "seq": 100,
+            "type": "ISSUE_CAPABILITY",
+            "scope_key": "task:none:db/secrets",
+            "fencing_token": 1,
+            "token_id": token_id,
+            "data": cap_raw,
+            "timestamp": 500.0
+        }
+        authority.registry.storage._append_record_under_lock(issue_rec)
+
+        ok, reason, _ = authority.registry.consume_token_and_record_dispatch(
+            token_id=token_id,
+            attempt_id=f"attempt-{token_id}",
+            dispatched_executor_id="exec-1",
+            started_at=500.0,
+        )
+        assert ok is False
+        assert reason == "CAPABILITY_CONSUMPTION_FAILED_EXPIRED_TOKEN"
+        assert authority.registry.is_consumed(token_id) is False
+
     # 4. verify_historical_capability succeeds with valid execution_start_time < expires_at
     valid, reason, _, _ = authority.verify_historical_capability(
         token_id="token-temporal-test-1",

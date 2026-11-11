@@ -1664,17 +1664,18 @@ class FileAuthorizationStore(AuthorizationStore):
                 if not cap_data:
                     return False, "CAPABILITY_CONSUMPTION_FAILED_UNKNOWN_TOKEN", None
 
-                # Expiration check at dispatch time with fail-closed temporal validation
+                # Expiration check at dispatch time with fail-closed temporal validation (unconditional)
                 expires_at_val = None
                 if isinstance(cap_data, dict):
                     expires_at_val = cap_data.get("expires_at")
                 else:
                     expires_at_val = getattr(cap_data, "expires_at", None)
-                if expires_at_val is not None:
-                    valid_start, start_num = _validate_finite_timestamp_value(started_at)
-                    valid_exp, exp_num = _validate_finite_timestamp_value(expires_at_val)
-                    if not valid_start or not valid_exp or start_num >= exp_num:
-                        return False, "CAPABILITY_CONSUMPTION_FAILED_EXPIRED_TOKEN", None
+                if expires_at_val is None:
+                    return False, "CAPABILITY_CONSUMPTION_FAILED_EXPIRED_TOKEN", None
+                valid_start, start_num = _validate_finite_timestamp_value(started_at)
+                valid_exp, exp_num = _validate_finite_timestamp_value(expires_at_val)
+                if not valid_start or not valid_exp or start_num >= exp_num:
+                    return False, "CAPABILITY_CONSUMPTION_FAILED_EXPIRED_TOKEN", None
 
                 scope_key = cap_data.get("scope_key") if isinstance(cap_data, dict) else getattr(cap_data, "scope_key", None)
                 cap_fence = int(cap_data.get("fencing_token", 1) if isinstance(cap_data, dict) else getattr(cap_data, "fencing_token", 1))
