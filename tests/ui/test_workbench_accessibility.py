@@ -964,7 +964,42 @@ def test_live_region_announcements(a11y_comprehensive_server):
         assert "Copy full JSON payload for trace" in trace_json_btn.get_attribute("aria-label")
         assert "Copy JSON payload for trace" in trace_json_btn.get_attribute("title")
 
-        # 8.5. Clean up mock and restore original navigator.clipboard
+        # 8.5. Verify Provenance Explorer Copy Event ID button presence and accessible attributes
+        page.click("#tab-provenance")
+        page.wait_for_selector("#provenance-record-list .trace-item", state="visible")
+        page.click("#provenance-record-list .trace-item:first-child")
+        page.wait_for_selector("#provenance-inspector-content:not(.hidden)", state="visible")
+        prov_event_id_btn = page.locator("#provenance-inspector-content .copy-btn", has_text="Copy Event ID")
+        assert prov_event_id_btn.count() == 1
+        assert "Copy Event ID" in prov_event_id_btn.get_attribute("aria-label")
+        assert "Copy Event ID" in prov_event_id_btn.get_attribute("title")
+
+        # Mock navigator.clipboard.writeText to capture copied argument and verify Copy Event ID action
+        page.evaluate("""() => {
+            window.__copied_event_id = null;
+            Object.defineProperty(navigator, 'clipboard', {
+                value: {
+                    writeText: (val) => {
+                        window.__copied_event_id = val;
+                        return Promise.resolve();
+                    }
+                },
+                configurable: true,
+                writable: true
+            });
+            document.getElementById('a11y-status-announcer').textContent = '';
+        }""")
+        prov_event_id_btn.click()
+        page.wait_for_function(
+            "() => document.getElementById('a11y-status-announcer').textContent === 'Copied to clipboard.'"
+        )
+        assert announcer.text_content() == "Copied to clipboard."
+        captured_event_id = page.evaluate("() => window.__copied_event_id")
+        # In a11y_comprehensive_server, the first mock provenance record event_id is prv-000
+        assert captured_event_id == "prv-000"
+        assert captured_event_id in prov_event_id_btn.get_attribute("aria-label")
+
+        # 8.6. Clean up mock and restore original navigator.clipboard
         page.evaluate("""() => {
             if (window.__orig_clipboard !== undefined) {
                 Object.defineProperty(navigator, 'clipboard', {
