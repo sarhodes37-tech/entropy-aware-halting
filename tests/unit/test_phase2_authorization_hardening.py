@@ -1078,7 +1078,7 @@ def test_capability_consumption_and_historical_verification_temporal_validation(
         cap_mem_bad.signature = mem_authority.registry.sign_capability(cap_mem_bad)
         mem_authority.registry.register_capability(cap_mem_bad)
 
-        # Historical verification directly verifies cap.expires_at via _validate_finite_timestamp_value
+        # Historical verification directly verifies cap.expires_at via _validate_finite_timestamp_value (with execution_start_time)
         valid, reason, _, _ = mem_authority.verify_historical_capability(
             token_id=cap_mem_bad.token_id,
             action_name="read_secret",
@@ -1089,3 +1089,15 @@ def test_capability_consumption_and_historical_verification_temporal_validation(
         )
         assert valid is False
         assert "HISTORICAL_VERIFICATION_FAILED_EXPIRED_BEFORE_EXECUTION" in reason
+
+        # Historical verification without execution_start_time or execution record still fails closed on invalid cap.expires_at
+        valid_no_exec, reason_no_exec, _, _ = mem_authority.verify_historical_capability(
+            token_id=cap_mem_bad.token_id,
+            action_name="read_secret",
+            target="db/secrets",
+            canonical_request_digest="digest-1234",
+            execution_start_time=None,
+            principal_id="principal-1",
+        )
+        assert valid_no_exec is False
+        assert "HISTORICAL_VERIFICATION_FAILED_EXPIRED_BEFORE_EXECUTION" in reason_no_exec
