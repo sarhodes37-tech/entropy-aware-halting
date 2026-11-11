@@ -92,6 +92,12 @@ class ActionPolicy:
 
 @dataclass
 class TypedHumanApprovalRecord:
+    """
+    Typed, authenticated human approval record for externally consequential actions.
+    Note on mutability: __post_init__ guarantees construction-time validation. Downstream
+    authorization-time validation (via is_expired and verify_approval_record) verifies
+    integrity and expiration guards upon policy evaluation.
+    """
     approval_id: str
     operation_id: str
     target_resource: str
@@ -102,6 +108,45 @@ class TypedHumanApprovalRecord:
     timestamp: str
     signature: str
     expires_at: Optional[float] = None
+
+    def __post_init__(self):
+        for field_name in (
+            "approval_id",
+            "operation_id",
+            "target_resource",
+            "canonical_args_digest",
+            "task_id",
+            "policy_version",
+            "approved_by_principal",
+            "timestamp",
+            "signature",
+        ):
+            val = getattr(self, field_name)
+            if not isinstance(val, str) or not val.strip():
+                raise ValueError(f"TypedHumanApprovalRecord: {field_name} must be a non-empty string")
+        self._validate_timestamp_fields()
+
+    def _validate_timestamp_fields(self) -> None:
+        """Strictly validates expires_at against type ambiguity, non-finiteness, and overflow."""
+        if self.expires_at is not None:
+            if isinstance(self.expires_at, str):
+                try:
+                    exp_float = float(self.expires_at)
+                except ValueError as e:
+                    raise ValueError(f"TypedHumanApprovalRecord: expires_at cannot be parsed as a float: {self.expires_at}") from e
+                if not math.isfinite(exp_float):
+                    raise ValueError(f"TypedHumanApprovalRecord: expires_at must be a finite number, got {self.expires_at}")
+                self.expires_at = exp_float
+            if isinstance(self.expires_at, bool) or not isinstance(self.expires_at, (int, float)):
+                raise TypeError(f"TypedHumanApprovalRecord: expires_at must be a numeric timestamp, got {type(self.expires_at).__name__}")
+            if isinstance(self.expires_at, int):
+                if not (MIN_TIMESTAMP_BOUND <= self.expires_at <= MAX_TIMESTAMP_BOUND):
+                    raise ValueError("TypedHumanApprovalRecord: expires_at integer overflows signed 64-bit limits")
+            else:
+                if not math.isfinite(self.expires_at):
+                    raise ValueError(f"TypedHumanApprovalRecord: expires_at must be a finite number, got {self.expires_at}")
+                if not (MIN_TIMESTAMP_BOUND <= self.expires_at <= MAX_TIMESTAMP_BOUND):
+                    raise ValueError("TypedHumanApprovalRecord: expires_at float overflows signed 64-bit limits")
 
     def is_expired(self, current_time: Optional[float] = None) -> bool:
         """
