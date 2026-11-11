@@ -243,6 +243,13 @@ class ReleaseGovernanceEngine:
                     reason=f"Evidence '{ev_id}' rejected: malformed signature encoding"
                 )
 
+            if len(sig_bytes) != 64:
+                return EvidenceValidationResult(
+                    evidence_id=ev_id,
+                    status=EvidenceValidationResultStatus.REJECTED,
+                    reason=f"Evidence '{ev_id}' rejected: signature length invalid ({len(sig_bytes)} bytes, expected 64)"
+                )
+
             payload = evidence.compute_signature_payload()
             if not verify_ed25519_signature(sig_bytes, payload, trusted_pubkey):
                 return EvidenceValidationResult(
@@ -288,6 +295,13 @@ class ReleaseGovernanceEngine:
                         evidence_id=ev_id,
                         status=EvidenceValidationResultStatus.REJECTED,
                         reason=f"Evidence '{ev_id}' malformed signature encoding"
+                    )
+
+                if len(sig_bytes) != 64:
+                    return EvidenceValidationResult(
+                        evidence_id=ev_id,
+                        status=EvidenceValidationResultStatus.REJECTED,
+                        reason=f"Evidence '{ev_id}' rejected: signature length invalid ({len(sig_bytes)} bytes, expected 64)"
                     )
 
                 payload = evidence.compute_signature_payload()

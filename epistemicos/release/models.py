@@ -204,6 +204,11 @@ class VerificationEvidenceRecord:
         if not self.evidence_type or not isinstance(self.evidence_type, str) or not self.evidence_type.strip():
             raise ValueError("VerificationEvidenceRecord: evidence_type must be a non-empty string")
         validate_sha256_hex(self.artifact_digest, "VerificationEvidenceRecord.artifact_digest")
+        if not self.evaluator_id or not isinstance(self.evaluator_id, str) or not self.evaluator_id.strip():
+            raise ValueError("VerificationEvidenceRecord: evaluator_id must be a non-empty string")
+        if self.evaluator_issuer is not None:
+            if not isinstance(self.evaluator_issuer, str) or not self.evaluator_issuer.strip():
+                raise ValueError("VerificationEvidenceRecord: evaluator_issuer must be a non-empty string when provided")
         if isinstance(self.status, str):
             self.status = EvidenceVerificationStatus(self.status)
 

@@ -1459,6 +1459,30 @@ def test_verification_evidence_record_validation_and_payload_sensitivity():
                 artifact_digest=art_digest
             )
 
+    # Invalid evaluator_id
+    for bad in [None, "", "   ", 123]:
+        with pytest.raises(ValueError, match="VerificationEvidenceRecord: evaluator_id must be a non-empty string"):
+            VerificationEvidenceRecord(
+                evidence_id="ev1",
+                manifest_digest=m_digest,
+                evidence_type="audit",
+                status=EvidenceVerificationStatus.PASS,
+                artifact_digest=art_digest,
+                evaluator_id=bad
+            )
+
+    # Invalid evaluator_issuer
+    for bad in ["", "   ", 123]:
+        with pytest.raises(ValueError, match="VerificationEvidenceRecord: evaluator_issuer must be a non-empty string when provided"):
+            VerificationEvidenceRecord(
+                evidence_id="ev1",
+                manifest_digest=m_digest,
+                evidence_type="audit",
+                status=EvidenceVerificationStatus.PASS,
+                artifact_digest=art_digest,
+                evaluator_issuer=bad
+            )
+
     # String status conversion and invalid status
     ev_str_pass = VerificationEvidenceRecord(
         evidence_id="ev1",
@@ -2203,6 +2227,20 @@ def test_engine_verify_single_evidence_coverage():
     assert res_b64.status == EvidenceValidationResultStatus.VERIFIED
     assert res_b64.evaluator_signature_verified is True
 
+    # - Invalid signature length (e.g. truncated base64 decoding to != 64 bytes)
+    ev_bad_len = VerificationEvidenceRecord(
+        evidence_id="ev-bad-len",
+        manifest_digest=m_digest,
+        evidence_type="layer4_security_audit",
+        status=EvidenceVerificationStatus.PASS,
+        artifact_digest=art_digest,
+        evaluator_issuer="EvaluatorIdP",
+        signature=base64.b64encode(b"short_signature_payload").decode("utf-8")
+    )
+    res_bad_len = engine_with_ver.verify_single_evidence(m_digest, ev_bad_len)
+    assert res_bad_len.status == EvidenceValidationResultStatus.REJECTED
+    assert "signature length invalid" in res_bad_len.reason
+
     # 3. Evaluator signatures under optional policy (require_evaluator_signatures=False)
     # - Declares evaluator_issuer but no signature
     engine_opt_sig = ReleaseGovernanceEngine(
@@ -2283,6 +2321,20 @@ def test_engine_verify_single_evidence_coverage():
     res_opt5 = engine_opt_sig.verify_single_evidence(m_digest, ev_opt_mal)
     assert res_opt5.status == EvidenceValidationResultStatus.REJECTED
     assert "malformed signature encoding" in res_opt5.reason
+
+    # - Invalid signature length under optional policy
+    ev_opt_bad_len = VerificationEvidenceRecord(
+        evidence_id="ev-opt-bad-len",
+        manifest_digest=m_digest,
+        evidence_type="layer4_security_audit",
+        status=EvidenceVerificationStatus.PASS,
+        artifact_digest=art_digest,
+        evaluator_issuer="EvaluatorIdP",
+        signature=base64.b64encode(b"short").decode("utf-8")
+    )
+    res_opt_bad_len = engine_opt_sig.verify_single_evidence(m_digest, ev_opt_bad_len)
+    assert res_opt_bad_len.status == EvidenceValidationResultStatus.REJECTED
+    assert "signature length invalid" in res_opt_bad_len.reason
 
     # - Cryptographic signature verification failed under optional policy
     ev_opt_bad_crypto = VerificationEvidenceRecord(
