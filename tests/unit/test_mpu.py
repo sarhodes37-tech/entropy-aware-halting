@@ -204,3 +204,92 @@ def test_evaluate_disclosure_epsilon_prevents_zero_division():
     # mpu_score = 0.5 / 1e-6 = 500000.0
     assert res.mpu_score == 500000.0
     assert res.authorized is True
+
+
+def test_evaluator_init_validation_rejects_non_finite_and_booleans():
+    with pytest.raises(TypeError, match="min_mpu_threshold must be numeric"):
+        MarginalPrivacyUtilityEvaluator(min_mpu_threshold=True)
+
+    with pytest.raises(TypeError, match="min_mpu_threshold must be numeric"):
+        MarginalPrivacyUtilityEvaluator(min_mpu_threshold="0.5")
+
+    with pytest.raises(ValueError, match="min_mpu_threshold must be a finite non-negative number"):
+        MarginalPrivacyUtilityEvaluator(min_mpu_threshold=float("nan"))
+
+    with pytest.raises(ValueError, match="min_mpu_threshold must be a finite non-negative number"):
+        MarginalPrivacyUtilityEvaluator(min_mpu_threshold=float("inf"))
+
+    with pytest.raises(ValueError, match="min_mpu_threshold must be a finite non-negative number"):
+        MarginalPrivacyUtilityEvaluator(min_mpu_threshold=-0.1)
+
+    with pytest.raises(TypeError, match="epsilon must be numeric"):
+        MarginalPrivacyUtilityEvaluator(epsilon=False)
+
+    with pytest.raises(ValueError, match="epsilon must be a finite positive number"):
+        MarginalPrivacyUtilityEvaluator(epsilon=0.0)
+
+    with pytest.raises(ValueError, match="epsilon must be a finite positive number"):
+        MarginalPrivacyUtilityEvaluator(epsilon=float("nan"))
+
+
+def test_evaluate_disclosure_rejects_non_finite_and_boolean_utility():
+    evaluator = MarginalPrivacyUtilityEvaluator()
+
+    with pytest.raises(TypeError, match="estimated_utility_gain must be numeric"):
+        evaluator.evaluate_disclosure(estimated_utility_gain=True, detections=[])
+
+    with pytest.raises(TypeError, match="estimated_utility_gain must be numeric"):
+        evaluator.evaluate_disclosure(estimated_utility_gain="0.8", detections=[])
+
+    with pytest.raises(ValueError, match="estimated_utility_gain must be finite"):
+        evaluator.evaluate_disclosure(estimated_utility_gain=float("nan"), detections=[])
+
+    with pytest.raises(ValueError, match="estimated_utility_gain must be finite"):
+        evaluator.evaluate_disclosure(estimated_utility_gain=float("inf"), detections=[])
+
+    with pytest.raises(ValueError, match="estimated_utility_gain must be finite"):
+        evaluator.evaluate_disclosure(estimated_utility_gain=float("-inf"), detections=[])
+
+
+def test_evaluate_disclosure_rejects_invalid_custom_threshold():
+    evaluator = MarginalPrivacyUtilityEvaluator()
+
+    with pytest.raises(TypeError, match="custom_threshold must be numeric"):
+        evaluator.evaluate_disclosure(estimated_utility_gain=0.5, detections=[], custom_threshold=True)
+
+    with pytest.raises(ValueError, match="custom_threshold must be a finite non-negative number"):
+        evaluator.evaluate_disclosure(estimated_utility_gain=0.5, detections=[], custom_threshold=float("nan"))
+
+    with pytest.raises(ValueError, match="custom_threshold must be a finite non-negative number"):
+        evaluator.evaluate_disclosure(estimated_utility_gain=0.5, detections=[], custom_threshold=float("-inf"))
+
+    with pytest.raises(ValueError, match="custom_threshold must be a finite non-negative number"):
+        evaluator.evaluate_disclosure(estimated_utility_gain=0.5, detections=[], custom_threshold=-1.0)
+
+
+def test_estimate_privacy_leakage_fails_closed_on_non_finite_confidence():
+    evaluator = MarginalPrivacyUtilityEvaluator()
+
+    # Corrupt detection confidence with NaN
+    det_nan = DetectionResult(
+        category=SensitivityCategory.CREDENTIAL,
+        value="secret",
+        span=(0, 6),
+        confidence=float("nan"),
+        detector_type="test"
+    )
+    leakage = evaluator.estimate_privacy_leakage([det_nan])
+    # Fails closed by treating as full confidence 1.0 (leakage = 1 - exp(-1.0))
+    expected = 1.0 - math.exp(-1.0)
+    assert leakage == pytest.approx(expected)
+
+    # Corrupt detection confidence with boolean True
+    det_bool = DetectionResult(
+        category=SensitivityCategory.CREDENTIAL,
+        value="secret",
+        span=(0, 6),
+        confidence=True,
+        detector_type="test"
+    )
+    leakage_bool = evaluator.estimate_privacy_leakage([det_bool])
+    assert leakage_bool == pytest.approx(expected)
