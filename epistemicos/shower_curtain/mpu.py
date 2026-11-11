@@ -48,21 +48,38 @@ class MarginalPrivacyUtilityEvaluator:
         min_mpu_threshold: float = 0.5,
         epsilon: float = 1e-6
     ):
-        self.min_mpu_threshold = min_mpu_threshold
-        self.epsilon = epsilon
+        import math
+        if isinstance(min_mpu_threshold, bool) or not isinstance(min_mpu_threshold, (int, float)):
+            raise TypeError(f"min_mpu_threshold must be numeric, got {type(min_mpu_threshold).__name__}")
+        if not math.isfinite(min_mpu_threshold) or min_mpu_threshold < 0.0:
+            raise ValueError(f"min_mpu_threshold must be a finite non-negative number, got {min_mpu_threshold}")
+
+        if isinstance(epsilon, bool) or not isinstance(epsilon, (int, float)):
+            raise TypeError(f"epsilon must be numeric, got {type(epsilon).__name__}")
+        if not math.isfinite(epsilon) or epsilon <= 0.0:
+            raise ValueError(f"epsilon must be a finite positive number, got {epsilon}")
+
+        self.min_mpu_threshold = float(min_mpu_threshold)
+        self.epsilon = float(epsilon)
 
     def estimate_privacy_leakage(self, detections: List[DetectionResult]) -> float:
         """
         Estimates total privacy leakage ΔL from detected sensitive items.
         Combines sensitivity weights, confidence, and volume.
+        Fails closed on non-finite or invalid confidence scores.
         """
+        import math
         if not detections:
             return 0.0
 
         total_weighted = 0.0
         for d in detections:
             weight = self.SENSITIVITY_WEIGHTS.get(d.category, 0.5)
-            total_weighted += weight * d.confidence
+            conf = getattr(d, "confidence", 1.0)
+            if isinstance(conf, bool) or not isinstance(conf, (int, float)) or not math.isfinite(conf) or conf < 0.0:
+                # Corrupted or non-finite confidence: fail closed by treating as maximum confidence (1.0)
+                conf = 1.0
+            total_weighted += weight * conf
 
         # Normalized non-linear saturation curve: 1 - exp(-total_weighted)
         leakage = 1.0 - math_exp(-total_weighted)
@@ -74,8 +91,22 @@ class MarginalPrivacyUtilityEvaluator:
         detections: List[DetectionResult],
         custom_threshold: Optional[float] = None
     ) -> MPUResult:
-        threshold = custom_threshold if custom_threshold is not None else self.min_mpu_threshold
-        delta_u = max(0.0, min(1.0, estimated_utility_gain))
+        import math
+        if isinstance(estimated_utility_gain, bool) or not isinstance(estimated_utility_gain, (int, float)):
+            raise TypeError(f"estimated_utility_gain must be numeric, got {type(estimated_utility_gain).__name__}")
+        if not math.isfinite(estimated_utility_gain):
+            raise ValueError(f"estimated_utility_gain must be finite, got {estimated_utility_gain}")
+
+        if custom_threshold is not None:
+            if isinstance(custom_threshold, bool) or not isinstance(custom_threshold, (int, float)):
+                raise TypeError(f"custom_threshold must be numeric, got {type(custom_threshold).__name__}")
+            if not math.isfinite(custom_threshold) or custom_threshold < 0.0:
+                raise ValueError(f"custom_threshold must be a finite non-negative number, got {custom_threshold}")
+            threshold = float(custom_threshold)
+        else:
+            threshold = self.min_mpu_threshold
+
+        delta_u = max(0.0, min(1.0, float(estimated_utility_gain)))
         delta_l = self.estimate_privacy_leakage(detections)
 
         # MPU = ΔU / (ΔL + ε)
