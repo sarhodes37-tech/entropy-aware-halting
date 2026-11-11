@@ -170,6 +170,66 @@ def test_record_event_payload_too_large(temp_audit_file):
         audit.record_event(event)
 
 
+def test_sensitive_key_differential_equivalence():
+    """
+    Validates 100% differential equivalence between the precompiled regex scan
+    and original generator pattern matching across all sensitive patterns, safe suffixes,
+    and arbitrary clean keys.
+    """
+    from epistemicos.audit import (
+        SENSITIVE_KEY_PATTERNS,
+        SAFE_KEY_SUFFIXES,
+        REGEX_SENSITIVE_KEY,
+        _is_sensitive_key,
+    )
+
+    def baseline_check(k_str: str) -> bool:
+        if any(p in k_str for p in SENSITIVE_KEY_PATTERNS):
+            return not k_str.endswith(SAFE_KEY_SUFFIXES)
+        return False
+
+    def regex_check(k_str: str) -> bool:
+        if REGEX_SENSITIVE_KEY.search(k_str):
+            return not k_str.endswith(SAFE_KEY_SUFFIXES)
+        return False
+
+    test_candidates = []
+    # Test all sensitive patterns alone, with prefix, with suffix, and with both
+    for p in SENSITIVE_KEY_PATTERNS:
+        test_candidates.append(p)
+        test_candidates.append(f"test_{p}")
+        test_candidates.append(f"{p}_field")
+        test_candidates.append(f"custom_{p}_field")
+        # Test with safe suffixes
+        for s in SAFE_KEY_SUFFIXES:
+            test_candidates.append(f"{p}{s}")
+            test_candidates.append(f"my_{p}{s}")
+            test_candidates.append(f"{p}{s}_extra")  # no longer ending with suffix
+
+    # Non-sensitive keys and boundary edge cases
+    test_candidates.extend([
+        "",
+        "a",
+        "normal_key",
+        "username",
+        "created_at",
+        "status",
+        "execution_latency_ms",
+        "model_id",
+        "gate_name",
+        "hardware_telemetry",
+        "transaction_id",
+        "confidence_matrix",
+    ])
+
+    for key_cand in test_candidates:
+        expected = baseline_check(key_cand)
+        actual = regex_check(key_cand)
+        assert actual == expected, f"Discrepancy on key '{key_cand}': expected {expected}, got {actual}"
+        # Also ensure cached _is_sensitive_key matches
+        assert _is_sensitive_key(key_cand) == expected, f"_is_sensitive_key mismatch on '{key_cand}'"
+
+
 def test_tamper_evident_audit_trail_hmac_key_validation(temp_audit_file):
     """Verifies fail-closed validation of hmac_key in TamperEvidentAuditTrail."""
     # Retain empty-key and invalid-type rejection tests
