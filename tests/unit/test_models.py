@@ -8,6 +8,7 @@ import json
 import math
 import os
 import sys
+import time
 from typing import List, Dict, Any, Tuple
 from datetime import datetime, timezone
 import pytest
@@ -1298,3 +1299,72 @@ def test_token_surprisal_sensor_input_contract_and_nonfinite_conversion_order():
     assert tokens[0].conversions == 1
     assert tokens[1].conversions == 0
     assert tokens[2].conversions == 0
+
+
+def test_permission_scope_expires_at_validation_and_fail_closed_lifecycle():
+    """Verify PermissionScope strictly validates expires_at and enforces fail-closed expiration."""
+    # 1. Valid finite timestamps
+    now = time.time()
+    scope = PermissionScope(expires_at=now + 60.0)
+    assert scope.expires_at == now + 60.0
+    assert scope.is_expired() is False
+    assert scope.validate_action({"op": "read", "node": "logistics_db"}) is True
+
+    # Past timestamp expires
+    past_scope = PermissionScope(expires_at=now - 10.0)
+    assert past_scope.is_expired() is True
+    assert past_scope.validate_action({"op": "read", "node": "logistics_db"}) is False
+
+    # 2. Reject boolean types
+    for bad_bool in (True, False):
+        with pytest.raises((TypeError, ValueError)):
+            PermissionScope(expires_at=bad_bool)
+
+    # 3. Reject non-numeric types
+    for bad_type in ("12345", [12345], {"expires_at": 12345}, None):
+        with pytest.raises((TypeError, ValueError)):
+            PermissionScope(expires_at=bad_type)
+
+    # 4. Reject non-finite floats (NaN, +Inf, -Inf)
+    for bad_float in (float("nan"), float("inf"), float("-inf")):
+        with pytest.raises((ValueError, TypeError)):
+            PermissionScope(expires_at=bad_float)
+
+    # 5. Reject signed 64-bit overflowing values
+    min_bound = -(1 << 63)
+    max_bound = (1 << 63) - 1
+    # Exactly on boundary is valid
+    assert PermissionScope(expires_at=min_bound).expires_at == float(min_bound)
+    assert PermissionScope(expires_at=max_bound).expires_at == float(max_bound)
+    # Outside boundary is rejected
+    with pytest.raises(ValueError):
+        PermissionScope(expires_at=min_bound - 1)
+    with pytest.raises(ValueError):
+        PermissionScope(expires_at=max_bound + 1)
+    with pytest.raises(ValueError):
+        PermissionScope(expires_at=10**100)
+
+    # 6. Fail-closed on mutated state and clock overrides
+    valid_scope = PermissionScope(expires_at=now + 100.0)
+    # Valid clock overrides
+    assert valid_scope.is_expired(current_time=now) is False
+    assert valid_scope.is_expired(current_time=now + 200.0) is True
+
+    # Mutated invalid expires_at fails closed
+    valid_scope.expires_at = float("inf")
+    assert valid_scope.is_expired() is True
+    assert valid_scope.validate_action({"op": "read", "node": "logistics_db"}) is False
+
+    valid_scope.expires_at = float("nan")
+    assert valid_scope.is_expired() is True
+
+    valid_scope.expires_at = True
+    assert valid_scope.is_expired() is True
+
+    valid_scope.expires_at = max_bound + 10
+    assert valid_scope.is_expired() is True
+
+    # Invalid clock overrides fail closed (return True)
+    reset_scope = PermissionScope(expires_at=now + 100.0)
+    for bad_clock in (True, False, "now", [now], float("nan"), float("inf"), float("-inf"), min_bound - 1, max_bound + 1):
+        assert reset_scope.is_expired(current_time=bad_clock) is True

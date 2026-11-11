@@ -12,13 +12,16 @@ import sys
 import time
 from enum import Enum
 from datetime import datetime, timezone
-from typing import Dict, Any, List, Optional, Set
-from pydantic import BaseModel, Field, model_validator
+from typing import Dict, Any, List, Optional, Set, Union
+from pydantic import BaseModel, Field, model_validator, field_validator
 
 
 # ==========================================
 # CONFIGURATION & CONSTANTS
 # ==========================================
+
+MIN_TIMESTAMP_BOUND = -(1 << 63)
+MAX_TIMESTAMP_BOUND = (1 << 63) - 1
 
 _DEFAULT_QUARANTINE_SUBNETS = [
     s.strip() for s in os.getenv("EPISTEMICOS_QUARANTINE_SUBNETS", "").split(",") if s.strip()
@@ -395,13 +398,36 @@ class PermissionScope(BaseModel):
         default_factory=lambda: list(_DEFAULT_QUARANTINE_SUBNETS)
     )
 
+    @field_validator("expires_at", mode="before")
+    @classmethod
+    def _validate_expires_at(cls, v: Any) -> float:
+        """Enforces numeric types, finiteness, and signed 64-bit limits on expires_at."""
+        if isinstance(v, bool) or not isinstance(v, (int, float)):
+            raise TypeError(f"PermissionScope: expires_at must be a numeric timestamp, got {type(v).__name__}")
+        if not (MIN_TIMESTAMP_BOUND <= v <= MAX_TIMESTAMP_BOUND) or (isinstance(v, float) and not math.isfinite(v)):
+            raise ValueError(f"PermissionScope: expires_at must be finite and within signed 64-bit limits: {v}")
+        return float(v)
+
+    def is_expired(self, current_time: Optional[float] = None) -> bool:
+        """Evaluates scope expiration, failing closed on corrupted, non-finite, or out-of-bounds inputs."""
+        exp = self.expires_at
+        if isinstance(exp, bool) or not isinstance(exp, (int, float)) or not (MIN_TIMESTAMP_BOUND <= exp <= MAX_TIMESTAMP_BOUND) or (isinstance(exp, float) and not math.isfinite(exp)):
+            return True
+        if current_time is not None:
+            if isinstance(current_time, bool) or not isinstance(current_time, (int, float)) or not (MIN_TIMESTAMP_BOUND <= current_time <= MAX_TIMESTAMP_BOUND) or (isinstance(current_time, float) and not math.isfinite(current_time)):
+                return True
+            now = current_time
+        else:
+            now = time.time()
+        return now >= exp
+
     def is_quarantined_channel(self) -> bool:
         if self.is_rmm_origin: return True
         if self.origin_subnet: return any(prefix in self.origin_subnet for prefix in self.quarantine_subnets)
         return False
 
     def validate_action(self, action: Dict[str, Any]) -> bool:
-        if self.attempt_count > self.max_attempts or time.time() > self.expires_at: return False
+        if self.attempt_count > self.max_attempts or self.is_expired(): return False
         op = action.get("op")
         target = action.get("node") or action.get("endpoint") or action.get("table") or action.get("policy")
 
