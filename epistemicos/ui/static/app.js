@@ -1217,7 +1217,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const handleActivate = async () => {
           this.state.selectedTraceId = trace.correlation_id;
           this.switchTab('traces');
-          await this.selectTrace(trace.correlation_id);
+          await this.selectTrace(trace.correlation_id, true);
           this.announce(`Navigated to Execution Trace Explorer (Trace: ${trace.correlation_id || 'UNKNOWN'})`);
           const activeItem = document.querySelector('#trace-list .trace-item.active');
           if (activeItem) {
@@ -1497,10 +1497,12 @@ document.addEventListener('DOMContentLoaded', () => {
       });
     },
 
-    async selectTrace(correlationId) {
+    async selectTrace(correlationId, skipAnnouncement = false) {
       this.state.selectedTraceId = correlationId;
       this.state.selectedEventSeq = null;
-      this.announce(`Selected execution trace ${correlationId}`);
+      if (!skipAnnouncement) {
+        this.announce(`Selected execution trace ${correlationId}`);
+      }
       this.renderTracesList();
 
       const emptyDiv = document.getElementById('trace-detail-empty');
