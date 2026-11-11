@@ -878,3 +878,98 @@ def test_human_approval_record_signed_64bit_timestamp_hardening():
     valid_parsed = HumanApprovalRecord.from_input({**dict_payload, "expires_at": 2000.0})
     assert valid_parsed is not None
     assert valid_parsed.expires_at == 2000.0
+
+
+def test_capability_consumption_and_historical_verification_temporal_validation(tmp_path):
+    """
+    Verifies fail-closed temporal validation in consume_token_and_record_dispatch and verify_historical_capability
+    against non-finite floats, booleans, out-of-range bounds, and expired timestamps.
+    """
+    store_path = str(tmp_path / "auth_store.jsonl")
+    denial_log = str(tmp_path / "denial.jsonl")
+    backend = FileAuthorizationStore(store_path)
+    registry = CapabilityRegistry(storage_backend=backend, denial_log_path=denial_log)
+    authority = AuthorizationAuthority(registry=registry)
+
+    # Issue a valid capability with expires_at = 1000.0
+    cap = Capability(
+        token_id="token-temporal-test-1",
+        principal_id="principal-1",
+        correlation_id="corr-1",
+        request_id="req-1",
+        action_name="read_secret",
+        target="db/secrets",
+        canonical_request_digest="digest-1234",
+        executor_id="exec-1",
+        policy_version="1.0.0",
+        created_at=500.0,
+        expires_at=1000.0,
+    )
+    authority.registry.register_capability(cap)
+
+    # 1. consume_token_and_record_dispatch with non-numeric, boolean, non-finite, out-of-bounds, or expired started_at
+    bad_started_ats = [
+        float("nan"),
+        float("inf"),
+        float("-inf"),
+        True,
+        False,
+        "500.0",
+        1 << 63,
+        -(1 << 63) - 1,
+        1000.0,  # started_at == expires_at is expired
+        1500.0,  # started_at > expires_at is expired
+    ]
+    for idx, bad_ts in enumerate(bad_started_ats):
+        attempt_id = f"attempt-bad-{idx}"
+        ok, reason, _ = authority.registry.consume_token_and_record_dispatch(
+            token_id="token-temporal-test-1",
+            attempt_id=attempt_id,
+            dispatched_executor_id="exec-1",
+            started_at=bad_ts,
+        )
+        assert ok is False
+        assert reason == "CAPABILITY_CONSUMPTION_FAILED_EXPIRED_TOKEN"
+
+    # Token must not have been consumed by the failed attempts
+    assert authority.registry.is_consumed("token-temporal-test-1") is False
+
+    # 2. consume_token_and_record_dispatch succeeds with valid finite started_at < expires_at
+    ok, reason, rec = authority.registry.consume_token_and_record_dispatch(
+        token_id="token-temporal-test-1",
+        attempt_id="attempt-good-1",
+        dispatched_executor_id="exec-1",
+        started_at=750.0,
+        dispatch_metadata={"principal_id": "principal-1"},
+    )
+    assert ok is True
+    assert authority.registry.is_consumed("token-temporal-test-1") is True
+
+    # 3. verify_historical_capability with non-numeric, boolean, non-finite, out-of-bounds, or expired execution_start_time
+    for bad_exec_time in bad_started_ats:
+        valid, reason, _, _ = authority.verify_historical_capability(
+            token_id="token-temporal-test-1",
+            action_name="read_secret",
+            target="db/secrets",
+            canonical_request_digest="digest-1234",
+            execution_attempt_id="attempt-good-1",
+            dispatched_executor_id="exec-1",
+            execution_start_time=bad_exec_time,
+            principal_id="principal-1",
+        )
+        assert valid is False
+        assert "HISTORICAL_VERIFICATION_FAILED_EXPIRED_BEFORE_EXECUTION" in reason
+
+    # 4. verify_historical_capability succeeds with valid execution_start_time < expires_at
+    valid, reason, _, _ = authority.verify_historical_capability(
+        token_id="token-temporal-test-1",
+        action_name="read_secret",
+        target="db/secrets",
+        canonical_request_digest="digest-1234",
+        execution_attempt_id="attempt-good-1",
+        dispatched_executor_id="exec-1",
+        execution_start_time=750.0,
+        principal_id="principal-1",
+    )
+    assert valid is True
+    assert reason == "HISTORICAL_CAPABILITY_VERIFIED"

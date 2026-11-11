@@ -1641,14 +1641,26 @@ class FileAuthorizationStore(AuthorizationStore):
                 if not cap_data:
                     return False, "CAPABILITY_CONSUMPTION_FAILED_UNKNOWN_TOKEN", None
 
-                # Expiration check at dispatch time
+                # Expiration check at dispatch time with fail-closed temporal validation
                 expires_at_val = None
                 if isinstance(cap_data, dict):
                     expires_at_val = cap_data.get("expires_at")
                 else:
                     expires_at_val = getattr(cap_data, "expires_at", None)
-                if expires_at_val is not None and float(started_at) > float(expires_at_val):
-                    return False, "CAPABILITY_CONSUMPTION_FAILED_EXPIRED_TOKEN", None
+                if expires_at_val is not None:
+                    # Fail closed if started_at or expires_at_val are boolean, non-numeric, non-finite, or out of bounds
+                    if (
+                        isinstance(started_at, bool)
+                        or not isinstance(started_at, (int, float))
+                        or not math.isfinite(started_at)
+                        or not (MIN_TIMESTAMP_BOUND <= started_at <= MAX_TIMESTAMP_BOUND)
+                        or isinstance(expires_at_val, bool)
+                        or not isinstance(expires_at_val, (int, float))
+                        or not math.isfinite(expires_at_val)
+                        or not (MIN_TIMESTAMP_BOUND <= expires_at_val <= MAX_TIMESTAMP_BOUND)
+                        or float(started_at) >= float(expires_at_val)
+                    ):
+                        return False, "CAPABILITY_CONSUMPTION_FAILED_EXPIRED_TOKEN", None
 
                 scope_key = cap_data.get("scope_key") if isinstance(cap_data, dict) else getattr(cap_data, "scope_key", None)
                 cap_fence = int(cap_data.get("fencing_token", 1) if isinstance(cap_data, dict) else getattr(cap_data, "fencing_token", 1))
@@ -3704,9 +3716,19 @@ class AuthorizationAuthority:
         if exec_time is None and exec_record:
             exec_time = exec_record.get("started_at")
 
-        # 1. Expiration check at execution time
+        # 1. Expiration check at execution time with fail-closed temporal validation
         if exec_time is not None and cap.expires_at is not None:
-            if float(exec_time) > float(cap.expires_at):
+            if (
+                isinstance(exec_time, bool)
+                or not isinstance(exec_time, (int, float))
+                or not math.isfinite(exec_time)
+                or not (MIN_TIMESTAMP_BOUND <= exec_time <= MAX_TIMESTAMP_BOUND)
+                or isinstance(cap.expires_at, bool)
+                or not isinstance(cap.expires_at, (int, float))
+                or not math.isfinite(cap.expires_at)
+                or not (MIN_TIMESTAMP_BOUND <= cap.expires_at <= MAX_TIMESTAMP_BOUND)
+                or float(exec_time) >= float(cap.expires_at)
+            ):
                 return False, f"HISTORICAL_VERIFICATION_FAILED_EXPIRED_BEFORE_EXECUTION: capability expired at {cap.expires_at}, execution started at {exec_time}", cap, exec_record
 
         # 2. Revocation ordering check
