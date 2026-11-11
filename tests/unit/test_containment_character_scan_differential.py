@@ -22,6 +22,9 @@ from epistemicos.containment import (
     _NETLOC_CTRL_REGEX,
     _HOST_WS_REGEX,
     _IP_INVALID_REGEX,
+    _URL_UNENCODED_CTRL_REGEX,
+    _IDNA_HOSTNAME_REGEX,
+    _SINGLE_INT_IP_REGEX,
 )
 
 
@@ -53,6 +56,16 @@ def _orig_ip_invalid_check(s: str) -> bool:
 def _regex_ip_invalid_check(s: str) -> bool:
     """New compiled regex predicate for numeric IP invalid character validation."""
     return bool(_IP_INVALID_REGEX.search(s))
+
+
+def _orig_url_unencoded_ctrl_check(s: str) -> bool:
+    """Original generator predicate for unencoded control characters in target URLs."""
+    return any(c in s for c in ('\r', '\n', '\t', '\x00', '\x0b', '\x0c'))
+
+
+def _regex_url_unencoded_ctrl_check(s: str) -> bool:
+    """New compiled regex predicate for unencoded control characters in target URLs."""
+    return bool(_URL_UNENCODED_CTRL_REGEX.search(s))
 
 
 def test_bmp_exhaustive_code_point_equivalence():
@@ -88,6 +101,16 @@ def test_bmp_exhaustive_code_point_equivalence():
     assert not mismatches_netloc, f"Netloc regex mismatched on {len(mismatches_netloc)} code points: {mismatches_netloc[:5]}"
     assert not mismatches_host_ws, f"Host whitespace regex mismatched on {len(mismatches_host_ws)} code points: {mismatches_host_ws[:5]}"
     assert not mismatches_ip, f"IP invalid regex mismatched on {len(mismatches_ip)} code points: {mismatches_ip[:5]}"
+
+    # 4. URL unencoded control characters check across all BMP code points
+    mismatches_url_ctrl = []
+    for code_point in range(65536):
+        char = chr(code_point)
+        orig_ctrl = _orig_url_unencoded_ctrl_check(char)
+        regex_ctrl = _regex_url_unencoded_ctrl_check(char)
+        if orig_ctrl != regex_ctrl:
+            mismatches_url_ctrl.append((code_point, hex(code_point), orig_ctrl, regex_ctrl))
+    assert not mismatches_url_ctrl, f"URL unencoded regex mismatched on {len(mismatches_url_ctrl)} code points"
 
 
 def test_unicode_whitespace_equivalence():
