@@ -28,6 +28,7 @@ from epistemicos.persistence.append import (
     FatalCommittedDataCorruptionError,
     PersistenceAppendError,
     MissingLockConfigurationError,
+    IndeterminateCommitError,
 )
 
 
@@ -606,14 +607,33 @@ def test_complete_append_path_performance_instrumentation(persistence_env, monke
 
 class MockFailingConnection:
     """Wraps an sqlite3.Connection to inject selective execution failures for testing."""
-    def __init__(self, real_conn, fail_after_commit=False, fail_on_insert=False):
+    def __init__(
+        self,
+        real_conn,
+        fail_after_commit=False,
+        fail_on_insert=False,
+        fail_on_rollback=False,
+        simulate_in_transaction=None,
+        fail_on_in_transaction_check=False,
+    ):
         self._real_conn = real_conn
         self.fail_after_commit = fail_after_commit
         self.fail_on_insert = fail_on_insert
+        self.fail_on_rollback = fail_on_rollback
+        self.simulate_in_transaction = simulate_in_transaction
+        self.fail_on_in_transaction_check = fail_on_in_transaction_check
         self.seen_first_commit = False
 
     def __getattr__(self, name):
         return getattr(self._real_conn, name)
+
+    @property
+    def in_transaction(self):
+        if self.fail_on_in_transaction_check:
+            raise sqlite3.OperationalError("Simulated failure accessing in_transaction property")
+        if self.simulate_in_transaction is not None:
+            return self.simulate_in_transaction
+        return self._real_conn.in_transaction
 
     def execute(self, sql, *args, **kwargs):
         if self.fail_on_insert and "INSERT INTO seen_events" in sql:
@@ -624,7 +644,145 @@ class MockFailingConnection:
                 raise sqlite3.OperationalError("Simulated commit timeout/network interrupt")
             else:
                 self.seen_first_commit = True
+        if self.fail_on_rollback and "ROLLBACK" in sql:
+            raise sqlite3.OperationalError("Simulated rollback I/O failure")
         return self._real_conn.execute(sql, *args, **kwargs)
+
+
+def test_commit_failure_successful_rollback_safe_truncation(persistence_env):
+    """
+    Required Regression Test A & D:
+    COMMIT failure followed by successful ROLLBACK.
+    Confirms that transaction is resolved, fresh connection sees no committed event,
+    safe truncation occurs, and no false acknowledgment is returned.
+    """
+    conn = persistence_env["conn"]
+    fd = persistence_env["segment_fd"]
+    db_path = persistence_env["db_path"]
+    lock_path = persistence_env["lock_path"]
+
+    mock_conn = MockFailingConnection(conn, fail_on_insert=True)
+
+    with pytest.raises(PersistenceAppendError, match="SQLite transaction failed"):
+        append_event(
+            ledger_id="rollback_ledger",
+            segment_sequence=0,
+            event_id="ev_fail",
+            payload={"status": "should_rollback"},
+            segment_fd=fd,
+            db_conn=mock_conn,
+            lock_file_path=lock_path,
+            db_path=db_path,
+        )
+
+    # Physical file must be safely truncated back to 0
+    assert os.fstat(fd).st_size == 0
+    # In-transaction on original connection is resolved
+    assert not mock_conn.in_transaction
+
+
+def test_commit_failure_rollback_failure_blocks_truncation(persistence_env):
+    """
+    Required Regression Test B:
+    COMMIT failure followed by ROLLBACK failure.
+    Connection remains transaction-active.
+    Asserts append_event raises explicit IndeterminateCommitError and physical bytes are NOT truncated.
+    """
+    conn = persistence_env["conn"]
+    fd = persistence_env["segment_fd"]
+    db_path = persistence_env["db_path"]
+    lock_path = persistence_env["lock_path"]
+
+    # Pre-populate metadata so append_event doesn't run step 1 transaction
+    with transaction(conn):
+        conn.execute(
+            """INSERT INTO ledger_metadata (ledger_id, active_segment_sequence, created_at_utc, updated_at_utc)
+               VALUES ('rb_fail_ledger', 0, datetime('now'), datetime('now'));"""
+        )
+        conn.execute(
+            """INSERT INTO segment_watermarks (ledger_id, segment_sequence, contiguous_watermark_offset, is_sealed, updated_at_utc)
+               VALUES ('rb_fail_ledger', 0, 0, 0, datetime('now'));"""
+        )
+
+    mock_conn = MockFailingConnection(
+        conn,
+        fail_on_insert=True,
+        fail_on_rollback=True,
+    )
+
+    # When rollback is called, simulate that the connection remains in transaction
+    orig_execute = mock_conn.execute
+    def execute_with_unresolved_txn(sql, *args, **kwargs):
+        if "ROLLBACK" in sql:
+            mock_conn.simulate_in_transaction = True
+            raise sqlite3.OperationalError("Simulated rollback I/O failure")
+        return orig_execute(sql, *args, **kwargs)
+
+    mock_conn.execute = execute_with_unresolved_txn
+
+    with pytest.raises(IndeterminateCommitError, match="remains inside an unresolved transaction"):
+        append_event(
+            ledger_id="rb_fail_ledger",
+            segment_sequence=0,
+            event_id="ev_rb_fail",
+            payload={"status": "critical_data"},
+            segment_fd=fd,
+            db_conn=mock_conn,
+            lock_file_path=lock_path,
+            db_path=db_path,
+        )
+
+    # Physical segment MUST NOT be truncated because transaction state is unresolved!
+    assert os.fstat(fd).st_size > 0
+
+
+def test_transaction_state_inspection_failure_blocks_truncation(persistence_env):
+    """
+    Required Regression Test C:
+    Simulate failure when checking in_transaction property.
+    Recovery fails closed with IndeterminateCommitError and physical segment is NOT truncated.
+    """
+    conn = persistence_env["conn"]
+    fd = persistence_env["segment_fd"]
+    db_path = persistence_env["db_path"]
+    lock_path = persistence_env["lock_path"]
+
+    with transaction(conn):
+        conn.execute(
+            """INSERT INTO ledger_metadata (ledger_id, active_segment_sequence, created_at_utc, updated_at_utc)
+               VALUES ('inspect_fail_ledger', 0, datetime('now'), datetime('now'));"""
+        )
+        conn.execute(
+            """INSERT INTO segment_watermarks (ledger_id, segment_sequence, contiguous_watermark_offset, is_sealed, updated_at_utc)
+               VALUES ('inspect_fail_ledger', 0, 0, 0, datetime('now'));"""
+        )
+
+    mock_conn = MockFailingConnection(
+        conn,
+        fail_on_insert=True,
+    )
+    orig_execute = mock_conn.execute
+    def execute_with_inspect_fail(sql, *args, **kwargs):
+        if "seen_events" in sql:
+            mock_conn.fail_on_in_transaction_check = True
+        return orig_execute(sql, *args, **kwargs)
+
+    mock_conn.execute = execute_with_inspect_fail
+
+    with pytest.raises(IndeterminateCommitError, match="Failed establishing transaction state"):
+        append_event(
+            ledger_id="inspect_fail_ledger",
+            segment_sequence=0,
+            event_id="ev_inspect_fail",
+            payload={"status": "critical_data"},
+            segment_fd=fd,
+            db_conn=mock_conn,
+            lock_file_path=lock_path,
+            db_path=db_path,
+        )
+
+    # Physical segment MUST NOT be truncated because transaction state could not be verified
+    assert os.fstat(fd).st_size > 0
 
 
 def test_indeterminate_commit_recovery_success(persistence_env):
@@ -650,27 +808,3 @@ def test_indeterminate_commit_recovery_success(persistence_env):
     assert res.event_id == "ev_indet_ok"
     assert res.byte_offset == 0
     assert res.new_contiguous_watermark == res.record_length
-
-
-def test_indeterminate_commit_recovery_rollback(persistence_env):
-    """Verify recovery when commit fails and was rolled back (Case B)."""
-    conn = persistence_env["conn"]
-    fd = persistence_env["segment_fd"]
-    db_path = persistence_env["db_path"]
-    lock_path = persistence_env["lock_path"]
-
-    mock_conn = MockFailingConnection(conn, fail_on_insert=True)
-
-    with pytest.raises(PersistenceAppendError, match="SQLite transaction failed"):
-        append_event(
-            ledger_id="rollback_ledger",
-            segment_sequence=0,
-            event_id="ev_fail",
-            payload={"status": "should_rollback"},
-            segment_fd=fd,
-            db_conn=mock_conn,
-            lock_file_path=lock_path,
-            db_path=db_path,
-        )
-
-    assert os.fstat(fd).st_size == 0

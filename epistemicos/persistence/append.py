@@ -612,6 +612,22 @@ def append_event(
                     (new_watermark, ledger_id, segment_sequence),
                 )
         except Exception as commit_exc:
+            # Check transaction state of original connection before attempting any destructive recovery
+            try:
+                orig_in_transaction = bool(db_conn.in_transaction)
+            except Exception as check_exc:
+                # If transaction state cannot be established, fail closed immediately
+                raise IndeterminateCommitError(
+                    f"Failed establishing transaction state on original connection: {check_exc}. Primary error: {commit_exc}"
+                ) from commit_exc
+
+            # If original connection remains inside an unresolved transaction, do NOT truncate
+            if orig_in_transaction:
+                raise IndeterminateCommitError(
+                    f"Original SQLite connection remains inside an unresolved transaction after error. "
+                    f"Physical ledger truncation blocked to prevent corruption: {commit_exc}"
+                ) from commit_exc
+
             # Auto-resolve db_path from db_conn if not explicitly passed
             effective_db_path = db_path
             if not effective_db_path:
@@ -645,6 +661,7 @@ def append_event(
                     f"SQLite transaction outcome indeterminate and db_path unresolvable: {commit_exc}"
                 ) from commit_exc
 
+            # Truncation is safe ONLY when transaction is confirmed resolved and uncommitted
             os.ftruncate(segment_fd, watermark_offset)
             os.fdatasync(segment_fd)
             raise PersistenceAppendError(f"SQLite transaction failed: {commit_exc}") from commit_exc

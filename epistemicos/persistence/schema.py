@@ -98,6 +98,14 @@ class TransactionError(PersistenceDatabaseError):
     """Raised when a transaction error occurs."""
 
 
+class RollbackFailedError(TransactionError):
+    """Raised when rolling back a transaction fails after an execution error."""
+    def __init__(self, message: str, original_exception: Exception, rollback_exception: Exception):
+        super().__init__(message)
+        self.original_exception = original_exception
+        self.rollback_exception = rollback_exception
+
+
 def configure_pragmas(conn: sqlite3.Connection) -> None:
     """
     Applies mandatory SQLite PRAGMAs for durability, concurrency, and integrity.
@@ -229,10 +237,14 @@ def transaction(conn: sqlite3.Connection) -> Generator[sqlite3.Connection, None,
     try:
         yield conn
         conn.execute("COMMIT;")
-    except Exception:
-        # Roll back on error, preserving the original exception
+    except Exception as primary_exc:
+        # Roll back on error, ensuring rollback failure is observable without masking primary error
         try:
             conn.execute("ROLLBACK;")
-        except Exception:
-            pass  # Suppress rollback error to ensure original exception surfaces
+        except Exception as rb_exc:
+            raise RollbackFailedError(
+                f"Rollback failed after transaction error ({rb_exc}); connection remains in transaction: {conn.in_transaction}",
+                original_exception=primary_exc,
+                rollback_exception=rb_exc,
+            ) from primary_exc
         raise
