@@ -189,6 +189,7 @@ def test_static_aria_accessibility_attributes():
     assert 'id="area-provenance-list"' in content
     assert 'id="provenance-record-list"' in content
     assert 'id="provenance-inspector-content"' in content
+    assert 'aria-label="Provenance Record Detail Inspector"' in content
     # Benchmark Workbench View 4 containers and controls
     assert 'id="view-benchmarks"' in content
     assert 'id="tab-benchmarks"' in content
