@@ -915,6 +915,8 @@ def test_capability_consumption_and_historical_verification_temporal_validation(
         True,
         False,
         "500.0",
+        10**1000,
+        -(10**1000),
         1 << 63,
         -(1 << 63) - 1,
         1000.0,  # started_at == expires_at is expired
@@ -973,3 +975,44 @@ def test_capability_consumption_and_historical_verification_temporal_validation(
     )
     assert valid is True
     assert reason == "HISTORICAL_CAPABILITY_VERIFIED"
+
+    # 5. Verify arbitrary-precision integer overflow protection when expires_at itself is 10**1000 or -(10**1000)
+    mem_authority = AuthorizationAuthority(registry=CapabilityRegistry(storage_backend=InMemoryAuthorizationStore()))
+    for bad_exp in (10**1000, -(10**1000), float("nan"), float("inf"), float("-inf"), True, False, 1 << 63, -(1 << 63) - 1):
+        cap_bad_exp = Capability(
+            token_id=f"token-bad-exp-{hash(str(bad_exp)) % 10000}",
+            principal_id="principal-1",
+            correlation_id="corr-1",
+            request_id="req-1",
+            action_name="read_secret",
+            target="db/secrets",
+            canonical_request_digest="digest-1234",
+            executor_id="exec-1",
+            policy_version="1.0.0",
+            created_at=500.0,
+            expires_at=1000.0,
+        )
+        object.__setattr__(cap_bad_exp, "expires_at", bad_exp)
+        mem_authority.registry.register_capability(cap_bad_exp)
+
+        # Dispatch consumption must fail closed
+        ok, reason, _ = mem_authority.registry.consume_token_and_record_dispatch(
+            token_id=cap_bad_exp.token_id,
+            attempt_id=f"attempt-{cap_bad_exp.token_id}",
+            dispatched_executor_id="exec-1",
+            started_at=500.0,
+        )
+        assert ok is False
+        assert reason == "CAPABILITY_CONSUMPTION_FAILED_EXPIRED_TOKEN"
+
+        # Historical verification must fail closed
+        valid, reason, _, _ = mem_authority.verify_historical_capability(
+            token_id=cap_bad_exp.token_id,
+            action_name="read_secret",
+            target="db/secrets",
+            canonical_request_digest="digest-1234",
+            execution_start_time=500.0,
+            principal_id="principal-1",
+        )
+        assert valid is False
+        assert "HISTORICAL_VERIFICATION_FAILED_EXPIRED_BEFORE_EXECUTION" in reason
