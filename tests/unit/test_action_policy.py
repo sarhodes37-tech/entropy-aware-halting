@@ -500,6 +500,17 @@ class TestSideEffectPolicyEngineInvariants:
         digest = engine.compute_canonical_digest(payload)
 
         # 1. Signature format invalid (unicode lookalikes, whitespace, sign, etc.)
+        base_record_fields = {
+            "approval_id": "APP-BAD-SIG",
+            "operation_id": "package_publish",
+            "target_resource": "https://example.com",
+            "canonical_args_digest": digest,
+            "task_id": "TASK-1",
+            "policy_version": "1.0.0",
+            "approved_by_principal": "admin",
+            "timestamp": "2026-01-01T00:00:00Z",
+            "signature": "0" * 64,
+        }
         for bad_sig in [
             "short",
             "0" * 63,
@@ -513,17 +524,8 @@ class TestSideEffectPolicyEngineInvariants:
             "-\x00" * 32,
             "\uff10" * 64,  # full-width unicode zero
         ]:
-            record = TypedHumanApprovalRecord(
-                approval_id="APP-BAD-SIG",
-                operation_id="package_publish",
-                target_resource="https://example.com",
-                canonical_args_digest=digest,
-                task_id="TASK-1",
-                policy_version="1.0.0",
-                approved_by_principal="admin",
-                timestamp="2026-01-01T00:00:00Z",
-                signature=bad_sig,  # type: ignore
-            )
+            record = TypedHumanApprovalRecord(**base_record_fields)
+            object.__setattr__(record, "signature", bad_sig)
             valid, msg = engine.verify_approval_record(
                 record=record,
                 expected_operation_id="package_publish",
@@ -545,18 +547,8 @@ class TestSideEffectPolicyEngineInvariants:
             float("-inf"),
         ]
         for bad_exp in bad_exp_list:
-            record = TypedHumanApprovalRecord(
-                approval_id="APP-BAD-EXP",
-                operation_id="package_publish",
-                target_resource="https://example.com",
-                canonical_args_digest=digest,
-                task_id="TASK-1",
-                policy_version="1.0.0",
-                approved_by_principal="admin",
-                timestamp="2026-01-01T00:00:00Z",
-                signature="0" * 64,
-                expires_at=bad_exp,  # type: ignore
-            )
+            record = TypedHumanApprovalRecord(**base_record_fields)
+            object.__setattr__(record, "expires_at", bad_exp)
             valid, msg = engine.verify_approval_record(
                 record=record,
                 expected_operation_id="package_publish",
@@ -695,8 +687,9 @@ class TestSideEffectPolicyEngineInvariants:
                 approved_by_principal="admin",
                 timestamp="2026-01-01T00:00:00Z",
                 signature="0" * 64,
-                expires_at=bad_exp,
+                expires_at=None,
             )
+            object.__setattr__(record_bad_exp, "expires_at", bad_exp)
             valid, msg = engine.verify_approval_record(
                 record=record_bad_exp,
                 expected_operation_id="package_publish",
@@ -890,3 +883,84 @@ class TestSideEffectPolicyEngineInvariants:
         for bad_val in (True, "string", float("nan"), float("inf"), 1 << 63, -(1 << 63) - 1):
             object.__setattr__(rec_exp, "expires_at", bad_val)
             assert rec_exp.is_expired(current_time=1500.0) is True
+
+    def test_typed_human_approval_record_post_init_validation(self):
+        """
+        Validates fail-closed __post_init__ validation on TypedHumanApprovalRecord:
+        1. Required string attributes must be non-empty strings.
+        2. expires_at rejects booleans, unparseable strings, non-finite floats, and signed 64-bit out-of-range values.
+        3. Valid integer boundaries and fractional floats pass.
+        """
+        base_kwargs = {
+            "approval_id": "APP-TEST-VAL",
+            "operation_id": "package_publish",
+            "target_resource": "https://example.com",
+            "canonical_args_digest": "0" * 64,
+            "task_id": "TASK-1",
+            "policy_version": "1.0.0",
+            "approved_by_principal": "admin",
+            "timestamp": "2026-01-01T00:00:00Z",
+            "signature": "0" * 64,
+        }
+
+        # 1. Valid construction with None, int, float, and valid numeric string
+        rec_none = TypedHumanApprovalRecord(**base_kwargs, expires_at=None)
+        assert rec_none.expires_at is None
+
+        rec_int = TypedHumanApprovalRecord(**base_kwargs, expires_at=2000)
+        assert rec_int.expires_at == 2000
+
+        rec_flt = TypedHumanApprovalRecord(**base_kwargs, expires_at=2000.5)
+        assert rec_flt.expires_at == 2000.5
+
+        rec_str = TypedHumanApprovalRecord(**base_kwargs, expires_at="2000.5")
+        assert rec_str.expires_at == 2000.5
+
+        # 2. Reject non-string or empty required fields
+        for field_name in (
+            "approval_id",
+            "operation_id",
+            "target_resource",
+            "canonical_args_digest",
+            "task_id",
+            "policy_version",
+            "approved_by_principal",
+            "timestamp",
+            "signature",
+        ):
+            for bad_val in ("", "   ", None, 12345, True, False, []):
+                invalid_kwargs = dict(base_kwargs)
+                invalid_kwargs[field_name] = bad_val
+                with pytest.raises(ValueError, match="must be a non-empty string"):
+                    TypedHumanApprovalRecord(**invalid_kwargs)
+
+        # 3. Reject boolean expires_at
+        for bad_bool in (True, False):
+            with pytest.raises(TypeError, match="expires_at must be a numeric timestamp"):
+                TypedHumanApprovalRecord(**base_kwargs, expires_at=bad_bool)
+
+        # 4. Reject unparseable strings
+        with pytest.raises(ValueError, match="cannot be parsed as a float"):
+            TypedHumanApprovalRecord(**base_kwargs, expires_at="invalid-date")
+
+        # 5. Reject non-finite floats
+        for bad_flt in (float("nan"), float("inf"), float("-inf")):
+            with pytest.raises(ValueError, match="must be a finite number"):
+                TypedHumanApprovalRecord(**base_kwargs, expires_at=bad_flt)
+
+        # 6. Reject signed 64-bit integer overflow
+        for bad_int in (1 << 63, -(1 << 63) - 1, 10**100):
+            with pytest.raises(ValueError, match="integer overflows signed 64-bit limits"):
+                TypedHumanApprovalRecord(**base_kwargs, expires_at=bad_int)
+
+        # 7. Reject signed 64-bit float overflow
+        for bad_flt in (float(1 << 63), float(-(1 << 63) - 2000), 1e100, -1e100):
+            with pytest.raises(ValueError, match="float overflows signed 64-bit limits"):
+                TypedHumanApprovalRecord(**base_kwargs, expires_at=bad_flt)
+
+        # 8. Valid boundary integers pass
+        rec_min = TypedHumanApprovalRecord(**base_kwargs, expires_at=-(1 << 63))
+        assert rec_min.expires_at == -(1 << 63)
+
+        rec_max = TypedHumanApprovalRecord(**base_kwargs, expires_at=(1 << 63) - 1)
+        assert rec_max.expires_at == (1 << 63) - 1
