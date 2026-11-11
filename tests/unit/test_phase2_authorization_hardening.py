@@ -1060,7 +1060,7 @@ def test_capability_consumption_and_historical_verification_temporal_validation(
 
     # 5b. Direct evaluation of in-memory Capability object with invalid expires_at fails closed with EXPIRED_BEFORE_EXECUTION
     mem_authority = AuthorizationAuthority(registry=CapabilityRegistry(storage_backend=InMemoryAuthorizationStore()))
-    for bad_exp in (10**1000, -(10**1000), float("nan"), float("inf"), float("-inf"), True, False, 1 << 63, -(1 << 63) - 1):
+    for bad_exp in (None, 10**1000, -(10**1000), float("nan"), float("inf"), float("-inf"), True, False, 1 << 63, -(1 << 63) - 1):
         cap_mem_bad = Capability(
             token_id=f"token-mem-bad-exp-{hash(str(bad_exp)) % 10000}",
             principal_id="principal-1",

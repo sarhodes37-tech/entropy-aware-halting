@@ -3732,7 +3732,9 @@ class AuthorizationAuthority:
             exec_time = exec_record.get("started_at")
 
         # 1. Expiration check at execution time with fail-closed temporal validation
-        if exec_time is not None and cap.expires_at is not None:
+        if exec_time is not None:
+            if cap.expires_at is None:
+                return False, f"HISTORICAL_VERIFICATION_FAILED_EXPIRED_BEFORE_EXECUTION: capability expired at None, execution started at {exec_time}", cap, exec_record
             valid_exec, exec_num = _validate_finite_timestamp_value(exec_time)
             valid_exp, exp_num = _validate_finite_timestamp_value(cap.expires_at)
             if not valid_exec or not valid_exp or exec_num >= exp_num:
