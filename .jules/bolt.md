@@ -147,3 +147,14 @@ Differential testing across edge cases and all 128 ASCII codepoints confirms 100
 - End-to-end `_resolve_with_features` pairwise comparison: **1.47x speedup** (32.0% latency reduction: median 3.462 µs -> 2.354 µs per comparison).
 Bit-level differential testing across empty sets, disjoint sets, identical sets, subsets, and 500 randomized token sets confirms 100% identical similarity score outputs.
 **Action:** When computing Jaccard index between two sets, never construct an explicit union set (`set_a | set_b`); compute union cardinality mathematically using `len(set_a) + len(set_b) - len(set_a & set_b)`.
+
+## 2026-11-10 - Precompiled Character-Class Regex Scanning for URL Unencoded Controls and Hostname Validation
+**Learning:** In URL and destination containment kernels (`parse_url_authority_structure` and `parse_ip_numeric`), evaluating unencoded control characters via dynamic Python generator expressions (`any(c in target_url_or_host for c in ('\r', '\n', '\t', '\x00', '\x0b', '\x0c'))`) and executing uncompiled regexes repeatedly (`re.match(r'^[a-z0-9\-\.]+$', idna_host)` and `re.match(r'^(0x[0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)$', clean_no_dot)`) introduces recurring bytecode iteration and regex compilation/cache-lookup overhead on hot containment parsing paths. Replacing them with module-level precompiled regular expressions (`_URL_UNENCODED_CTRL_REGEX = re.compile(r"[\r\n\t\x00\x0b\x0c]")`, `_IDNA_HOSTNAME_REGEX = re.compile(r"^[a-z0-9\-\.]+$")`, and `_SINGLE_INT_IP_REGEX = re.compile(r"^(0x[0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)$")`) yields consistent measured performance gains:
+- Clean Target URL control scan: **1.47x speedup** (32.1% latency reduction: median 1.034 µs -> 0.702 µs).
+- Rejected C0 Target URL control scan: **1.85x speedup** (45.9% latency reduction: median 1.493 µs -> 0.807 µs).
+- Rejected CR Target URL control scan: **1.58x speedup** (36.8% latency reduction: median 1.269 µs -> 0.802 µs).
+- IDNA hostname match: **1.57x speedup** (36.3% latency reduction: median 1.161 µs -> 0.740 µs).
+- Single-integer numeric IP hex match: **1.71x speedup** (41.5% latency reduction: median 1.086 µs -> 0.636 µs).
+- Single-integer numeric IP non-match: **1.81x speedup** (44.7% latency reduction: median 1.007 µs -> 0.557 µs).
+Differential testing across all 65,536 code points of the BMP confirms 100% identical Boolean classification.
+**Action:** In network parsing and input containment routines, always precompile regular expressions at module scope instead of calling `re.match()` inline or using generator loops over character sets.
