@@ -677,7 +677,7 @@ def test_keyboard_navigation_and_focus_management_workflows(a11y_comprehensive_s
             )
             assert "trace-item" in focused_classes_prov and "active" in focused_classes_prov
 
-        # 6. Keyboard Navigation in Benchmark Cases Listbox
+        # 6. Keyboard Navigation in Benchmark Cases Listbox and Focus Shift to Inspector
         page.click("#tab-benchmarks")
         page.wait_for_selector("#benchmark-case-list .trace-item")
         case_first = page.locator("#benchmark-case-list .trace-item").first
@@ -686,6 +686,8 @@ def test_keyboard_navigation_and_focus_management_workflows(a11y_comprehensive_s
         page.keyboard.press("Enter")
         page.wait_for_selector("#benchmark-case-content:not(.hidden)")
         assert page.locator("#benchmark-case-content").is_visible()
+        focused_el_id = page.evaluate("() => document.activeElement ? document.activeElement.id : ''")
+        assert focused_el_id == "benchmark-case-content"
 
         # 7. Focusability of Scrollable JSON Region
         raw_pre = page.locator("#benchmark-case-content pre.inspector-block")

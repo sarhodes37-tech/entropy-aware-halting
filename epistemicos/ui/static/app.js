@@ -4388,6 +4388,7 @@ document.addEventListener('DOMContentLoaded', () => {
       if (contentDiv) {
         contentDiv.classList.remove('hidden');
         this.renderCaseDetailInspector(caseRecord, contentDiv);
+        contentDiv.focus();
       }
     },
 
