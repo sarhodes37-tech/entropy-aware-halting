@@ -659,6 +659,8 @@ def test_keyboard_navigation_and_focus_management_workflows(a11y_comprehensive_s
         page.keyboard.press("Enter")
         page.wait_for_selector("#provenance-inspector-content:not(.hidden)")
         assert page.locator("#provenance-inspector-content").is_visible()
+        focused_prov_id = page.evaluate("() => document.activeElement ? document.activeElement.id : ''")
+        assert focused_prov_id == "provenance-inspector-content"
 
         # 5b. Provenance to Trace "View Related Trace" Shortcut & Focus Restoration
         trace_shortcut_btn = page.locator(

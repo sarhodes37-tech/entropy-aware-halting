@@ -2622,6 +2622,7 @@ document.addEventListener('DOMContentLoaded', () => {
       if (contentDiv) {
         contentDiv.classList.remove('hidden');
         this.renderProvenanceRecordInspector(record, contentDiv);
+        contentDiv.focus();
       }
     },
 
