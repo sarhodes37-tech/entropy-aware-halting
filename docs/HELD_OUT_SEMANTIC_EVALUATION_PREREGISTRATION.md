@@ -1,7 +1,7 @@
 # Preregistration Protocol: Held-Out Evaluation of Semantic Uncertainty for Adaptive Halting
 
 **Version:** 1.0.0
-**Date:** March 2026
+**Date:** October 2026
 **Status:** FROZEN BEFORE HELD-OUT RUN
 **Target Domain:** Multi-Step Reasoning Trajectories with Meaning-Level Conclusion Clustered Signals
 
